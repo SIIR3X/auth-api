@@ -4,3 +4,43 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+[dev-dependencies]
+postgres = { version = "0.19.12", features = ["with-uuid-1", "with-time-0_3"] }
+uuid = "1.22.0"
+
+[[test]]
+name = "migrations"
+path = "tests/db/migrations/mod.rs"
+
+[[test]]
+name = "users"
+path = "tests/db/users/mod.rs"
+
+[[test]]
+name = "sessions"
+path = "tests/db/sessions/mod.rs"
+
+[[test]]
+name = "rbac"
+path = "tests/db/rbac/mod.rs"
+
+[[test]]
+name = "two_factor"
+path = "tests/db/two_factor/mod.rs"
+
+[[test]]
+name = "tokens"
+path = "tests/db/tokens/mod.rs"
+
+[[test]]
+name = "audit"
+path = "tests/db/audit/mod.rs"
+
+[[test]]
+name = "flows"
+path = "tests/db/flows/mod.rs"
+
+[[test]]
+name = "db_smoke_test"
+path = "tests/db/smoke_test.rs"
