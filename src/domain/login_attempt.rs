@@ -3,7 +3,7 @@
 //! Maps the `login_attempts` table used for brute-force detection,
 //! lockout logic, and security investigations.
 
-use std::net::IpAddr;
+use ipnetwork::IpNetwork;
 
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -30,6 +30,6 @@ pub struct LoginAttempt {
     pub attempted_identifier: String,
     pub was_successful: bool,
     pub failure_reason: Option<LoginFailureReason>,
-    pub request_ip: Option<IpAddr>,
+    pub request_ip: Option<IpNetwork>,
     pub request_user_agent: Option<String>,
 }
