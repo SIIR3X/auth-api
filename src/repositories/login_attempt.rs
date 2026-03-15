@@ -3,7 +3,7 @@
 //! Used by the authentication service to record attempts and by the rate-limit
 //! layer to detect brute-force patterns before issuing a lockout.
 
-use std::net::IpAddr;
+use ipnetwork::IpNetwork;
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -17,7 +17,7 @@ pub struct NewLoginAttempt<'a> {
     pub attempted_identifier: &'a str,
     pub was_successful: bool,
     pub failure_reason: Option<LoginFailureReason>,
-    pub request_ip: Option<IpAddr>,
+    pub request_ip: Option<IpNetwork>,
     pub request_user_agent: Option<&'a str>,
 }
 
@@ -67,7 +67,7 @@ pub async fn count_recent_failures_by_identifier(
 /// Uses the partial index on (request_ip, attempted_at) WHERE was_successful = FALSE.
 pub async fn count_recent_failures_by_ip(
     pool: &PgPool,
-    ip: IpAddr,
+    ip: IpNetwork,
     window_secs: i64,
 ) -> Result<i64, sqlx::Error> {
     let row: (i64,) = sqlx::query_as(
