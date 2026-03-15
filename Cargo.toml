@@ -4,18 +4,27 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aes-gcm = "0.10.3"
 anyhow = "1.0.102"
+argon2 = "0.5.3"
 axum = "0.8.8"
+base64 = "0.22.1"
 deadpool-redis = { version = "0.23.0", features = ["rt_tokio_1"] }
 dotenvy = "0.15.7"
-lettre = { version = "0.11.19", default-features = false, features = ["tokio1-rustls-tls", "builder", "hostname"] }
+jsonwebtoken = { version = "10.3.0", default-features = false, features = ["rust_crypto"] }
+ipnetwork = "0.20"
+lettre = { version = "0.11.19", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
+rand = "0.10.0"
+rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "macros", "json"] }
+sha2 = "0.10.9"
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "macros", "json", "ipnetwork"] }
 tera = "1.20.1"
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["serde"] }
 tokio = { version = "1.50.0", features = ["full"] }
+totp-rs = { version = "5.7.1", features = ["gen_secret"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }

@@ -3,7 +3,7 @@
 //! Maps the `audit_log` partitioned table. This table is append-only;
 //! the database enforces it via a trigger. Never attempt updates or deletes.
 
-use std::net::IpAddr;
+use ipnetwork::IpNetwork;
 
 use serde_json::Value as JsonValue;
 use time::OffsetDateTime;
@@ -42,6 +42,6 @@ pub struct AuditLog {
     pub request_id: Option<Uuid>,
     pub created_at: OffsetDateTime,
     pub action: AuditAction,
-    pub ip_address: Option<IpAddr>,
+    pub ip_address: Option<IpNetwork>,
     pub metadata: JsonValue,
 }

@@ -3,7 +3,7 @@
 //! Maps the `sessions` table. token_hash is a SHA-256 digest of the raw
 //! token; the plaintext is never persisted.
 
-use std::net::IpAddr;
+use ipnetwork::IpNetwork;
 
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -28,7 +28,7 @@ pub struct Session {
     pub rotated_at: Option<OffsetDateTime>,
     pub compromised_at: Option<OffsetDateTime>,
     pub replaced_by_session_id: Option<Uuid>,
-    pub ip_address: Option<IpAddr>,
+    pub ip_address: Option<IpNetwork>,
     pub device_name: Option<String>,
     // 32-byte SHA-256 digest
     pub token_hash: Vec<u8>,
