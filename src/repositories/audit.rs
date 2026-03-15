@@ -3,7 +3,7 @@
 //! This table is append-only; the database enforces it via a trigger.
 //! Never attempt UPDATE or DELETE through this repository.
 
-use std::net::IpAddr;
+use ipnetwork::IpNetwork;
 
 use serde_json::Value as JsonValue;
 use sqlx::PgPool;
@@ -17,7 +17,7 @@ pub struct NewAuditEntry {
     pub user_id: Option<Uuid>,
     pub request_id: Option<Uuid>,
     pub action: AuditAction,
-    pub ip_address: Option<IpAddr>,
+    pub ip_address: Option<IpNetwork>,
     pub metadata: JsonValue,
 }
 

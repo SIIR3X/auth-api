@@ -4,7 +4,7 @@
 //! is revoked and the new one is created in a single transaction to prevent
 //! any window where both tokens are valid simultaneously.
 
-use std::net::IpAddr;
+use ipnetwork::IpNetwork;
 
 use sqlx::PgPool;
 use time::OffsetDateTime;
@@ -18,7 +18,7 @@ pub struct NewSession<'a> {
     pub user_id: Uuid,
     pub session_family_id: Uuid,
     pub expires_at: OffsetDateTime,
-    pub ip_address: Option<IpAddr>,
+    pub ip_address: Option<IpNetwork>,
     pub device_name: Option<&'a str>,
     pub token_hash: &'a [u8],
     pub user_agent: Option<&'a str>,
