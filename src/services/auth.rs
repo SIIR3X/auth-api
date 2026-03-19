@@ -122,7 +122,7 @@ pub async fn register(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    email::send_verification_email(
+    if let Err(e) = email::send_verification_email(
         &state.mailer,
         &state.templates,
         &state.config.mail,
@@ -132,7 +132,10 @@ pub async fn register(
         &raw_token,
         &state.config.server.public_url,
     )
-    .await?;
+    .await
+    {
+        tracing::warn!(error = ?e, user_id = %user.id, "failed to send verification email");
+    }
 
     audit::append(
         &state.db,
@@ -542,7 +545,7 @@ pub async fn forgot_password(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    email::send_password_reset_email(
+    if let Err(e) = email::send_password_reset_email(
         &state.mailer,
         &state.templates,
         &state.config.mail,
@@ -552,7 +555,10 @@ pub async fn forgot_password(
         &raw_token,
         &state.config.server.public_url,
     )
-    .await?;
+    .await
+    {
+        tracing::warn!(error = ?e, user_id = %user.id, "failed to send password reset email");
+    }
 
     audit::append(
         &state.db,
@@ -722,7 +728,7 @@ pub async fn resend_verification_email(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    email::send_verification_email(
+    if let Err(e) = email::send_verification_email(
         &state.mailer,
         &state.templates,
         &state.config.mail,
@@ -732,7 +738,10 @@ pub async fn resend_verification_email(
         &raw_token,
         &state.config.server.public_url,
     )
-    .await?;
+    .await
+    {
+        tracing::warn!(error = ?e, user_id = %user_id, "failed to send verification email");
+    }
 
     audit::append(
         &state.db,
