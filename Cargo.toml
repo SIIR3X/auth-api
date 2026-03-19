@@ -32,7 +32,11 @@ async-trait = "0.1.89"
 
 [dev-dependencies]
 postgres = { version = "0.19.12", features = ["with-uuid-1", "with-time-0_3"] }
-uuid = "1.22.0"
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+serde_json = "1.0"
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "macros", "migrate"] }
+tokio = { version = "1.50.0", features = ["full"] }
+uuid = { version = "1.22.0", features = ["v4"] }
 
 [[test]]
 name = "migrations"
@@ -69,3 +73,7 @@ path = "tests/db/flows/mod.rs"
 [[test]]
 name = "db_smoke_test"
 path = "tests/db/smoke_test.rs"
+
+[[test]]
+name = "http"
+path = "tests/http/mod.rs"

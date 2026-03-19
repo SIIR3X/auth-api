@@ -68,11 +68,11 @@ fn me_router() -> Router<AppState> {
         // Sessions
         .route("/sessions", get(session::list))
         .route("/sessions", delete(session::revoke_all))
-        .route("/sessions/:id", delete(session::revoke))
+        .route("/sessions/{id}", delete(session::revoke))
         // Two-factor
         .route("/two-factor/totp/setup", post(two_factor::setup_totp))
-        .route("/two-factor/totp/:id/verify", post(two_factor::verify_totp_setup))
-        .route("/two-factor/totp/:id", delete(two_factor::disable_totp))
+        .route("/two-factor/totp/{id}/verify", post(two_factor::verify_totp_setup))
+        .route("/two-factor/totp/{id}", delete(two_factor::disable_totp))
         .route("/two-factor/recovery-codes", post(two_factor::regenerate_recovery_codes))
         .route("/two-factor/recovery-codes/use", post(two_factor::use_recovery_code))
 }
