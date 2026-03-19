@@ -3,7 +3,7 @@
 //! Token hashes are 32-byte SHA-256 digests. Plaintext tokens are generated
 //! at the service layer and never persisted.
 
-use std::net::IpAddr;
+use ipnetwork::IpNetwork;
 
 use sqlx::PgPool;
 use time::OffsetDateTime;
@@ -17,7 +17,7 @@ pub struct NewEmailVerificationToken<'a> {
     pub user_id: Uuid,
     pub token_hash: &'a [u8],
     pub expires_at: OffsetDateTime,
-    pub request_ip: Option<IpAddr>,
+    pub request_ip: Option<IpNetwork>,
     pub request_user_agent: Option<&'a str>,
     pub target_email: &'a str,
 }
@@ -26,7 +26,7 @@ pub struct NewPasswordResetToken<'a> {
     pub user_id: Uuid,
     pub token_hash: &'a [u8],
     pub expires_at: OffsetDateTime,
-    pub request_ip: Option<IpAddr>,
+    pub request_ip: Option<IpNetwork>,
     pub request_user_agent: Option<&'a str>,
 }
 
