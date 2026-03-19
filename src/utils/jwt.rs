@@ -1,7 +1,7 @@
 //! JWT encoding and decoding using HS256.
 //!
-//! Access tokens carry a jti (unique ID) so they can be individually revoked
-//! via a Redis blocklist without invalidating other tokens for the same user.
+//! Access tokens carry sid (session ID) so handlers can revoke the right session
+//! on logout without an extra DB lookup, and jti for individual token revocation.
 
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,8 @@ pub enum JwtError {
 pub struct Claims {
     /// Subject: user UUID.
     pub sub: Uuid,
+    /// Session ID: the refresh session this access token was issued for.
+    pub sid: Uuid,
     /// JWT ID: unique per token, used for blocklist-based revocation.
     pub jti: Uuid,
     /// Expiry (Unix timestamp).
@@ -28,9 +30,10 @@ pub struct Claims {
 }
 
 impl Claims {
-    pub fn new(user_id: Uuid, exp: i64) -> Self {
+    pub fn new(user_id: Uuid, session_id: Uuid, exp: i64) -> Self {
         Self {
             sub: user_id,
+            sid: session_id,
             jti: Uuid::new_v4(),
             exp,
             iat: time::OffsetDateTime::now_utc().unix_timestamp(),
@@ -69,6 +72,7 @@ mod tests {
     fn valid_claims() -> Claims {
         Claims::new(
             Uuid::new_v4(),
+            Uuid::new_v4(),
             time::OffsetDateTime::now_utc().unix_timestamp() + 3600,
         )
     }
@@ -80,6 +84,7 @@ mod tests {
         let decoded = decode_token(&token, SECRET).unwrap();
 
         assert_eq!(decoded.sub, claims.sub);
+        assert_eq!(decoded.sid, claims.sid);
         assert_eq!(decoded.jti, claims.jti);
         assert_eq!(decoded.exp, claims.exp);
     }
@@ -87,9 +92,10 @@ mod tests {
     #[test]
     fn each_token_has_unique_jti() {
         let user_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
         let exp = time::OffsetDateTime::now_utc().unix_timestamp() + 3600;
-        let c1 = Claims::new(user_id, exp);
-        let c2 = Claims::new(user_id, exp);
+        let c1 = Claims::new(user_id, session_id, exp);
+        let c2 = Claims::new(user_id, session_id, exp);
         assert_ne!(c1.jti, c2.jti);
     }
 
@@ -103,6 +109,7 @@ mod tests {
     fn decode_expired_token_fails() {
         let claims = Claims {
             sub: Uuid::new_v4(),
+            sid: Uuid::new_v4(),
             jti: Uuid::new_v4(),
             exp: 1,
             iat: 1,

@@ -28,6 +28,7 @@ totp-rs = { version = "5.7.1", features = ["gen_secret"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
+async-trait = "0.1.89"
 
 [dev-dependencies]
 postgres = { version = "0.19.12", features = ["with-uuid-1", "with-time-0_3"] }
