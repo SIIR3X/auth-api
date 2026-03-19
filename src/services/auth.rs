@@ -427,7 +427,7 @@ pub async fn refresh_token(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    let access_token = build_access_token(&user, state)?;
+    let access_token = build_access_token(&user, new_session.id, state)?;
 
     Ok(AuthTokens {
         access_token,
@@ -657,14 +657,14 @@ async fn issue_tokens(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    let access_token = build_access_token(user, state)?;
+    let access_token = build_access_token(user, session.id, state)?;
 
     Ok(AuthTokens { access_token, refresh_token: raw_token, session })
 }
 
-fn build_access_token(user: &User, state: &AppState) -> Result<String, AppError> {
+fn build_access_token(user: &User, session_id: uuid::Uuid, state: &AppState) -> Result<String, AppError> {
     let exp = time::in_secs(state.config.jwt.access_expiry_secs).unix_timestamp();
-    let claims = Claims::new(user.id, exp);
+    let claims = Claims::new(user.id, session_id, exp);
     crate::utils::jwt::encode_token(&claims, &state.config.jwt.secret)
         .map_err(|e| AppError::Internal(e.into()))
 }
@@ -748,4 +748,71 @@ pub async fn resend_verification_email(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(())
+}
+
+// Complete 2FA login with a recovery code instead of a TOTP code.
+pub async fn complete_login_with_recovery(
+    state: &AppState,
+    pre_auth_token: &str,
+    recovery_code_plaintext: &str,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+) -> Result<AuthTokens, AppError> {
+    let redis_key = format!("pre_auth:{}", pre_auth_token);
+    let mut conn = state.redis.get().await.map_err(|e| AppError::Internal(e.into()))?;
+
+    let user_id_str: Option<String> = conn.get(&redis_key).await.map_err(|e| AppError::Internal(e.into()))?;
+    let user_id_str = user_id_str.ok_or(AppError::TokenInvalid)?;
+
+    conn.del::<_, ()>(&redis_key).await.map_err(|e| AppError::Internal(e.into()))?;
+
+    let user_id: Uuid = user_id_str.parse().map_err(|_| AppError::TokenInvalid)?;
+
+    let user = user_repo::find_by_id(&state.db, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or(AppError::Unauthorized)?;
+
+    if !user.is_active() {
+        return Err(AppError::AccountSuspended);
+    }
+
+    let code_hash = crypto::sha256(recovery_code_plaintext.as_bytes());
+    let record = recovery_code::find_by_hash(&state.db, &code_hash)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or(AppError::TwoFactorFailed)?;
+
+    if record.user_id != user_id {
+        return Err(AppError::TwoFactorFailed);
+    }
+
+    let consumed = recovery_code::consume(&state.db, record.id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    if !consumed {
+        return Err(AppError::TwoFactorFailed);
+    }
+
+    let tokens = issue_tokens(state, &user, ip, user_agent, None).await?;
+
+    user_repo::update_last_login(&state.db, user.id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(user.id),
+            request_id: None,
+            action: AuditAction::Login,
+            ip_address: ip,
+            metadata: json!({"two_factor": "recovery_code"}),
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+
+    Ok(tokens)
 }
