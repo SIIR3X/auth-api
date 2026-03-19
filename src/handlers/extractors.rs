@@ -13,7 +13,7 @@ use axum::{
 };
 use ipnetwork::IpNetwork;
 
-use crate::{error::AppError, state::AppState, utils::jwt};
+use crate::{error::AppError, repositories::session as session_repo, state::AppState, utils::jwt};
 
 // Authenticated user extracted from the JWT Bearer token.
 
@@ -41,6 +41,17 @@ impl FromRequestParts<AppState> for AuthUser {
 
         let claims = jwt::decode_token(token, &state.config.jwt.secret)
             .map_err(|_| AppError::TokenInvalid)?;
+
+        // Verify the session is still active in the database.
+        // This ensures logout and session revocation take effect immediately.
+        let session = session_repo::find_by_id(&state.db, claims.sid)
+            .await
+            .map_err(|_| AppError::Unauthorized)?
+            .ok_or(AppError::Unauthorized)?;
+
+        if !session.is_active() {
+            return Err(AppError::Unauthorized);
+        }
 
         Ok(Self {
             user_id: claims.sub,

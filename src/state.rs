@@ -62,6 +62,22 @@ impl AppState {
             config: Arc::new(config),
         })
     }
+
+    /// Build the application state with an existing database pool.
+    /// Used in integration tests where the pool is created and migrated externally.
+    pub async fn from_config_with_pool(config: Config, db: PgPool) -> Result<Self, AppStateError> {
+        let redis = build_redis_pool(&config.redis)?;
+        let mailer = build_mailer(&config.mail.smtp)?;
+        let templates = Arc::new(build_templates(&config.mail)?);
+
+        Ok(Self {
+            db,
+            redis,
+            mailer,
+            templates,
+            config: Arc::new(config),
+        })
+    }
 }
 
 // Builders
@@ -101,6 +117,8 @@ fn build_mailer(cfg: &SmtpConfig) -> Result<Mailer, lettre::transport::smtp::Err
 /// Load all templates from `{templates_dir}/emails/**/*`.
 /// Each template is addressable as "emails/{locale}/name.html".
 fn build_templates(cfg: &MailConfig) -> Result<Tera, tera::Error> {
-    let pattern = format!("{}/emails/**/*", cfg.templates_dir);
+    // Pattern must start from templates_dir so Tera names templates relative to it.
+    // e.g. with templates_dir="templates": "templates/**/*" -> "emails/en/verification.html"
+    let pattern = format!("{}/**/*", cfg.templates_dir);
     Tera::new(&pattern)
 }
