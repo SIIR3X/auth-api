@@ -2,13 +2,22 @@
 //!
 //! All routes are assembled here and the AppState is bound once at the top level.
 //! Public routes (no auth required) are separated from protected routes.
+//! Global middlewares (request ID, security headers, rate limiting) are applied
+//! at the top level so every route benefits from them.
 
 use axum::{
+    middleware,
     routing::{delete, get, patch, post},
     Router,
 };
 
-use crate::state::AppState;
+use crate::{
+    middleware::{
+        rate_limit::{self, RateLimitState},
+        request_id, security_headers,
+    },
+    state::AppState,
+};
 
 pub mod auth;
 pub mod extractors;
@@ -17,9 +26,17 @@ pub mod two_factor;
 pub mod user;
 
 pub fn router(state: AppState) -> Router {
+    let rl_state = RateLimitState {
+        redis: state.redis.clone(),
+        limit: state.config.rate_limit.requests_per_second,
+    };
+
     Router::new()
         .nest("/auth", auth_router())
         .nest("/users/me", me_router())
+        .layer(middleware::from_fn_with_state(rl_state, rate_limit::layer_with_state))
+        .layer(middleware::from_fn(security_headers::layer))
+        .layer(middleware::from_fn(request_id::layer))
         .with_state(state)
 }
 
