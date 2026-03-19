@@ -3,7 +3,7 @@
 //! Maps `email_verification_tokens` and `password_reset_tokens` tables.
 //! token_hash is a 32-byte SHA-256 digest; the plaintext token is never stored.
 
-use std::net::IpAddr;
+use ipnetwork::IpNetwork;
 
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -16,7 +16,7 @@ pub struct EmailVerificationToken {
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub used_at: Option<OffsetDateTime>,
-    pub request_ip: Option<IpAddr>,
+    pub request_ip: Option<IpNetwork>,
     pub request_user_agent: Option<String>,
     pub target_email: String,
 }
@@ -29,7 +29,7 @@ pub struct PasswordResetToken {
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub used_at: Option<OffsetDateTime>,
-    pub request_ip: Option<IpAddr>,
+    pub request_ip: Option<IpNetwork>,
     pub request_user_agent: Option<String>,
 }
 

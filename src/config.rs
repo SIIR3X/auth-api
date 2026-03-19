@@ -45,6 +45,8 @@ impl FromStr for Environment {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// Public-facing base URL used to build links in emails (e.g. "https://api.example.com").
+    pub public_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +173,8 @@ impl Config {
             server: ServerConfig {
                 host: env_string("SERVER_HOST").unwrap_or_else(|| "0.0.0.0".into()),
                 port: env_parse("SERVER_PORT").unwrap_or(3000u16),
+                public_url: env_string("APP_PUBLIC_URL")
+                    .unwrap_or_else(|| "http://localhost:3000".into()),
             },
             database: DatabaseConfig {
                 url: env_require("DATABASE_URL")?,
