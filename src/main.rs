@@ -2,6 +2,7 @@ mod config;
 mod domain;
 mod error;
 mod handlers;
+mod middleware;
 mod repositories;
 mod services;
 mod state;
