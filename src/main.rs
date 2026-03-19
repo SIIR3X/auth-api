@@ -1,15 +1,4 @@
-mod config;
-mod domain;
-mod error;
-mod handlers;
-mod middleware;
-mod repositories;
-mod services;
-mod state;
-mod utils;
-
-use config::{Config, LogFormat};
-use state::AppState;
+use rust_api::{config::{Config, LogFormat}, handlers, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init_tracing(cfg: &config::LogConfig) {
+fn init_tracing(cfg: &rust_api::config::LogConfig) {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
     let filter = EnvFilter::try_new(&cfg.level).unwrap_or_else(|_| EnvFilter::new("info"));

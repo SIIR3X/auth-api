@@ -124,8 +124,7 @@ pub async fn change_locale(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// Convert UserStatus to a lowercase string without pulling in a serde dependency on the domain.
-fn user_status_str(status: &crate::domain::user::UserStatus) -> String {
+pub fn user_status_str(status: &crate::domain::user::UserStatus) -> String {
     use crate::domain::user::UserStatus;
     match status {
         UserStatus::Active => "active",

@@ -15,7 +15,10 @@ use crate::{
     state::AppState,
 };
 
-use super::extractors::{AuthUser, ClientIp, UserAgent};
+use super::{
+    extractors::{AuthUser, ClientIp, UserAgent},
+    user::user_status_str,
+};
 
 // Request types
 
@@ -128,7 +131,7 @@ pub async fn register(
             id: user.id,
             username: user.username,
             email: user.email,
-            status: format!("{:?}", user.status).to_lowercase(),
+            status: user_status_str(&user.status),
             preferred_locale: user.preferred_locale,
         }),
     ))
