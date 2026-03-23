@@ -1,4 +1,4 @@
--- 0011_recovery_codes.sql
+-- 0012_recovery_codes.sql
 -- Creates hashed recovery codes used as backup access factors.
 -- These codes allow account recovery when the primary second factor is unavailable
 -- and are tracked individually so each code can be consumed exactly once.

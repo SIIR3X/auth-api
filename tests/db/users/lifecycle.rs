@@ -32,7 +32,10 @@ fn deleting_user_cascades_to_sessions_and_tokens() {
 
     let sessions: i64 = db
         .client()
-        .query_one("SELECT COUNT(*) FROM sessions WHERE user_id = $1", &[&user_id])
+        .query_one(
+            "SELECT COUNT(*) FROM sessions WHERE user_id = $1",
+            &[&user_id],
+        )
         .expect("failed to count sessions")
         .get(0);
     let tokens: i64 = db
@@ -95,7 +98,10 @@ fn deleting_user_cascades_to_roles_two_factor_and_recovery_data() {
 
     let user_roles: i64 = db
         .client()
-        .query_one("SELECT COUNT(*) FROM user_roles WHERE user_id = $1", &[&user_id])
+        .query_one(
+            "SELECT COUNT(*) FROM user_roles WHERE user_id = $1",
+            &[&user_id],
+        )
         .expect("failed to count user roles")
         .get(0);
     let two_factor: i64 = db
@@ -141,7 +147,11 @@ fn updating_user_touches_updated_at() {
             "INSERT INTO users (username, email, password_hash)
              VALUES ($1, $2, $3)
              RETURNING id, updated_at",
-            &[&"updated_user", &"updated@example.com", &crate::common::fixtures::SAMPLE_PASSWORD_HASH],
+            &[
+                &"updated_user",
+                &"updated@example.com",
+                &crate::common::fixtures::SAMPLE_PASSWORD_HASH,
+            ],
         )
         .expect("failed to insert user");
     let user_id = row.get::<_, uuid::Uuid>(0);

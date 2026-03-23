@@ -38,12 +38,10 @@ pub async fn create(
 }
 
 pub async fn mark_verified(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE two_factor_methods SET is_verified = TRUE WHERE id = $1",
-    )
-    .bind(id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE two_factor_methods SET is_verified = TRUE WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -120,6 +118,33 @@ pub async fn find_primary_by_user(
     .await
 }
 
+/// Returns (id, totp_secret) for every verified TOTP method that has a secret.
+/// Used exclusively during encryption key rotation.
+pub async fn find_all_totp_secrets(pool: &PgPool) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, totp_secret
+         FROM two_factor_methods
+         WHERE method_type = 'totp' AND totp_secret IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Updates the encrypted TOTP secret for a single method row.
+pub async fn update_totp_secret(
+    pool: &PgPool,
+    id: Uuid,
+    new_secret: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE two_factor_methods SET totp_secret = $2 WHERE id = $1")
+        .bind(id)
+        .bind(new_secret)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn find_by_type(
     pool: &PgPool,
     user_id: Uuid,
@@ -131,5 +156,19 @@ pub async fn find_by_type(
     .bind(user_id)
     .bind(method_type)
     .fetch_optional(pool)
+    .await
+}
+
+pub async fn find_all_by_type(
+    pool: &PgPool,
+    user_id: Uuid,
+    method_type: TwoFactorType,
+) -> Result<Vec<TwoFactorMethod>, sqlx::Error> {
+    sqlx::query_as::<_, TwoFactorMethod>(
+        "SELECT * FROM two_factor_methods WHERE user_id = $1 AND method_type = $2 ORDER BY created_at",
+    )
+    .bind(user_id)
+    .bind(method_type)
+    .fetch_all(pool)
     .await
 }

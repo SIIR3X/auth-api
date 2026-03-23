@@ -72,7 +72,10 @@ fn sessions_cleanup_query_removes_only_expired_active_sessions() {
 
     let remaining: i64 = db
         .client()
-        .query_one("SELECT COUNT(*) FROM sessions WHERE user_id = $1", &[&user_id])
+        .query_one(
+            "SELECT COUNT(*) FROM sessions WHERE user_id = $1",
+            &[&user_id],
+        )
         .expect("failed to count remaining sessions")
         .get(0);
 

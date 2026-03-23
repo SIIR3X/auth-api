@@ -109,7 +109,11 @@ fn users_reject_invalid_username_format() {
         .execute(
             "INSERT INTO users (username, email, password_hash)
              VALUES ($1, $2, $3)",
-            &[&"no spaces allowed", &sample_email(102), &SAMPLE_PASSWORD_HASH],
+            &[
+                &"no spaces allowed",
+                &sample_email(102),
+                &SAMPLE_PASSWORD_HASH,
+            ],
         )
         .expect_err("invalid username should fail");
 
@@ -164,7 +168,11 @@ fn users_require_verified_email_for_active_status() {
         .execute(
             "INSERT INTO users (username, email, password_hash, status)
              VALUES ($1, $2, $3, 'active')",
-            &[&"active_without_verification", &sample_email(104), &SAMPLE_PASSWORD_HASH],
+            &[
+                &"active_without_verification",
+                &sample_email(104),
+                &SAMPLE_PASSWORD_HASH,
+            ],
         )
         .expect_err("active users should require email_verified_at");
 
@@ -181,7 +189,11 @@ fn users_allow_verified_email_for_active_status() {
         .execute(
             "INSERT INTO users (username, email, password_hash, status, email_verified_at)
              VALUES ($1, $2, $3, 'active', NOW())",
-            &[&"active_verified", &sample_email(105), &SAMPLE_PASSWORD_HASH],
+            &[
+                &"active_verified",
+                &sample_email(105),
+                &SAMPLE_PASSWORD_HASH,
+            ],
         )
         .expect("active verified user should be allowed");
 }

@@ -92,10 +92,7 @@ async fn revoke_session() {
 
     // Revoke session 2 from session 1
     let del = app
-        .delete_auth(
-            &format!("/users/me/sessions/{other_session_id}"),
-            token1,
-        )
+        .delete_auth(&format!("/users/me/sessions/{other_session_id}"), token1)
         .await;
     assert_eq!(del.status().as_u16(), 204);
 
@@ -115,7 +112,11 @@ async fn revoke_all_sessions() {
     let user = fixtures::authenticated_user(&app, 4).await;
 
     let res = app
-        .delete_auth("/users/me/sessions", &user.access_token)
+        .delete_auth_json(
+            "/users/me/sessions",
+            &user.access_token,
+            &serde_json::json!({ "current_password": user.password }),
+        )
         .await;
     assert_eq!(res.status().as_u16(), 204);
 
@@ -125,5 +126,80 @@ async fn revoke_all_sessions() {
         res2.status().as_u16() == 401 || res2.status().as_u16() == 403,
         "expected auth error after revoking all sessions, got {}",
         res2.status()
+    );
+}
+
+#[tokio::test]
+async fn revoke_session_requires_recent_reauth() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::register_user(&app, 5).await;
+    fixtures::activate_user(&app.db, user.id).await;
+
+    let r1: serde_json::Value = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+
+    let r2: serde_json::Value = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+
+    let token1 = r1["access_token"].as_str().unwrap();
+    let token2 = r2["access_token"].as_str().unwrap();
+
+    let sessions: serde_json::Value = app
+        .get_auth("/users/me/sessions", token1)
+        .await
+        .json()
+        .await
+        .unwrap();
+
+    let other_session_id = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["is_current"] == false)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    app.clear_recent_reauth(token1).await;
+
+    let res = app
+        .delete_auth(&format!("/users/me/sessions/{other_session_id}"), token1)
+        .await;
+    assert_eq!(res.status().as_u16(), 403);
+
+    let res = app
+        .post_auth(
+            "/users/me/reauth",
+            token1,
+            &serde_json::json!({ "current_password": user.password }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+
+    let res = app
+        .delete_auth(&format!("/users/me/sessions/{other_session_id}"), token1)
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+
+    let res = app.get_auth("/users/me/sessions", token2).await;
+    assert!(
+        res.status().as_u16() == 401 || res.status().as_u16() == 403,
+        "expected auth error after session revocation, got {}",
+        res.status()
     );
 }
