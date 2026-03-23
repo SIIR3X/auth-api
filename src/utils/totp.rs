@@ -37,11 +37,12 @@ pub fn qr_uri(base32_secret: &str, email: &str, issuer: &str) -> String {
 }
 
 /// Verifies a 6-digit TOTP code against the encrypted secret stored in the database.
-/// Accepts codes from the previous and next 30-second window (skew = 1).
+/// `skew` controls how many 30-second steps before/after the current one are accepted.
 pub fn verify_code(
     encrypted_secret: &str,
     code: &str,
     key: &[u8; 32],
+    skew: u8,
 ) -> Result<bool, TotpError> {
     let plaintext = crypto::decrypt(encrypted_secret, key)?;
 
@@ -49,10 +50,27 @@ pub fn verify_code(
         .to_bytes()
         .map_err(|_| TotpError::InvalidSecret)?;
 
-    let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes)
+    let totp = TOTP::new(Algorithm::SHA1, 6, skew, 30, secret_bytes)
         .map_err(|_| TotpError::InvalidSecret)?;
 
     totp.check_current(code).map_err(|_| TotpError::TimeError)
+}
+
+// Percent-encodes a string for use in a URI (RFC 3986 unreserved chars pass through).
+fn percent_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            b => {
+                use std::fmt::Write;
+                let _ = write!(out, "%{:02X}", b);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -99,14 +117,14 @@ mod tests {
         let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes).unwrap();
         let code = totp.generate_current().unwrap();
 
-        assert!(verify_code(&encrypted, &code, KEY).unwrap());
+        assert!(verify_code(&encrypted, &code, KEY, 1).unwrap());
     }
 
     #[test]
     fn verify_wrong_code_returns_false() {
         let secret_b32 = generate_secret();
         let encrypted = crypto::encrypt(&secret_b32, KEY).unwrap();
-        assert!(!verify_code(&encrypted, "000000", KEY).unwrap());
+        assert!(!verify_code(&encrypted, "000000", KEY, 1).unwrap());
     }
 
     #[test]
@@ -114,23 +132,6 @@ mod tests {
         let secret_b32 = generate_secret();
         let encrypted = crypto::encrypt(&secret_b32, KEY).unwrap();
         let wrong_key = &[99u8; 32];
-        assert!(verify_code(&encrypted, "123456", wrong_key).is_err());
+        assert!(verify_code(&encrypted, "123456", wrong_key, 1).is_err());
     }
-}
-
-// Percent-encodes a string for use in a URI (RFC 3986 unreserved chars pass through).
-fn percent_encode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for byte in input.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            b => {
-                use std::fmt::Write;
-                let _ = write!(out, "%{:02X}", b);
-            }
-        }
-    }
-    out
 }

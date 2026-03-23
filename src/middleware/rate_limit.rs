@@ -16,33 +16,58 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use deadpool_redis::{redis::AsyncCommands, Pool as RedisPool};
+use deadpool_redis::{Pool as RedisPool, redis::Script};
+use ipnetwork::IpNetwork;
 
 use crate::handlers::extractors::ClientIp;
 
 const WINDOW_MS: u64 = 60_000; // 1 minute sliding window
+const RATE_LIMIT_LUA: &str = r#"
+local key = KEYS[1]
+local now_ms = tonumber(ARGV[1])
+local window_ms = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local member = ARGV[4]
+
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now_ms - window_ms)
+
+local count = redis.call('ZCARD', key)
+if count >= limit then
+    redis.call('PEXPIRE', key, window_ms + 1000)
+    return 0
+end
+
+redis.call('ZADD', key, now_ms, member)
+redis.call('PEXPIRE', key, window_ms + 1000)
+return 1
+"#;
 
 pub async fn layer(
     State(redis): State<RedisPool>,
     client_ip: ClientIp,
     limit: u64,
+    fail_open_on_redis_error: bool,
+    allow_requests_without_ip: bool,
     req: Request,
     next: Next,
 ) -> Response {
-    // If we cannot determine the IP we let the request through.
-    // Blocking unknown IPs would break legitimate clients behind certain proxies.
     let ip = match client_ip.0 {
         Some(ip) => ip.ip().to_string(),
-        None => return next.run(req).await,
+        None if allow_requests_without_ip => return next.run(req).await,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "client IP unavailable").into_response(),
     };
 
     match check_rate_limit(&redis, &ip, limit).await {
         Ok(true) => next.run(req).await,
         Ok(false) => (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response(),
-        // On Redis failure, fail open to avoid taking down the API.
         Err(e) => {
-            tracing::warn!(ip = %ip, error = %e, "rate limit Redis error, failing open");
-            next.run(req).await
+            if fail_open_on_redis_error {
+                tracing::warn!(ip = %ip, error = %e, "rate limit Redis error, failing open");
+                next.run(req).await
+            } else {
+                tracing::error!(ip = %ip, error = %e, "rate limit Redis error, failing closed");
+                (StatusCode::SERVICE_UNAVAILABLE, "rate limiter unavailable").into_response()
+            }
         }
     }
 }
@@ -54,22 +79,19 @@ async fn check_rate_limit(redis: &RedisPool, ip: &str, limit: u64) -> Result<boo
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as u64;
-    let window_start = now_ms.saturating_sub(WINDOW_MS);
 
-    // Remove expired entries, then count the current window.
-    let _: () = conn.zrembyscore(&key, "-inf", window_start as f64).await?;
-    let count: u64 = conn.zcard(&key).await?;
-
-    if count >= limit {
-        return Ok(false);
-    }
-
-    // Add a unique member scored by current timestamp, then set TTL.
     let member = format!("{now_ms}-{}", uuid::Uuid::new_v4());
-    let _: () = conn.zadd(&key, member, now_ms as f64).await?;
-    let _: () = conn.pexpire(&key, (WINDOW_MS + 1000) as i64).await?;
+    let script = Script::new(RATE_LIMIT_LUA);
+    let allowed: i32 = script
+        .key(&key)
+        .arg(now_ms as i64)
+        .arg(WINDOW_MS as i64)
+        .arg(limit as i64)
+        .arg(&member)
+        .invoke_async(&mut conn)
+        .await?;
 
-    Ok(true)
+    Ok(allowed == 1)
 }
 
 // Extractor-free version for use as a plain function from a closure middleware.
@@ -80,6 +102,9 @@ async fn check_rate_limit(redis: &RedisPool, ip: &str, limit: u64) -> Result<boo
 pub struct RateLimitState {
     pub redis: RedisPool,
     pub limit: u64,
+    pub trusted_proxy_cidrs: Vec<IpNetwork>,
+    pub fail_open_on_redis_error: bool,
+    pub allow_requests_without_ip: bool,
 }
 
 pub async fn layer_with_state(
@@ -90,15 +115,21 @@ pub async fn layer_with_state(
 ) -> Response {
     let ip = match client_ip.0 {
         Some(ip) => ip.ip().to_string(),
-        None => return next.run(req).await,
+        None if state.allow_requests_without_ip => return next.run(req).await,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "client IP unavailable").into_response(),
     };
 
     match check_rate_limit(&state.redis, &ip, state.limit).await {
         Ok(true) => next.run(req).await,
         Ok(false) => (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response(),
         Err(e) => {
-            tracing::warn!(ip = %ip, error = %e, "rate limit Redis error, failing open");
-            next.run(req).await
+            if state.fail_open_on_redis_error {
+                tracing::warn!(ip = %ip, error = %e, "rate limit Redis error, failing open");
+                next.run(req).await
+            } else {
+                tracing::error!(ip = %ip, error = %e, "rate limit Redis error, failing closed");
+                (StatusCode::SERVICE_UNAVAILABLE, "rate limiter unavailable").into_response()
+            }
         }
     }
 }

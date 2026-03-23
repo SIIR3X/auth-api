@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<body>
+<p>Hello {{ username }},</p>
+<p>We detected a login to your account from an unusual location or device.</p>
+<ul>
+  {% if ip %}<li><strong>IP address:</strong> {{ ip }}</li>{% endif %}
+  {% if country %}<li><strong>Country:</strong> {{ country }}</li>{% endif %}
+  {% if city %}<li><strong>City:</strong> {{ city }}</li>{% endif %}
+  {% if signals %}<li><strong>Signals:</strong> {{ signals | join(sep=", ") }}</li>{% endif %}
+</ul>
+<p>If this was you, no action is needed. If you do not recognise this activity, please change your password immediately and enable two-factor authentication.</p>
+</body>
+</html>

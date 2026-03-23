@@ -3,6 +3,7 @@
 //! Each module is self-contained and can be used by any service.
 
 pub mod crypto;
+pub mod geoip;
 pub mod jwt;
 pub mod password;
 pub mod time;

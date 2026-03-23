@@ -23,6 +23,7 @@ CREATE TABLE users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     email_verified_at TIMESTAMPTZ,
     last_login_at TIMESTAMPTZ,
+    locked_until TIMESTAMPTZ,
     status user_status NOT NULL DEFAULT 'pending_verification',
     preferred_locale VARCHAR(10) NOT NULL DEFAULT 'en',
     username VARCHAR(50) NOT NULL,
@@ -47,3 +48,4 @@ CREATE TRIGGER users_set_updated_at
 
 CREATE INDEX idx_users_status ON users (status);
 CREATE INDEX idx_users_last_login ON users (last_login_at);
+CREATE INDEX idx_users_locked_until ON users (locked_until) WHERE locked_until IS NOT NULL;

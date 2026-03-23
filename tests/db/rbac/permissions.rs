@@ -10,7 +10,10 @@ fn permissions_generate_name_from_resource_and_action() {
     let permission_id = insert_permission(db.client(), "users", "read");
     let name: String = db
         .client()
-        .query_one("SELECT name FROM permissions WHERE id = $1", &[&permission_id])
+        .query_one(
+            "SELECT name FROM permissions WHERE id = $1",
+            &[&permission_id],
+        )
         .expect("failed to load generated permission name")
         .get(0);
 

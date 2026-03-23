@@ -33,6 +33,10 @@ pub enum AuditAction {
     AccountSuspended,
     AccountReactivated,
     RateLimitExceeded,
+    SuspiciousLogin,
+    NewDeviceLogin,
+    AccountDeleted,
+    Reauthenticated,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

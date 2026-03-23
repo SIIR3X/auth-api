@@ -1,4 +1,4 @@
--- 0010_password_reset_tokens.sql
+-- 0011_password_reset_tokens.sql
 -- Creates one-time password reset tokens for "forgot password" workflows.
 -- Tokens are stored as hashes only, expire automatically, and are consumed once
 -- to avoid replay or reuse after a successful password change.

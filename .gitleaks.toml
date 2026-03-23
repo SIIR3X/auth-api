@@ -1,0 +1,21 @@
+title = "rust-api gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fixtures, vendor code, and sample env files"
+paths = [
+  '''^vendor/''',
+  '''^tests/''',
+  '''^\.env\.example$''',
+]
+
+[[allowlists]]
+description = "Known development placeholders"
+regexes = [
+  '''test-secret-that-is-long-enough-for-hs256''',
+  '''change-me(?:-[A-Za-z0-9._-]+)?''',
+  '''smtp\.example\.com''',
+  '''postgres://rust_api_test:test_password@localhost/rust_api_test''',
+]

@@ -21,11 +21,11 @@ pub async fn layer(mut req: Request, next: Next) -> Response {
         .map(|s| s.to_owned())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let header_value = HeaderValue::from_str(&id).unwrap_or_else(|_| {
-        HeaderValue::from_static("invalid")
-    });
+    let header_value =
+        HeaderValue::from_str(&id).unwrap_or_else(|_| HeaderValue::from_static("invalid"));
 
-    req.headers_mut().insert(&X_REQUEST_ID, header_value.clone());
+    req.headers_mut()
+        .insert(&X_REQUEST_ID, header_value.clone());
 
     let mut res = next.run(req).await;
     res.headers_mut().insert(&X_REQUEST_ID, header_value);

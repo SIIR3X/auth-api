@@ -94,22 +94,39 @@ pub async fn revoke(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
 }
 
 pub async fn revoke_all_by_user(pool: &PgPool, user_id: Uuid) -> Result<u64, sqlx::Error> {
-    let result =
-        sqlx::query("UPDATE sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL")
-            .bind(user_id)
-            .execute(pool)
-            .await?;
+    let result = sqlx::query(
+        "UPDATE sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Revokes all active sessions for a user except the given session.
+pub async fn revoke_all_except(
+    pool: &PgPool,
+    user_id: Uuid,
+    except_session_id: Uuid,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE sessions SET revoked_at = NOW()
+         WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL",
+    )
+    .bind(user_id)
+    .bind(except_session_id)
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected())
 }
 
 /// Calls the database function that revokes every session in the same family.
 /// Used when a refresh token replay attack is detected.
 pub async fn revoke_family(pool: &PgPool, session_id: Uuid) -> Result<u64, sqlx::Error> {
-    let row: (i32,) =
-        sqlx::query_as("SELECT revoke_session_family($1)")
-            .bind(session_id)
-            .fetch_one(pool)
-            .await?;
+    let row: (i32,) = sqlx::query_as("SELECT revoke_session_family($1)")
+        .bind(session_id)
+        .fetch_one(pool)
+        .await?;
     Ok(row.0 as u64)
 }
 
@@ -133,7 +150,10 @@ pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Session>, sqlx
 }
 
 /// Returns non-revoked sessions ordered by most recently used.
-pub async fn find_active_by_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<Session>, sqlx::Error> {
+pub async fn find_active_by_user(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<Session>, sqlx::Error> {
     sqlx::query_as::<_, Session>(
         "SELECT * FROM sessions
          WHERE user_id = $1 AND revoked_at IS NULL

@@ -2,6 +2,7 @@
 name = "rust-api"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [dependencies]
 aes-gcm = "0.10.3"
@@ -9,9 +10,9 @@ anyhow = "1.0.102"
 argon2 = "0.5.3"
 axum = "0.8.8"
 base64 = "0.22.1"
-deadpool-redis = { version = "0.23.0", features = ["rt_tokio_1"] }
+deadpool-redis = { version = "0.23.0", features = ["rt_tokio_1", "script"] }
 dotenvy = "0.15.7"
-jsonwebtoken = { version = "10.3.0", default-features = false, features = ["rust_crypto"] }
+hmac = "0.12.1"
 ipnetwork = "0.20"
 lettre = { version = "0.11.19", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 rand = "0.10.0"
@@ -19,7 +20,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "macros", "json", "ipnetwork"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "derive", "json", "ipnetwork"] }
 tera = "1.20.1"
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["serde"] }
@@ -29,14 +30,24 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 async-trait = "0.1.89"
+tower-http = { version = "0.6.8", features = ["cors"] }
+email_address = "0.2.9"
+maxminddb = "0.27.3"
+webauthn-rs = { version = "0.5.1", features = ["resident-key-support", "danger-allow-state-serialisation"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "form"] }
 
 [dev-dependencies]
 postgres = { version = "0.19.12", features = ["with-uuid-1", "with-time-0_3"] }
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+proptest = "1.9.0"
 serde_json = "1.0"
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "macros", "migrate"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "derive", "json", "ipnetwork", "migrate"] }
 tokio = { version = "1.50.0", features = ["full"] }
 uuid = { version = "1.22.0", features = ["v4"] }
+webauthn-authenticator-rs = { version = "0.5.4", features = ["softpasskey"] }
+
+[patch.crates-io]
+sqlx = { path = "vendor/sqlx" }
+sqlx-macros-core = { path = "vendor/sqlx-macros-core" }
 
 [[test]]
 name = "migrations"

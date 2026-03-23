@@ -1,4 +1,4 @@
--- 0014_seed.sql
+-- 0016_seed.sql
 -- Inserts the base authorization data required by the application to boot with
 -- sensible defaults: standard roles and the initial permission catalog.
 -- This migration provides the minimum RBAC dataset expected by the API.
