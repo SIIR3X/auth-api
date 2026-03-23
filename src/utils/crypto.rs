@@ -7,10 +7,10 @@
 use std::fmt::Write;
 
 use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
+    aead::{Aead, AeadCore, KeyInit, OsRng},
 };
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use rand_core::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -45,15 +45,16 @@ pub fn generate_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// Generates `n` secure random recovery codes formatted as "XXXX-XXXX-XXXX-XXXX".
+/// Generates `n` secure random recovery codes formatted as "XXXX-XXXX-XXXX-XXXX-XXXX".
+/// 5 groups × 4 hex chars = 10 bytes = 80 bits of entropy (meets NIST SP 800-63B guidance).
 pub fn generate_recovery_codes(n: usize) -> Vec<String> {
     (0..n)
         .map(|_| {
-            let mut bytes = [0u8; 8];
+            let mut bytes = [0u8; 10];
             OsRng.fill_bytes(&mut bytes);
 
-            // Format 8 bytes as 4 groups of 4 uppercase hex chars
-            let mut code = String::with_capacity(19);
+            // Format 10 bytes as 5 groups of 4 uppercase hex chars
+            let mut code = String::with_capacity(24);
             for (i, chunk) in bytes.chunks(2).enumerate() {
                 if i > 0 {
                     code.push('-');
@@ -91,6 +92,17 @@ pub fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<String, CryptoError> {
     combined.extend_from_slice(&ciphertext);
 
     Ok(B64.encode(combined))
+}
+
+/// Re-encrypts a ciphertext from `old_key` to `new_key` in a single step.
+/// Used during encryption key rotation to migrate all stored TOTP secrets.
+pub fn re_encrypt(
+    encoded: &str,
+    old_key: &[u8; 32],
+    new_key: &[u8; 32],
+) -> Result<String, CryptoError> {
+    let plaintext = decrypt(encoded, old_key)?;
+    encrypt(&plaintext, new_key)
 }
 
 /// Decrypts a value produced by `encrypt`.
@@ -150,24 +162,37 @@ mod tests {
     #[test]
     fn decrypt_with_wrong_key_fails() {
         let ciphertext = encrypt("secret", KEY).unwrap();
-        assert!(matches!(decrypt(&ciphertext, OTHER_KEY), Err(CryptoError::Decryption)));
+        assert!(matches!(
+            decrypt(&ciphertext, OTHER_KEY),
+            Err(CryptoError::Decryption)
+        ));
     }
 
     #[test]
     fn decrypt_truncated_input_fails() {
-        assert!(matches!(decrypt("dG9vc2hvcnQ=", KEY), Err(CryptoError::InvalidInput)));
+        assert!(matches!(
+            decrypt("dG9vc2hvcnQ=", KEY),
+            Err(CryptoError::InvalidInput)
+        ));
     }
 
     #[test]
     fn decrypt_invalid_base64_fails() {
-        assert!(matches!(decrypt("!!!not-base64!!!", KEY), Err(CryptoError::InvalidInput)));
+        assert!(matches!(
+            decrypt("!!!not-base64!!!", KEY),
+            Err(CryptoError::InvalidInput)
+        ));
     }
 
     #[test]
     fn generate_token_is_url_safe() {
         let token = generate_token();
         assert!(!token.is_empty());
-        assert!(token.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
+        assert!(
+            token
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        );
     }
 
     #[test]
@@ -175,9 +200,9 @@ mod tests {
         let codes = generate_recovery_codes(10);
         assert_eq!(codes.len(), 10);
         for code in &codes {
-            // Expected format: "XXXX-XXXX-XXXX-XXXX" (4 groups of 4 hex chars)
+            // Expected format: "XXXX-XXXX-XXXX-XXXX-XXXX" (5 groups of 4 hex chars = 80 bits)
             let parts: Vec<&str> = code.split('-').collect();
-            assert_eq!(parts.len(), 4);
+            assert_eq!(parts.len(), 5);
             for part in parts {
                 assert_eq!(part.len(), 4);
                 assert!(part.chars().all(|c| c.is_ascii_hexdigit()));
@@ -195,6 +220,9 @@ mod tests {
     #[test]
     fn decode_encryption_key_wrong_length_fails() {
         let b64 = B64.encode(b"too-short");
-        assert!(matches!(decode_encryption_key(&b64), Err(CryptoError::InvalidKey)));
+        assert!(matches!(
+            decode_encryption_key(&b64),
+            Err(CryptoError::InvalidKey)
+        ));
     }
 }

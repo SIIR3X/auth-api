@@ -84,6 +84,29 @@ pub async fn count_recent_failures_by_ip(
     Ok(row.0)
 }
 
+/// Counts consecutive failures for a known user since their last successful login.
+/// Returns 0 if the user has never logged in or the last attempt was successful.
+pub async fn count_consecutive_failures_by_user(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<i64, sqlx::Error> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)
+         FROM login_attempts
+         WHERE user_id = $1
+           AND was_successful = FALSE
+           AND attempted_at > COALESCE(
+               (SELECT MAX(attempted_at) FROM login_attempts
+                WHERE user_id = $1 AND was_successful = TRUE),
+               '1970-01-01'::TIMESTAMPTZ
+           )",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
 pub async fn find_last_by_user(
     pool: &PgPool,
     user_id: Uuid,

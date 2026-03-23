@@ -5,7 +5,9 @@
 //! lives here; only SQL and type conversions.
 
 pub mod audit;
+pub mod email_2fa;
 pub mod login_attempt;
+pub mod login_location;
 pub mod recovery_code;
 pub mod role;
 pub mod session;

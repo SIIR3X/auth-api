@@ -6,9 +6,9 @@
 //! to the caller.
 
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 use tracing::error;
@@ -43,7 +43,10 @@ pub enum AppError {
     EmailNotVerified,
     AccountSuspended,
     AccountInactive,
+    AccountLocked,
     TwoFactorRequired,
+    LoginBlocked,
+    ReauthenticationRequired,
 
     // 404
     NotFound,
@@ -54,8 +57,14 @@ pub enum AppError {
     // 422
     Validation(String),
 
+    // 422 - CAPTCHA
+    CaptchaFailed,
+
     // 429
     RateLimitExceeded,
+
+    // 503
+    ServiceUnavailable(&'static str),
 
     // 500 - message is logged, never sent to the caller
     Internal(anyhow::Error),
@@ -89,11 +98,17 @@ impl IntoResponse for AppError {
             // 403
             Self::Forbidden => (
                 StatusCode::FORBIDDEN,
-                ErrorBody::new("forbidden", "You do not have permission to perform this action."),
+                ErrorBody::new(
+                    "forbidden",
+                    "You do not have permission to perform this action.",
+                ),
             ),
             Self::EmailNotVerified => (
                 StatusCode::FORBIDDEN,
-                ErrorBody::new("email_not_verified", "Please verify your email address first."),
+                ErrorBody::new(
+                    "email_not_verified",
+                    "Please verify your email address first.",
+                ),
             ),
             Self::AccountSuspended => (
                 StatusCode::FORBIDDEN,
@@ -103,9 +118,33 @@ impl IntoResponse for AppError {
                 StatusCode::FORBIDDEN,
                 ErrorBody::new("account_inactive", "This account is inactive."),
             ),
+            Self::AccountLocked => (
+                StatusCode::FORBIDDEN,
+                ErrorBody::new(
+                    "account_locked",
+                    "This account is temporarily locked due to too many failed login attempts.",
+                ),
+            ),
             Self::TwoFactorRequired => (
                 StatusCode::FORBIDDEN,
-                ErrorBody::new("two_factor_required", "Two-factor authentication is required."),
+                ErrorBody::new(
+                    "two_factor_required",
+                    "Two-factor authentication is required.",
+                ),
+            ),
+            Self::LoginBlocked => (
+                StatusCode::FORBIDDEN,
+                ErrorBody::new(
+                    "login_blocked",
+                    "This login attempt has been blocked due to suspicious activity.",
+                ),
+            ),
+            Self::ReauthenticationRequired => (
+                StatusCode::FORBIDDEN,
+                ErrorBody::new(
+                    "reauthentication_required",
+                    "Recent re-authentication is required for this action.",
+                ),
             ),
 
             // 404
@@ -125,14 +164,39 @@ impl IntoResponse for AppError {
             // 422
             Self::Validation(_) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
-                ErrorBody::new("validation_error", "The request body contains invalid data."),
+                ErrorBody::new(
+                    "validation_error",
+                    "The request body contains invalid data.",
+                ),
+            ),
+            Self::CaptchaFailed => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorBody::new(
+                    "captcha_failed",
+                    "CAPTCHA verification failed. Please try again.",
+                ),
             ),
 
             // 429
             Self::RateLimitExceeded => (
                 StatusCode::TOO_MANY_REQUESTS,
-                ErrorBody::new("rate_limit_exceeded", "Too many requests. Please slow down."),
+                ErrorBody::new(
+                    "rate_limit_exceeded",
+                    "Too many requests. Please slow down.",
+                ),
             ),
+
+            // 503
+            Self::ServiceUnavailable(dependency) => {
+                error!(dependency, "required upstream dependency is unavailable");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    ErrorBody::new(
+                        "service_unavailable",
+                        "A required upstream dependency is unavailable.",
+                    ),
+                )
+            }
 
             // 500
             Self::Internal(err) => {

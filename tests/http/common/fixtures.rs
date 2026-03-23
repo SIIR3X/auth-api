@@ -53,18 +53,21 @@ pub async fn register_user(app: &TestApp, index: usize) -> RegisteredUser {
     let body: Value = res.json().await.unwrap();
     let id = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
 
-    RegisteredUser { id, username, email, password }
+    RegisteredUser {
+        id,
+        username,
+        email,
+        password,
+    }
 }
 
 // Activate a user directly in the DB (skip email verification flow).
 pub async fn activate_user(pool: &PgPool, user_id: Uuid) {
-    sqlx::query(
-        "UPDATE users SET status = 'active', email_verified_at = NOW() WHERE id = $1",
-    )
-    .bind(user_id)
-    .execute(pool)
-    .await
-    .expect("failed to activate user");
+    sqlx::query("UPDATE users SET status = 'active', email_verified_at = NOW() WHERE id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("failed to activate user");
 }
 
 // Register, activate, and login — returns tokens ready for authenticated requests.

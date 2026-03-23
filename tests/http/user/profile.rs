@@ -81,3 +81,87 @@ async fn change_locale_success() {
 
     assert_eq!(res.status().as_u16(), 204);
 }
+
+#[tokio::test]
+async fn change_email_requires_current_password() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 6).await;
+
+    let res = app
+        .patch_auth(
+            "/users/me/email",
+            &user.access_token,
+            &serde_json::json!({
+                "email": "new-email@example.com",
+                "current_password": "WrongPassword!",
+            }),
+        )
+        .await;
+
+    assert_eq!(res.status().as_u16(), 401);
+}
+
+#[tokio::test]
+async fn change_email_success_updates_email_and_requires_reverification() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 7).await;
+
+    let res = app
+        .patch_auth(
+            "/users/me/email",
+            &user.access_token,
+            &serde_json::json!({
+                "email": "new-email@example.com",
+                "current_password": user.password,
+            }),
+        )
+        .await;
+
+    assert_eq!(res.status().as_u16(), 204);
+
+    let profile = app.get_auth("/users/me", &user.access_token).await;
+    assert_eq!(profile.status().as_u16(), 200);
+
+    let body: serde_json::Value = profile.json().await.unwrap();
+    assert_eq!(body["email"], "new-email@example.com");
+    assert_eq!(body["status"], "pending_verification");
+}
+
+#[tokio::test]
+async fn change_email_without_password_requires_recent_reauth() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 8).await;
+
+    app.clear_recent_reauth(&user.access_token).await;
+
+    let res = app
+        .patch_auth(
+            "/users/me/email",
+            &user.access_token,
+            &serde_json::json!({
+                "email": "recent-auth@example.com"
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 403);
+
+    let res = app
+        .post_auth(
+            "/users/me/reauth",
+            &user.access_token,
+            &serde_json::json!({ "current_password": user.password }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+
+    let res = app
+        .patch_auth(
+            "/users/me/email",
+            &user.access_token,
+            &serde_json::json!({
+                "email": "recent-auth@example.com"
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+}

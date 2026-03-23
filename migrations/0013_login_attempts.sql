@@ -1,4 +1,4 @@
--- 0012_login_attempts.sql
+-- 0013_login_attempts.sql
 -- Creates the operational login-attempt ledger.
 -- Stores recent successful and failed authentication attempts for brute-force
 -- detection, risk scoring, lockout logic, and support/security investigations.

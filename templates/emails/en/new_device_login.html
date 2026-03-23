@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<body>
+<p>Hello {{ username }},</p>
+<p>We noticed a new login to your account from a device we haven't seen before.</p>
+<ul>
+  {% if ip %}<li><strong>IP address:</strong> {{ ip }}</li>{% endif %}
+  {% if country %}<li><strong>Country:</strong> {{ country }}</li>{% endif %}
+  {% if city %}<li><strong>City:</strong> {{ city }}</li>{% endif %}
+  {% if user_agent %}<li><strong>Device:</strong> {{ user_agent }}</li>{% endif %}
+</ul>
+<p>If this was you, no action is needed. If you do not recognise this activity, please change your password immediately and enable two-factor authentication.</p>
+</body>
+</html>

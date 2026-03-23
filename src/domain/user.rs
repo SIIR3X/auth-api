@@ -22,11 +22,19 @@ pub struct User {
     pub updated_at: OffsetDateTime,
     pub email_verified_at: Option<OffsetDateTime>,
     pub last_login_at: Option<OffsetDateTime>,
+    pub locked_until: Option<OffsetDateTime>,
     pub status: UserStatus,
     pub preferred_locale: String,
     pub username: String,
     pub email: String,
     pub password_hash: String,
+}
+
+impl User {
+    pub fn is_locked(&self) -> bool {
+        self.locked_until
+            .is_some_and(|t| t > OffsetDateTime::now_utc())
+    }
 }
 
 impl User {

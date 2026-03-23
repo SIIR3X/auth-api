@@ -5,6 +5,7 @@
 
 pub mod audit;
 pub mod login_attempt;
+pub mod login_location;
 pub mod role;
 pub mod session;
 pub mod token;

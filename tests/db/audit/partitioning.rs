@@ -162,7 +162,10 @@ fn audit_log_request_index_exists() {
 
     let exists = db
         .client()
-        .query_one("SELECT to_regclass('idx_audit_log_request') IS NOT NULL", &[])
+        .query_one(
+            "SELECT to_regclass('idx_audit_log_request') IS NOT NULL",
+            &[],
+        )
         .expect("failed to check request_id index")
         .get::<_, bool>(0);
 

@@ -1,6 +1,7 @@
 //! Repository for the `users` table.
 
 use sqlx::PgPool;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::domain::user::{User, UserStatus};
@@ -43,11 +44,7 @@ pub async fn update_password_hash(
     Ok(())
 }
 
-pub async fn update_username(
-    pool: &PgPool,
-    id: Uuid,
-    username: &str,
-) -> Result<(), sqlx::Error> {
+pub async fn update_username(pool: &PgPool, id: Uuid, username: &str) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE users SET username = $2 WHERE id = $1")
         .bind(id)
         .bind(username)
@@ -81,14 +78,31 @@ pub async fn update_locale(pool: &PgPool, id: Uuid, locale: &str) -> Result<(), 
     Ok(())
 }
 
-pub async fn update_status(
-    pool: &PgPool,
-    id: Uuid,
-    status: UserStatus,
-) -> Result<(), sqlx::Error> {
+pub async fn update_status(pool: &PgPool, id: Uuid, status: UserStatus) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
         .bind(id)
         .bind(status)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_locked_until(
+    pool: &PgPool,
+    id: Uuid,
+    locked_until: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET locked_until = $2 WHERE id = $1")
+        .bind(id)
+        .bind(locked_until)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn clear_lockout(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET locked_until = NULL WHERE id = $1")
+        .bind(id)
         .execute(pool)
         .await?;
     Ok(())
@@ -132,10 +146,17 @@ pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<User>, s
         .await
 }
 
-pub async fn find_by_username(
-    pool: &PgPool,
-    username: &str,
-) -> Result<Option<User>, sqlx::Error> {
+/// Permanently deletes a user and all associated data via CASCADE.
+/// This is irreversible and fulfills GDPR right-to-erasure requests.
+pub async fn delete(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn find_by_username(pool: &PgPool, username: &str) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = $1")
         .bind(username)
         .fetch_optional(pool)

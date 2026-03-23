@@ -1,4 +1,4 @@
--- 0009_email_verification_tokens.sql
+-- 0010_email_verification_tokens.sql
 -- Creates one-time email verification tokens.
 -- Used both for initial registration verification and for email change flows,
 -- with single-use semantics, expiration, and the exact target email being verified.
