@@ -2,22 +2,22 @@
 //! email verification, password reset, and 2FA challenge completion.
 
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
     error::AppError,
-    services::{auth as auth_svc, two_factor as tf_svc},
+    services::{auth as auth_svc, captcha as captcha_svc, email_2fa as email_2fa_svc},
     state::AppState,
 };
 
 use super::{
-    extractors::{AuthUser, ClientIp, UserAgent},
-    user::user_status_str,
+    extractors::{AuthUser, ClientIp, RequestId, UserAgent},
+    user::{user_status_str, validate_locale},
 };
 
 // Request types
@@ -28,6 +28,8 @@ pub struct RegisterRequest {
     pub email: String,
     pub password: String,
     pub locale: Option<String>,
+    /// hCaptcha token from the frontend widget. Required when CAPTCHA_SECRET is configured.
+    pub captcha_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -35,6 +37,7 @@ pub struct LoginRequest {
     pub identifier: String,
     pub password: String,
     pub device_name: Option<String>,
+    pub captcha_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +53,7 @@ pub struct VerifyEmailQuery {
 #[derive(Deserialize)]
 pub struct ForgotPasswordRequest {
     pub email: String,
+    pub captcha_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +72,17 @@ pub struct CompleteTwoFactorRequest {
 pub struct RecoveryLoginRequest {
     pub pre_auth_token: String,
     pub recovery_code: String,
+}
+
+#[derive(Deserialize)]
+pub struct CompleteEmailTwoFactorRequest {
+    pub pre_auth_token: String,
+    pub code: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResendEmailTwoFactorRequest {
+    pub pre_auth_token: String,
 }
 
 // Response types
@@ -96,6 +111,8 @@ pub enum LoginResponse {
     },
     TwoFactor {
         two_factor_required: bool,
+        /// "totp" or "webauthn"
+        two_factor_method: String,
         pre_auth_token: String,
     },
 }
@@ -106,6 +123,7 @@ pub async fn register(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     UserAgent(ua): UserAgent,
+    RequestId(rid): RequestId,
     Json(body): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<UserResponse>), AppError> {
     validate_email(&body.email)?;
@@ -113,6 +131,11 @@ pub async fn register(
     validate_username(&body.username)?;
 
     let locale = body.locale.as_deref().unwrap_or("en");
+    validate_locale(locale)?;
+
+    // Verify CAPTCHA if a secret is configured; skip silently otherwise.
+    let captcha_token = body.captcha_token.as_deref().unwrap_or("");
+    captcha_svc::verify(&state, captcha_token).await?;
 
     let user = auth_svc::register(
         &state,
@@ -122,6 +145,7 @@ pub async fn register(
         locale,
         ip,
         ua.as_deref(),
+        rid,
     )
     .await?;
 
@@ -141,8 +165,12 @@ pub async fn login(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     UserAgent(ua): UserAgent,
+    RequestId(rid): RequestId,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
+    let captcha_token = body.captcha_token.as_deref().unwrap_or("");
+    captcha_svc::verify(&state, captcha_token).await?;
+
     let result = auth_svc::login(
         &state,
         &body.identifier,
@@ -150,6 +178,7 @@ pub async fn login(
         ip,
         ua.as_deref(),
         body.device_name.as_deref(),
+        rid,
     )
     .await?;
 
@@ -158,12 +187,14 @@ pub async fn login(
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token,
         },
-        auth_svc::LoginResult::TwoFactorRequired { pre_auth_token } => {
-            LoginResponse::TwoFactor {
-                two_factor_required: true,
-                pre_auth_token,
-            }
-        }
+        auth_svc::LoginResult::TwoFactorRequired {
+            pre_auth_token,
+            method,
+        } => LoginResponse::TwoFactor {
+            two_factor_required: true,
+            two_factor_method: method,
+            pre_auth_token,
+        },
     };
 
     Ok(Json(response))
@@ -174,7 +205,16 @@ pub async fn logout(
     ClientIp(ip): ClientIp,
     auth: AuthUser,
 ) -> Result<StatusCode, AppError> {
-    auth_svc::logout(&state, auth.session_id, auth.user_id, ip).await?;
+    auth_svc::logout(
+        &state,
+        auth.session_id,
+        auth.user_id,
+        auth.jti,
+        auth.token_exp,
+        ip,
+        auth.request_id,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -182,9 +222,11 @@ pub async fn refresh(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     UserAgent(ua): UserAgent,
+    RequestId(rid): RequestId,
     Json(body): Json<RefreshRequest>,
 ) -> Result<Json<TokensResponse>, AppError> {
-    let tokens = auth_svc::refresh_token(&state, &body.refresh_token, ip, ua.as_deref()).await?;
+    let tokens =
+        auth_svc::refresh_token(&state, &body.refresh_token, ip, ua.as_deref(), rid).await?;
     Ok(Json(TokensResponse {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
@@ -193,9 +235,11 @@ pub async fn refresh(
 
 pub async fn verify_email(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    RequestId(rid): RequestId,
     Query(q): Query<VerifyEmailQuery>,
 ) -> Result<StatusCode, AppError> {
-    auth_svc::verify_email(&state, &q.token).await?;
+    auth_svc::verify_email(&state, &q.token, ip, rid).await?;
     Ok(StatusCode::OK)
 }
 
@@ -203,18 +247,24 @@ pub async fn forgot_password(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     UserAgent(ua): UserAgent,
+    RequestId(rid): RequestId,
     Json(body): Json<ForgotPasswordRequest>,
 ) -> Result<StatusCode, AppError> {
-    auth_svc::forgot_password(&state, &body.email, ip, ua.as_deref()).await?;
+    let captcha_token = body.captcha_token.as_deref().unwrap_or("");
+    captcha_svc::verify(&state, captcha_token).await?;
+
+    auth_svc::forgot_password(&state, &body.email, ip, ua.as_deref(), rid).await?;
     Ok(StatusCode::OK)
 }
 
 pub async fn reset_password(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    RequestId(rid): RequestId,
     Json(body): Json<ResetPasswordRequest>,
 ) -> Result<StatusCode, AppError> {
     validate_password(&body.new_password)?;
-    auth_svc::reset_password(&state, &body.token, &body.new_password).await?;
+    auth_svc::reset_password(&state, &body.token, &body.new_password, ip, rid).await?;
     Ok(StatusCode::OK)
 }
 
@@ -222,6 +272,7 @@ pub async fn complete_two_factor(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     UserAgent(ua): UserAgent,
+    RequestId(rid): RequestId,
     Json(body): Json<CompleteTwoFactorRequest>,
 ) -> Result<Json<TokensResponse>, AppError> {
     let tokens = auth_svc::complete_two_factor_login(
@@ -231,6 +282,7 @@ pub async fn complete_two_factor(
         ip,
         ua.as_deref(),
         None,
+        rid,
     )
     .await?;
 
@@ -244,6 +296,7 @@ pub async fn recovery_login(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     UserAgent(ua): UserAgent,
+    RequestId(rid): RequestId,
     Json(body): Json<RecoveryLoginRequest>,
 ) -> Result<Json<TokensResponse>, AppError> {
     let tokens = auth_svc::complete_login_with_recovery(
@@ -252,6 +305,7 @@ pub async fn recovery_login(
         &body.recovery_code,
         ip,
         ua.as_deref(),
+        rid,
     )
     .await?;
 
@@ -261,13 +315,61 @@ pub async fn recovery_login(
     }))
 }
 
+pub async fn complete_email_two_factor(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    UserAgent(ua): UserAgent,
+    RequestId(rid): RequestId,
+    Json(body): Json<CompleteEmailTwoFactorRequest>,
+) -> Result<Json<TokensResponse>, AppError> {
+    let tokens = auth_svc::complete_email_2fa_login(
+        &state,
+        &body.pre_auth_token,
+        &body.code,
+        ip,
+        ua.as_deref(),
+        None,
+        rid,
+    )
+    .await?;
+
+    Ok(Json(TokensResponse {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+    }))
+}
+
+pub async fn resend_email_two_factor(
+    State(state): State<AppState>,
+    Json(body): Json<ResendEmailTwoFactorRequest>,
+) -> Result<StatusCode, AppError> {
+    // Resolve user_id from pre_auth_token without revealing whether it exists.
+    let redis_key = format!("pre_auth:{}", body.pre_auth_token);
+    let user_id = {
+        use deadpool_redis::redis::AsyncCommands;
+        let mut conn = state
+            .redis
+            .get()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+        let val: Option<String> = conn
+            .get(&redis_key)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("redis: {e}")))?;
+        val.ok_or(AppError::TokenInvalid)?
+            .parse::<uuid::Uuid>()
+            .map_err(|_| AppError::TokenInvalid)?
+    };
+
+    // Fire-and-forget: errors are non-fatal to avoid enumeration via timing.
+    let _ = email_2fa_svc::send_code(&state, user_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // Validation helpers
 
 fn validate_email(email: &str) -> Result<(), AppError> {
-    let has_at = email.contains('@');
-    let parts: Vec<&str> = email.splitn(2, '@').collect();
-    let valid = has_at && parts.len() == 2 && !parts[0].is_empty() && parts[1].contains('.');
-    if !valid {
+    if !email_address::EmailAddress::is_valid(email) {
         return Err(AppError::Validation("invalid email address".into()));
     }
     Ok(())
@@ -275,19 +377,28 @@ fn validate_email(email: &str) -> Result<(), AppError> {
 
 fn validate_password(password: &str) -> Result<(), AppError> {
     if password.len() < 8 {
-        return Err(AppError::Validation("password must be at least 8 characters".into()));
+        return Err(AppError::Validation(
+            "password must be at least 8 characters".into(),
+        ));
     }
     if password.len() > 128 {
-        return Err(AppError::Validation("password must not exceed 128 characters".into()));
+        return Err(AppError::Validation(
+            "password must not exceed 128 characters".into(),
+        ));
     }
     Ok(())
 }
 
 fn validate_username(username: &str) -> Result<(), AppError> {
     if username.len() < 3 || username.len() > 30 {
-        return Err(AppError::Validation("username must be 3 to 30 characters".into()));
+        return Err(AppError::Validation(
+            "username must be 3 to 30 characters".into(),
+        ));
     }
-    if !username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !username
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(AppError::Validation(
             "username may only contain letters, digits, underscores and hyphens".into(),
         ));

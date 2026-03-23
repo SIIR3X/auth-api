@@ -2,21 +2,24 @@
 
 #![allow(dead_code)]
 
+use deadpool_redis::{Pool as RedisPool, redis::AsyncCommands};
 use reqwest::{Client, Response};
-use tracing_subscriber::EnvFilter;
 use serde::Serialize;
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::net::TcpListener;
+use tracing_subscriber::EnvFilter;
 
 use rust_api::{config::Config, handlers, state::AppState};
 
 // Environment variable names for test infrastructure
 const TEST_DATABASE_URL: &str = "TEST_DATABASE_URL";
 const TEST_REDIS_URL: &str = "TEST_REDIS_URL";
+const TEST_JWT_SECRET: &str = "test-secret-that-is-long-enough-for-hs256";
 
 pub struct TestApp {
     pub base_url: String,
     pub db: PgPool,
+    pub redis: RedisPool,
     pub client: Client,
     db_name: String,
     admin_url: String,
@@ -24,6 +27,13 @@ pub struct TestApp {
 
 impl TestApp {
     pub async fn spawn() -> Self {
+        Self::spawn_with_config(|_| {}).await
+    }
+
+    pub async fn spawn_with_config<F>(configure: F) -> Self
+    where
+        F: FnOnce(&mut Config),
+    {
         // Initialize tracing once — subsequent calls are no-ops.
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
@@ -34,10 +44,9 @@ impl TestApp {
 
         dotenvy::dotenv().ok();
 
-        let admin_url = std::env::var(TEST_DATABASE_URL)
-            .expect("TEST_DATABASE_URL must be set");
-        let redis_url = std::env::var(TEST_REDIS_URL)
-            .unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+        let admin_url = std::env::var(TEST_DATABASE_URL).expect("TEST_DATABASE_URL must be set");
+        let redis_url =
+            std::env::var(TEST_REDIS_URL).unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
 
         let db_name = format!("rust_api_http_test_{}", uuid::Uuid::new_v4().simple());
 
@@ -62,16 +71,20 @@ impl TestApp {
             .await
             .expect("failed to connect to test database");
 
-        sqlx::migrate!("./migrations")
-            .run(&db)
+        let migrator = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
             .await
-            .expect("failed to run migrations");
+            .expect("failed to load migrations");
+
+        migrator.run(&db).await.expect("failed to run migrations");
 
         // Build a minimal config pointing at the test database and Redis
-        let config = test_config(&db_url, &redis_url);
-        let state = AppState::from_config_with_pool(config, db.clone()).await
+        let mut config = test_config(&db_url, &redis_url);
+        configure(&mut config);
+        let state = AppState::from_config_with_pool(config, db.clone())
+            .await
             .expect("failed to build app state");
 
+        let redis = state.redis.clone();
         let app = handlers::router(state);
 
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -80,7 +93,12 @@ impl TestApp {
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
         });
 
         let client = Client::builder()
@@ -91,6 +109,7 @@ impl TestApp {
         Self {
             base_url: format!("http://127.0.0.1:{port}"),
             db,
+            redis,
             client,
             db_name,
             admin_url,
@@ -143,6 +162,40 @@ impl TestApp {
             .await
             .expect("request failed")
     }
+
+    /// Delete the Redis anti-spam cooldown key for email 2FA.
+    /// Call this after setup verification so the next login can auto-dispatch an OTP.
+    pub async fn clear_email_2fa_cooldown(&self, user_id: uuid::Uuid) {
+        if let Ok(mut conn) = self.redis.get().await {
+            let key = format!("email2fa_cd:{}", user_id);
+            let _: Result<(), _> = conn.del(&key).await;
+        }
+    }
+
+    pub async fn clear_recent_reauth(&self, access_token: &str) {
+        let claims = rust_api::utils::jwt::decode_token(access_token, TEST_JWT_SECRET)
+            .expect("failed to decode test access token");
+
+        if let Ok(mut conn) = self.redis.get().await {
+            let key = format!("reauth:{}", claims.sid);
+            let _: Result<(), _> = conn.del(&key).await;
+        }
+    }
+
+    pub async fn delete_auth_json<B: serde::Serialize>(
+        &self,
+        path: &str,
+        token: &str,
+        body: &B,
+    ) -> Response {
+        self.client
+            .delete(format!("{}{}", self.base_url, path))
+            .bearer_auth(token)
+            .json(body)
+            .send()
+            .await
+            .expect("request failed")
+    }
 }
 
 impl Drop for TestApp {
@@ -182,6 +235,7 @@ impl Drop for TestApp {
 
 // Build a test config without needing a full .env file.
 fn test_config(db_url: &str, redis_url: &str) -> Config {
+    #[allow(unused_imports)]
     use rust_api::config::*;
 
     Config {
@@ -190,6 +244,7 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
             host: "127.0.0.1".into(),
             port: 0,
             public_url: "http://localhost".into(),
+            trusted_proxy_cidrs: Vec::new(),
         },
         database: DatabaseConfig {
             url: db_url.into(),
@@ -202,9 +257,12 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
             pool_size: 5,
         },
         jwt: JwtConfig {
-            secret: "test-secret-that-is-long-enough-for-hs256".into(),
+            secret: TEST_JWT_SECRET.into(),
+            previous_secret: None,
             access_expiry_secs: 900,
             refresh_expiry_secs: 86400,
+            strict_session_binding: false,
+            max_session_lifetime_secs: 60 * 60 * 24 * 90,
         },
         crypto: CryptoConfig {
             argon2_memory_kib: 8192, // low for tests
@@ -212,10 +270,30 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
             argon2_parallelism: 1,
             totp_issuer: "test".into(),
             encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+            previous_encryption_key: None,
+            totp_skew: 1,
+            recovery_code_expiry_days: 365,
         },
         rate_limit: RateLimitConfig {
-            requests_per_second: 1000,
-            burst_size: 1000,
+            requests_per_minute: 10_000,
+            auth_requests_per_minute: 10_000,
+            fail_open_on_redis_error: true,
+            allow_requests_without_ip: true,
+        },
+        security: SecurityConfig {
+            lockout_threshold: 3, // low threshold so tests don't need 10 failures
+            lockout_duration_secs: 1800,
+            sensitive_action_reauth_secs: 600,
+        },
+        captcha: CaptchaConfig {
+            secret: None, // disabled in tests
+            verify_url: "https://hcaptcha.com/siteverify".into(),
+            request_timeout_secs: 1,
+            fail_open_on_error: false,
+        },
+        cors: CorsConfig {
+            allowed_origins: vec!["*".into()],
+            allow_credentials: false,
         },
         mail: MailConfig {
             smtp: SmtpConfig {
@@ -228,6 +306,22 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
             },
             templates_dir: "templates".into(),
             default_locale: "en".into(),
+        },
+        audit: AuditConfig {
+            retention_months: 6,
+        },
+        risk: RiskConfig {
+            geoip_db_path: String::new(),
+            geoip_required: false,
+            alert_threshold: 30,
+            challenge_threshold: 60,
+            block_threshold: 80,
+            history_days: 90,
+        },
+        webauthn: WebAuthnConfig {
+            rp_id: "localhost".into(),
+            rp_origin: "http://localhost:3000".into(),
+            rp_name: "test".into(),
         },
         log: LogConfig {
             level: "error".into(),

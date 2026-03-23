@@ -14,6 +14,8 @@ use crate::{
     state::AppState,
 };
 
+use super::{auth as auth_svc, reauth as reauth_svc};
+
 pub async fn list_active(state: &AppState, user_id: Uuid) -> Result<Vec<Session>, AppError> {
     session_repo::find_active_by_user(&state.db, user_id)
         .await
@@ -24,9 +26,22 @@ pub async fn list_active(state: &AppState, user_id: Uuid) -> Result<Vec<Session>
 pub async fn revoke(
     state: &AppState,
     user_id: Uuid,
+    current_session_id: Uuid,
     session_id: Uuid,
     ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        user_id,
+        current_session_id,
+        None,
+        ip,
+        request_id,
+        "revoke_session",
+    )
+    .await?;
+
     let session = session_repo::find_by_id(&state.db, session_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
@@ -41,11 +56,15 @@ pub async fn revoke(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
+    // Blacklist the refresh token so it cannot be used even before DB TTL expires.
+    auth_svc::blocklist_refresh_token(state, &session.token_hash, session.expires_at).await;
+    reauth_svc::clear_recent_reauth(state, session.id).await;
+
     audit::append(
         &state.db,
         &NewAuditEntry {
             user_id: Some(user_id),
-            request_id: None,
+            request_id,
             action: AuditAction::SessionRevoked,
             ip_address: ip,
             metadata: json!({"session_id": session_id}),
@@ -58,20 +77,45 @@ pub async fn revoke(
 }
 
 /// Revokes all active sessions for the user (sign out everywhere).
+/// Requires the user's current password as confirmation.
 pub async fn revoke_all(
     state: &AppState,
     user_id: Uuid,
+    current_session_id: Uuid,
+    current_password: Option<&str>,
     ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
 ) -> Result<u64, AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        user_id,
+        current_session_id,
+        current_password,
+        ip,
+        request_id,
+        "revoke_all_sessions",
+    )
+    .await?;
+
+    // Collect active sessions before revoking so we can blacklist their tokens.
+    let active = session_repo::find_active_by_user(&state.db, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
     let count = session_repo::revoke_all_by_user(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+
+    for s in &active {
+        auth_svc::blocklist_refresh_token(state, &s.token_hash, s.expires_at).await;
+        reauth_svc::clear_recent_reauth(state, s.id).await;
+    }
 
     audit::append(
         &state.db,
         &NewAuditEntry {
             user_id: Some(user_id),
-            request_id: None,
+            request_id,
             action: AuditAction::SessionRevoked,
             ip_address: ip,
             metadata: json!({"count": count, "all": true}),

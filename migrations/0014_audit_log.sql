@@ -1,4 +1,4 @@
--- 0013_audit_log.sql
+-- 0014_audit_log.sql
 -- Creates the append-only audit log for security-relevant events.
 -- This table is partitioned by month, optimized for long-term retention and
 -- forensic analysis, and records actions like logins, role changes, 2FA events,
@@ -24,8 +24,13 @@ CREATE TYPE audit_action AS ENUM (
     'session_family_revoked',
     'account_suspended',
     'account_reactivated',
-    'rate_limit_exceeded'
+    'rate_limit_exceeded',
+    'suspicious_login',
+    'new_device_login',
+    'account_deleted',
+    'reauthenticated'
 );
+
 
 CREATE TABLE audit_log (
     id UUID NOT NULL DEFAULT gen_random_uuid(),

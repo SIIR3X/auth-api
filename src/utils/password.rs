@@ -5,8 +5,8 @@
 //! and benchmark on your target hardware before going to production.
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Algorithm, Argon2, Params, Version,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 
 use crate::config::CryptoConfig;
@@ -67,6 +67,9 @@ mod tests {
             argon2_parallelism: 1,
             totp_issuer: "test".into(),
             encryption_key: String::new(),
+            previous_encryption_key: None,
+            totp_skew: 1,
+            recovery_code_expiry_days: 365,
         }
     }
 
@@ -86,7 +89,10 @@ mod tests {
 
     #[test]
     fn verify_malformed_hash_returns_error() {
-        assert!(matches!(verify("password", "not-a-hash"), Err(PasswordError::Parse(_))));
+        assert!(matches!(
+            verify("password", "not-a-hash"),
+            Err(PasswordError::Parse(_))
+        ));
     }
 
     #[test]
