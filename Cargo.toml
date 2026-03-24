@@ -20,7 +20,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "derive", "json", "ipnetwork"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "derive", "json", "ipnetwork", "migrate"] }
 tera = "1.20.1"
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["serde"] }
@@ -37,6 +37,7 @@ webauthn-rs = { version = "0.5.1", features = ["resident-key-support", "danger-a
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "form"] }
 
 [dev-dependencies]
+criterion = { version = "0.7.0", features = ["html_reports"] }
 postgres = { version = "0.19.12", features = ["with-uuid-1", "with-time-0_3"] }
 proptest = "1.9.0"
 serde_json = "1.0"
@@ -86,5 +87,13 @@ name = "db_smoke_test"
 path = "tests/db/smoke_test.rs"
 
 [[test]]
+name = "performance"
+path = "tests/db/performance/mod.rs"
+
+[[test]]
 name = "http"
 path = "tests/http/mod.rs"
+
+[[bench]]
+name = "core_benches"
+harness = false

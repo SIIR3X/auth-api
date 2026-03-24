@@ -12,6 +12,18 @@ use uuid::Uuid;
 
 use crate::domain::session::Session;
 
+pub const FIND_BY_TOKEN_HASH_SQL: &str = "SELECT * FROM sessions WHERE token_hash = $1";
+pub const FIND_VALIDATION_BY_ID_SQL: &str =
+    "SELECT expires_at, revoked_at FROM sessions WHERE id = $1";
+pub const FIND_ACTIVE_BY_USER_SQL: &str = "SELECT * FROM sessions
+         WHERE user_id = $1 AND revoked_at IS NULL
+         ORDER BY last_used_at DESC";
+pub const FIND_ACTIVE_SUMMARY_BY_USER_SQL: &str = "SELECT id, last_used_at, expires_at, created_at,
+            ip_address, device_name, user_agent
+         FROM sessions
+         WHERE user_id = $1 AND revoked_at IS NULL
+         ORDER BY last_used_at DESC";
+
 // Input types
 
 pub struct NewSession<'a> {
@@ -22,6 +34,29 @@ pub struct NewSession<'a> {
     pub device_name: Option<&'a str>,
     pub token_hash: &'a [u8],
     pub user_agent: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SessionValidation {
+    pub expires_at: OffsetDateTime,
+    pub revoked_at: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ActiveSessionSummary {
+    pub id: Uuid,
+    pub last_used_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
+    pub created_at: OffsetDateTime,
+    pub ip_address: Option<IpNetwork>,
+    pub device_name: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+impl SessionValidation {
+    pub fn is_active(&self) -> bool {
+        self.revoked_at.is_none() && self.expires_at > OffsetDateTime::now_utc()
+    }
 }
 
 // Writes
@@ -136,7 +171,7 @@ pub async fn find_by_token_hash(
     pool: &PgPool,
     token_hash: &[u8],
 ) -> Result<Option<Session>, sqlx::Error> {
-    sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE token_hash = $1")
+    sqlx::query_as::<_, Session>(FIND_BY_TOKEN_HASH_SQL)
         .bind(token_hash)
         .fetch_optional(pool)
         .await
@@ -149,17 +184,33 @@ pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Session>, sqlx
         .await
 }
 
+pub async fn find_validation_by_id(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<SessionValidation>, sqlx::Error> {
+    sqlx::query_as::<_, SessionValidation>(FIND_VALIDATION_BY_ID_SQL)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+}
+
 /// Returns non-revoked sessions ordered by most recently used.
 pub async fn find_active_by_user(
     pool: &PgPool,
     user_id: Uuid,
 ) -> Result<Vec<Session>, sqlx::Error> {
-    sqlx::query_as::<_, Session>(
-        "SELECT * FROM sessions
-         WHERE user_id = $1 AND revoked_at IS NULL
-         ORDER BY last_used_at DESC",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await
+    sqlx::query_as::<_, Session>(FIND_ACTIVE_BY_USER_SQL)
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+}
+
+pub async fn find_active_summary_by_user(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<ActiveSessionSummary>, sqlx::Error> {
+    sqlx::query_as::<_, ActiveSessionSummary>(FIND_ACTIVE_SUMMARY_BY_USER_SQL)
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
 }

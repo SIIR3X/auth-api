@@ -5,19 +5,22 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
-    domain::{audit::AuditAction, session::Session},
+    domain::audit::AuditAction,
     error::AppError,
     repositories::{
         audit::{self, NewAuditEntry},
-        session as session_repo,
+        session::{self as session_repo, ActiveSessionSummary},
     },
     state::AppState,
 };
 
 use super::{auth as auth_svc, reauth as reauth_svc};
 
-pub async fn list_active(state: &AppState, user_id: Uuid) -> Result<Vec<Session>, AppError> {
-    session_repo::find_active_by_user(&state.db, user_id)
+pub async fn list_active(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<Vec<ActiveSessionSummary>, AppError> {
+    session_repo::find_active_summary_by_user(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))
 }

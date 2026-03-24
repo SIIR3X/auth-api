@@ -6,6 +6,9 @@ use uuid::Uuid;
 
 use crate::domain::user::{User, UserStatus};
 
+pub const FIND_BY_EMAIL_SQL: &str = "SELECT * FROM users WHERE email = $1::citext";
+pub const FIND_BY_USERNAME_SQL: &str = "SELECT * FROM users WHERE username = $1::citext";
+
 // Input types
 
 pub struct NewUser<'a> {
@@ -140,10 +143,21 @@ pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<User>, sqlx::E
 }
 
 pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<User>, sqlx::Error> {
-    sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
+    sqlx::query_as::<_, User>(FIND_BY_EMAIL_SQL)
         .bind(email)
         .fetch_optional(pool)
         .await
+}
+
+pub async fn find_by_identifier(
+    pool: &PgPool,
+    identifier: &str,
+) -> Result<Option<User>, sqlx::Error> {
+    if identifier.contains('@') {
+        find_by_email(pool, identifier).await
+    } else {
+        find_by_username(pool, identifier).await
+    }
 }
 
 /// Permanently deletes a user and all associated data via CASCADE.
@@ -157,7 +171,7 @@ pub async fn delete(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
 }
 
 pub async fn find_by_username(pool: &PgPool, username: &str) -> Result<Option<User>, sqlx::Error> {
-    sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = $1")
+    sqlx::query_as::<_, User>(FIND_BY_USERNAME_SQL)
         .bind(username)
         .fetch_optional(pool)
         .await
