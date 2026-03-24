@@ -53,12 +53,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM alpine:${ALPINE_VERSION} AS migrations
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && \
+    addgroup -S migrate && \
+    adduser -S -D -H -h /migrations -s /sbin/nologin -G migrate migrate
 
 WORKDIR /migrations
 
 COPY --from=migrations-builder /tmp/sqlx-cli/bin/sqlx /usr/local/bin/sqlx
 COPY migrations ./migrations
+
+RUN chown -R migrate:migrate /migrations
+
+USER migrate:migrate
 
 ENTRYPOINT ["/usr/local/bin/sqlx", "migrate", "run", "--source", "/migrations/migrations"]
 

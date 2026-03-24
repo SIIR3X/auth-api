@@ -1,4 +1,4 @@
-#[path = "support/bench_support.rs"]
+#[path = "bench_support.rs"]
 mod bench_support;
 
 use std::{
