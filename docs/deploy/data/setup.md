@@ -8,6 +8,7 @@ The data server is responsible for:
 - holding the local runtime configuration
 - holding the local encrypted secret store with `pass`
 - running database migrations
+- optionally hosting the observability stack
 
 The server is not expected to contain the full Git repository.
 Repository files are references only.
@@ -144,3 +145,10 @@ After PostgreSQL and Redis are ready, create the final application-side URLs and
 pass insert rust-api/app/DATABASE_URL
 pass insert rust-api/app/REDIS_URL
 ```
+
+## Optional Step 9. Start Observability
+
+If this server also hosts Grafana, Loki, and Alloy, use:
+- [../observability/setup.md](../observability/setup.md)
+- [../observability/environment-variables.md](../observability/environment-variables.md)
+- [../observability/ports.md](../observability/ports.md)

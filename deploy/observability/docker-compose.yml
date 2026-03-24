@@ -1,0 +1,70 @@
+services:
+  loki:
+    image: ${LOKI_IMAGE:-grafana/loki:3.6.0}
+    restart: unless-stopped
+    command:
+      - -config.file=/etc/loki/config.yml
+    ports:
+      - "${LOKI_BIND_IP:-127.0.0.1}:${LOKI_PORT:-3100}:3100"
+    volumes:
+      - type: bind
+        source: ${LOKI_CONFIG_FILE:?set LOKI_CONFIG_FILE}
+        target: /etc/loki/config.yml
+        read_only: true
+      - type: bind
+        source: ${LOKI_DATA_DIR:?set LOKI_DATA_DIR}
+        target: /loki
+    security_opt:
+      - no-new-privileges:true
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.6}
+    restart: unless-stopped
+    depends_on:
+      - loki
+    ports:
+      - "${GRAFANA_BIND_IP:-127.0.0.1}:${GRAFANA_PORT:-3001}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: ${GRAFANA_ALLOW_SIGN_UP:-false}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://127.0.0.1:3001}
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - type: bind
+        source: ${GRAFANA_DATA_DIR:?set GRAFANA_DATA_DIR}
+        target: /var/lib/grafana
+      - type: bind
+        source: ${GRAFANA_PROVISIONING_DIR:?set GRAFANA_PROVISIONING_DIR}
+        target: /etc/grafana/provisioning
+        read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+  alloy:
+    image: ${ALLOY_IMAGE:-grafana/alloy:v1.12.0}
+    restart: unless-stopped
+    depends_on:
+      - loki
+    user: "0:0"
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    ports:
+      - "${ALLOY_BIND_IP:-127.0.0.1}:${ALLOY_PORT:-12345}:12345"
+    volumes:
+      - type: bind
+        source: ${ALLOY_CONFIG_FILE:?set ALLOY_CONFIG_FILE}
+        target: /etc/alloy/config.alloy
+        read_only: true
+      - type: bind
+        source: ${ALLOY_DATA_DIR:?set ALLOY_DATA_DIR}
+        target: /var/lib/alloy/data
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+    security_opt:
+      - no-new-privileges:true

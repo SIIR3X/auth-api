@@ -132,7 +132,7 @@
 \textbf{Date:} & 24 March 2026 \\
 \textbf{Repository:} & \texttt{rust-api} \\
 \textbf{Version:} & 0.1.0 \\
-\textbf{Scope:} & Schema, backend architecture, benchmarks, and deployment \\
+\textbf{Scope:} & Schema, backend architecture, benchmarks, deployment, and observability \\
 \end{tabular}
 
 \vspace{1.2cm}
@@ -144,10 +144,12 @@
 \vspace{0.35cm}
 This document provides a structured technical reading of the Rust API repository. It
 studies the PostgreSQL schema table by table, explains the internal organization of
-the Rust codebase and the HTTP surface, and documents the self-hosted deployment
+the Rust codebase and the HTTP surface, documents the self-hosted deployment
 model built around Docker, PostgreSQL, Redis, Nginx, \texttt{pass}, and
-\texttt{cryptsetup}. The report is intended to serve as a durable engineering
-reference for maintenance, onboarding, performance work, and release operations.
+\texttt{cryptsetup}, and describes the monitoring stack used to observe logs and
+security-relevant runtime behavior. The report is intended to serve as a durable
+engineering reference for maintenance, onboarding, performance work, release
+operations, and production observation.
 \end{minipage}}
 
 \vfill
@@ -185,7 +187,7 @@ reference for maintenance, onboarding, performance work, and release operations.
 
 The Rust API repository already contains the main elements of a production-oriented backend: a non-trivial PostgreSQL schema, layered Rust application code, a real HTTP surface, two Docker images, deployment documentation, and CI workflows. That makes it possible to write a report that is both descriptive and analytical. A short repository description would not be enough here, because the project already has architectural choices that need to be explained in context: why sessions are stored durably, why tokens are hashed at rest, why audit logs are partitioned, why Redis is separated from PostgreSQL, and why migrations are published as their own image rather than being treated as a side effect of the runtime container.
 
-This report therefore has four main objectives. First, it documents the shape of the schema, table by table, so that future maintenance does not rely exclusively on reading migrations in chronological order. Second, it explains how the Rust codebase is organized and how HTTP requests move from router to service to repository. Third, it records the current deployment model as a deliberate architecture rather than a set of ad hoc shell commands. Fourth, it identifies the main operational and performance characteristics of the project, with special attention to the distinction between cryptographic cost and database cost.
+This report therefore has five main objectives. First, it documents the shape of the schema, table by table, so that future maintenance does not rely exclusively on reading migrations in chronological order. Second, it explains how the Rust codebase is organized and how HTTP requests move from router to service to repository. Third, it records the current deployment model as a deliberate architecture rather than a set of ad hoc shell commands. Fourth, it describes the monitoring model adopted around Grafana, Loki, Alloy, and read-only SQL observation. Fifth, it identifies the main operational and performance characteristics of the project, with special attention to the distinction between cryptographic cost and database cost.
 
 \subsection{Method and Limits}
 
@@ -1172,6 +1174,169 @@ The main strength of the deployment design is not that it is extremely complex. 
 \end{itemize}
 
 For a self-hosted project, this is a strong operational baseline. It avoids both extremes: a completely ad hoc deployment and an overly abstract platform that would be heavier than the project itself.
+
+\reportpart{Monitoring and Observability}
+
+\section{Observability Objectives}
+
+Once a backend moves beyond trivial CRUD behavior, operational visibility becomes part of the design rather than a postscript. This is especially true for an authentication-oriented system. Operators do not only need to know whether the process is running; they also need to understand whether PostgreSQL is emitting warnings, whether Redis is behaving correctly, whether migrations failed, whether suspicious login activity is rising, and whether the reverse proxy and runtime container are producing error patterns that deserve intervention.
+
+The repository now documents a monitoring model built around Grafana, Loki, and Alloy, with PostgreSQL remaining the durable source for structured audit and login-attempt data. This is an important distinction. The project does not treat every operational signal as an unstructured log line. Instead, it separates two categories of evidence:
+
+\begin{itemize}
+  \item container and service logs, which are best handled by a log aggregation system;
+  \item structured security telemetry, which remains in PostgreSQL and can later be queried from Grafana through a read-only datasource.
+\end{itemize}
+
+This split is coherent with the rest of the project. Append-only audit records, login attempts, and derived security signals already have explicit relational structure and should keep it. In contrast, runtime messages from PostgreSQL, Redis, Grafana, Loki, Alloy, or the application process itself belong naturally to a log stream.
+
+\section{Monitoring Topology}
+
+In the currently documented model, the observability stack is hosted on the data server. This means that the same host may run:
+
+\begin{itemize}
+  \item PostgreSQL and Redis as stateful backend services;
+  \item Loki as the log store;
+  \item Grafana as the visualization layer;
+  \item Alloy as the local agent reading Docker container logs.
+\end{itemize}
+
+This topology is not the only possible one, but it is a reasonable self-hosted compromise. It keeps the monitoring stack on a server that is already private, already stateful, and already expected to remain under the operator's control.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Monitoring components and their roles}
+\begin{tabularx}{\linewidth}{P{0.18\linewidth} P{0.18\linewidth} Y}
+\toprule
+\textbf{Component} & \textbf{Placement} & \textbf{Operational role} \\
+\midrule
+Alloy & Data server & Reads Docker logs locally, applies labels, and forwards streams to Loki. \\
+Loki & Data server & Stores and indexes container logs for exploration and dashboard queries. \\
+Grafana & Data server & Exposes the monitoring UI, dashboards, and ad hoc exploration. \\
+PostgreSQL datasource & Data server / Grafana & Allows Grafana to query structured tables such as \texttt{audit\_log} and \texttt{login\_attempts} through a dedicated read-only role. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Why Loki Does Not Replace \texttt{audit\_log}}
+
+An important architectural decision is that Loki is not used as a substitute for the SQL audit ledger. This is the correct choice. The \texttt{audit\_log} table is append-only, partitioned, queryable with relational semantics, and indexed according to the security questions the system expects to answer. Replacing that with pure log search would weaken the model rather than strengthen it.
+
+Loki should instead be understood as the runtime-observation layer. It answers questions such as:
+
+\begin{itemize}
+  \item What did PostgreSQL log during the last hour?
+  \item Is Redis emitting errors or warnings?
+  \item Did Grafana or Alloy fail to start correctly?
+  \item What happened in the migration container during the last execution?
+\end{itemize}
+
+The audit schema answers a different class of questions:
+
+\begin{itemize}
+  \item How many suspicious logins were recorded today?
+  \item Which requests triggered session-family revocation?
+  \item Which users accumulated repeated failed logins?
+  \item Which security actions occurred for one correlation identifier?
+\end{itemize}
+
+Keeping both layers separate produces a cleaner and more trustworthy operational model.
+
+\section{Log Collection Model}
+
+The deployed Alloy configuration uses Docker discovery and labels each stream with service-related metadata before forwarding it to Loki. This means the operator can search logs by container name, Docker Compose service, project, stream, and the manually attached role labels used in the repository configuration.
+
+Conceptually, the pipeline is:
+
+\begin{enumerate}
+  \item Docker produces stdout/stderr log streams for each container.
+  \item Alloy discovers those containers on the local host.
+  \item Alloy attaches stable labels such as \texttt{service}, \texttt{container}, and \texttt{server\_role}.
+  \item Loki ingests and stores the resulting streams.
+  \item Grafana queries Loki and renders dashboards or ad hoc views.
+\end{enumerate}
+
+This is a light architecture by modern observability standards, but it is proportionate to the project. It avoids the complexity of a heavyweight search cluster while still giving centralized log search and dashboards.
+
+\subsection{Expected Early Log Coverage}
+
+At the current stage of the repository, the monitoring stack is primarily designed to centralize:
+
+\begin{itemize}
+  \item PostgreSQL logs;
+  \item Redis logs;
+  \item Grafana, Loki, and Alloy logs;
+  \item migration-container logs when the migrations image is executed on the data server.
+\end{itemize}
+
+The application server can later join the same stack by running its own Alloy agent and forwarding logs to the same Loki instance. This staged rollout is sensible because it keeps the first monitoring milestone small: observe the private backend host first, then widen the scope to the public application server.
+
+\section{Dashboards and Operational Reading}
+
+The repository now includes provisioned Grafana dashboards. Their purpose is not to be a full observability platform on day one, but to provide an immediately useful baseline once the monitoring stack starts.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Provisioned dashboard baseline}
+\begin{tabularx}{\linewidth}{P{0.27\linewidth} P{0.23\linewidth} Y}
+\toprule
+\textbf{Dashboard} & \textbf{Primary source} & \textbf{Purpose} \\
+\midrule
+\texttt{Data Server Overview} & Loki & Gives a first operational picture of log volume, recent errors, and recent container output across the main data-server services. \\
+\texttt{PostgreSQL and Redis Logs} & Loki & Focuses on the two stateful backend dependencies and exposes their log streams directly. \\
+\texttt{Observability Services} & Loki & Observes the monitoring stack itself, which is important because an unobserved monitoring stack quickly becomes misleading. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+These dashboards are intentionally log-centric. They answer the most basic and most useful first questions:
+
+\begin{itemize}
+  \item Are services producing logs at all?
+  \item Are there obvious recent errors?
+  \item Can an operator immediately inspect PostgreSQL or Redis output?
+  \item Is the monitoring stack itself healthy enough to trust?
+\end{itemize}
+
+This baseline is appropriate. Operational monitoring should begin with trustworthy signal acquisition before expanding into more sophisticated panels.
+
+\subsection{The Next Layer: SQL Dashboards}
+
+After the PostgreSQL read-only datasource is configured in Grafana, a second class of dashboards becomes possible. These dashboards should focus on structured tables rather than on free-form logs. Typical candidates include:
+
+\begin{itemize}
+  \item failed logins by hour from \texttt{login\_attempts};
+  \item suspicious logins over time from \texttt{audit\_log};
+  \item session revocations and replay detections from \texttt{audit\_log};
+  \item recent behavioral location changes from \texttt{login\_locations}.
+\end{itemize}
+
+From an architectural perspective, this is where the project becomes particularly strong: Grafana can act as a single observation interface while still respecting the difference between logs and relational evidence.
+
+\section{Security of the Monitoring Stack}
+
+Monitoring systems are often deployed carelessly because they are considered ``internal.'' That would be a mistake here. The repository documentation adopts a healthier posture:
+
+\begin{itemize}
+  \item Grafana should remain private unless intentionally published behind a secured reverse proxy;
+  \item Loki should remain private and should not be exposed broadly;
+  \item Alloy's debug UI should remain local or at most private-network only;
+  \item the PostgreSQL datasource should use a dedicated read-only role rather than reusing the application or migration role.
+\end{itemize}
+
+This is a coherent security stance. A monitoring stack has visibility into service behavior, identifiers, and potentially sensitive failure modes. It should therefore be treated as an operationally privileged subsystem, not as a disposable convenience service.
+
+\section{Why the Monitoring Model Fits the Project}
+
+The monitoring design is a good fit for the overall character of the repository for three reasons.
+
+First, it remains self-hosted and proportionate. The project does not need a large multi-node observability platform to become observable. Grafana, Loki, and Alloy are sufficient to give useful visibility at the current scale.
+
+Second, it preserves semantic clarity. Runtime logs go to Loki. Security facts remain in PostgreSQL. This avoids the common mistake of pushing every kind of operational truth into one tool regardless of structure.
+
+Third, it integrates naturally with the documented deployment model. The stack can be deployed on the data server using the same documentation-driven workflow as the rest of the infrastructure, with local configuration files, a local \texttt{pass} store, and predictable filesystem paths under \texttt{/srv/rust-api-data}.
 
 \reportpart{Conclusion}
 
