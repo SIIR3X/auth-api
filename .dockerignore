@@ -1,0 +1,17 @@
+*
+!Cargo.toml
+!Cargo.lock
+!benches/
+!benches/**
+!migrations/
+!migrations/**
+!src/
+!src/**
+!templates/
+!templates/**
+!tests/
+!tests/**
+!vendor/
+!vendor/**
+!Dockerfile
+!.dockerignore
