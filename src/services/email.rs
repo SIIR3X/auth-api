@@ -6,6 +6,8 @@
 
 #![allow(clippy::too_many_arguments)]
 
+use std::future::Future;
+
 use lettre::{
     AsyncTransport,
     message::{Mailbox, Message, header::ContentType},
@@ -30,6 +32,17 @@ const TNAME_NEW_DEVICE_LOGIN: &str = "new_device_login";
 const TNAME_PASSWORD_CHANGED: &str = "password_changed";
 const TNAME_TWO_FACTOR_DISABLED: &str = "two_factor_disabled";
 const TNAME_RECOVERY_CODE_USED: &str = "recovery_code_used";
+
+pub fn dispatch_best_effort<F>(label: &'static str, future: F)
+where
+    F: Future<Output = Result<(), AppError>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(error) = future.await {
+            tracing::warn!(error = ?error, task = label, "background notification failed");
+        }
+    });
+}
 
 pub async fn send_verification_email(
     mailer: &Mailer,
