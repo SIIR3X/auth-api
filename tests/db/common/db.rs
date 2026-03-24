@@ -3,13 +3,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use postgres::types::ToSql;
 use postgres::{Client, Config, Error, NoTls};
 
 pub const MIGRATIONS_DIR: &str = "migrations";
 static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+static TEMPLATE_DB_NAME: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationFile {
@@ -38,26 +41,15 @@ impl TestDatabase {
             .connect(NoTls)
             .unwrap_or_else(|err| panic!("failed to connect to admin database: {err}"));
 
-        let db_name = create_test_database(&mut admin);
+        let template_db = ensure_template_database(&admin_config, &base_config);
+        let db_name = create_test_database(&mut admin, Some(&template_db));
         drop(admin);
 
         let mut test_config = base_config;
         test_config.dbname(&db_name);
-        let mut client = test_config
+        let client = test_config
             .connect(NoTls)
             .unwrap_or_else(|err| panic!("failed to connect to test database `{db_name}`: {err}"));
-
-        for migration in migration_files() {
-            let sql = fs::read_to_string(&migration.path).unwrap_or_else(|err| {
-                panic!(
-                    "failed to read migration `{}`: {err}",
-                    migration.path.display()
-                )
-            });
-            client.batch_execute(&sql).unwrap_or_else(|err| {
-                panic!("failed to apply migration `{}`: {err}", migration.file_name)
-            });
-        }
 
         Some(Self {
             admin_config,
@@ -132,6 +124,29 @@ pub fn assert_constraint(err: &Error, expected: &str) {
     assert_eq!(actual, expected, "unexpected constraint error: {db_error}");
 }
 
+pub fn explain_plan(client: &mut Client, sql: &str, params: &[&(dyn ToSql + Sync)]) -> String {
+    client
+        .batch_execute("SET enable_seqscan = off; SET enable_tidscan = off;")
+        .expect("failed to configure planner guardrails for explain");
+
+    let explain_sql = format!("EXPLAIN (COSTS OFF) {sql}");
+    let rows = client
+        .query(&explain_sql, params)
+        .expect("failed to explain query plan");
+
+    rows.into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn assert_plan_contains(plan: &str, needle: &str) {
+    assert!(
+        plan.contains(needle),
+        "expected plan to contain `{needle}`, got:\n{plan}"
+    );
+}
+
 fn unique_suffix() -> u128 {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -149,12 +164,17 @@ fn is_sql_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn create_test_database(admin: &mut Client) -> String {
+fn create_test_database(admin: &mut Client, template_name: Option<&str>) -> String {
     let mut last_error = None;
 
     for _attempt in 0..5 {
         let db_name = format!("rust_api_test_{}_{}", std::process::id(), unique_suffix());
-        let sql = format!("CREATE DATABASE \"{db_name}\" TEMPLATE template0");
+        let sql = match template_name {
+            Some(template_name) => {
+                format!("CREATE DATABASE \"{db_name}\" TEMPLATE \"{template_name}\"")
+            }
+            None => format!("CREATE DATABASE \"{db_name}\" TEMPLATE template0"),
+        };
 
         match admin.batch_execute(&sql) {
             Ok(()) => return db_name,
@@ -167,5 +187,54 @@ fn create_test_database(admin: &mut Client) -> String {
             panic!("failed to create test database `{db_name}` after retries: {err}")
         }
         None => panic!("failed to create test database: no attempts were made"),
+    }
+}
+
+fn ensure_template_database(admin_config: &Config, base_config: &Config) -> String {
+    TEMPLATE_DB_NAME
+        .get_or_init(|| {
+            let template_db = format!("rust_api_db_template_{}", std::process::id());
+
+            let mut admin = admin_config
+                .clone()
+                .connect(NoTls)
+                .unwrap_or_else(|err| panic!("failed to connect to admin database: {err}"));
+
+            let _ = admin.batch_execute(&format!(
+                "DROP DATABASE IF EXISTS \"{template_db}\" WITH (FORCE)"
+            ));
+            admin
+                .batch_execute(&format!(
+                    "CREATE DATABASE \"{template_db}\" TEMPLATE template0"
+                ))
+                .unwrap_or_else(|err| {
+                    panic!("failed to create template database `{template_db}`: {err}")
+                });
+            drop(admin);
+
+            let mut template_config = base_config.clone();
+            template_config.dbname(&template_db);
+            let mut template_client = template_config.connect(NoTls).unwrap_or_else(|err| {
+                panic!("failed to connect to template database `{template_db}`: {err}")
+            });
+
+            apply_migrations(&mut template_client);
+
+            template_db
+        })
+        .clone()
+}
+
+fn apply_migrations(client: &mut Client) {
+    for migration in migration_files() {
+        let sql = fs::read_to_string(&migration.path).unwrap_or_else(|err| {
+            panic!(
+                "failed to read migration `{}`: {err}",
+                migration.path.display()
+            )
+        });
+        client.batch_execute(&sql).unwrap_or_else(|err| {
+            panic!("failed to apply migration `{}`: {err}", migration.file_name)
+        });
     }
 }

@@ -33,7 +33,8 @@ pub async fn verify_password(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
-    let valid = password::verify(password, &user.password_hash)
+    let valid = password::verify_async(password, &user.password_hash)
+        .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
     if !valid {
@@ -213,20 +214,27 @@ pub async fn change_email(
         (user.username, user.preferred_locale)
     };
 
-    if let Err(e) = super::email::send_verification_email(
-        &state.mailer,
-        &state.templates,
-        &state.config.mail,
-        new_email,
-        &username,
-        &preferred_locale,
-        &raw_token,
-        &state.config.server.public_url,
-    )
-    .await
-    {
-        tracing::warn!(error = ?e, user_id = %user_id, "failed to send email change verification");
-    }
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = new_email.to_string();
+    let username = username.clone();
+    let locale = preferred_locale.clone();
+    let raw_token = raw_token.clone();
+    let public_url = state.config.server.public_url.clone();
+    super::email::dispatch_best_effort("email_change_verification", async move {
+        super::email::send_verification_email(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+            &raw_token,
+            &public_url,
+        )
+        .await
+    });
 
     Ok(())
 }
@@ -262,7 +270,8 @@ pub async fn change_password(
         return Err(AppError::EmailNotVerified);
     }
 
-    let new_hash = password::hash(new_password, &state.config.crypto)
+    let new_hash = password::hash_async(new_password, &state.config.crypto)
+        .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
     user_repo::update_password_hash(&state.db, user_id, &new_hash)
@@ -287,18 +296,23 @@ pub async fn change_password(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    if let Err(e) = super::email::send_password_changed(
-        &state.mailer,
-        &state.templates,
-        &state.config.mail,
-        &user.email,
-        &user.username,
-        &user.preferred_locale,
-    )
-    .await
-    {
-        tracing::warn!(error = ?e, user_id = %user_id, "failed to send password_changed email");
-    }
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = user.email.clone();
+    let username = user.username.clone();
+    let locale = user.preferred_locale.clone();
+    super::email::dispatch_best_effort("password_changed_email", async move {
+        super::email::send_password_changed(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+        )
+        .await
+    });
 
     Ok(())
 }

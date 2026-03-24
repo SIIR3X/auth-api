@@ -21,6 +21,8 @@ pub enum PasswordError {
     Parse(argon2::password_hash::Error),
     #[error("verification failed: {0}")]
     Verify(argon2::password_hash::Error),
+    #[error("password worker task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
 }
 
 /// Hashes a plaintext password using Argon2id with a random salt.
@@ -54,6 +56,23 @@ pub fn verify(password: &str, hash: &str) -> Result<bool, PasswordError> {
         Err(argon2::password_hash::Error::Password) => Ok(false),
         Err(e) => Err(PasswordError::Verify(e)),
     }
+}
+
+/// Runs Argon2id hashing on the blocking threadpool so authentication work
+/// does not stall the async runtime under load.
+pub async fn hash_async(password: &str, cfg: &CryptoConfig) -> Result<String, PasswordError> {
+    let password = password.to_owned();
+    let cfg = cfg.clone();
+
+    tokio::task::spawn_blocking(move || hash(&password, &cfg)).await?
+}
+
+/// Runs Argon2id verification on the blocking threadpool.
+pub async fn verify_async(password: &str, hash_value: &str) -> Result<bool, PasswordError> {
+    let password = password.to_owned();
+    let hash_value = hash_value.to_owned();
+
+    tokio::task::spawn_blocking(move || verify(&password, &hash_value)).await?
 }
 
 #[cfg(test)]
@@ -101,5 +120,14 @@ mod tests {
         let h1 = hash("password", &cfg).unwrap();
         let h2 = hash("password", &cfg).unwrap();
         assert_ne!(h1, h2);
+    }
+
+    #[tokio::test]
+    async fn async_hash_and_verify_match_sync_behavior() {
+        let cfg = test_config();
+        let h = hash_async("hunter2", &cfg).await.unwrap();
+
+        assert!(verify_async("hunter2", &h).await.unwrap());
+        assert!(!verify_async("wrong", &h).await.unwrap());
     }
 }

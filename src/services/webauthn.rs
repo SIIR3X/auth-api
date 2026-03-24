@@ -227,19 +227,24 @@ pub async fn disable(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    if let Err(e) = super::email::send_two_factor_disabled(
-        &state.mailer,
-        &state.templates,
-        &state.config.mail,
-        &user.email,
-        &user.username,
-        &user.preferred_locale,
-        "webauthn",
-    )
-    .await
-    {
-        tracing::warn!(error = ?e, user_id = %user_id, "failed to send two_factor_disabled email");
-    }
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = user.email.clone();
+    let username = user.username.clone();
+    let locale = user.preferred_locale.clone();
+    super::email::dispatch_best_effort("webauthn_disabled_email", async move {
+        super::email::send_two_factor_disabled(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+            "webauthn",
+        )
+        .await
+    });
 
     Ok(())
 }
