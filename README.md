@@ -25,6 +25,7 @@ It focuses on authentication and account security, with support for:
 The project also includes:
 - SQL migrations and a dedicated migrations image
 - Docker deployment assets for the application server and data server
+- optional observability assets with Grafana, Loki, and Alloy
 - benchmark tooling for Rust, HTTP, and SQL hot paths
 - GitHub Actions workflows for code checks, Docker checks, security checks, and image publication
 
@@ -42,6 +43,7 @@ The project also includes:
 | Password hashing | Argon2 |
 | 2FA / auth | TOTP, Email OTP, WebAuthn |
 | Containerization | Docker |
+| Observability | Grafana, Loki, Alloy |
 | CI / CD | GitHub Actions + GHCR |
 
 ## Repository Layout
@@ -96,11 +98,13 @@ Deployment is split between:
 Main deployment guides:
 - [`docs/deploy/app/setup.md`](docs/deploy/app/setup.md)
 - [`docs/deploy/data/setup.md`](docs/deploy/data/setup.md)
+- [`docs/deploy/observability/setup.md`](docs/deploy/observability/setup.md)
 - [`docs/deploy/shared/image-release.md`](docs/deploy/shared/image-release.md)
 
 Additional deployment references:
 - [`deploy/app/docker-compose.yml`](deploy/app/docker-compose.yml)
 - [`deploy/data/docker-compose.yml`](deploy/data/docker-compose.yml)
+- [`deploy/observability/docker-compose.yml`](deploy/observability/docker-compose.yml)
 - [`deploy/proxy/nginx.conf`](deploy/proxy/nginx.conf)
 
 ## CI and Release Flow
