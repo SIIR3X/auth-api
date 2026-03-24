@@ -3,3 +3,6 @@
 vendor
 sbom.json
 reports/bench/
+docs/report/*
+!docs/report/*.tex
+!docs/report/*.pdf

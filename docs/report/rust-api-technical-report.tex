@@ -1,0 +1,1186 @@
+\documentclass[11pt,a4paper]{article}
+
+% Encoding / language
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{lmodern}
+
+% Layout
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{setspace}
+
+% Mathematics
+\usepackage{amsmath}
+
+% Tables / figures
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{float}
+\usepackage{ragged2e}
+
+% Links / bookmarks
+\usepackage[hidelinks]{hyperref}
+\usepackage{bookmark}
+\usepackage{xurl}
+
+% Header / footer
+\usepackage{fancyhdr}
+
+% Code blocks
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{caption}
+
+% Double rule for title page
+\newcommand{\doublebar}{%
+  \par\noindent\centering
+  \rule{\linewidth}{0.7pt}\par\vspace{-12pt}%
+  \rule{\linewidth}{0.7pt}\par
+}
+
+% Page style
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\textbf{Lucas Fagioli}}
+\fancyhead[R]{\textbf{Rust API Technical Report}}
+\fancyhead[C]{}
+\renewcommand{\headrulewidth}{0.6pt}
+\fancyfoot[R]{\thepage}
+\renewcommand{\footrulewidth}{0pt}
+\setlength{\headheight}{16pt}
+
+% General tuning
+\setstretch{1.08}
+\setcounter{tocdepth}{3}
+\setcounter{secnumdepth}{3}
+\setlength{\tabcolsep}{3pt}
+\setlength{\emergencystretch}{3em}
+\renewcommand{\arraystretch}{1.10}
+\newcolumntype{Y}{>{\justifying\arraybackslash\hspace{0pt}}X}
+\newcolumntype{P}[1]{>{\justifying\arraybackslash\hspace{0pt}}p{#1}}
+\newcolumntype{T}[1]{>{\ttfamily\small\arraybackslash\hspace{0pt}}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash\hspace{0pt}}p{#1}}
+\newcolumntype{N}{>{\justifying\arraybackslash\footnotesize\hspace{0pt}}X}
+
+% Listings
+\definecolor{codebg}{RGB}{247,247,247}
+\definecolor{codeframe}{RGB}{210,210,210}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  columns=fullflexible,
+  breaklines=true,
+  keepspaces=true,
+  showstringspaces=false
+}
+
+% Helpers for repeated database tables
+\newcommand{\dbfield}[4]{\texttt{#1} & \texttt{#2} & #3 & #4 \\}
+\newcommand{\dbtotal}[2]{\midrule \multicolumn{2}{r}{\textbf{Estimated logical row size}} & \textbf{#1} & #2 \\}
+\newcommand{\route}[1]{\nolinkurl{#1}}
+\newcommand{\codecell}[1]{{\small\path{#1}}}
+
+% Custom numbered part headings: "I. Title"
+\newcommand{\reportpart}[1]{%
+  \clearpage
+  \refstepcounter{part}%
+  \addcontentsline{toc}{part}{\thepart.\enspace #1}%
+  \thispagestyle{plain}%
+  \begin{center}
+    \vspace*{2.0cm}
+    {\Huge\bfseries \thepart.\par}
+    \vspace{0.35cm}
+    {\huge\bfseries #1\par}
+    \vspace{0.45cm}
+    \rule{0.42\linewidth}{0.7pt}\par
+    \vspace{0.8cm}
+  \end{center}
+}
+
+\begin{document}
+\hypersetup{pageanchor=false}
+
+% =========================
+% Title page
+% =========================
+\thispagestyle{empty}
+\vspace*{1.5cm}
+
+\begin{center}
+\doublebar
+\vspace{0.6cm}
+
+{\Large\bfseries TECHNICAL REPORT\par}
+\vspace{1.0cm}
+
+{\Huge\bfseries Rust API Project\par}
+\vspace{0.3cm}
+{\Large Database, API, and Infrastructure\par}
+
+\vspace{1.0cm}
+\rule{0.76\linewidth}{0.8pt}
+\vspace{1.0cm}
+
+\begin{tabular}{rl}
+\textbf{Author:} & Lucas Fagioli \\
+\textbf{Date:} & 24 March 2026 \\
+\textbf{Repository:} & \texttt{rust-api} \\
+\textbf{Version:} & 0.1.0 \\
+\textbf{Scope:} & Schema, backend architecture, benchmarks, and deployment \\
+\end{tabular}
+
+\vspace{1.2cm}
+
+\fbox{%
+\begin{minipage}{0.88\linewidth}
+\small
+\textbf{Executive Summary}\par
+\vspace{0.35cm}
+This document provides a structured technical reading of the Rust API repository. It
+studies the PostgreSQL schema table by table, explains the internal organization of
+the Rust codebase and the HTTP surface, and documents the self-hosted deployment
+model built around Docker, PostgreSQL, Redis, Nginx, \texttt{pass}, and
+\texttt{cryptsetup}. The report is intended to serve as a durable engineering
+reference for maintenance, onboarding, performance work, and release operations.
+\end{minipage}}
+
+\vfill
+\rule{0.76\linewidth}{0.8pt}
+\vspace{0.35cm}
+
+{\normalsize Internal technical documentation\par}
+{\small March 2026\par}
+
+\vspace{0.45cm}
+\doublebar
+\end{center}
+
+\newpage
+
+% =========================
+% TOC
+% =========================
+\clearpage
+\thispagestyle{empty}
+\tableofcontents
+\vspace*{\fill}
+\clearpage
+
+% =========================
+% Introduction
+% =========================
+\clearpage
+\pagenumbering{arabic}
+\hypersetup{pageanchor=true}
+
+\reportpart{Introduction}
+
+\section{Project Context and Objectives}
+
+The Rust API repository already contains the main elements of a production-oriented backend: a non-trivial PostgreSQL schema, layered Rust application code, a real HTTP surface, two Docker images, deployment documentation, and CI workflows. That makes it possible to write a report that is both descriptive and analytical. A short repository description would not be enough here, because the project already has architectural choices that need to be explained in context: why sessions are stored durably, why tokens are hashed at rest, why audit logs are partitioned, why Redis is separated from PostgreSQL, and why migrations are published as their own image rather than being treated as a side effect of the runtime container.
+
+This report therefore has four main objectives. First, it documents the shape of the schema, table by table, so that future maintenance does not rely exclusively on reading migrations in chronological order. Second, it explains how the Rust codebase is organized and how HTTP requests move from router to service to repository. Third, it records the current deployment model as a deliberate architecture rather than a set of ad hoc shell commands. Fourth, it identifies the main operational and performance characteristics of the project, with special attention to the distinction between cryptographic cost and database cost.
+
+\subsection{Method and Limits}
+
+This report is written from the repository itself, not from a live production deployment. That distinction matters. The schema, routes, Docker assets, deployment guides, and benchmark harnesses are all available in the repository and can therefore be described directly. In contrast, exact relation sizes, exact table growth curves, and benchmark numbers for a specific machine are not embedded in the repository. For that reason:
+
+\begin{itemize}
+  \item storage figures in the database chapter are engineering estimates derived from column types and typical payload lengths;
+  \item operational size formulas are presented explicitly as models, not as measured production facts;
+  \item the performance chapter focuses on benchmark coverage, dominant cost centers, and latency classes rather than pretending that one local benchmark run is universally authoritative.
+\end{itemize}
+
+This methodological limitation is not a weakness. On the contrary, it makes the report more honest and more maintainable. The document provides the framework used to reason about the project, and production measurements can later be inserted into that framework without having to redesign the report itself.
+
+\reportpart{Database}
+
+\section{Database Objectives and Design Principles}
+
+PostgreSQL is the durable source of truth of the project. Every security-sensitive state transition that must survive a process restart eventually lands in PostgreSQL: user lifecycle state, role assignment, second-factor enrollment, refresh-token lineage, one-time verification or reset material, risk telemetry, and audit events. In a system of this kind, the schema is not merely a storage detail. It directly participates in the security model.
+
+Three design principles are particularly visible in the migrations.
+
+\subsection{Security State Is Stored Durably}
+
+The project does not reduce authentication to ``accept a JWT and trust it until it expires.'' Instead, the runtime API ties JWTs and refresh flows back to persistent session state. This allows explicit revocation, compromise marking, refresh-token reuse detection, and family-wide invalidation. In other words, session state remains visible and mutable after token issuance, which is a stronger model than pure stateless token handling.
+
+\subsection{One-Time Material Is Hashed at Rest}
+
+The repository stores refresh tokens, email verification tokens, password reset tokens, email 2FA codes, and recovery codes as hashes when plaintext recovery is not needed. This is an important design choice. If the database were disclosed, those values would not automatically become replayable credentials. The schema therefore reflects the same principle as password hashing: avoid storing secrets in recoverable form unless recovery is functionally required.
+
+\subsection{Consistency Is Enforced in SQL, Not Only in Rust}
+
+The migrations define many constraints that prevent invalid states before the application code even sees them. Examples include:
+
+\begin{itemize}
+  \item username and locale format checks;
+  \item email verification consistency with user status;
+  \item session replacement and compromise metadata consistency;
+  \item second-factor payload constraints by method type;
+  \item one-active-token semantics for verification and reset flows;
+  \item append-only audit log enforcement.
+\end{itemize}
+
+This is a healthy pattern. The Rust application still performs validation, but the schema acts as the final line of defense for invariants that should never be broken.
+
+\section{Schema Map}
+
+The schema can be read as three large areas: identity and authorization, session and authentication state, and operational telemetry. Table~\ref{tab:schema-groups} gives a high-level view before the detailed, table-by-table analysis.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Logical grouping of the main relations}
+\label{tab:schema-groups}
+\begin{tabularx}{\linewidth}{P{0.20\linewidth} P{0.28\linewidth} Y}
+\toprule
+\textbf{Group} & \textbf{Main relations} & \textbf{Role in the system} \\
+\midrule
+Identity and authorization & \codecell{users}, \codecell{roles}, \codecell{permissions}, \codecell{role_permissions}, \codecell{user_roles} & Represents accounts, lifecycle state, default roles, and effective authorization. \\
+Session and authentication state & \codecell{sessions}, \codecell{two_factor_methods}, \codecell{email_2fa_codes}, \codecell{email_verification_tokens}, \codecell{password_reset_tokens}, \codecell{recovery_codes} & Persists the security artifacts needed to authenticate, verify, challenge, rotate, revoke, and recover access. \\
+Operational telemetry & \codecell{login_attempts}, \codecell{audit_log}, \codecell{login_locations} & Records behavior, suspicious activity, operational history, and long-lived audit evidence. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Table-by-Table Analysis}
+
+This section is intentionally detailed. Each subsection explains what the table contributes to the overall security model, then gives a field-by-field size estimate. The figures are not exact PostgreSQL heap measurements. They are typical logical payload estimates that help with capacity planning and with identifying which relations are naturally light and which ones can become heavy over time.
+
+\subsection{Identity and Authorization}
+
+\subsubsection{\texttt{users}}
+
+The \texttt{users} table is the anchor of the entire schema. It is not limited to a username and a password hash. It also captures account lifecycle state, locale, verification state, lockout state, and last login timestamp. This is the correct shape for a security-oriented user table because most important decisions during login and profile updates depend on a coherent view of the account as a whole.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{users}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key generated by \texttt{gen\_random\_uuid()}.}
+\dbfield{created\_at}{TIMESTAMPTZ}{8 B}{Creation timestamp.}
+\dbfield{updated\_at}{TIMESTAMPTZ}{8 B}{Maintained by the generic update trigger.}
+\dbfield{email\_verified\_at}{TIMESTAMPTZ}{8 B}{Present only once verification succeeds.}
+\dbfield{last\_login\_at}{TIMESTAMPTZ}{8 B}{Updated on successful authentication.}
+\dbfield{locked\_until}{TIMESTAMPTZ}{8 B}{Used by temporary lockout logic.}
+\dbfield{status}{user\_status}{4 B}{Enum for active, inactive, suspended, or pending verification.}
+\dbfield{preferred\_locale}{VARCHAR(10)}{2--10 B}{Usually a short value such as \texttt{en} or \texttt{en\_US}.}
+\dbfield{username}{VARCHAR(50)}{8--24 B}{Short user-controlled identifier.}
+\dbfield{email}{CITEXT}{20--40 B}{Case-insensitive login identifier.}
+\dbfield{password\_hash}{TEXT}{95--110 B}{Argon2id encoded hash string.}
+\dbtotal{approx. 185--240 B}{Planning model: \texttt{row\_count x 185--240 B} for heap payload, plus unique indexes on username and email and secondary lifecycle indexes.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+For sizing discussions, a practical planning rule is to think of \texttt{users} as a relation whose business payload is modest but whose indexes matter a lot. The table itself remains relatively small in most deployments; the more important cost is the set of unique and secondary indexes used by login and lifecycle queries.
+
+\subsubsection{\texttt{roles}}
+
+The \texttt{roles} table is intentionally small and stable. Its main job is to provide named authorization bundles, plus a single ``default role'' concept for new registrations. This is a low-growth table whose importance lies in semantic clarity rather than storage weight.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{roles}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key.}
+\dbfield{created\_at}{TIMESTAMPTZ}{8 B}{Creation timestamp.}
+\dbfield{is\_default}{BOOLEAN}{1 B}{Marks the unique default role.}
+\dbfield{name}{VARCHAR(50)}{4--16 B}{Usually a short value such as \texttt{user} or \texttt{admin}.}
+\dbfield{description}{TEXT}{0--80 B}{Optional descriptive text.}
+\dbtotal{approx. 29--121 B}{Planning model: \texttt{row\_count x 29--121 B} plus the unique name index and the partial default-role index.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{\texttt{permissions}}
+
+Permissions are normalized as \texttt{resource + action}. The generated \texttt{name} column gives the application a stable and human-readable permission identifier while keeping the logical source normalized. This is operationally elegant because the generated field can be indexed and queried directly without losing the semantic structure of the permission.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{permissions}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key.}
+\dbfield{created\_at}{TIMESTAMPTZ}{8 B}{Creation timestamp.}
+\dbfield{resource}{VARCHAR(50)}{6--20 B}{Examples: \texttt{user}, \texttt{session}.}
+\dbfield{action}{VARCHAR(50)}{4--16 B}{Examples: \texttt{read}, \texttt{write}, \texttt{revoke}.}
+\dbfield{name}{TEXT GENERATED}{12--40 B}{Stored generated value \texttt{resource:action}.}
+\dbfield{description}{TEXT}{0--80 B}{Optional explanatory text.}
+\dbtotal{approx. 46--180 B}{Planning model: \texttt{row\_count x 46--180 B} plus the composite uniqueness index and the generated name index.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{\texttt{role\_permissions}}
+
+This pivot table is structurally simple but semantically central. It defines which permissions belong to each role. The table is expected to stay small unless the authorization model grows significantly.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{role\_permissions}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{role\_id}{UUID}{16 B}{Foreign key to \texttt{roles}.}
+\dbfield{permission\_id}{UUID}{16 B}{Foreign key to \texttt{permissions}.}
+\dbtotal{approx. 32 B}{Planning model: \texttt{row\_count x 32 B} plus the primary key index and the reverse lookup index on permission.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{\texttt{user\_roles}}
+
+The \texttt{user\_roles} table maps accounts to roles and records who granted the role and when. Compared with a plain many-to-many join, this is more valuable operationally because it keeps some assignment provenance.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{user\_roles}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{user\_id}{UUID}{16 B}{Foreign key to \texttt{users}.}
+\dbfield{role\_id}{UUID}{16 B}{Foreign key to \texttt{roles}.}
+\dbfield{granted\_by}{UUID}{16 B}{Nullable actor who granted the role.}
+\dbfield{granted\_at}{TIMESTAMPTZ}{8 B}{Assignment timestamp.}
+\dbtotal{approx. 40--56 B}{Planning model: \texttt{row\_count x 40--56 B} plus the composite primary key and the role-side lookup index.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Session and Authentication State}
+
+\subsubsection{\texttt{sessions}}
+
+The \texttt{sessions} table is one of the most important relations in the entire project. It stores durable session state, refresh-token family lineage, replacement chains, revocation timestamps, compromise markers, device metadata, and the hash of the refresh token itself. It therefore sits at the boundary between security design and operational observability.
+
+This table is also where the project's philosophy becomes very visible: refresh-token handling is not treated as an opaque blob. Instead, the schema is designed so that session state can be inspected, listed, rotated, revoked, and forensically understood.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{sessions}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key.}
+\dbfield{user\_id}{UUID}{16 B}{Account owning the session.}
+\dbfield{session\_family\_id}{UUID}{16 B}{Groups rotated sessions into a lineage.}
+\dbfield{last\_used\_at}{TIMESTAMPTZ}{8 B}{Updated on activity.}
+\dbfield{expires\_at}{TIMESTAMPTZ}{8 B}{Hard expiration boundary.}
+\dbfield{created\_at}{TIMESTAMPTZ}{8 B}{Session creation timestamp.}
+\dbfield{revoked\_at}{TIMESTAMPTZ}{8 B}{Present when revoked.}
+\dbfield{rotated\_at}{TIMESTAMPTZ}{8 B}{Present when rotation occurred.}
+\dbfield{compromised\_at}{TIMESTAMPTZ}{8 B}{Present after replay or security revocation.}
+\dbfield{replaced\_by\_session\_id}{UUID}{16 B}{Points to the next session after refresh rotation.}
+\dbfield{ip\_address}{INET}{8--20 B}{Client IP recorded for the session.}
+\dbfield{device\_name}{VARCHAR(100)}{0--40 B}{Short user-facing device label.}
+\dbfield{token\_hash}{BYTEA}{32 B}{SHA-256 digest of the refresh token.}
+\dbfield{user\_agent}{TEXT}{40--120 B}{Potentially the heaviest textual column on common rows.}
+\dbfield{compromise\_reason}{ENUM}{4 B}{Why the session family was marked compromised.}
+\dbtotal{approx. 220--340 B}{Planning model: \texttt{row\_count x 220--340 B} plus multiple hot-path indexes for token lookup, active sessions, and family traversal.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+From an operational point of view, \texttt{sessions} is the clearest example of a table that is not large because of business payload alone, but because the system deliberately keeps security history that many simpler applications would discard.
+
+\subsubsection{\texttt{two\_factor\_methods}}
+
+The \texttt{two\_factor\_methods} table centralizes TOTP, email OTP, and WebAuthn registrations into one typed registry. The schema avoids invalid payload combinations through a large consistency check, which is preferable to spreading factor logic across several unrelated tables without coordination.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{two\_factor\_methods}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key.}
+\dbfield{user\_id}{UUID}{16 B}{Owner of the factor.}
+\dbfield{webauthn\_sign\_count}{BIGINT}{8 B}{Used only for WebAuthn clone detection.}
+\dbfield{last\_used\_at}{TIMESTAMPTZ}{8 B}{Updated on successful usage.}
+\dbfield{created\_at}{TIMESTAMPTZ}{8 B}{Creation timestamp.}
+\dbfield{updated\_at}{TIMESTAMPTZ}{8 B}{Maintained by the trigger.}
+\dbfield{method\_type}{ENUM}{4 B}{One of \texttt{totp}, \texttt{email}, or \texttt{webauthn}.}
+\dbfield{is\_primary}{BOOLEAN}{1 B}{Primary factor marker.}
+\dbfield{is\_verified}{BOOLEAN}{1 B}{Verification state.}
+\dbfield{totp\_secret}{TEXT}{48--96 B}{Encrypted application-layer payload for TOTP rows only.}
+\dbfield{webauthn\_credential\_id}{TEXT}{40--120 B}{Present only on WebAuthn rows.}
+\dbfield{webauthn\_public\_key}{TEXT}{120--260 B}{Usually the heaviest field on WebAuthn rows.}
+\dbtotal{email row: approx. 70 B; TOTP row: approx. 130--180 B; WebAuthn row: approx. 260--450 B}{Planning model: total size depends on the factor mix; WebAuthn-heavy deployments make this table materially larger than email- or TOTP-only deployments.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+This heterogeneity is precisely why the table deserves explicit documentation. A TOTP row and a WebAuthn row serve the same conceptual role, but they have very different storage and indexing profiles.
+
+\subsubsection{\texttt{email\_2fa\_codes}}
+
+This relation stores short-lived hashed OTP codes sent during the email-based second-factor challenge. The table is intentionally narrow and ephemeral. Its storage impact comes from write frequency rather than row width.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{email\_2fa\_codes}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key.}
+\dbfield{user\_id}{UUID}{16 B}{Factor owner.}
+\dbfield{code\_hash}{BYTEA}{32 B}{Hashed OTP code.}
+\dbfield{created\_at}{TIMESTAMPTZ}{8 B}{Creation timestamp.}
+\dbfield{expires\_at}{TIMESTAMPTZ}{8 B}{Expiry boundary.}
+\dbfield{used\_at}{TIMESTAMPTZ}{8 B}{Consumption timestamp.}
+\dbtotal{approx. 88 B}{Planning model: \texttt{row\_count x 88 B} plus the user-and-expiry lookup index; operational churn matters more than row width.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{\texttt{email\_verification\_tokens}}
+
+The verification-token table is more informative than a simple token store because it also records the request IP, user agent, and exact target email being verified. This is valuable for both security review and product logic, especially when email changes are involved.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{email\_verification\_tokens}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key.}
+\dbfield{user\_id}{UUID}{16 B}{Referenced account.}
+\dbfield{token\_hash}{BYTEA}{32 B}{Stored as a hash, not as plaintext.}
+\dbfield{created\_at}{TIMESTAMPTZ}{8 B}{Creation timestamp.}
+\dbfield{expires\_at}{TIMESTAMPTZ}{8 B}{Expiry boundary.}
+\dbfield{used\_at}{TIMESTAMPTZ}{8 B}{Consumption timestamp.}
+\dbfield{request\_ip}{INET}{8--20 B}{Origin of the request.}
+\dbfield{request\_user\_agent}{VARCHAR(255)}{0--80 B}{Request metadata, usually shorter than the full limit.}
+\dbfield{target\_email}{CITEXT}{20--40 B}{Exact email address being verified.}
+\dbtotal{approx. 116--228 B}{Planning model: \texttt{row\_count x 116--228 B} plus the token uniqueness index and the active-token partial indexes.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{\texttt{password\_reset\_tokens}}
+
+This relation is very similar to the email verification table, except that the target email field is not needed. Its storage profile is therefore slightly lighter, but it remains an important operational table because password resets are one of the most security-sensitive flows in the application.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{password\_reset\_tokens}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key.}
+\dbfield{user\_id}{UUID}{16 B}{Referenced account.}
+\dbfield{token\_hash}{BYTEA}{32 B}{Stored as a hash only.}
+\dbfield{created\_at}{TIMESTAMPTZ}{8 B}{Creation timestamp.}
+\dbfield{expires\_at}{TIMESTAMPTZ}{8 B}{Expiry boundary.}
+\dbfield{used\_at}{TIMESTAMPTZ}{8 B}{Consumption timestamp.}
+\dbfield{request\_ip}{INET}{8--20 B}{Originating IP address.}
+\dbfield{request\_user\_agent}{VARCHAR(255)}{0--80 B}{Request metadata.}
+\dbtotal{approx. 96--188 B}{Planning model: \texttt{row\_count x 96--188 B} plus the token uniqueness index and the active-token partial indexes.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{\texttt{recovery\_codes}}
+
+Recovery codes are a backup factor, so the project stores them individually and as hashes. The table is small but very security-sensitive. What matters here is not storage weight but the guarantee that each code can be consumed exactly once and traced individually.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{recovery\_codes}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key.}
+\dbfield{user\_id}{UUID}{16 B}{Owner of the recovery code.}
+\dbfield{created\_at}{TIMESTAMPTZ}{8 B}{Creation timestamp.}
+\dbfield{expires\_at}{TIMESTAMPTZ}{8 B}{Optional expiry.}
+\dbfield{used\_at}{TIMESTAMPTZ}{8 B}{Consumption timestamp.}
+\dbfield{code\_position}{SMALLINT}{2 B}{Position within the generated set.}
+\dbfield{code\_hash}{BYTEA}{32 B}{Hashed recovery code.}
+\dbtotal{approx. 90 B}{Planning model: \texttt{row\_count x 90 B} plus the uniqueness indexes on hash and per-user position and the active-code lookup indexes.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Operational Telemetry}
+
+\subsubsection{\texttt{login\_attempts}}
+
+The \texttt{login\_attempts} relation is one of the most operationally important tables in the database. It powers brute-force protection, identifier-based failure windows, IP-based failure windows, lockout logic, and part of the risk-scoring pipeline. Unlike the core identity tables, this one is expected to grow continuously.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{login\_attempts}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key.}
+\dbfield{user\_id}{UUID}{16 B}{Nullable when the identifier does not map to a known user.}
+\dbfield{attempted\_at}{TIMESTAMPTZ}{8 B}{Main time dimension.}
+\dbfield{attempted\_identifier}{CITEXT}{20--40 B}{Email or username supplied by the client.}
+\dbfield{was\_successful}{BOOLEAN}{1 B}{Outcome flag.}
+\dbfield{failure\_reason}{ENUM}{4 B}{Present on failed attempts only.}
+\dbfield{request\_ip}{INET}{8--20 B}{IP used for abuse detection.}
+\dbfield{request\_user\_agent}{VARCHAR(255)}{0--80 B}{Support and forensic context.}
+\dbtotal{approx. 73--185 B}{Planning model: \texttt{row\_count x 73--185 B} plus several time-oriented anti-abuse indexes; this is one of the first tables likely to become storage-heavy.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+For production capacity planning, \texttt{login\_attempts} should be treated as one of the first relations to monitor because public authentication traffic can generate writes even when no user successfully authenticates.
+
+\subsubsection{\texttt{audit\_log}}
+
+The \texttt{audit\_log} table is deliberately designed as an append-only, partitioned journal. It records security-relevant actions such as logins, failed logins, password changes, factor enablement or disablement, session compromise events, suspicious logins, and account deletion. Partitioning by month is the correct design choice because the table is expected to grow continuously and because audit data is naturally retention-driven.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{audit\_log}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key component together with \texttt{created\_at}.}
+\dbfield{user\_id}{UUID}{16 B}{Nullable because some audit events may not map to a durable user record.}
+\dbfield{request\_id}{UUID}{16 B}{Correlation identifier.}
+\dbfield{created\_at}{TIMESTAMPTZ}{8 B}{Partition key and event timestamp.}
+\dbfield{action}{ENUM}{4 B}{Security action type.}
+\dbfield{ip\_address}{INET}{8--20 B}{Network origin.}
+\dbfield{metadata}{JSONB}{10--500+ B}{Variable payload; this field dominates row width variability.}
+\dbtotal{approx. 78--580+ B}{Planning model: \texttt{row\_count x 78--580+ B} per partition, plus partition indexes. The metadata payload and retention period dominate total size.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The audit log is the clearest example of why exact size cannot be known from migrations alone: the \texttt{metadata} column can remain tiny for routine events or become significantly larger when detailed event context is retained.
+
+\subsubsection{\texttt{login\_locations}}
+
+The \texttt{login\_locations} table stores successful login context for risk analysis. It is not just a geolocation cache. It captures a stable tuple made of user, country, city, and user agent, then refreshes first-seen and last-seen timestamps over time. This means the table behaves like behavioral memory rather than like a raw append-only event stream.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{\texttt{login\_locations}: field-level size estimate}
+\begin{tabularx}{\linewidth}{T{0.13\linewidth} T{0.15\linewidth} C{0.11\linewidth} N}
+\toprule
+Field & SQL type & Typical size & Notes \\
+\midrule
+\dbfield{id}{UUID}{16 B}{Primary key.}
+\dbfield{user\_id}{UUID}{16 B}{Owner of the behavioral entry.}
+\dbfield{country}{TEXT}{8--24 B}{Country label from GeoIP resolution.}
+\dbfield{city}{TEXT}{8--40 B}{City label from GeoIP resolution.}
+\dbfield{user\_agent}{TEXT}{40--120 B}{Main discriminating field for device context.}
+\dbfield{ip\_address}{INET}{8--20 B}{Most recent IP for the tuple.}
+\dbfield{latitude}{DOUBLE PRECISION}{8 B}{Optional geographic coordinate.}
+\dbfield{longitude}{DOUBLE PRECISION}{8 B}{Optional geographic coordinate.}
+\dbfield{last\_seen}{TIMESTAMPTZ}{8 B}{Updated on each matching login.}
+\dbfield{first\_seen}{TIMESTAMPTZ}{8 B}{Creation timestamp of the tuple.}
+\dbtotal{approx. 120--268 B}{Planning model: \texttt{row\_count x 120--268 B} plus the uniqueness index used by the upsert path and the last-seen index used by risk lookups.}
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Indexes, Triggers, and SQL-Side Logic}
+
+\subsection{Index Strategy}
+
+The index design in this schema is strongly aligned with authentication hot paths rather than with generic analytics. That is exactly what should happen in a security backend: the indexes serve login lookup, refresh-token validation, per-user session listing, brute-force counting, recent-risk lookup, and audit retrieval.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Representative indexes and the queries they accelerate}
+\begin{tabularx}{\linewidth}{T{0.23\linewidth} T{0.28\linewidth} Y}
+\toprule
+Relation & Index & Primary purpose \\
+\midrule
+\codecell{users} & \codecell{users_username_key}, \codecell{users_email_key} & Fast login identifier lookup and uniqueness enforcement. \\
+\codecell{sessions} & \codecell{idx_sessions_user_active} & List active sessions for the account management UI. \\
+\codecell{sessions} & \codecell{sessions_token_hash_key} & Refresh-token lookup by hash. \\
+\codecell{sessions} & \codecell{idx_sessions_family_created} & Walk and revoke refresh-token families. \\
+\codecell{two_factor_methods} & \codecell{idx_2fa_user_verified} & Resolve verified factors quickly for a given user. \\
+\codecell{email_verification_tokens} & \codecell{idx_email_verification_tokens_user_active} & Guarantee at most one active verification token per user. \\
+\codecell{password_reset_tokens} & \codecell{idx_password_reset_tokens_user_active} & Guarantee at most one active password reset token per user. \\
+\codecell{login_attempts} & \codecell{idx_login_attempts_failed_identifier_time} & Count recent failures by identifier. \\
+\codecell{login_attempts} & \codecell{idx_login_attempts_failed_ip_time} & Count recent failures by IP. \\
+\codecell{audit_log} & \codecell{idx_audit_log_created_brin} & Keep range scans over time economical on large partitions. \\
+\codecell{login_locations} & \codecell{idx_login_locations_upsert} & Enforce uniqueness of the risk-location tuple. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Triggers and SQL Functions}
+
+The project uses a restrained but appropriate amount of SQL-side logic. The database is not overloaded with business rules, but a few functions live there because PostgreSQL is the most reliable place for them.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Database-side functions and triggers}
+\begin{tabularx}{\linewidth}{T{0.24\linewidth} P{0.20\linewidth} Y}
+\toprule
+\textbf{SQL object} & \textbf{Kind} & \textbf{Responsibility} \\
+\midrule
+\codecell{set_updated_at()} & Function / trigger target & Rewrites \texttt{updated\_at} before update on mutable tables. \\
+\codecell{users_set_updated_at} & Trigger & Keeps \texttt{users.updated\_at} consistent. \\
+\codecell{two_factor_methods_set_updated_at} & Trigger & Keeps \texttt{two\_factor\_methods.updated\_at} consistent. \\
+\codecell{revoke_session_family(...)} & Function & Revokes every row in a refresh-token family after replay or security action. \\
+\codecell{rotate_audit_log_partitions(...)} & Function & Creates future monthly partitions and drops partitions older than retention. \\
+\codecell{prevent_audit_log_modification()} & Function / trigger target & Enforces append-only semantics on the audit journal. \\
+\codecell{audit_log_append_only} & Trigger & Rejects unauthorized update or delete operations on the audit table. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+This is a good balance. Timestamp upkeep, append-only enforcement, and partition rotation all belong naturally in the database. Higher-level business logic remains in the Rust service layer, which keeps the project understandable.
+
+\section{Storage Growth and Measurement Strategy}
+
+\subsection{Which Tables Matter Most for Capacity Planning}
+
+From a storage point of view, not all relations deserve the same attention. Small catalog or join tables such as \texttt{roles}, \texttt{permissions}, and \texttt{role\_permissions} are architecturally important but operationally cheap. The relations that deserve regular monitoring are those that grow as a function of traffic, security events, or retention policy.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Relations that should be monitored first in production}
+\begin{tabularx}{\linewidth}{T{0.22\linewidth} P{0.16\linewidth} Y}
+\toprule
+Relation & Growth profile & Why it matters \\
+\midrule
+\codecell{audit_log} & Very high & Append-only journal; retention and partition management dominate long-term cost. \\
+\codecell{login_attempts} & High & Public traffic can generate continuous writes, including failed traffic. \\
+\codecell{sessions} & Medium to high & Refresh rotation and active device history accumulate over time. \\
+\codecell{login_locations} & Medium & Successful logins refresh behavioral history and can create new tuples. \\
+\codecell{email_verification_tokens} and \codecell{password_reset_tokens} & Medium & High operational churn despite relatively small row width. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Recommended Measurement Query}
+
+When a live PostgreSQL instance is available, the repository should be complemented with direct size measurements. The following query is a suitable baseline because it separates heap size, index size, and total relation size:
+
+\begin{lstlisting}[language=SQL,caption={Suggested PostgreSQL query for relation size measurement}]
+SELECT
+    relname AS relation_name,
+    pg_size_pretty(pg_relation_size(oid)) AS table_size,
+    pg_size_pretty(pg_indexes_size(oid)) AS index_size,
+    pg_size_pretty(pg_total_relation_size(oid)) AS total_size
+FROM pg_class
+WHERE relkind = 'r'
+  AND relnamespace = 'public'::regnamespace
+ORDER BY pg_total_relation_size(oid) DESC;
+\end{lstlisting}
+
+\subsection{How to Read the Estimates in This Report}
+
+The size tables above should be interpreted as logical payload models. In other words, they answer the question ``what kind of row width should an engineer expect from this table?'' rather than ``what exact number of bytes does PostgreSQL allocate in every case?'' For operational planning, that distinction is acceptable and useful.
+
+If an average row width is known or estimated, table footprint can be approximated with the following first-order model:
+
+\[
+\text{table footprint} \approx (\text{row count} \times \text{average row size}) + \text{index footprint}
+\]
+
+This is particularly important for \texttt{login\_attempts} and \texttt{audit\_log}. Those tables do not become operationally expensive because each row is huge; they become expensive because the system is designed to keep writing to them over time.
+
+\reportpart{API and Rust Codebase}
+
+\section{Crate Layout and Responsibility Split}
+
+The repository uses a layered Rust layout that is well suited to a security-sensitive HTTP backend. The structure is important because the codebase is already large enough that careless growth would quickly produce handlers with embedded SQL, crypto helpers duplicated across modules, or service logic scattered across unrelated files.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Main Rust modules and their responsibility}
+\begin{tabularx}{\linewidth}{T{0.22\linewidth} Y}
+\toprule
+\textbf{Module} & \textbf{Responsibility} \\
+\midrule
+\codecell{config} & Loads and validates environment-driven configuration. \\
+\codecell{state} & Builds application state, including PostgreSQL, Redis, SMTP, templates, GeoIP, and WebAuthn. \\
+\codecell{handlers} & Owns the HTTP layer and route registration. \\
+\codecell{middleware} & Provides request IDs, security headers, and Redis-backed rate limiting. \\
+\codecell{repositories} & Encapsulates SQL queries and persistence operations. \\
+\codecell{services} & Contains business logic, security flows, orchestration, and policy decisions. \\
+\codecell{domain} & Declares domain-level types such as users, sessions, audit entries, and tokens. \\
+\codecell{utils} & Provides supporting utilities for crypto, JWT, passwords, GeoIP, TOTP, and time. \\
+\codecell{src/bin/bench_*} & Benchmark harnesses for HTTP and SQL performance. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+This split is one of the strengths of the project. The HTTP layer remains thin, SQL is isolated, and application-wide resources are assembled in one place. That makes the code easier to understand and reduces the risk that one route will evolve in a way that silently bypasses cross-cutting policy.
+
+\section{Runtime Bootstrap}
+
+The application starts in \texttt{src/main.rs}. Startup is deliberately simple and readable:
+
+\begin{enumerate}
+  \item load configuration from the environment;
+  \item initialize tracing;
+  \item optionally execute the one-off TOTP key rotation command;
+  \item build the shared \texttt{AppState};
+  \item rotate audit partitions at startup;
+  \item build the Axum router;
+  \item bind the listener and serve the application.
+\end{enumerate}
+
+This is a good bootstrap shape because it keeps one-off maintenance behavior visible and does not bury runtime initialization inside deeply nested abstractions.
+
+\subsection{What \texttt{AppState} Contains}
+
+The \texttt{AppState} struct is the operational center of the application. It holds:
+
+\begin{itemize}
+  \item the PostgreSQL pool;
+  \item the Redis pool;
+  \item the SMTP mailer;
+  \item the HTTP client used by external integrations;
+  \item the Tera template engine;
+  \item the loaded configuration;
+  \item the GeoIP database handle;
+  \item the WebAuthn runtime.
+\end{itemize}
+
+This design is clean because expensive or shared resources are initialized once and injected through Axum state rather than being recreated by handlers.
+
+\section{HTTP Surface}
+
+The router is split into two major branches: public authentication routes under \texttt{/auth} and authenticated self-service routes under \texttt{/users/me}. That split mirrors the trust model of the application.
+
+\subsection{Public Routes}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Public HTTP routes}
+\begin{tabularx}{\linewidth}{T{0.12\linewidth} T{0.39\linewidth} Y}
+\toprule
+Method & Path & Purpose \\
+\midrule
+POST & \route{/auth/register} & Account registration. \\
+POST & \route{/auth/login} & Primary login with password-based authentication. \\
+POST & \route{/auth/logout} & Logout endpoint. \\
+POST & \route{/auth/refresh} & Refresh-token rotation and access-token renewal. \\
+GET & \route{/auth/verify-email} & Email verification flow. \\
+POST & \route{/auth/forgot-password} & Password reset initiation. \\
+POST & \route{/auth/reset-password} & Password reset completion. \\
+POST & \route{/auth/two-factor/complete} & Generic second-factor completion. \\
+POST & \route{/auth/two-factor/recovery} & Recovery-code login path. \\
+POST & \route{/auth/two-factor/email/complete} & Email OTP completion. \\
+POST & \route{/auth/two-factor/email/resend} & Email OTP resend. \\
+POST & \route{/auth/two-factor/webauthn/start} & WebAuthn authentication challenge start. \\
+POST & \route{/auth/two-factor/webauthn/finish} & WebAuthn authentication challenge finish. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Public routes are the most exposed surface of the project. They therefore combine several defensive layers: rate limiting, careful error handling, token hashing, lockout logic, risk scoring, and factor challenge flows.
+
+\subsection{Protected Self-Service Routes}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Authenticated self-service routes under \texttt{/users/me}}
+\begin{tabularx}{\linewidth}{T{0.12\linewidth} T{0.41\linewidth} Y}
+\toprule
+Method & Path & Purpose \\
+\midrule
+GET & \route{/users/me/} & Current profile view. \\
+POST & \route{/users/me/reauth} & Fresh reauthentication for sensitive actions. \\
+PATCH & \route{/users/me/username} & Username change. \\
+PATCH & \route{/users/me/email} & Email change. \\
+PATCH & \route{/users/me/password} & Password change. \\
+PATCH & \route{/users/me/locale} & Locale change. \\
+DELETE & \route{/users/me/} & Account deletion. \\
+GET & \route{/users/me/sessions} & List active sessions. \\
+DELETE & \route{/users/me/sessions} & Revoke all sessions. \\
+DELETE & \route{/users/me/sessions/\{id\}} & Revoke one specific session. \\
+POST & \route{/users/me/two-factor/totp/setup} & Start TOTP enrollment. \\
+POST & \route{/users/me/two-factor/totp/\{id\}/verify} & Verify TOTP enrollment. \\
+DELETE & \route{/users/me/two-factor/totp/\{id\}} & Disable TOTP. \\
+POST & \route{/users/me/two-factor/recovery-codes} & Regenerate recovery codes. \\
+POST & \route{/users/me/two-factor/recovery-codes/use} & Consume a recovery code. \\
+POST & \route{/users/me/two-factor/email/setup} & Start email OTP enrollment. \\
+POST & \route{/users/me/two-factor/email/send} & Send email OTP code. \\
+POST & \route{/users/me/two-factor/email/\{id\}/verify} & Verify email OTP enrollment. \\
+DELETE & \route{/users/me/two-factor/email/\{id\}} & Disable email OTP. \\
+POST & \route{/users/me/two-factor/webauthn/register/start} & Start WebAuthn registration. \\
+POST & \route{/users/me/two-factor/webauthn/register/finish} & Finish WebAuthn registration. \\
+DELETE & \route{/users/me/two-factor/webauthn/\{id\}} & Disable a WebAuthn credential. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The self-service surface is already fairly rich. That is one of the reasons why a layered architecture matters here: account changes, session changes, second-factor changes, and sensitive reauthentication all require different combinations of repository access, validation, and audit logging.
+
+\section{Internal Request Flow}
+
+Although each route has its own details, the application follows one stable request pattern:
+
+\begin{enumerate}
+  \item the request enters the Axum router;
+  \item global middleware attaches a request ID, security headers, and rate limiting;
+  \item the handler parses and validates HTTP-facing input;
+  \item the service layer applies the actual business and security rules;
+  \item repositories execute the necessary SQL operations;
+  \item side effects such as mail, audit writes, or token issuance are performed;
+  \item the response is returned with a stable success or error shape.
+\end{enumerate}
+
+This pattern is important because it keeps route code readable. A maintainer can start from the router, move into the handler, then into the service, and finally into the repository. That mental model is easy to teach and easy to preserve during future refactors.
+
+\section{Functional Domains}
+
+\subsection{Authentication and Account Lifecycle}
+
+The authentication stack covers registration, email verification, password-based login, password reset, and logout or refresh flows. Importantly, those flows are not isolated from the rest of the project. Registration interacts with roles and default-role assignment; login interacts with sessions, login telemetry, factor challenge state, risk scoring, and audit logging; password reset interacts with one-time token storage and with downstream password-change security actions.
+
+\subsection{Sessions and Token Rotation}
+
+Session management is more mature than a typical tutorial implementation. Sessions are durable, listable, revocable, and organized into families. Refresh-token rotation does not merely mint a new token; it also modifies the persistent lineage that makes replay detection and family-wide compromise handling possible.
+
+\subsection{Second Factors}
+
+The project supports three families of second factors: TOTP, email OTP, and WebAuthn. This is valuable because it allows the system to adapt to different trust and UX models. TOTP provides an offline authenticator-app factor, email OTP provides a fallback or lower-security but convenient factor, and WebAuthn provides phishing-resistant credentials. The existence of recovery codes completes that design by providing a controlled recovery path when the primary factor is unavailable.
+
+\subsection{Risk, Audit, and User Notification}
+
+The project does not stop at authentication success or failure. It also records login attempts, tracks login locations, computes risk signals, writes audit entries, and can send mail when certain thresholds are crossed. This is one of the reasons the repository deserves to be described as a security backend rather than as a simple ``login API.''
+
+\section{How to Add a New Feature}
+
+As the repository grows, consistency matters more than speed of implementation. The safest order for adding a new feature is therefore architectural rather than opportunistic.
+
+\subsection{Step 1: Define the Functional and Security Scope}
+
+Before writing code, define what the feature changes in terms of user-visible behavior, state transitions, and security requirements. For example, a new ``trusted device'' feature would interact with sessions, login locations, risk scoring, and probably the audit log. That means the feature should not be approached as a single new handler.
+
+\subsection{Step 2: Update the Schema if Persistent State Changes}
+
+If the feature requires new durable state, the migration should come first. This keeps the repository honest: the schema defines what the application is allowed to store, and the rest of the stack grows on top of that contract.
+
+\subsection{Step 3: Extend Repositories Before Extending Handlers}
+
+Once the schema exists, add or update repository functions for the relevant queries. This preserves the layered design and prevents handlers from growing direct SQL responsibilities.
+
+\subsection{Step 4: Add the Service-Level Policy}
+
+The service layer is where rules should live: revocation policy, factor validation policy, mail-sending triggers, or audit semantics. This keeps the HTTP layer thin and makes behavior easier to test outside of Axum.
+
+\subsection{Step 5: Expose the Feature Through Routes}
+
+Only after the domain, schema, and service behavior are clear should the handler and route be added. Doing it in that order reduces architectural drift and makes code review easier because each layer has a clear purpose.
+
+\subsection{Step 6: Add Tests, Benchmarks, and Documentation}
+
+If the feature touches a hot authentication path, benchmark coverage should be considered as part of the implementation rather than as an optional afterthought. If it changes runtime configuration or deployment expectations, the deployment documentation should be updated in the same change set.
+
+\section{Benchmark Surface and Performance Interpretation}
+
+\subsection{What Is Benchmarked in the Repository}
+
+The repository already includes two dedicated benchmark binaries:
+
+\begin{itemize}
+  \item \texttt{src/bin/bench\_http.rs}, which runs HTTP scenarios against a real Axum server backed by PostgreSQL and Redis;
+  \item \texttt{src/bin/bench\_sql.rs}, which runs query-level measurements and captures one \texttt{EXPLAIN ANALYZE} plan per scenario.
+\end{itemize}
+
+This is a very useful setup because it separates application-level latency from query-level latency. In practice, that distinction matters a lot: password verification can dominate request latency even when the underlying queries are already fast.
+
+\subsection{HTTP Benchmark Coverage}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{HTTP benchmark scenarios and their main cost center}
+\begin{tabularx}{\linewidth}{T{0.28\linewidth} P{0.18\linewidth} Y}
+\toprule
+Scenario & Expected latency class & Dominant cost center \\
+\midrule
+\codecell{register} & High & Password hashing, account creation, and mail-related work. \\
+\codecell{login_success_email} & High & Password verification plus session creation and logging. \\
+\codecell{login_success_username} & High & Same class as email login. \\
+\codecell{login_wrong_password} & High & Password verification still dominates even on failure. \\
+\codecell{forgot_password} & Low to moderate & Token issuance and mail flow preparation. \\
+\codecell{refresh} & Very low & Session hash lookup, rotation, and token issuance. \\
+\codecell{get_profile} & Very low & Authenticated read with light database work. \\
+\codecell{list_sessions} & Very low & Hot indexed query over the session table. \\
+\codecell{reauthenticate} & High & Password verification for a fresh-trust operation. \\
+\codecell{change_locale} & Low & Small authenticated update. \\
+\codecell{email_2fa_challenge} & High & Primary authentication plus challenge issuance. \\
+\codecell{email_2fa_complete} & Moderate & Code verification and follow-up state changes. \\
+\codecell{totp_challenge} & High & Primary authentication plus TOTP challenge path. \\
+\codecell{totp_complete} & Moderate & TOTP verification plus session finalization. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Even without freezing one specific benchmark run into the report, the performance shape is already clear. Password-based and reauthentication flows sit in the expensive class because Argon2 is intentionally costly. In contrast, refresh, profile, session listing, and small account updates are lightweight because the underlying SQL paths are well indexed and the application is not doing heavy cryptographic work there.
+
+\subsection{SQL Benchmark Coverage}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{SQL benchmark scenarios covered by the repository}
+\begin{tabularx}{\linewidth}{T{0.30\linewidth} Y}
+\toprule
+Scenario & Runtime meaning \\
+\midrule
+\codecell{find_by_identifier_email} & Hot login lookup by email. \\
+\codecell{find_by_identifier_username} & Hot login lookup by username. \\
+\codecell{find_validation_by_id} & Session validation on authenticated requests. \\
+\codecell{find_by_token_hash} & Refresh-token lookup. \\
+\codecell{find_active_by_user} & Session management list view. \\
+\codecell{find_recent_for_risk} & Recent login-location lookup for risk scoring. \\
+\codecell{count_recent_failures_by_identifier} & Brute-force counting by login identifier. \\
+\codecell{count_recent_failures_by_ip} & Brute-force counting by source IP. \\
+\codecell{count_consecutive_failures_by_user} & Lockout-oriented consecutive-failure counting. \\
+\codecell{login_location_upsert} & Steady-state successful-login location update path. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+This SQL benchmark set is well chosen because it covers the exact queries that define the perceived responsiveness and the security behavior of the system. The project is not benchmarking arbitrary reads; it is benchmarking the paths that actually matter.
+
+\subsection{Main Performance Interpretation}
+
+The main performance conclusion of the current codebase is not that ``everything must become faster.'' The more precise conclusion is that the system already separates into two classes of work:
+
+\begin{itemize}
+  \item cryptographically expensive flows, where latency is dominated by Argon2 or factor verification and where that cost is mostly intentional;
+  \item I/O-bound but well-indexed flows, where latency remains low because the SQL access pattern is healthy.
+\end{itemize}
+
+That distinction matters when tuning the project. If a login path is expensive, the first question should be whether the cost is intentional cryptography or avoidable persistence overhead. The current repository strongly suggests that the former is often the dominant explanation.
+
+\reportpart{Infrastructure and Deployment}
+
+\section{Deployment Topology}
+
+The deployment model documented in the repository separates the system into two servers:
+
+\begin{itemize}
+  \item an application server;
+  \item a data server.
+\end{itemize}
+
+This split is operationally sound. It separates HTTP-facing concerns from durable state concerns and gives the deployment a clear shape that can be reasoned about, documented, and secured.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Server responsibilities in the current deployment model}
+\begin{tabularx}{\linewidth}{P{0.18\linewidth} P{0.25\linewidth} Y}
+\toprule
+\textbf{Server} & \textbf{Main assets} & \textbf{Operational role} \\
+\midrule
+Application server & Runtime API container, Nginx, GeoIP file, runtime configuration, local \texttt{pass} store & Serves HTTP traffic, exposes the public service, and consumes PostgreSQL and Redis as external dependencies. \\
+Data server & PostgreSQL, Redis, runtime configuration, local \texttt{pass} store, migration image execution & Holds durable service state and runs the database migration step. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Docker Image Model}
+
+The repository builds two distinct Docker images from the same \texttt{Dockerfile}:
+
+\begin{itemize}
+  \item a runtime image for the API;
+  \item a migrations image containing \texttt{sqlx-cli} and the migration files.
+\end{itemize}
+
+That split is an architectural strength. Database migrations are not just ``something the app does on boot.'' They are their own operational concern and deserve their own build target, their own release artifact, and their own execution step.
+
+\subsection{Runtime Image}
+
+The runtime image is intentionally minimal. It ships the compiled binary, the mail templates, CA certificates, and a non-root application user. The container is read-only at runtime except for a small temporary filesystem, and Linux capabilities are dropped. These are meaningful hardening choices for a public-facing service.
+
+\subsection{Migrations Image}
+
+The migrations image exists for a different purpose: it allows a server to apply schema changes without cloning the repository. That is important in the documented deployment model, where the server is expected to receive images and local deployment files, not the whole source tree.
+
+\section{Secrets and Encrypted Service Roots}
+
+\subsection{Local Secret Management with \texttt{pass}}
+
+The repository no longer relies on an external secret manager. Instead, each server keeps a local encrypted \texttt{pass} store backed by GPG. This is a pragmatic compromise: secrets are not left as plaintext environment files on disk, but the operational model remains understandable and self-hosted.
+
+In the current documentation:
+
+\begin{itemize}
+  \item application-side secrets are stored under a hierarchy such as \texttt{rust-api/app/...};
+  \item data-side secrets are stored under a hierarchy such as \texttt{rust-api/data/...}.
+\end{itemize}
+
+At startup, secrets are exported from \texttt{pass} into the shell environment and then consumed by Docker Compose.
+
+\subsection{Encrypted Service Roots with \texttt{cryptsetup}}
+
+The deployment guides also recommend encrypting:
+
+\begin{itemize}
+  \item \texttt{/srv/rust-api};
+  \item \texttt{/srv/rust-api-data}
+\end{itemize}
+
+with LUKS volumes managed through \texttt{cryptsetup}. This is operationally coherent with the local-secret model:
+
+\begin{itemize}
+  \item \texttt{pass} protects individual secret values;
+  \item encrypted service roots protect the broader server filesystem at rest.
+\end{itemize}
+
+The combination is particularly suitable for self-hosted infrastructure where the operator wants local control without running a full secret-management platform.
+
+\section{Application Server Procedure}
+
+The application server procedure documented in \texttt{docs/deploy/app/setup.md} is well ordered and should be preserved as such:
+
+\begin{enumerate}
+  \item prepare the encrypted service root if LUKS is used;
+  \item create \texttt{/srv/rust-api/env/runtime.env};
+  \item populate application-side secrets in \texttt{pass};
+  \item prepare the GeoIP database file if risk scoring requires it;
+  \item create \texttt{/srv/rust-api/compose/docker-compose.yml};
+  \item install and configure Nginx;
+  \item export secrets and start the application container.
+\end{enumerate}
+
+This order is not arbitrary. The application should not be started before the reverse proxy, runtime configuration, and local secret store are ready. Likewise, GeoIP data should exist before startup if the configuration is strict about it.
+
+\subsection{Why GeoIP Lives on the Application Server}
+
+GeoIP is not a service of its own. It is a data file consumed locally by the Rust process. That is why it belongs on the application server, mounted into the runtime container, rather than on the data server. This is a small but important example of the deployment model remaining faithful to the actual runtime dependency graph.
+
+\section{Data Server Procedure}
+
+The data server procedure documented in \texttt{docs/deploy/data/setup.md} is similarly structured:
+
+\begin{enumerate}
+  \item prepare the encrypted service root if LUKS is used;
+  \item create \texttt{/srv/rust-api-data/env/runtime.env};
+  \item populate PostgreSQL and Redis secrets in \texttt{pass};
+  \item create \texttt{/srv/rust-api-data/compose/docker-compose.yml};
+  \item start PostgreSQL and Redis;
+  \item initialize PostgreSQL roles and the application database;
+  \item validate Redis protection and connectivity;
+  \item run the migrations image;
+  \item construct the final application-side \texttt{DATABASE\_URL} and \texttt{REDIS\_URL}.
+\end{enumerate}
+
+This deployment order is particularly important because the application server depends on data services that already exist and are already migrated. The runtime application image is not supposed to bootstrap the database by itself.
+
+\subsection{Why PostgreSQL and Redis Share a Data Server Here}
+
+The documented topology treats PostgreSQL and Redis as colocated on the data server. That is a reasonable trade-off in a self-hosted environment: Redis stays close to the application's abuse-control and session-support needs, while PostgreSQL remains the durable source of truth. The two services have different lifecycles, but they share the same broad operational perimeter of ``stateful backend dependencies.''
+
+\section{Release Pipeline and CI Workflows}
+
+The repository currently documents and uses four main GitHub Actions workflows.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\caption{Main GitHub Actions workflows}
+\begin{tabularx}{\linewidth}{T{0.23\linewidth} P{0.18\linewidth} Y}
+\toprule
+\textbf{Workflow} & \textbf{Trigger} & \textbf{Role} \\
+\midrule
+\codecell{code-checks.yml} & Pull request to \texttt{main} & Runs formatting, Clippy, and tests for the Rust codebase. \\
+\codecell{docker-checks.yml} & Pull request to \texttt{main} & Runs Docker-oriented checks such as image build, Dockerfile linting, and container security scanning. \\
+\codecell{security.yml} & Pull request to \texttt{main} & Runs dependency and repository security checks such as \texttt{cargo audit}, \texttt{cargo deny}, \texttt{gitleaks}, and SBOM generation. \\
+\codecell{docker-publish.yml} & Tag push \texttt{v*} & Builds and publishes the runtime and migrations images to GHCR. Publication is allowed only when the tagged commit belongs to \texttt{main}. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Release Semantics}
+
+Releases are tag-driven. A version tag such as \texttt{v1.0.0} does not create a new commit; it simply points to an existing commit and triggers image publication. That is a clean release model because it keeps source history and release identity separate. The published artifacts are:
+
+\begin{itemize}
+  \item \texttt{ghcr.io/<owner>/rust-api:<tag>};
+  \item \texttt{ghcr.io/<owner>/rust-api-migrations:<tag>}.
+\end{itemize}
+
+This means the servers do not need the repository itself. They only need:
+
+\begin{itemize}
+  \item local deployment files created from the repository documentation;
+  \item the published images;
+  \item the local secret store and encrypted service root.
+\end{itemize}
+
+\section{Why the Deployment Model Is Coherent}
+
+The main strength of the deployment design is not that it is extremely complex. On the contrary, its strength is that it is explicit and proportionate:
+
+\begin{itemize}
+  \item the application server serves the API and nothing else;
+  \item the data server owns PostgreSQL, Redis, and migrations;
+  \item the runtime and migrations are separate images;
+  \item secrets are local and encrypted rather than outsourced;
+  \item service roots can be encrypted without changing Compose paths;
+  \item image release is centralized in GitHub Actions and consumption is local.
+\end{itemize}
+
+For a self-hosted project, this is a strong operational baseline. It avoids both extremes: a completely ad hoc deployment and an overly abstract platform that would be heavier than the project itself.
+
+\reportpart{Conclusion}
+
+\section{Final Assessment}
+
+The Rust API project already has the characteristics of a serious backend system. Its PostgreSQL schema is security-aware and structurally coherent. Its Rust codebase is layered in a way that keeps the HTTP layer readable and isolates persistence logic properly. Its benchmark harnesses show that the project has moved beyond intuition and into explicit measurement. Finally, its deployment model is no longer an informal script collection, but a documented architecture split across application and data responsibilities.
+
+The most important conclusion of this report is that the project is consistent across layers. The database does not contradict the service logic. The service logic does not fight the deployment model. The deployment model does not pretend that migrations, secrets, reverse proxying, and runtime serving are the same concern. This coherence is the main technical asset of the repository today.
+
+Future work should therefore preserve that quality. New features should continue to be introduced through migrations, repositories, services, handlers, tests, benchmark coverage, and deployment documentation in that order. If this discipline is maintained, the project can grow without losing the clarity that currently makes it understandable.
+
+\end{document}
