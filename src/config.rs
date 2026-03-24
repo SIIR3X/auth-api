@@ -652,7 +652,7 @@ mod tests {
                 pool_size: 5,
             },
             jwt: JwtConfig {
-                secret: "12345678901234567890123456789012".into(),
+                secret: "1".repeat(32),
                 previous_secret: None,
                 access_expiry_secs: 900,
                 refresh_expiry_secs: 3600,

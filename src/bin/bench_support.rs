@@ -423,3 +423,8 @@ fn unique_suffix() -> u128 {
 
     timestamp ^ ((std::process::id() as u128) << 32)
 }
+
+// Tooling compatibility shim: cargo-geiger treats every `src/bin/*.rs`
+// as a binary entrypoint. Keeping a no-op main here preserves the shared
+// bench module path without affecting the real benchmark binaries.
+fn main() {}
