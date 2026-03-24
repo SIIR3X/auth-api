@@ -22,7 +22,7 @@ Examples:
 - `v1.2.3`
 
 The workflow file is:
-- [docker-publish.yml](../../.github/workflows/docker-publish.yml)
+- [docker-publish.yml](../../../.github/workflows/docker-publish.yml)
 
 ## Create a Release Tag
 

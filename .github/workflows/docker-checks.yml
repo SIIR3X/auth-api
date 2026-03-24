@@ -1,0 +1,70 @@
+name: Docker Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  docker-checks:
+    name: Docker Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: Run Semgrep
+        run: |
+          python3 -m pip install --user semgrep
+          ~/.local/bin/semgrep scan
+
+      - name: Build application image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          load: true
+          tags: rust-api:pr
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build migrations image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: migrations
+          load: true
+          tags: rust-api-migrations:pr
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan application image with Trivy
+        uses: aquasecurity/trivy-action@0.31.0
+        with:
+          image-ref: rust-api:pr
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: Scan migrations image with Trivy
+        uses: aquasecurity/trivy-action@0.31.0
+        with:
+          image-ref: rust-api-migrations:pr
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
