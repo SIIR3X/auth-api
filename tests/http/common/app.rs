@@ -6,7 +6,7 @@ use deadpool_redis::{Pool as RedisPool, redis::AsyncCommands};
 use reqwest::{Client, Response};
 use serde::Serialize;
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::OnceCell};
 use tracing_subscriber::EnvFilter;
 
 use rust_api::{config::Config, handlers, state::AppState};
@@ -15,6 +15,8 @@ use rust_api::{config::Config, handlers, state::AppState};
 const TEST_DATABASE_URL: &str = "TEST_DATABASE_URL";
 const TEST_REDIS_URL: &str = "TEST_REDIS_URL";
 const TEST_JWT_SECRET: &str = "test-secret-that-is-long-enough-for-hs256";
+
+static TEMPLATE_DB: OnceCell<String> = OnceCell::const_new();
 
 pub struct TestApp {
     pub base_url: String,
@@ -49,6 +51,7 @@ impl TestApp {
             std::env::var(TEST_REDIS_URL).unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
 
         let db_name = format!("rust_api_http_test_{}", uuid::Uuid::new_v4().simple());
+        let template_db = ensure_template_database(&admin_url).await;
 
         // Create isolated test database
         let admin_pool = PgPoolOptions::new()
@@ -57,25 +60,21 @@ impl TestApp {
             .await
             .expect("failed to connect to admin database");
 
-        sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
-            .execute(&admin_pool)
-            .await
-            .expect("failed to create test database");
+        sqlx::query(&format!(
+            "CREATE DATABASE \"{db_name}\" TEMPLATE \"{template_db}\""
+        ))
+        .execute(&admin_pool)
+        .await
+        .expect("failed to create test database");
         drop(admin_pool);
 
-        // Connect to the new database and run migrations
+        // Connect to the cloned database.
         let db_url = replace_db_name(&admin_url, &db_name);
         let db = PgPoolOptions::new()
             .max_connections(5)
             .connect(&db_url)
             .await
             .expect("failed to connect to test database");
-
-        let migrator = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
-            .await
-            .expect("failed to load migrations");
-
-        migrator.run(&db).await.expect("failed to run migrations");
 
         // Build a minimal config pointing at the test database and Redis
         let mut config = test_config(&db_url, &redis_url);
@@ -338,4 +337,53 @@ fn replace_db_name(url: &str, new_db: &str) -> String {
     } else {
         format!("{}/{}", url, new_db)
     }
+}
+
+async fn ensure_template_database(admin_url: &str) -> String {
+    TEMPLATE_DB
+        .get_or_init(|| async {
+            let template_db = format!("rust_api_http_template_{}", std::process::id());
+
+            let admin_pool = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(admin_url)
+                .await
+                .expect("failed to connect to admin database for template setup");
+
+            let _ = sqlx::query(&format!(
+                "DROP DATABASE IF EXISTS \"{template_db}\" WITH (FORCE)"
+            ))
+            .execute(&admin_pool)
+            .await;
+
+            sqlx::query(&format!(
+                "CREATE DATABASE \"{template_db}\" TEMPLATE template0"
+            ))
+            .execute(&admin_pool)
+            .await
+            .expect("failed to create template test database");
+            drop(admin_pool);
+
+            let template_url = replace_db_name(admin_url, &template_db);
+            let template_pool = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&template_url)
+                .await
+                .expect("failed to connect to template test database");
+
+            let migrator = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+                .await
+                .expect("failed to load migrations for template test database");
+
+            migrator
+                .run(&template_pool)
+                .await
+                .expect("failed to run migrations on template test database");
+
+            drop(template_pool);
+
+            template_db
+        })
+        .await
+        .clone()
 }

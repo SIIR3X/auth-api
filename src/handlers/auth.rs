@@ -344,22 +344,9 @@ pub async fn resend_email_two_factor(
     Json(body): Json<ResendEmailTwoFactorRequest>,
 ) -> Result<StatusCode, AppError> {
     // Resolve user_id from pre_auth_token without revealing whether it exists.
-    let redis_key = format!("pre_auth:{}", body.pre_auth_token);
-    let user_id = {
-        use deadpool_redis::redis::AsyncCommands;
-        let mut conn = state
-            .redis
-            .get()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-        let val: Option<String> = conn
-            .get(&redis_key)
-            .await
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("redis: {e}")))?;
-        val.ok_or(AppError::TokenInvalid)?
-            .parse::<uuid::Uuid>()
-            .map_err(|_| AppError::TokenInvalid)?
-    };
+    let user_id = auth_svc::resolve_pre_auth(&state, &body.pre_auth_token)
+        .await?
+        .user_id;
 
     // Fire-and-forget: errors are non-fatal to avoid enumeration via timing.
     let _ = email_2fa_svc::send_code(&state, user_id).await;

@@ -166,19 +166,24 @@ pub async fn disable(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    if let Err(e) = email_svc::send_two_factor_disabled(
-        &state.mailer,
-        &state.templates,
-        &state.config.mail,
-        &user.email,
-        &user.username,
-        &user.preferred_locale,
-        "email",
-    )
-    .await
-    {
-        tracing::warn!(error = ?e, user_id = %user_id, "failed to send two_factor_disabled email");
-    }
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = user.email.clone();
+    let username = user.username.clone();
+    let locale = user.preferred_locale.clone();
+    email_svc::dispatch_best_effort("email_2fa_disabled_email", async move {
+        email_svc::send_two_factor_disabled(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+            "email",
+        )
+        .await
+    });
 
     Ok(())
 }
@@ -221,19 +226,24 @@ pub async fn send_code(state: &AppState, user_id: Uuid) -> Result<(), AppError> 
         let _: Result<(), _> = conn.set_ex(&cooldown_key, 1u8, SEND_COOLDOWN_SECS).await;
     }
 
-    if let Err(e) = email_svc::send_email_otp(
-        &state.mailer,
-        &state.templates,
-        &state.config.mail,
-        &user.email,
-        &user.username,
-        &user.preferred_locale,
-        &code,
-    )
-    .await
-    {
-        tracing::warn!(error = ?e, user_id = %user_id, "failed to send email 2FA code");
-    }
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = user.email.clone();
+    let username = user.username.clone();
+    let locale = user.preferred_locale.clone();
+    email_svc::dispatch_best_effort("email_2fa_code", async move {
+        email_svc::send_email_otp(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+            &code,
+        )
+        .await
+    });
 
     Ok(())
 }

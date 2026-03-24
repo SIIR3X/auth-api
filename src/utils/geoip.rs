@@ -7,6 +7,7 @@
 use std::{net::IpAddr, path::Path, sync::Arc};
 
 use ipnetwork::IpNetwork;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct GeoIp(Option<Arc<maxminddb::Reader<Vec<u8>>>>);
@@ -61,7 +62,7 @@ impl GeoIp {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoLocation {
     pub country: String,
     pub city: String,

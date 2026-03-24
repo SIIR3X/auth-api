@@ -64,7 +64,7 @@ impl FromRequestParts<AppState> for AuthUser {
 
         // Verify the session is still active in the database.
         // This ensures logout and session revocation take effect immediately.
-        let session = session_repo::find_by_id(&state.db, claims.sid)
+        let session = session_repo::find_validation_by_id(&state.db, claims.sid)
             .await
             .map_err(|_| AppError::Unauthorized)?
             .ok_or(AppError::Unauthorized)?;

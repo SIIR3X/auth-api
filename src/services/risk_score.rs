@@ -14,17 +14,20 @@
 //!   unusual hour (00:00 to 05:59 UTC)            +15
 //!   impossible travel (> 500 km/h since last)    +50
 
+use std::collections::HashSet;
+
 use ipnetwork::IpNetwork;
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
     config::RiskConfig,
-    domain::{audit::AuditAction, login_location::LoginLocation},
+    domain::audit::AuditAction,
     error::AppError,
     repositories::{
         audit::{self, NewAuditEntry},
-        login_location,
+        login_location::{self, RiskHistoryEntry},
     },
     state::AppState,
     utils::geoip::GeoLocation,
@@ -42,7 +45,7 @@ const MAX_NORMAL_SPEED_KMH: f64 = 500.0;
 
 // --
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginContext {
     pub user_id: Uuid,
     pub ip: IpNetwork,
@@ -51,7 +54,7 @@ pub struct LoginContext {
     pub login_time: OffsetDateTime,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RiskDecision {
     Allow,
     Alert,
@@ -59,7 +62,7 @@ pub enum RiskDecision {
     Block,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RiskResult {
     pub score: u32,
     pub decision: RiskDecision,
@@ -70,7 +73,7 @@ pub struct RiskResult {
 
 pub async fn evaluate(state: &AppState, ctx: &LoginContext) -> Result<RiskResult, AppError> {
     let cfg = &state.config.risk;
-    let history = login_location::find_recent(&state.db, ctx.user_id, cfg.history_days)
+    let history = login_location::find_recent_for_risk(&state.db, ctx.user_id, cfg.history_days)
         .await
         .map_err(AppError::from)?;
 
@@ -138,16 +141,16 @@ pub async fn audit_suspicious(
 
 // --
 
-fn compute_score(ctx: &LoginContext, history: &[LoginLocation]) -> (u32, Vec<String>) {
+pub fn compute_score(ctx: &LoginContext, history: &[RiskHistoryEntry]) -> (u32, Vec<String>) {
     let mut score = 0u32;
     let mut signals: Vec<String> = Vec::new();
 
     let country = ctx.geo.as_ref().map(|g| g.country.as_str()).unwrap_or("");
     let city = ctx.geo.as_ref().map(|g| g.city.as_str()).unwrap_or("");
 
-    let known_countries: Vec<&str> = history.iter().map(|l| l.country.as_str()).collect();
-    let known_cities: Vec<&str> = history.iter().map(|l| l.city.as_str()).collect();
-    let known_uas: Vec<&str> = history.iter().map(|l| l.user_agent.as_str()).collect();
+    let known_countries: HashSet<&str> = history.iter().map(|l| l.country.as_str()).collect();
+    let known_cities: HashSet<&str> = history.iter().map(|l| l.city.as_str()).collect();
+    let known_uas: HashSet<&str> = history.iter().map(|l| l.user_agent.as_str()).collect();
 
     // New country
     if !country.is_empty() && !known_countries.contains(&country) {
@@ -208,7 +211,7 @@ fn check_impossible_travel(
     lat: f64,
     lon: f64,
     now: OffsetDateTime,
-    history: &[LoginLocation],
+    history: &[RiskHistoryEntry],
 ) -> Option<bool> {
     let prev = history
         .iter()
