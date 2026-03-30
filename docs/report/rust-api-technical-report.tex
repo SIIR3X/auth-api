@@ -1189,17 +1189,18 @@ This split is coherent with the rest of the project. Append-only audit records, 
 
 \section{Monitoring Topology}
 
-In the currently documented model, the main observability stack is hosted on the home server, while the data server runs its own Alloy agent and forwards logs and metrics back to that central stack. This means the overall topology is split as follows:
+In the currently documented model, observability is centralized, but collection remains local to each server. The application server and the data server each run their own Alloy agent. Those agents collect host metrics, journal entries, and container logs on the machine where the signals are produced, then forward them over private links to a shared Grafana, Loki, and Prometheus stack. This means the overall topology is split as follows:
 
 \begin{itemize}
+  \item the application server runs the Rust API and its local Alloy agent;
   \item the data server runs PostgreSQL and Redis as stateful backend services;
-  \item the data server runs Alloy locally to collect host metrics, journal entries, and Docker logs;
-  \item the home server runs Loki as the shared log store;
-  \item the home server runs Prometheus as the shared metrics store;
-  \item the home server runs Grafana as the shared visualization and dashboard layer.
+  \item the data server runs its own Alloy agent locally to collect host metrics, journal entries, and Docker logs;
+  \item the central observability stack runs Loki as the shared log store;
+  \item the central observability stack runs Prometheus as the shared metrics store;
+  \item the central observability stack runs Grafana as the shared visualization and dashboard layer.
 \end{itemize}
 
-This topology is a better fit for the repository's current deployment model. The home server already centralizes private administration services behind WireGuard, while the data server remains focused on stateful backend dependencies. As a result, observability is centralized without turning the data server into a second general-purpose control plane.
+This topology is a better fit for the repository's current deployment model than colocating the whole monitoring stack with PostgreSQL and Redis. The application server and data server each keep a very small local footprint: only their runtime services plus one Alloy process. Heavy coordination tasks such as storage, querying, and dashboards stay centralized. As a result, observability is shared without turning either runtime host into a second control plane.
 
 \begin{table}[H]
 \centering
@@ -1209,11 +1210,11 @@ This topology is a better fit for the repository's current deployment model. The
 \toprule
 \textbf{Component} & \textbf{Placement} & \textbf{Operational role} \\
 \midrule
-Alloy & Data server & Reads Docker logs locally, applies labels, and forwards streams to Loki. \\
-Loki & Home server & Stores and indexes container logs for exploration and dashboard queries. \\
-Prometheus & Home server & Receives metrics from Alloy agents and stores time-series data. \\
-Grafana & Home server & Exposes the monitoring UI, dashboards, and ad hoc exploration. \\
-PostgreSQL datasource & Data server / Home server Grafana & Allows Grafana to query structured tables such as \texttt{audit\_log} and \texttt{login\_attempts} through a dedicated read-only role. \\
+Alloy & Application server and data server & Collects local host metrics, journal entries, Docker logs, and selected file logs, then forwards them with stable labels. \\
+Loki & Central observability stack & Stores and indexes runtime logs for exploration and dashboard queries. \\
+Prometheus & Central observability stack & Receives metrics from Alloy agents and stores time-series data. \\
+Grafana & Central observability stack & Exposes dashboards, Explore queries, and the PostgreSQL datasource. \\
+PostgreSQL datasource & Data server / central Grafana & Allows Grafana to query structured tables such as \texttt{audit\_log} and \texttt{login\_attempts} through a dedicated read-only role. \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1227,7 +1228,7 @@ Loki should instead be understood as the runtime-observation layer. It answers q
 \begin{itemize}
   \item What did PostgreSQL log during the last hour?
   \item Is Redis emitting errors or warnings?
-  \item Did Grafana or Alloy fail to start correctly?
+  \item Did Nginx, the Rust API container, or Alloy fail to start correctly?
   \item What happened in the migration container during the last execution?
 \end{itemize}
 
@@ -1244,32 +1245,35 @@ Keeping both layers separate produces a cleaner and more trustworthy operational
 
 \section{Log Collection Model}
 
-The deployed Alloy configuration uses Docker discovery and labels each stream with service-related metadata before forwarding it to Loki. This means the operator can search logs by container name, Docker Compose service, project, stream, and the manually attached role labels used in the repository configuration.
+The deployed Alloy configurations use Docker discovery and stable labels before forwarding streams to Loki and metrics to Prometheus. The data server configuration focuses on host, journal, and Docker signals for PostgreSQL and Redis. The application server configuration adds the same host and Docker coverage, but also tails Nginx log files. This means the operator can search or graph data by container name, Docker Compose service, project, stream, host label, and the manually attached \texttt{server\_role}.
 
 Conceptually, the pipeline is:
 
 \begin{enumerate}
   \item Docker produces stdout/stderr log streams for each container.
-  \item Alloy discovers those containers on the local host.
-  \item Alloy attaches stable labels such as \texttt{service}, \texttt{container}, and \texttt{server\_role}.
-  \item Loki ingests and stores the resulting streams.
-  \item Grafana queries Loki and renders dashboards or ad hoc views.
+  \item Alloy discovers those containers on the local host and also reads journal entries, host metrics, and selected file logs.
+  \item Alloy attaches stable labels such as \texttt{service}, \texttt{container}, \texttt{host}, and \texttt{server\_role}.
+  \item Loki ingests and stores the resulting log streams, while Prometheus receives the forwarded metrics.
+  \item Grafana queries Loki, Prometheus, and PostgreSQL and renders dashboards or ad hoc views.
 \end{enumerate}
 
 This is a light architecture by modern observability standards, but it is proportionate to the project. It avoids the complexity of a heavyweight search cluster while still giving centralized log search and dashboards.
 
 \subsection{Expected Early Log Coverage}
 
-At the current stage of the repository, the monitoring stack is primarily designed to centralize:
+At the current stage of the repository, the monitoring stack is designed to centralize at least:
 
 \begin{itemize}
+  \item Rust API container logs;
+  \item Nginx logs on the application server;
   \item PostgreSQL logs;
   \item Redis logs;
-  \item Grafana, Loki, Prometheus, and Alloy logs;
+  \item Alloy, Grafana, Loki, and Prometheus logs;
+  \item system journal entries from the application and data servers;
   \item migration-container logs when the migrations image is executed on the data server.
 \end{itemize}
 
-The application server can later join the same stack by running its own Alloy agent and forwarding logs to the same Loki instance on the home server. This staged rollout is sensible because it keeps the first monitoring milestone small: observe the private backend host first, then widen the scope to the public application server.
+This is already a meaningful baseline. It covers the public runtime host, the private stateful host, the monitoring stack itself, and the SQL audit layer without forcing all operational evidence into a single storage model.
 
 \section{Dashboards and Operational Reading}
 
@@ -1283,9 +1287,9 @@ The repository now includes provisioned Grafana dashboards. Their purpose is not
 \toprule
 \textbf{Dashboard} & \textbf{Primary source} & \textbf{Purpose} \\
 \midrule
-\texttt{Data Server Overview} & Loki & Gives a first operational picture of log volume, recent errors, and recent container output across the main data-server services. \\
+\texttt{Rust API App Server} & Prometheus and Loki & Shows host-level resource usage and runtime log activity for the application server. \\
 \texttt{PostgreSQL and Redis Logs} & Loki & Focuses on the two stateful backend dependencies and exposes their log streams directly. \\
-\texttt{Observability Services} & Loki & Observes the monitoring stack itself, which is important because an unobserved monitoring stack quickly becomes misleading. \\
+\texttt{Rust API Audit Overview} & PostgreSQL & Queries structured audit and login-related tables through a read-only SQL datasource. \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1293,10 +1297,10 @@ The repository now includes provisioned Grafana dashboards. Their purpose is not
 These dashboards are intentionally log-centric. They answer the most basic and most useful first questions:
 
 \begin{itemize}
+  \item Are the application and data hosts both visible in metrics?
   \item Are services producing logs at all?
   \item Are there obvious recent errors?
-  \item Can an operator immediately inspect PostgreSQL or Redis output?
-  \item Is the monitoring stack itself healthy enough to trust?
+  \item Can an operator immediately inspect PostgreSQL, Redis, Nginx, or application output?
 \end{itemize}
 
 This baseline is appropriate. Operational monitoring should begin with trustworthy signal acquisition before expanding into more sophisticated panels.
@@ -1319,13 +1323,13 @@ From an architectural perspective, this is where the project becomes particularl
 Monitoring systems are often deployed carelessly because they are considered ``internal.'' That would be a mistake here. The repository documentation adopts a healthier posture:
 
 \begin{itemize}
-  \item Grafana should remain private on the home server unless intentionally published behind a secured reverse proxy;
+  \item Grafana should remain private unless intentionally published behind a secured reverse proxy;
   \item Loki and Prometheus should remain private and should not be exposed broadly;
   \item Alloy's debug UI should remain local or at most private-only;
   \item the PostgreSQL datasource should use a dedicated read-only role rather than reusing the application or migration role.
 \end{itemize}
 
-This is a coherent security stance. A monitoring stack has visibility into service behavior, identifiers, and potentially sensitive failure modes. It should therefore be treated as an operationally privileged subsystem, not as a disposable convenience service.
+This is a coherent security stance. A monitoring stack has visibility into service behavior, identifiers, and potentially sensitive failure modes. The current documentation strengthens that stance further by routing metrics and logs over private connectivity rather than relying on broad public exposure. It should therefore be treated as an operationally privileged subsystem, not as a disposable convenience service.
 
 \section{Why the Monitoring Model Fits the Project}
 
@@ -1335,7 +1339,7 @@ First, it remains self-hosted and proportionate. The project does not need a lar
 
 Second, it preserves semantic clarity. Runtime logs go to Loki. Security facts remain in PostgreSQL. This avoids the common mistake of pushing every kind of operational truth into one tool regardless of structure.
 
-Third, it integrates naturally with the documented deployment model. The data server still owns its local Alloy configuration under \texttt{/srv/rust-api-data}, while the main Grafana, Loki, and Prometheus stack lives on the home server and is managed through that repository's deployment workflow. This split keeps stateful data services and central observability aligned with their actual operational roles.
+Third, it integrates naturally with the documented deployment model. The data server owns its local Alloy configuration under \texttt{/srv/rust-api-data}, the application server owns its own Alloy configuration under \texttt{/srv/rust-api/observability}, and the shared Grafana, Loki, and Prometheus stack remains a separate operational concern. This split keeps runtime hosts focused on collection and execution, while the central stack focuses on storage, querying, and dashboards.
 
 \reportpart{Conclusion}
 
