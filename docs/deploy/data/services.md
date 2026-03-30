@@ -50,9 +50,9 @@ REDIS_PORT=6379
 REDIS_DATA_DIR=/srv/rust-api-data/redis
 ```
 
-Replace `__DATA_SERVER_PRIVATE_IP__` with the private IP already allowed between the application server and the data server.
+Replace `__DATA_SERVER_PRIVATE_IP__` with the private IP already allowed from the application server.
 
-## 4. Create the data compose file
+## 4. Create the compose file
 
 ```bash
 sudo nano /srv/rust-api-data/compose/docker-compose.yml
@@ -60,7 +60,7 @@ sudo nano /srv/rust-api-data/compose/docker-compose.yml
 
 Use [docker-compose.yml](../../../deploy/data/docker-compose.yml) as the reference.
 
-## 5. Start PostgreSQL and Redis
+## 5. Export the secrets
 
 ```bash
 export POSTGRES_DB="$(pass show rust-api/data/postgres_db)"
@@ -68,6 +68,8 @@ export POSTGRES_USER="$(pass show rust-api/data/postgres_user)"
 export POSTGRES_PASSWORD="$(pass show rust-api/data/postgres_password)"
 export REDIS_PASSWORD="$(pass show rust-api/data/redis_password)"
 ```
+
+## 6. Start PostgreSQL and Redis
 
 ```bash
 docker compose \
@@ -81,10 +83,18 @@ docker compose \
   up -d
 ```
 
-## 6. Validate Redis
+## 7. Validate the services
 
 ```bash
-export REDIS_PASSWORD="$(pass show rust-api/data/redis_password)"
+cd /srv/rust-api-data/compose
+docker compose ps
+docker compose logs postgres --tail 50
+docker compose logs redis --tail 50
+```
+
+Validate Redis:
+
+```bash
 redis-cli -h 127.0.0.1 -p 6379 -a "$REDIS_PASSWORD" ping
 ```
 

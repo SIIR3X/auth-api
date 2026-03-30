@@ -1,6 +1,6 @@
-# Database Setup
+# Database
 
-[Previous: Services](services.md) | [Back to setup](setup.md) | [Next: Monitoring](monitoring.md)
+[Previous: Data Services](services.md) | [Back to setup](setup.md) | [Next: Observability](monitoring.md)
 
 ## 1. Create the PostgreSQL roles
 
@@ -16,6 +16,11 @@ Run:
 CREATE ROLE rust_api_app LOGIN PASSWORD 'CHANGE_ME';
 CREATE ROLE rust_api_grafana LOGIN PASSWORD 'CHANGE_ME';
 ```
+
+Use:
+- `rust_api_migrator` for schema changes and migrations
+- `rust_api_app` for the runtime application
+- `rust_api_grafana` for read-only Grafana access
 
 ## 2. Create the extensions and grants
 
@@ -55,11 +60,6 @@ GRANT SELECT ON TABLE
 TO rust_api_grafana;
 ```
 
-Use:
-- `rust_api_migrator` for migrations
-- `rust_api_app` for the application
-- `rust_api_grafana` for Grafana only
-
 ## 3. Run migrations
 
 ```bash
@@ -81,7 +81,7 @@ docker run --rm \
   ghcr.io/<owner>/rust-api-migrations:<tag>
 ```
 
-## 4. Create the final URLs for the application server
+## 4. Create the final application URLs
 
 On the application server:
 
@@ -93,3 +93,11 @@ pass insert rust-api/app/redis_url
 Recommended formats:
 - `database_url` -> `postgres://rust_api_app:...@__DATA_PRIVATE_IP__:5432/rust_api`
 - `redis_url` -> `redis://:...@__DATA_PRIVATE_IP__:6379`
+
+## 5. Validate
+
+Reconnect to PostgreSQL and confirm the core tables exist:
+
+```bash
+docker exec -it $(docker ps --filter name=postgres --format '{{.Names}}') psql -U "$(pass show rust-api/data/postgres_user)" -d rust_api -c '\dt'
+```
