@@ -1,6 +1,6 @@
-# Application Services
+# Service Deployment
 
-[Back to setup](setup.md) | [Next: Nginx](nginx.md)
+[Previous: Nginx and HTTPS](nginx.md) | [Back to setup](setup.md) | [Next: Observability](monitoring.md)
 
 ## 1. Create the directories
 
@@ -41,7 +41,7 @@ pass insert rust-api/app/jwt_previous_secret
 pass insert rust-api/app/previous_encryption_key
 ```
 
-`database_url` and `redis_url` must already point to the private IP of the data server.
+`database_url` and `redis_url` must already point to the private data services.
 
 ## 4. Create `runtime.env`
 
@@ -79,7 +79,7 @@ LOG_LEVEL=info
 LOG_FORMAT=json
 ```
 
-## 5. Create the app compose file
+## 5. Create the application compose file
 
 ```bash
 sudo nano /srv/rust-api/compose/docker-compose.yml
@@ -87,7 +87,7 @@ sudo nano /srv/rust-api/compose/docker-compose.yml
 
 Use [docker-compose.yml](../../../deploy/app/docker-compose.yml) as the reference.
 
-## 6. Start the API
+## 6. Export the secrets and runtime variables
 
 ```bash
 export DATABASE_URL="$(pass show rust-api/app/database_url)"
@@ -106,6 +106,8 @@ export RUST_API_BIND_PORT=3000
 export RUST_API_DATA_DIR=/srv/rust-api/data
 ```
 
+## 7. Start the service
+
 ```bash
 docker compose \
   -f /srv/rust-api/compose/docker-compose.yml \
@@ -116,11 +118,13 @@ docker compose \
   up -d
 ```
 
-## 7. Validate locally
+## 8. Validate locally and through Nginx
 
 ```bash
 cd /srv/rust-api/compose
 docker compose ps
 docker compose logs app --tail 50
 ss -ltnp | grep ':3000'
+curl -I http://127.0.0.1:3000
+curl -I https://__APP_DOMAIN__
 ```
