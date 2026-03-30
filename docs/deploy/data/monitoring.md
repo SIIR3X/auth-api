@@ -1,4 +1,4 @@
-# Monitoring and Grafana
+# Observability
 
 [Previous: Database](database.md) | [Back to setup](setup.md)
 
@@ -15,8 +15,15 @@ Use these files as references:
 
 Replace:
 - `__HOST_LABEL__` -> `rust-api-data`
-- `__LOKI_PUSH_URL__` -> your existing Loki push URL
-- `__PROMETHEUS_REMOTE_WRITE_URL__` -> your existing Prometheus remote write URL
+- `__LOKI_PUSH_URL__` -> the Loki push URL reachable from the data server
+- `__PROMETHEUS_REMOTE_WRITE_URL__` -> the Prometheus remote write URL reachable from the data server
+
+Recommended values when the observability tunnel is already in place:
+
+```text
+__LOKI_PUSH_URL__=http://__OBSERVABILITY_SERVER_IP__:3100/loki/api/v1/push
+__PROMETHEUS_REMOTE_WRITE_URL__=http://__OBSERVABILITY_SERVER_IP__:9090/api/v1/write
+```
 
 Start it:
 
@@ -27,11 +34,9 @@ docker compose ps
 docker compose logs alloy --tail 50
 ```
 
-Before validating application logs and metrics, deploy the application-side Alloy with [../app/monitoring.md](../app/monitoring.md).
+Before validating cross-service logs and metrics, deploy the application-side Alloy with [../app/monitoring.md](../app/monitoring.md).
 
-## 2. Add the PostgreSQL datasource to the existing Grafana
-
-On the home server:
+## 2. Add the PostgreSQL datasource to the central Grafana stack
 
 ```bash
 sudo nano /srv/grafana-stack/provisioning/datasources/rust-api-postgresql.yml
@@ -66,32 +71,44 @@ Use these files as references:
 - [postgresql-and-redis-logs.json](../../../deploy/data/grafana/dashboards/postgresql-and-redis-logs.json)
 - [rust-api-audit-overview.json](../../../deploy/data/grafana/dashboards/rust-api-audit-overview.json)
 
-The dashboards expect these datasource UIDs:
-- Loki -> `loki`
-- Prometheus -> `prometheus`
-- PostgreSQL -> `rust_api_postgres`
+Replace:
+- `__HOST_LABEL__` in `rust-api-app-server.json`
+
+The datasource UIDs in the dashboard files must match the central Grafana stack.
 
 ## 4. Reload Grafana
 
-On the home server:
+Export the same Grafana variables used by the central stack, then reload Grafana:
 
 ```bash
 cd /srv/grafana-stack
-docker compose restart grafana
+export GRAFANA_ADMIN_USER="$(pass show home-server/grafana/admin_user)"
+export GRAFANA_ADMIN_PASSWORD="$(pass show home-server/grafana/admin_password)"
+export GRAFANA_SECRET_KEY="$(pass show home-server/grafana/secret_key)"
+export GRAFANA_DOMAIN="$(pass show home-server/grafana/domain)"
+export GRAFANA_ROOT_URL="$(pass show home-server/grafana/root_url)"
+export SMTP_HOST="$(pass show home-server/grafana/smtp_host)"
+export SMTP_USER="$(pass show home-server/grafana/smtp_user)"
+export SMTP_PASSWORD="$(pass show home-server/grafana/smtp_password)"
+export SMTP_FROM_ADDRESS="$(pass show home-server/grafana/smtp_from_address)"
+export SMTP_FROM_NAME="$(pass show home-server/grafana/smtp_from_name)"
+export ALERT_EMAIL_TO="$(pass show home-server/grafana/alert_email_to)"
+docker compose up -d grafana
 ```
 
-## 5. Validate in Grafana
+## 5. Validate
 
-Open Grafana from the home server private URL, for example:
-- `https://grafana.siir3x.fr`
-
-Check:
-- logs from the data server
-- logs from the application VPS
-- PostgreSQL and Redis logs
-- audit panels from PostgreSQL
+On the central Grafana stack, validate:
+- metrics for `host="rust-api-data"`
+- Docker logs for `server_role="data"`
+- Docker logs for `server_role="app"`
+- PostgreSQL audit queries through the Rust API PostgreSQL datasource
 
 Useful queries:
+
+```text
+node_cpu_seconds_total{host="rust-api-data",server_role="data"}
+```
 
 ```text
 {job="docker",server_role="data",host="rust-api-data"}
