@@ -1,6 +1,33 @@
-logging {
-  level  = "info"
-  format = "logfmt"
+prometheus.exporter.unix "host" {
+  procfs_path       = "/host/proc"
+  sysfs_path        = "/host/sys"
+  rootfs_path       = "/host/root"
+  enable_collectors = ["thermal_zone"]
+}
+
+discovery.relabel "host" {
+  targets = prometheus.exporter.unix.host.targets
+
+  rule {
+    target_label = "host"
+    replacement  = "__HOST_LABEL__"
+  }
+
+  rule {
+    target_label = "server_role"
+    replacement  = "data"
+  }
+}
+
+prometheus.scrape "host" {
+  targets    = discovery.relabel.host.output
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = "__PROMETHEUS_REMOTE_WRITE_URL__"
+  }
 }
 
 discovery.docker "containers" {
@@ -41,16 +68,24 @@ loki.source.docker "containers" {
   refresh_interval = "5s"
   labels = {
     job         = "docker",
+    host        = "__HOST_LABEL__",
     server_role = "data",
   }
 }
 
+loki.source.journal "journal" {
+  path       = "/run/log/journal"
+  labels     = {
+    job         = "journal",
+    host        = "__HOST_LABEL__",
+    server_role = "data",
+  }
+  max_age    = "24h"
+  forward_to = [loki.write.default.receiver]
+}
+
 loki.write "default" {
   endpoint {
-    url = "http://loki:3100/loki/api/v1/push"
-  }
-
-  external_labels = {
-    source = "docker",
+    url = "__LOKI_PUSH_URL__"
   }
 }

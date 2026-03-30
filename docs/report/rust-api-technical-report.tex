@@ -129,7 +129,7 @@
 
 \begin{tabular}{rl}
 \textbf{Author:} & Lucas Fagioli \\
-\textbf{Date:} & 24 March 2026 \\
+\textbf{Date:} & 30 March 2026 \\
 \textbf{Repository:} & \texttt{rust-api} \\
 \textbf{Version:} & 0.1.0 \\
 \textbf{Scope:} & Schema, backend architecture, benchmarks, deployment, and observability \\
@@ -145,8 +145,7 @@
 This document provides a structured technical reading of the Rust API repository. It
 studies the PostgreSQL schema table by table, explains the internal organization of
 the Rust codebase and the HTTP surface, documents the self-hosted deployment
-model built around Docker, PostgreSQL, Redis, Nginx, \texttt{pass}, and
-\texttt{cryptsetup}, and describes the monitoring stack used to observe logs and
+model built around Docker, PostgreSQL, Redis, Nginx, and \texttt{pass}, and describes the monitoring stack used to observe logs and
 security-relevant runtime behavior. The report is intended to serve as a durable
 engineering reference for maintenance, onboarding, performance work, release
 operations, and production observation.
@@ -1063,30 +1062,29 @@ In the current documentation:
 
 At startup, secrets are exported from \texttt{pass} into the shell environment and then consumed by Docker Compose.
 
-\subsection{Encrypted Service Roots with \texttt{cryptsetup}}
+\subsection{Service Roots}
 
-The deployment guides also recommend encrypting:
+The deployment guides keep service data under:
 
 \begin{itemize}
   \item \texttt{/srv/rust-api};
   \item \texttt{/srv/rust-api-data}
 \end{itemize}
 
-with LUKS volumes managed through \texttt{cryptsetup}. This is operationally coherent with the local-secret model:
+This remains operationally coherent with the local-secret model:
 
 \begin{itemize}
   \item \texttt{pass} protects individual secret values;
-  \item encrypted service roots protect the broader server filesystem at rest.
+  \item service data lives under stable, explicit paths.
 \end{itemize}
 
-The combination is particularly suitable for self-hosted infrastructure where the operator wants local control without running a full secret-management platform.
+This is particularly suitable for self-hosted infrastructure where the operator wants local control without running a full secret-management platform.
 
 \section{Application Server Procedure}
 
 The application server procedure documented in \texttt{docs/deploy/app/setup.md} is well ordered and should be preserved as such:
 
 \begin{enumerate}
-  \item prepare the encrypted service root if LUKS is used;
   \item create \texttt{/srv/rust-api/env/runtime.env};
   \item populate application-side secrets in \texttt{pass};
   \item prepare the GeoIP database file if risk scoring requires it;
@@ -1106,7 +1104,6 @@ GeoIP is not a service of its own. It is a data file consumed locally by the Rus
 The data server procedure documented in \texttt{docs/deploy/data/setup.md} is similarly structured:
 
 \begin{enumerate}
-  \item prepare the encrypted service root if LUKS is used;
   \item create \texttt{/srv/rust-api-data/env/runtime.env};
   \item populate PostgreSQL and Redis secrets in \texttt{pass};
   \item create \texttt{/srv/rust-api-data/compose/docker-compose.yml};
@@ -1157,7 +1154,7 @@ This means the servers do not need the repository itself. They only need:
 \begin{itemize}
   \item local deployment files created from the repository documentation;
   \item the published images;
-  \item the local secret store and encrypted service root.
+  \item the local secret store.
 \end{itemize}
 
 \section{Why the Deployment Model Is Coherent}
@@ -1192,16 +1189,17 @@ This split is coherent with the rest of the project. Append-only audit records, 
 
 \section{Monitoring Topology}
 
-In the currently documented model, the observability stack is hosted on the data server. This means that the same host may run:
+In the currently documented model, the main observability stack is hosted on the home server, while the data server runs its own Alloy agent and forwards logs and metrics back to that central stack. This means the overall topology is split as follows:
 
 \begin{itemize}
-  \item PostgreSQL and Redis as stateful backend services;
-  \item Loki as the log store;
-  \item Grafana as the visualization layer;
-  \item Alloy as the local agent reading Docker container logs.
+  \item the data server runs PostgreSQL and Redis as stateful backend services;
+  \item the data server runs Alloy locally to collect host metrics, journal entries, and Docker logs;
+  \item the home server runs Loki as the shared log store;
+  \item the home server runs Prometheus as the shared metrics store;
+  \item the home server runs Grafana as the shared visualization and dashboard layer.
 \end{itemize}
 
-This topology is not the only possible one, but it is a reasonable self-hosted compromise. It keeps the monitoring stack on a server that is already private, already stateful, and already expected to remain under the operator's control.
+This topology is a better fit for the repository's current deployment model. The home server already centralizes private administration services behind WireGuard, while the data server remains focused on stateful backend dependencies. As a result, observability is centralized without turning the data server into a second general-purpose control plane.
 
 \begin{table}[H]
 \centering
@@ -1212,9 +1210,10 @@ This topology is not the only possible one, but it is a reasonable self-hosted c
 \textbf{Component} & \textbf{Placement} & \textbf{Operational role} \\
 \midrule
 Alloy & Data server & Reads Docker logs locally, applies labels, and forwards streams to Loki. \\
-Loki & Data server & Stores and indexes container logs for exploration and dashboard queries. \\
-Grafana & Data server & Exposes the monitoring UI, dashboards, and ad hoc exploration. \\
-PostgreSQL datasource & Data server / Grafana & Allows Grafana to query structured tables such as \texttt{audit\_log} and \texttt{login\_attempts} through a dedicated read-only role. \\
+Loki & Home server & Stores and indexes container logs for exploration and dashboard queries. \\
+Prometheus & Home server & Receives metrics from Alloy agents and stores time-series data. \\
+Grafana & Home server & Exposes the monitoring UI, dashboards, and ad hoc exploration. \\
+PostgreSQL datasource & Data server / Home server Grafana & Allows Grafana to query structured tables such as \texttt{audit\_log} and \texttt{login\_attempts} through a dedicated read-only role. \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1266,11 +1265,11 @@ At the current stage of the repository, the monitoring stack is primarily design
 \begin{itemize}
   \item PostgreSQL logs;
   \item Redis logs;
-  \item Grafana, Loki, and Alloy logs;
+  \item Grafana, Loki, Prometheus, and Alloy logs;
   \item migration-container logs when the migrations image is executed on the data server.
 \end{itemize}
 
-The application server can later join the same stack by running its own Alloy agent and forwarding logs to the same Loki instance. This staged rollout is sensible because it keeps the first monitoring milestone small: observe the private backend host first, then widen the scope to the public application server.
+The application server can later join the same stack by running its own Alloy agent and forwarding logs to the same Loki instance on the home server. This staged rollout is sensible because it keeps the first monitoring milestone small: observe the private backend host first, then widen the scope to the public application server.
 
 \section{Dashboards and Operational Reading}
 
@@ -1320,9 +1319,9 @@ From an architectural perspective, this is where the project becomes particularl
 Monitoring systems are often deployed carelessly because they are considered ``internal.'' That would be a mistake here. The repository documentation adopts a healthier posture:
 
 \begin{itemize}
-  \item Grafana should remain private unless intentionally published behind a secured reverse proxy;
-  \item Loki should remain private and should not be exposed broadly;
-  \item Alloy's debug UI should remain local or at most private-network only;
+  \item Grafana should remain private on the home server unless intentionally published behind a secured reverse proxy;
+  \item Loki and Prometheus should remain private and should not be exposed broadly;
+  \item Alloy's debug UI should remain local or at most private-only;
   \item the PostgreSQL datasource should use a dedicated read-only role rather than reusing the application or migration role.
 \end{itemize}
 
@@ -1336,7 +1335,7 @@ First, it remains self-hosted and proportionate. The project does not need a lar
 
 Second, it preserves semantic clarity. Runtime logs go to Loki. Security facts remain in PostgreSQL. This avoids the common mistake of pushing every kind of operational truth into one tool regardless of structure.
 
-Third, it integrates naturally with the documented deployment model. The stack can be deployed on the data server using the same documentation-driven workflow as the rest of the infrastructure, with local configuration files, a local \texttt{pass} store, and predictable filesystem paths under \texttt{/srv/rust-api-data}.
+Third, it integrates naturally with the documented deployment model. The data server still owns its local Alloy configuration under \texttt{/srv/rust-api-data}, while the main Grafana, Loki, and Prometheus stack lives on the home server and is managed through that repository's deployment workflow. This split keeps stateful data services and central observability aligned with their actual operational roles.
 
 \reportpart{Conclusion}
 
