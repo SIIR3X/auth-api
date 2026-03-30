@@ -98,14 +98,15 @@ Deployment is split between:
 Main deployment guides:
 - [`docs/deploy/app/setup.md`](docs/deploy/app/setup.md)
 - [`docs/deploy/data/setup.md`](docs/deploy/data/setup.md)
-- [`docs/deploy/observability/setup.md`](docs/deploy/observability/setup.md)
 - [`docs/deploy/shared/image-release.md`](docs/deploy/shared/image-release.md)
 
 Additional deployment references:
 - [`deploy/app/docker-compose.yml`](deploy/app/docker-compose.yml)
+- [`deploy/app/nginx.conf`](deploy/app/nginx.conf)
+- [`deploy/app/alloy/docker-compose.yml`](deploy/app/alloy/docker-compose.yml)
 - [`deploy/data/docker-compose.yml`](deploy/data/docker-compose.yml)
-- [`deploy/observability/docker-compose.yml`](deploy/observability/docker-compose.yml)
-- [`deploy/proxy/nginx.conf`](deploy/proxy/nginx.conf)
+- [`deploy/data/alloy/docker-compose.yml`](deploy/data/alloy/docker-compose.yml)
+- [`deploy/data/grafana/datasources/rust-api-postgresql.yml`](deploy/data/grafana/datasources/rust-api-postgresql.yml)
 
 ## CI and Release Flow
 
