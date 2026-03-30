@@ -23,6 +23,116 @@
   "panels": [
     {
       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 18,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "100 - (avg by (host) (rate(node_cpu_seconds_total{mode=\"idle\",host=\"__HOST_LABEL__\"}[5m])) * 100)",
+          "legendFormat": "{{host}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "CPU Usage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 18,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(1 - (node_memory_MemAvailable_bytes{host=\"__HOST_LABEL__\"} / node_memory_MemTotal_bytes{host=\"__HOST_LABEL__\"})) * 100",
+          "legendFormat": "{{host}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Memory Usage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
         "type": "loki",
         "uid": "loki"
       },
@@ -43,9 +153,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
-        "y": 0
+        "y": 8
       },
       "options": {
         "legend": {
@@ -66,13 +176,13 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "sum by (service) (count_over_time({job=\"docker\",server_role=\"data\",service=~\"grafana|loki|alloy\"}[$__interval]))",
+          "expr": "sum by (service) (count_over_time({job=\"docker\",server_role=\"app\",host=\"__HOST_LABEL__\",service=~\"app|rust-api\"}[$__interval]))",
           "legendFormat": "{{service}}",
           "queryType": "range",
           "refId": "A"
         }
       ],
-      "title": "Observability Service Log Volume",
+      "title": "API Log Volume by Service",
       "type": "timeseries"
     },
     {
@@ -84,35 +194,18 @@
         "defaults": {
           "color": {
             "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 3
-              }
-            ]
           }
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
-        "w": 8,
-        "x": 0,
+        "h": 8,
+        "w": 12,
+        "x": 12,
         "y": 8
       },
       "options": {
-        "colorMode": "background",
+        "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
@@ -122,8 +215,7 @@
           ],
           "fields": "",
           "values": false
-        },
-        "textMode": "auto"
+        }
       },
       "targets": [
         {
@@ -132,142 +224,12 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "sum(count_over_time({job=\"docker\",server_role=\"data\",service=\"grafana\"} |= `error` [15m]))",
+          "expr": "sum(count_over_time({job=\"docker\",server_role=\"app\",host=\"__HOST_LABEL__\",service=~\"app|rust-api\"} |= `error` [5m]))",
           "queryType": "range",
           "refId": "A"
         }
       ],
-      "title": "Grafana Errors (15m)",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 3
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 8,
-        "x": 8,
-        "y": 8
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "editorMode": "code",
-          "expr": "sum(count_over_time({job=\"docker\",server_role=\"data\",service=\"loki\"} |= `error` [15m]))",
-          "queryType": "range",
-          "refId": "A"
-        }
-      ],
-      "title": "Loki Errors (15m)",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 3
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 8,
-        "x": 16,
-        "y": 8
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "editorMode": "code",
-          "expr": "sum(count_over_time({job=\"docker\",server_role=\"data\",service=\"alloy\"} |= `error` [15m]))",
-          "queryType": "range",
-          "refId": "A"
-        }
-      ],
-      "title": "Alloy Errors (15m)",
+      "title": "API Errors (5m)",
       "type": "stat"
     },
     {
@@ -277,9 +239,9 @@
       },
       "gridPos": {
         "h": 10,
-        "w": 8,
+        "w": 12,
         "x": 0,
-        "y": 13
+        "y": 16
       },
       "options": {
         "dedupStrategy": "none",
@@ -298,12 +260,12 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "{job=\"docker\",server_role=\"data\",service=\"grafana\"}",
+          "expr": "{job=\"docker\",server_role=\"app\",host=\"__HOST_LABEL__\",service=~\"app|rust-api\"}",
           "queryType": "range",
           "refId": "A"
         }
       ],
-      "title": "Grafana Logs",
+      "title": "API Logs",
       "type": "logs"
     },
     {
@@ -313,9 +275,9 @@
       },
       "gridPos": {
         "h": 10,
-        "w": 8,
-        "x": 8,
-        "y": 13
+        "w": 12,
+        "x": 12,
+        "y": 16
       },
       "options": {
         "dedupStrategy": "none",
@@ -334,48 +296,12 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "{job=\"docker\",server_role=\"data\",service=\"loki\"}",
+          "expr": "{job=\"nginx\",server_role=\"app\",host=\"__HOST_LABEL__\"}",
           "queryType": "range",
           "refId": "A"
         }
       ],
-      "title": "Loki Logs",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 8,
-        "x": 16,
-        "y": 13
-      },
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "editorMode": "code",
-          "expr": "{job=\"docker\",server_role=\"data\",service=\"alloy\"}",
-          "queryType": "range",
-          "refId": "A"
-        }
-      ],
-      "title": "Alloy Logs",
+      "title": "Nginx Logs",
       "type": "logs"
     }
   ],
@@ -383,10 +309,10 @@
   "schemaVersion": 39,
   "style": "dark",
   "tags": [
-    "observability",
-    "grafana",
-    "loki",
-    "alloy"
+    "rust-api",
+    "app",
+    "logs",
+    "metrics"
   ],
   "templating": {
     "list": []
@@ -395,10 +321,8 @@
     "from": "now-6h",
     "to": "now"
   },
-  "timepicker": {},
-  "timezone": "",
-  "title": "Observability Services",
-  "uid": "observability-services",
+  "title": "Rust API App Server",
+  "uid": "rust-api-app-server",
   "version": 1,
   "weekStart": ""
 }
