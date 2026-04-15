@@ -139,11 +139,13 @@ async fn build_pg_pool(cfg: &DatabaseConfig) -> Result<PgPool, sqlx::Error> {
 fn build_redis_pool(cfg: &RedisConfig) -> Result<RedisPool, deadpool_redis::CreatePoolError> {
     let mut pool_cfg = RedisPoolConfig::from_url(&cfg.url);
 
-    pool_cfg.pool = Some(deadpool_redis::PoolConfig {
+    let mut pool_config = deadpool_redis::PoolConfig {
         max_size: cfg.pool_size as usize,
         ..Default::default()
-    });
+    };
+    pool_config.timeouts.wait = Some(Duration::from_millis(cfg.wait_timeout_ms));
 
+    pool_cfg.pool = Some(pool_config);
     pool_cfg.create_pool(Some(Runtime::Tokio1))
 }
 

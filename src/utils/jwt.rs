@@ -31,16 +31,22 @@ pub struct Claims {
     pub exp: i64,
     /// Issued at (Unix timestamp).
     pub iat: i64,
+    /// Not Before (Unix timestamp). Optional for backward compatibility with
+    /// tokens issued before this field was added; validated when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nbf: Option<i64>,
 }
 
 impl Claims {
     pub fn new(user_id: Uuid, session_id: Uuid, exp: i64) -> Self {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
         Self {
             sub: user_id,
             sid: session_id,
             jti: Uuid::new_v4(),
             exp,
-            iat: time::OffsetDateTime::now_utc().unix_timestamp(),
+            iat: now,
+            nbf: Some(now),
         }
     }
 }
@@ -125,8 +131,16 @@ fn decode_token_inner(token: &str, secret: &str) -> Result<Claims, JwtError> {
     let claims: Claims = serde_json::from_slice(&payload_bytes)
         .map_err(|e| JwtError::Decode(format!("invalid payload json: {e}")))?;
 
-    if claims.exp <= time::OffsetDateTime::now_utc().unix_timestamp() {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+
+    if claims.exp <= now {
         return Err(JwtError::Decode("token expired".into()));
+    }
+
+    if let Some(nbf) = claims.nbf {
+        if nbf > now {
+            return Err(JwtError::Decode("token not yet valid".into()));
+        }
     }
 
     Ok(claims)
@@ -201,6 +215,7 @@ mod tests {
             jti: Uuid::new_v4(),
             exp: 1,
             iat: 1,
+            nbf: None,
         };
         let token = encode_token(&claims, SECRET).unwrap();
         assert!(matches!(
@@ -244,6 +259,7 @@ mod tests {
                 jti: Uuid::from_bytes(jti),
                 exp: now + exp_delta,
                 iat: now.saturating_sub(iat_back),
+                nbf: None,
             };
 
             let token = encode_token(&claims, SECRET).unwrap();
@@ -270,6 +286,7 @@ mod tests {
                 jti: Uuid::from_bytes(jti),
                 exp: now + exp_delta,
                 iat: now,
+                nbf: None,
             };
 
             let token = encode_token(&claims, SECRET).unwrap();

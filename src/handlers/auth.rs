@@ -382,12 +382,9 @@ fn validate_username(username: &str) -> Result<(), AppError> {
             "username must be 3 to 30 characters".into(),
         ));
     }
-    if !username
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-    {
+    if !username.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return Err(AppError::Validation(
-            "username may only contain letters, digits, underscores and hyphens".into(),
+            "username may only contain letters, digits and underscores".into(),
         ));
     }
     Ok(())

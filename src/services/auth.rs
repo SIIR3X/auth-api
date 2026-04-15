@@ -42,6 +42,12 @@ use super::{email, email_2fa, reauth, risk_score};
 
 /// Redis key prefix for the JTI blocklist.
 const JTI_BLOCKLIST_PREFIX: &str = "jti_block:";
+/// Redis key prefix for the session validity cache.
+const SESSION_CACHE_PREFIX: &str = "sess_valid:";
+/// TTL for cached session validity checks (seconds).
+/// Short TTL ensures revocations (admin, bulk) propagate within this window.
+/// Explicit logouts always invalidate the cache key immediately.
+const SESSION_CACHE_TTL_SECS: u64 = 5;
 
 /// Max failed attempts per identifier within the window before lockout.
 const MAX_FAILURES_BY_IDENTIFIER: i64 = 10;
@@ -508,7 +514,7 @@ pub async fn login(
         }
         .to_string();
 
-        let pre_auth_token = Uuid::new_v4().to_string();
+        let pre_auth_token = crypto::generate_token();
         let redis_key = pre_auth_key(&pre_auth_token);
         let pre_auth_state = PreAuthState {
             user_id: user.id,
@@ -874,7 +880,7 @@ pub async fn refresh_token(
     let new_raw_token = crypto::generate_token();
     let new_hash = crypto::sha256(new_raw_token.as_bytes());
 
-    let new_session = session_repo::rotate(
+    let new_session = match session_repo::rotate(
         &state.db,
         session.id,
         &NewSession {
@@ -888,7 +894,30 @@ pub async fn refresh_token(
         },
     )
     .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    {
+        Ok(session) => session,
+        Err(sqlx::Error::RowNotFound) => {
+            session_repo::revoke_family(&state.db, session.id)
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
+
+            audit::append(
+                &state.db,
+                &NewAuditEntry {
+                    user_id: Some(session.user_id),
+                    request_id,
+                    action: AuditAction::SessionReplayDetected,
+                    ip_address: ip,
+                    metadata: json!({"session_id": session.id}),
+                },
+            )
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+            return Err(AppError::TokenInvalid);
+        }
+        Err(e) => return Err(AppError::Internal(e.into())),
+    };
 
     let access_token = build_access_token(user.id, new_session.id, state)?;
 
@@ -918,6 +947,10 @@ pub async fn logout(
     session_repo::revoke(&state.db, session_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+
+    // Invalidate the Redis session cache so revocation propagates immediately
+    // without waiting for SESSION_CACHE_TTL_SECS to expire.
+    invalidate_session_cache(state, session_id);
 
     blocklist_jti(state, jti, token_exp).await;
 
@@ -979,9 +1012,12 @@ pub async fn verify_email(
         return Err(AppError::TokenInvalid);
     }
 
-    token::consume_verification(&state.db, record.id)
+    let consumed = token::consume_verification(&state.db, record.id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+    if !consumed {
+        return Err(AppError::TokenInvalid);
+    }
 
     user_repo::mark_email_verified(&state.db, record.user_id)
         .await
@@ -1132,18 +1168,30 @@ pub async fn reset_password(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    token::consume_password_reset(&state.db, record.id)
+    let consumed = token::consume_password_reset(&state.db, record.id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+    if !consumed {
+        return Err(AppError::TokenInvalid);
+    }
 
     user_repo::update_password_hash(&state.db, record.user_id, &new_hash)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
+    let revoked_session_ids = session_repo::find_active_by_user(&state.db, record.user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .into_iter()
+        .map(|session| session.id)
+        .collect::<Vec<_>>();
+
     // Invalidate all active sessions to force re-login with the new password
     session_repo::revoke_all_by_user(&state.db, record.user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+
+    invalidate_session_caches(state, &revoked_session_ids).await;
 
     // Also purge pending verification and reset tokens
     token::revoke_active_password_reset_by_user(&state.db, record.user_id)
@@ -1643,6 +1691,66 @@ pub async fn is_jti_blocked(state: &AppState, jti: Uuid) -> bool {
     }
 }
 
+/// Check session validity with a short-lived Redis cache to reduce per-request DB queries.
+///
+/// On cache hit, returns the cached result immediately.
+/// On cache miss, queries the database and caches the result for SESSION_CACHE_TTL_SECS.
+/// Both active and inactive results are cached: inactive prevents DB hammering from
+/// replayed revoked tokens (JTI blocklist covers the logout case directly).
+/// Fails open on Redis errors — falls back to a direct DB query.
+pub async fn check_session_validity(state: &AppState, session_id: Uuid) -> Result<bool, AppError> {
+    let key = format!("{SESSION_CACHE_PREFIX}{session_id}");
+
+    // Fast path: check Redis cache first.
+    if let Ok(mut conn) = state.redis.get().await {
+        if let Ok(Some(cached)) = conn.get::<_, Option<u8>>(&key).await {
+            return Ok(cached == 1);
+        }
+    }
+
+    // Slow path: query the database on cache miss.
+    let session = session_repo::find_validation_by_id(&state.db, session_id)
+        .await
+        .map_err(|_| AppError::Unauthorized)?
+        .ok_or(AppError::Unauthorized)?;
+
+    let is_active = session.is_active();
+
+    // Cache the result to skip the DB on subsequent requests within the TTL window.
+    if let Ok(mut conn) = state.redis.get().await {
+        let value: u8 = if is_active { 1 } else { 0 };
+        let _: Result<(), _> = conn.set_ex(&key, value, SESSION_CACHE_TTL_SECS).await;
+    }
+
+    Ok(is_active)
+}
+
+/// Immediately invalidate the session validity cache entry.
+/// Call this on explicit logout to ensure revocation takes effect without waiting for TTL expiry.
+/// Best-effort: if Redis is unavailable, the cache expires naturally within SESSION_CACHE_TTL_SECS.
+pub fn invalidate_session_cache(state: &AppState, session_id: Uuid) {
+    let redis = state.redis.clone();
+    let key = format!("{SESSION_CACHE_PREFIX}{session_id}");
+    tokio::spawn(async move {
+        if let Ok(mut conn) = redis.get().await {
+            let _: Result<(), _> = conn.del(&key).await;
+        }
+    });
+}
+
+pub async fn invalidate_session_caches(state: &AppState, session_ids: &[Uuid]) {
+    if session_ids.is_empty() {
+        return;
+    }
+
+    if let Ok(mut conn) = state.redis.get().await {
+        for session_id in session_ids {
+            let key = format!("{SESSION_CACHE_PREFIX}{session_id}");
+            let _: Result<(), _> = conn.del(&key).await;
+        }
+    }
+}
+
 pub async fn resolve_pre_auth(
     state: &AppState,
     pre_auth_token: &str,
@@ -1785,7 +1893,7 @@ fn build_risk_context(
     let geo = ip.and_then(|ip| state.geoip.lookup(&ip));
     risk_score::LoginContext {
         user_id,
-        ip: ip.unwrap_or_else(|| "0.0.0.0/0".parse().unwrap()),
+        ip: ip.unwrap_or_else(|| "0.0.0.0/0".parse().expect("0.0.0.0/0 is a valid CIDR")),
         user_agent: user_agent.unwrap_or("").to_string(),
         geo,
         login_time: time::now(),

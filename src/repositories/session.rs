@@ -88,6 +88,16 @@ pub async fn rotate(
 ) -> Result<Session, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
+    let old_session = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1 FOR UPDATE")
+        .bind(old_session_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)?;
+
+    if old_session.revoked_at.is_some() {
+        return Err(sqlx::Error::RowNotFound);
+    }
+
     let new_session = sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
              (user_id, session_family_id, expires_at, ip_address, device_name, token_hash, user_agent)
