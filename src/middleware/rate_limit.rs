@@ -59,7 +59,12 @@ pub async fn layer(
 
     match check_rate_limit(&redis, &ip, limit).await {
         Ok(true) => next.run(req).await,
-        Ok(false) => (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response(),
+        Ok(false) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("Retry-After", "60")],
+            "rate limit exceeded",
+        )
+            .into_response(),
         Err(e) => {
             if fail_open_on_redis_error {
                 tracing::warn!(ip = %ip, error = %e, "rate limit Redis error, failing open");
@@ -121,7 +126,12 @@ pub async fn layer_with_state(
 
     match check_rate_limit(&state.redis, &ip, state.limit).await {
         Ok(true) => next.run(req).await,
-        Ok(false) => (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response(),
+        Ok(false) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("Retry-After", "60")],
+            "rate limit exceeded",
+        )
+            .into_response(),
         Err(e) => {
             if state.fail_open_on_redis_error {
                 tracing::warn!(ip = %ip, error = %e, "rate limit Redis error, failing open");
