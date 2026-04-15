@@ -82,3 +82,34 @@ async fn new_access_token_is_usable() {
     let profile_res = app.get_auth("/users/me", new_access).await;
     assert_eq!(profile_res.status().as_u16(), 200);
 }
+
+#[tokio::test]
+async fn concurrent_refresh_only_allows_one_success() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 4).await;
+
+    let client_a = app.client.clone();
+    let client_b = app.client.clone();
+    let url = format!("{}/auth/refresh", app.base_url);
+    let payload = serde_json::json!({ "refresh_token": user.refresh_token });
+
+    let req_a = client_a.post(&url).json(&payload).send();
+    let req_b = client_b.post(&url).json(&payload).send();
+    let (res_a, res_b) = tokio::join!(req_a, req_b);
+
+    let status_a = res_a.unwrap().status().as_u16();
+    let status_b = res_b.unwrap().status().as_u16();
+    let success_count = [status_a, status_b]
+        .into_iter()
+        .filter(|status| *status == 200)
+        .count();
+
+    assert_eq!(
+        success_count, 1,
+        "expected exactly one successful refresh, got {status_a} and {status_b}"
+    );
+    assert!(
+        [status_a, status_b].into_iter().all(|status| status == 200 || status == 401),
+        "expected one success and one auth failure, got {status_a} and {status_b}"
+    );
+}

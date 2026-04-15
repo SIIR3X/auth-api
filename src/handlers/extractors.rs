@@ -16,7 +16,6 @@ use ipnetwork::IpNetwork;
 use crate::{
     error::AppError,
     middleware::{rate_limit::RateLimitState, request_id::X_REQUEST_ID},
-    repositories::session as session_repo,
     services::auth as auth_svc,
     state::AppState,
     utils::jwt,
@@ -62,14 +61,10 @@ impl FromRequestParts<AppState> for AuthUser {
             return Err(AppError::TokenInvalid);
         }
 
-        // Verify the session is still active in the database.
-        // This ensures logout and session revocation take effect immediately.
-        let session = session_repo::find_validation_by_id(&state.db, claims.sid)
-            .await
-            .map_err(|_| AppError::Unauthorized)?
-            .ok_or(AppError::Unauthorized)?;
-
-        if !session.is_active() {
+        // Verify the session is still active.
+        // Uses a short-lived Redis cache (SESSION_CACHE_TTL_SECS) to avoid a DB query
+        // on every authenticated request. Explicit logouts invalidate the cache immediately.
+        if !auth_svc::check_session_validity(state, claims.sid).await? {
             return Err(AppError::Unauthorized);
         }
 

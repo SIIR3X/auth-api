@@ -7,6 +7,7 @@
 
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     http::{Method, header},
     middleware,
     routing::{delete, get, patch, post},
@@ -69,6 +70,9 @@ pub fn router(state: AppState) -> Router {
             security_headers::layer,
         ))
         .layer(middleware::from_fn(request_id::layer))
+        // 64 KB is more than sufficient for any JSON payload this API accepts.
+        // Overrides Axum's default 2 MB limit to reduce DoS exposure.
+        .layer(DefaultBodyLimit::max(65_536))
         .with_state(state)
 }
 

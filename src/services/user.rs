@@ -18,7 +18,7 @@ use crate::{
     utils::{crypto, password, time},
 };
 
-use super::reauth as reauth_svc;
+use super::{auth as auth_svc, reauth as reauth_svc};
 
 const EMAIL_TOKEN_EXPIRY_SECS: u64 = 60 * 60 * 24;
 
@@ -111,6 +111,13 @@ pub async fn change_email(
 
     let raw_token = crypto::generate_token();
     let token_hash = crypto::sha256(raw_token.as_bytes());
+    let other_session_ids = session_repo::find_active_by_user(&state.db, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .into_iter()
+        .filter(|session| session.id != current_session_id)
+        .map(|session| session.id)
+        .collect::<Vec<_>>();
 
     let (username, preferred_locale) = {
         let mut tx = state
@@ -214,6 +221,8 @@ pub async fn change_email(
         (user.username, user.preferred_locale)
     };
 
+    auth_svc::invalidate_session_caches(state, &other_session_ids).await;
+
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();
     let mail_cfg = state.config.mail.clone();
@@ -278,10 +287,19 @@ pub async fn change_password(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
+    let revoked_session_ids = session_repo::find_active_by_user(&state.db, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .into_iter()
+        .map(|session| session.id)
+        .collect::<Vec<_>>();
+
     // Revoke all sessions so other devices must re-authenticate
     session_repo::revoke_all_by_user(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+
+    auth_svc::invalidate_session_caches(state, &revoked_session_ids).await;
 
     audit::append(
         &state.db,

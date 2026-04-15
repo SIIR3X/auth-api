@@ -323,6 +323,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
         redis: RedisConfig {
             url: redis_url.into(),
             pool_size: 16,
+            wait_timeout_ms: 2000,
         },
         jwt: JwtConfig {
             secret: "bench-secret-that-is-long-enough-for-hs256".into(),

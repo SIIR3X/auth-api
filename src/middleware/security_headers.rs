@@ -12,6 +12,7 @@
 
 use axum::{
     extract::{Request, State},
+    http::HeaderValue,
     middleware::Next,
     response::Response,
 };
@@ -31,24 +32,26 @@ pub async fn layer(
     let mut res = next.run(req).await;
     let headers = res.headers_mut();
 
-    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
-    headers.insert("x-frame-options", "DENY".parse().unwrap());
-    headers.insert("x-xss-protection", "0".parse().unwrap());
+    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert("x-xss-protection", HeaderValue::from_static("0"));
     if state.enable_hsts {
         headers.insert(
             "strict-transport-security",
-            "max-age=63072000; includeSubDomains".parse().unwrap(),
+            HeaderValue::from_static("max-age=63072000; includeSubDomains"),
         );
     }
     headers.insert(
         "referrer-policy",
-        "strict-origin-when-cross-origin".parse().unwrap(),
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
     headers.insert(
         "permissions-policy",
-        "geolocation=(), microphone=(), camera=()".parse().unwrap(),
+        HeaderValue::from_static("geolocation=(), microphone=(), camera=()"),
     );
-    headers.insert("content-security-policy", CSP.parse().unwrap());
+    headers.insert("content-security-policy", HeaderValue::from_static(CSP));
+    // Prevent tokens and sensitive data from being cached by proxies or browsers.
+    headers.insert("cache-control", HeaderValue::from_static("no-store"));
 
     res
 }
