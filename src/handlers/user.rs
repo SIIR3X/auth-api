@@ -4,7 +4,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{error::AppError, services::user as user_svc, state::AppState};
+use crate::{error::AppError, services::{reauth as reauth_svc, user as user_svc}, state::AppState};
 
 use super::extractors::{AuthUser, ClientIp, UserAgent};
 
@@ -13,6 +13,7 @@ use super::extractors::{AuthUser, ClientIp, UserAgent};
 #[derive(Deserialize)]
 pub struct ChangeUsernameRequest {
     pub username: String,
+    pub current_password: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -89,6 +90,22 @@ pub async fn change_username(
             "username must be 3 to 30 characters".into(),
         ));
     }
+    if !body.username.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Err(AppError::Validation(
+            "username may only contain letters, digits and underscores".into(),
+        ));
+    }
+
+    reauth_svc::require_recent_reauth_or_password(
+        &state,
+        auth.user_id,
+        auth.session_id,
+        body.current_password.as_deref(),
+        ip,
+        auth.request_id,
+        "change_username",
+    )
+    .await?;
 
     user_svc::change_username(&state, auth.user_id, &body.username, ip, auth.request_id).await?;
     Ok(StatusCode::NO_CONTENT)

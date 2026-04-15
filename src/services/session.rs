@@ -61,6 +61,7 @@ pub async fn revoke(
 
     // Blacklist the refresh token so it cannot be used even before DB TTL expires.
     auth_svc::blocklist_refresh_token(state, &session.token_hash, session.expires_at).await;
+    auth_svc::invalidate_session_cache(state, session.id);
     reauth_svc::clear_recent_reauth(state, session.id).await;
 
     audit::append(
@@ -108,6 +109,9 @@ pub async fn revoke_all(
     let count = session_repo::revoke_all_by_user(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+
+    let session_ids = active.iter().map(|s| s.id).collect::<Vec<_>>();
+    auth_svc::invalidate_session_caches(state, &session_ids).await;
 
     for s in &active {
         auth_svc::blocklist_refresh_token(state, &s.token_hash, s.expires_at).await;

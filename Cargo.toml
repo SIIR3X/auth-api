@@ -46,9 +46,6 @@ tokio = { version = "1.50.0", features = ["full"] }
 uuid = { version = "1.22.0", features = ["v4"] }
 webauthn-authenticator-rs = { version = "0.5.4", features = ["softpasskey"] }
 
-[patch.crates-io]
-sqlx = { path = "vendor/sqlx" }
-sqlx-macros-core = { path = "vendor/sqlx-macros-core" }
 
 [[test]]
 name = "migrations"

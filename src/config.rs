@@ -70,6 +70,9 @@ pub struct DatabaseConfig {
 pub struct RedisConfig {
     pub url: String,
     pub pool_size: u32,
+    /// Maximum time in milliseconds to wait for a connection from the pool.
+    /// Prevents unbounded queue buildup under Redis pressure. Default: 2000ms.
+    pub wait_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -300,6 +303,7 @@ impl Config {
             redis: RedisConfig {
                 url: env_require("REDIS_URL")?,
                 pool_size: env_parse("REDIS_POOL_SIZE").unwrap_or(10),
+                wait_timeout_ms: env_parse("REDIS_WAIT_TIMEOUT_MS").unwrap_or(2000),
             },
             jwt: JwtConfig {
                 secret: env_require("JWT_SECRET")?,
@@ -364,7 +368,7 @@ impl Config {
                 allow_credentials: env_parse("CORS_ALLOW_CREDENTIALS").unwrap_or(true),
             },
             audit: AuditConfig {
-                retention_months: env_parse("AUDIT_LOG_RETENTION_MONTHS").unwrap_or(6),
+                retention_months: env_parse("AUDIT_LOG_RETENTION_MONTHS").unwrap_or(12),
             },
             risk: RiskConfig {
                 geoip_db_path: env_string("GEOIP_DB_PATH").unwrap_or_default(),
@@ -419,6 +423,13 @@ impl Config {
             if self.captcha.secret.is_some() {
                 validate_https_url("CAPTCHA_VERIFY_URL", &self.captcha.verify_url)?;
             }
+
+            if self.mail.smtp.username.is_empty() {
+                return Err(ConfigError::Invalid {
+                    key: "SMTP_USERNAME".into(),
+                    reason: "must not be empty in production (unauthenticated/unencrypted SMTP is not allowed)".into(),
+                });
+            }
         }
 
         Ok(())
@@ -470,6 +481,14 @@ fn validate_jwt_secret(secret: &str) -> Result<(), ConfigError> {
         return Err(ConfigError::Invalid {
             key: "JWT_SECRET".into(),
             reason: "must be at least 32 characters long".into(),
+        });
+    }
+
+    let unique_chars = secret.chars().collect::<std::collections::HashSet<_>>().len();
+    if unique_chars < 10 {
+        return Err(ConfigError::Invalid {
+            key: "JWT_SECRET".into(),
+            reason: "secret has insufficient entropy: use a random value (e.g. openssl rand -hex 32)".into(),
         });
     }
 
@@ -650,9 +669,10 @@ mod tests {
             redis: RedisConfig {
                 url: "redis://127.0.0.1:6379".into(),
                 pool_size: 5,
+                wait_timeout_ms: 2000,
             },
             jwt: JwtConfig {
-                secret: "1".repeat(32),
+                secret: "abcdefghijklmnopqrstuvwxyz123456".into(),
                 previous_secret: None,
                 access_expiry_secs: 900,
                 refresh_expiry_secs: 3600,
