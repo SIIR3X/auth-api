@@ -32,7 +32,10 @@ pub async fn layer(
     let mut res = next.run(req).await;
     let headers = res.headers_mut();
 
-    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
     headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
     headers.insert("x-xss-protection", HeaderValue::from_static("0"));
     if state.enable_hsts {

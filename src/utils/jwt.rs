@@ -137,10 +137,10 @@ fn decode_token_inner(token: &str, secret: &str) -> Result<Claims, JwtError> {
         return Err(JwtError::Decode("token expired".into()));
     }
 
-    if let Some(nbf) = claims.nbf {
-        if nbf > now {
-            return Err(JwtError::Decode("token not yet valid".into()));
-        }
+    if let Some(nbf) = claims.nbf
+        && nbf > now
+    {
+        return Err(JwtError::Decode("token not yet valid".into()));
     }
 
     Ok(claims)

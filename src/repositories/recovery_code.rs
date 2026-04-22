@@ -21,20 +21,7 @@ pub async fn create_batch(
     expires_at: Option<time::OffsetDateTime>,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-
-    for (position, hash) in codes {
-        sqlx::query(
-            "INSERT INTO recovery_codes (user_id, code_position, code_hash, expires_at)
-             VALUES ($1, $2, $3, $4)",
-        )
-        .bind(user_id)
-        .bind(position)
-        .bind(*hash)
-        .bind(expires_at)
-        .execute(&mut *tx)
-        .await?;
-    }
-
+    insert_batch_in_tx(&mut tx, user_id, codes, expires_at).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -83,18 +70,34 @@ pub async fn replace_all_in_tx(
         .execute(&mut **tx)
         .await?;
 
-    for (position, hash) in codes {
-        sqlx::query(
-            "INSERT INTO recovery_codes (user_id, code_position, code_hash, expires_at)
-             VALUES ($1, $2, $3, $4)",
-        )
-        .bind(user_id)
-        .bind(*position)
-        .bind(*hash)
-        .bind(expires_at)
-        .execute(&mut **tx)
-        .await?;
+    insert_batch_in_tx(tx, user_id, codes, expires_at).await
+}
+
+/// Inserts a full set of recovery codes in a single UNNEST statement.
+async fn insert_batch_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    codes: &[(i16, &[u8])],
+    expires_at: Option<time::OffsetDateTime>,
+) -> Result<(), sqlx::Error> {
+    if codes.is_empty() {
+        return Ok(());
     }
+
+    let positions: Vec<i16> = codes.iter().map(|(pos, _)| *pos).collect();
+    let hashes: Vec<&[u8]> = codes.iter().map(|(_, hash)| *hash).collect();
+
+    sqlx::query(
+        "INSERT INTO recovery_codes (user_id, code_position, code_hash, expires_at)
+         SELECT $1, pos, hash, $4
+         FROM UNNEST($2::smallint[], $3::bytea[]) AS t(pos, hash)",
+    )
+    .bind(user_id)
+    .bind(&positions)
+    .bind(&hashes)
+    .bind(expires_at)
+    .execute(&mut **tx)
+    .await?;
 
     Ok(())
 }

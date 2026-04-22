@@ -69,3 +69,113 @@ pub struct GeoLocation {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_empty_path_returns_unavailable_instance() {
+        let geoip = GeoIp::open("");
+        assert!(
+            !geoip.is_available(),
+            "empty path must produce an unavailable GeoIp"
+        );
+    }
+
+    #[test]
+    fn open_nonexistent_path_returns_unavailable_instance() {
+        let geoip = GeoIp::open("/tmp/does_not_exist_rust_api_test.mmdb");
+        assert!(!geoip.is_available());
+    }
+
+    #[test]
+    fn lookup_on_unavailable_instance_returns_none() {
+        let geoip = GeoIp::open("");
+        let ip: ipnetwork::IpNetwork = "8.8.8.8/32".parse().unwrap();
+        assert!(
+            geoip.lookup(&ip).is_none(),
+            "lookup on unavailable GeoIp must return None"
+        );
+    }
+
+    #[test]
+    fn lookup_loopback_returns_none_without_database() {
+        let geoip = GeoIp::open("");
+        let ip: ipnetwork::IpNetwork = "127.0.0.1/32".parse().unwrap();
+        assert!(geoip.lookup(&ip).is_none());
+    }
+
+    // Tests using the MaxMind GeoIP2-City test database
+    // The test fixture is checked in at tests/fixtures/GeoIP2-City-Test.mmdb.
+    // It is the free test database published by MaxMind at
+    // https://github.com/maxmind/MaxMind-DB/tree/main/test-data
+    // and requires no license key.
+
+    const TEST_DB: &str = "tests/fixtures/GeoIP2-City-Test.mmdb";
+
+    #[test]
+    fn open_real_db_is_available() {
+        let geoip = GeoIp::open(TEST_DB);
+        assert!(
+            geoip.is_available(),
+            "GeoIp::open({TEST_DB}) must return an available instance"
+        );
+    }
+
+    /// 81.2.69.142 is a well-known test IP in the MaxMind test DB that maps to
+    /// GB (United Kingdom), London.
+    #[test]
+    fn lookup_known_ip_returns_gb_country() {
+        let geoip = GeoIp::open(TEST_DB);
+        let ip: ipnetwork::IpNetwork = "81.2.69.142/32".parse().unwrap();
+        let loc = geoip
+            .lookup(&ip)
+            .expect("81.2.69.142 must resolve to a location in the test DB");
+
+        assert_eq!(
+            loc.country, "GB",
+            "expected country GB, got '{}'",
+            loc.country
+        );
+        assert!(
+            !loc.city.is_empty(),
+            "expected a city name for 81.2.69.142, got empty string"
+        );
+    }
+
+    /// 175.16.199.1 maps to CN (China) in the MaxMind test DB.
+    #[test]
+    fn lookup_chinese_ip_returns_cn_country() {
+        let geoip = GeoIp::open(TEST_DB);
+        let ip: ipnetwork::IpNetwork = "175.16.199.1/32".parse().unwrap();
+        let loc = geoip
+            .lookup(&ip)
+            .expect("175.16.199.1 must resolve to a location in the test DB");
+
+        assert_eq!(
+            loc.country, "CN",
+            "expected country CN, got '{}'",
+            loc.country
+        );
+    }
+
+    /// RFC-1918 addresses are not in the geo database.
+    #[test]
+    fn lookup_private_ip_returns_none_with_real_db() {
+        let geoip = GeoIp::open(TEST_DB);
+        let ip: ipnetwork::IpNetwork = "192.168.1.1/32".parse().unwrap();
+        assert!(
+            geoip.lookup(&ip).is_none(),
+            "private IPs must not appear in the geo database"
+        );
+    }
+
+    /// Loopback is not in the geo database either.
+    #[test]
+    fn lookup_loopback_returns_none_with_real_db() {
+        let geoip = GeoIp::open(TEST_DB);
+        let ip: ipnetwork::IpNetwork = "127.0.0.1/32".parse().unwrap();
+        assert!(geoip.lookup(&ip).is_none());
+    }
+}

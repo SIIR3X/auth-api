@@ -12,15 +12,12 @@ use uuid::Uuid;
 pub enum TwoFactorType {
     Totp,
     Email,
-    Webauthn,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct TwoFactorMethod {
     pub id: Uuid,
     pub user_id: Uuid,
-    // Monotonic counter used to detect cloned WebAuthn authenticators
-    pub webauthn_sign_count: i64,
     pub last_used_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -29,9 +26,6 @@ pub struct TwoFactorMethod {
     pub is_verified: bool,
     // Encrypted ciphertext, only set when method_type = Totp
     pub totp_secret: Option<String>,
-    // Only set when method_type = Webauthn
-    pub webauthn_credential_id: Option<String>,
-    pub webauthn_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -50,5 +44,36 @@ pub struct RecoveryCode {
 impl RecoveryCode {
     pub fn is_used(&self) -> bool {
         self.used_at.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn code(used: bool) -> RecoveryCode {
+        RecoveryCode {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            created_at: time::OffsetDateTime::now_utc(),
+            expires_at: None,
+            used_at: if used {
+                Some(time::OffsetDateTime::now_utc())
+            } else {
+                None
+            },
+            code_position: 1,
+            code_hash: vec![0u8; 32],
+        }
+    }
+
+    #[test]
+    fn is_used_returns_true_when_used_at_is_set() {
+        assert!(code(true).is_used());
+    }
+
+    #[test]
+    fn is_used_returns_false_when_used_at_is_none() {
+        assert!(!code(false).is_used());
     }
 }

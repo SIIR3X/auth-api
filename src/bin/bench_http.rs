@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use deadpool_redis::redis::AsyncCommands;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -108,9 +109,18 @@ struct BenchmarkDataset {
     locale_users: Vec<Credential>,
     email_2fa_users: Vec<Email2faCredential>,
     totp_users: Vec<TotpCredential>,
+    logout_users: Vec<Credential>,
+    change_password_users: Vec<Credential>,
+    revoke_session_users: Vec<Credential>,
+    email_change_start_users: Vec<Credential>,
+    email_change_full_users: Vec<Credential>,
 }
 
 static REGISTER_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Fixed OTP code injected directly into Redis flow state for email-change benchmarks.
+/// Bypasses the real OTP generation so we don't need a mail server or brute-force.
+const BENCH_EMAIL_CHANGE_OTP: &str = "987654";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -129,7 +139,7 @@ async fn main() -> Result<()> {
     let dataset = seed_dataset(&state, concurrency).await?;
     let (base_url, client) = bench_support::spawn_app(state.clone()).await?;
 
-    let scenarios = vec![
+    let mut scenarios = vec![
         bench_register(
             &base_url,
             &client,
@@ -157,11 +167,21 @@ async fn main() -> Result<()> {
         bench_login_wrong_password(
             &base_url,
             &client,
+            state.clone(),
             dataset.wrong_password_users.clone(),
             scaled(base_iterations, 1, 1),
             warmup,
         )
         .await?,
+    ];
+    // Purge any residual login_attempts so the brute-force counters
+    // (MAX_FAILURES_BY_IP = 30) don't bleed into subsequent scenarios
+    // that need successful logins from 127.0.0.1.
+    sqlx::query("DELETE FROM login_attempts")
+        .execute(&state.db)
+        .await
+        .context("failed to purge login_attempts between scenarios")?;
+    let scenarios2 = vec![
         bench_forgot_password(
             &base_url,
             &client,
@@ -246,7 +266,52 @@ async fn main() -> Result<()> {
             warmup,
         )
         .await?,
+        bench_logout(
+            &base_url,
+            &client,
+            dataset.logout_users.clone(),
+            scaled(base_iterations, 1, 1),
+            warmup,
+        )
+        .await?,
+        bench_change_password(
+            &base_url,
+            &client,
+            dataset.change_password_users.clone(),
+            // Argon2 is expensive - fewer iterations keep the bench fast while still sampling well.
+            scaled(base_iterations, 1, 2),
+            warmup,
+        )
+        .await?,
+        bench_revoke_session(
+            &base_url,
+            &client,
+            dataset.revoke_session_users.clone(),
+            scaled(base_iterations, 2, 1),
+            warmup,
+        )
+        .await?,
+        bench_email_change_start(
+            &base_url,
+            &client,
+            state.clone(),
+            dataset.email_change_start_users.clone(),
+            scaled(base_iterations, 3, 4),
+            warmup,
+        )
+        .await?,
+        bench_email_change_full(
+            &base_url,
+            &client,
+            state.clone(),
+            dataset.email_change_full_users.clone(),
+            // Full 4-step pipeline - fewer iterations; each measures end-to-end flow latency.
+            scaled(base_iterations, 1, 4).max(4),
+            warmup,
+        )
+        .await?,
     ];
+    scenarios.extend(scenarios2);
 
     let report = HttpBenchmarkReport {
         generated_at_unix: ::time::OffsetDateTime::now_utc().unix_timestamp(),
@@ -258,6 +323,10 @@ async fn main() -> Result<()> {
             "HTTP benchmarks run against a real Axum server with Postgres and Redis.".into(),
             "Rate limits, CAPTCHA, and lockout thresholds are relaxed in benchmark mode to keep steady-state scenarios repeatable.".into(),
             "Email 2FA cooldown keys and TOTP anti-replay keys are cleared between iterations so challenge completion can be measured repeatedly.".into(),
+            "logout: sessions are pre-created before the timed region so each iteration measures only the revocation path.".into(),
+            "change_password: measures Argon2 rehash + session revocation; current_password is threaded through iterations.".into(),
+            "revoke_session: extra sessions are pre-created before the timed region; DELETE latency is measured in isolation.".into(),
+            "email_change_full: OTPs are injected directly into Redis flow state - no mail server required; includes all 4 HTTP round-trips.".into(),
         ],
         scenarios,
     };
@@ -289,6 +358,13 @@ async fn seed_dataset(state: &AppState, concurrency: usize) -> Result<BenchmarkD
         locale_users: create_credentials(state, "locale", concurrency).await?,
         email_2fa_users: create_email_2fa_credentials(state, "email2fa", concurrency).await?,
         totp_users: create_totp_credentials(state, "totp", concurrency).await?,
+        logout_users: create_credentials(state, "logout", concurrency).await?,
+        change_password_users: create_credentials(state, "change_pw", concurrency).await?,
+        revoke_session_users: create_credentials(state, "revoke_session", concurrency).await?,
+        email_change_start_users: create_credentials(state, "email_change_start", concurrency)
+            .await?,
+        email_change_full_users: create_credentials(state, "email_change_full", concurrency)
+            .await?,
     })
 }
 
@@ -555,6 +631,7 @@ async fn bench_login_success_username(
 async fn bench_login_wrong_password(
     base_url: &str,
     client: &reqwest::Client,
+    state: AppState,
     credentials: Vec<Credential>,
     iterations: usize,
     warmup: usize,
@@ -565,41 +642,54 @@ async fn bench_login_wrong_password(
 
     run_http_scenario(
         "login_wrong_password",
-        "Rejected login with an incorrect password.",
+        "Rejected login with an incorrect password (one isolated attempt per timed iteration).",
         concurrency,
         iterations,
         warmup,
         move |worker_id| {
             let base_url = base_url.clone();
             let client = client.clone();
+            let state = state.clone();
             let credential = credentials[worker_id].clone();
             async move {
-                run_worker_loop(
-                    worker_id,
-                    warmup,
-                    iterations,
-                    credential,
-                    move |credential, _| {
-                        let base_url = base_url.clone();
-                        let client = client.clone();
-                        boxed_http(async move {
-                            let body = json!({
-                                "identifier": credential.email,
-                                "password": "DefinitelyWrongPassword!"
-                            });
-                            send_json_expect_status(
-                                &client,
-                                reqwest::Method::POST,
-                                &format!("{base_url}/auth/login"),
-                                Some(&body),
-                                None,
-                                401,
-                            )
-                            .await
-                        })
-                    },
-                )
-                .await
+                let mut observations = Vec::with_capacity(iterations);
+
+                for run_index in 0..(warmup + iterations) {
+                    // Purge accumulated login failures before each attempt so
+                    // MAX_FAILURES_BY_IP (hardcoded at 30) is never reached
+                    // mid-scenario and turns the expected 401 into a 429.
+                    let _ = sqlx::query("DELETE FROM login_attempts")
+                        .execute(&state.db)
+                        .await;
+
+                    let body = json!({
+                        "identifier": credential.email,
+                        "password": "DefinitelyWrongPassword!"
+                    });
+
+                    let started_at = Instant::now();
+                    let outcome = send_json_expect_status(
+                        &client,
+                        reqwest::Method::POST,
+                        &format!("{base_url}/auth/login"),
+                        Some(&body),
+                        None,
+                        401,
+                    )
+                    .await;
+                    let elapsed = started_at.elapsed();
+
+                    if run_index >= warmup {
+                        observations.push(HttpObservation {
+                            latency: elapsed,
+                            status: outcome.status,
+                            ok: outcome.ok,
+                            error: outcome.error,
+                        });
+                    }
+                }
+
+                Ok(observations)
             }
         },
     )
@@ -1284,6 +1374,549 @@ async fn bench_totp_complete(
         },
     )
     .await
+}
+
+async fn bench_logout(
+    base_url: &str,
+    client: &reqwest::Client,
+    credentials: Vec<Credential>,
+    iterations: usize,
+    warmup: usize,
+) -> Result<HttpScenarioReport> {
+    let base_url = base_url.to_string();
+    let client = client.clone();
+    let concurrency = credentials.len();
+
+    run_http_scenario(
+        "logout",
+        "Session termination: JWT blocklisting and session row invalidation.",
+        concurrency,
+        iterations,
+        warmup,
+        move |worker_id| {
+            let base_url = base_url.clone();
+            let client = client.clone();
+            let credential = credentials[worker_id].clone();
+            async move {
+                // Pre-create one session per timed run (warmup + iterations) so each
+                // iteration has a fresh, valid access token to revoke.
+                let total = warmup + iterations;
+                let mut token_queue: Vec<String> = Vec::with_capacity(total);
+                for i in 0..total {
+                    let device = format!("bench-logout-{worker_id}-{i}");
+                    let tokens = login_complete(
+                        &client,
+                        &base_url,
+                        &credential.email,
+                        &credential.password,
+                        &device,
+                    )
+                    .await
+                    .context("failed to pre-create logout session")?;
+                    token_queue.push(tokens.access_token);
+                }
+
+                run_worker_loop(
+                    worker_id,
+                    warmup,
+                    iterations,
+                    (token_queue, 0usize),
+                    move |ctx, _| {
+                        let base_url = base_url.clone();
+                        let client = client.clone();
+                        let token = ctx.0[ctx.1].clone();
+                        ctx.1 += 1;
+                        boxed_http(async move {
+                            send_json_expect_status(
+                                &client,
+                                reqwest::Method::POST,
+                                &format!("{base_url}/auth/logout"),
+                                None,
+                                Some(&token),
+                                204,
+                            )
+                            .await
+                        })
+                    },
+                )
+                .await
+            }
+        },
+    )
+    .await
+}
+
+async fn bench_change_password(
+    base_url: &str,
+    client: &reqwest::Client,
+    credentials: Vec<Credential>,
+    iterations: usize,
+    warmup: usize,
+) -> Result<HttpScenarioReport> {
+    let base_url = base_url.to_string();
+    let client = client.clone();
+    let concurrency = credentials.len();
+
+    run_http_scenario(
+        "change_password",
+        "Authenticated password change: Argon2 hash of the new password plus full session revocation. Re-login before each timed iteration because change_password revokes all sessions including the current one.",
+        concurrency,
+        iterations,
+        warmup,
+        move |worker_id| {
+            let base_url = base_url.clone();
+            let client = client.clone();
+            let credential = credentials[worker_id].clone();
+            async move {
+                // current_pw tracks the live password across iterations.
+                let mut current_pw = credential.password.clone();
+                let mut observations = Vec::with_capacity(iterations);
+
+                for (counter, run_index) in (0..(warmup + iterations)).enumerate() {
+                    // Re-login before each timed iteration: change_password calls
+                    // revoke_all_by_user (all sessions, including the current one),
+                    // so the previous token is always invalid for the next run.
+                    let device = format!("bench-change-pw-{worker_id}-{run_index}");
+                    let tokens = login_complete(
+                        &client,
+                        &base_url,
+                        &credential.email,
+                        &current_pw,
+                        &device,
+                    )
+                    .await
+                    .context("failed to re-login for change_password iteration")?;
+
+                    let new_pw = format!("BenchNewPass!{worker_id}_{counter}");
+
+                    let started_at = Instant::now();
+                    let outcome = send_json_expect_status(
+                        &client,
+                        reqwest::Method::PATCH,
+                        &format!("{base_url}/users/me/password"),
+                        Some(&json!({
+                            "current_password": current_pw,
+                            "new_password": new_pw,
+                        })),
+                        Some(&tokens.access_token),
+                        204,
+                    )
+                    .await;
+                    let elapsed = started_at.elapsed();
+
+                    if outcome.ok {
+                        current_pw = new_pw;
+                    }
+
+                    if run_index >= warmup {
+                        observations.push(HttpObservation {
+                            latency: elapsed,
+                            status: outcome.status,
+                            ok: outcome.ok,
+                            error: outcome.error,
+                        });
+                    }
+                }
+
+                Ok(observations)
+            }
+        },
+    )
+    .await
+}
+
+async fn bench_revoke_session(
+    base_url: &str,
+    client: &reqwest::Client,
+    credentials: Vec<Credential>,
+    iterations: usize,
+    warmup: usize,
+) -> Result<HttpScenarioReport> {
+    let base_url = base_url.to_string();
+    let client = client.clone();
+    let concurrency = credentials.len();
+
+    run_http_scenario(
+        "revoke_session",
+        "Single-session revocation: authenticated DELETE on a specific session UUID.",
+        concurrency,
+        iterations,
+        warmup,
+        move |worker_id| {
+            let base_url = base_url.clone();
+            let client = client.clone();
+            let credential = credentials[worker_id].clone();
+            async move {
+                // Main session used to authenticate DELETE requests throughout the bench.
+                let main_tokens = login_complete(
+                    &client,
+                    &base_url,
+                    &credential.email,
+                    &credential.password,
+                    "bench-revoke-main",
+                )
+                .await
+                .context("failed to create main revoke session")?;
+
+                // Pre-create one extra session per timed run.
+                let total = warmup + iterations;
+                for i in 0..total {
+                    login_complete(
+                        &client,
+                        &base_url,
+                        &credential.email,
+                        &credential.password,
+                        &format!("bench-revoke-extra-{worker_id}-{i}"),
+                    )
+                    .await
+                    .context("failed to pre-create extra session")?;
+                }
+
+                // Collect all non-current session IDs from the sessions list.
+                let session_ids =
+                    collect_non_current_session_ids(&client, &base_url, &main_tokens.access_token)
+                        .await
+                        .context("failed to collect session IDs for revoke bench")?;
+
+                if session_ids.len() < total {
+                    anyhow::bail!(
+                        "expected at least {total} sessions, got {}",
+                        session_ids.len()
+                    );
+                }
+
+                run_worker_loop(
+                    worker_id,
+                    warmup,
+                    iterations,
+                    (main_tokens, session_ids, 0usize),
+                    move |ctx, _| {
+                        let base_url = base_url.clone();
+                        let client = client.clone();
+                        let token = ctx.0.access_token.clone();
+                        let session_id = ctx.1[ctx.2];
+                        ctx.2 += 1;
+                        boxed_http(async move {
+                            send_json_expect_status(
+                                &client,
+                                reqwest::Method::DELETE,
+                                &format!("{base_url}/users/me/sessions/{session_id}"),
+                                None,
+                                Some(&token),
+                                204,
+                            )
+                            .await
+                        })
+                    },
+                )
+                .await
+            }
+        },
+    )
+    .await
+}
+
+async fn bench_email_change_start(
+    base_url: &str,
+    client: &reqwest::Client,
+    state: AppState,
+    credentials: Vec<Credential>,
+    iterations: usize,
+    warmup: usize,
+) -> Result<HttpScenarioReport> {
+    let base_url = base_url.to_string();
+    let client = client.clone();
+    let concurrency = credentials.len();
+
+    run_http_scenario(
+        "email_change_start",
+        "Email change initiation: OTP generation, Redis flow state creation, and fire-and-forget email dispatch.",
+        concurrency,
+        iterations,
+        warmup,
+        move |worker_id| {
+            let base_url = base_url.clone();
+            let client = client.clone();
+            let state = state.clone();
+            let credential = credentials[worker_id].clone();
+            async move {
+                let tokens = login_complete(
+                    &client,
+                    &base_url,
+                    &credential.email,
+                    &credential.password,
+                    "bench-ecstart-setup",
+                )
+                .await
+                .context("failed to create email_change_start session")?;
+
+                run_worker_loop(
+                    worker_id,
+                    warmup,
+                    iterations,
+                    (tokens, credential.user_id),
+                    move |ctx, _| {
+                        let base_url = base_url.clone();
+                        let client = client.clone();
+                        let state = state.clone();
+                        let token = ctx.0.access_token.clone();
+                        let user_id = ctx.1;
+                        boxed_http(async move {
+                            // Clear cooldown set by a previous iteration's confirm step
+                            // (or by the start step itself if the flow was abandoned).
+                            clear_email_change_cooldown_bench(&state, user_id).await;
+                            // Also cancel any lingering in-progress flow so the service
+                            // doesn't return a conflict.
+                            cancel_email_change_flow_bench(&state, user_id).await;
+                            send_json_expect_status(
+                                &client,
+                                reqwest::Method::POST,
+                                &format!("{base_url}/users/me/email/start"),
+                                Some(&json!({})),
+                                Some(&token),
+                                200,
+                            )
+                            .await
+                        })
+                    },
+                )
+                .await
+            }
+        },
+    )
+    .await
+}
+
+async fn bench_email_change_full(
+    base_url: &str,
+    client: &reqwest::Client,
+    state: AppState,
+    credentials: Vec<Credential>,
+    iterations: usize,
+    warmup: usize,
+) -> Result<HttpScenarioReport> {
+    let base_url = base_url.to_string();
+    let client = client.clone();
+    let concurrency = credentials.len();
+
+    run_http_scenario(
+        "email_change_full",
+        "Complete 4-step email change pipeline: start → verify-current → submit → confirm. OTPs are injected directly into Redis; email send is fire-and-forget.",
+        concurrency,
+        iterations,
+        warmup,
+        move |worker_id| {
+            let base_url = base_url.clone();
+            let client = client.clone();
+            let state = state.clone();
+            let credential = credentials[worker_id].clone();
+            async move {
+                let tokens = login_complete(
+                    &client,
+                    &base_url,
+                    &credential.email,
+                    &credential.password,
+                    "bench-ecfull-setup",
+                )
+                .await
+                .context("failed to create email_change_full session")?;
+
+                run_worker_loop(
+                    worker_id,
+                    warmup,
+                    iterations,
+                    (tokens, credential.user_id),
+                    move |ctx, run_index| {
+                        let base_url = base_url.clone();
+                        let client = client.clone();
+                        let state = state.clone();
+                        let token = ctx.0.access_token.clone();
+                        let user_id = ctx.1;
+                        // Unique new email per run to avoid conflicts across iterations.
+                        let new_email = format!("bench_ecf_{worker_id}_{run_index}@bench.test");
+                        boxed_http(async move {
+                            // Step 0: clear cooldown from previous iteration's confirm step.
+                            clear_email_change_cooldown_bench(&state, user_id).await;
+
+                            // Step 1: start - creates the flow and returns flow_token.
+                            let (status, payload) = match send_json(
+                                &client,
+                                reqwest::Method::POST,
+                                &format!("{base_url}/users/me/email/start"),
+                                Some(&json!({})),
+                                Some(&token),
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    return HttpOutcome {
+                                        status: 0,
+                                        ok: false,
+                                        error: Some(format!("start request failed: {e:#}")),
+                                    };
+                                }
+                            };
+                            if status != 200 {
+                                return HttpOutcome {
+                                    status,
+                                    ok: false,
+                                    error: Some(format!("start returned {status}: {payload}")),
+                                };
+                            }
+                            let flow_token = match parse_flow_token(&payload) {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    return HttpOutcome {
+                                        status,
+                                        ok: false,
+                                        error: Some(format!("failed to parse flow_token: {e:#}")),
+                                    };
+                                }
+                            };
+
+                            // Inject known OTP into the flow state so we don't need a mail server.
+                            inject_known_otp_into_flow(&state.redis, &flow_token).await;
+
+                            // Step 2: verify-current.
+                            let outcome = send_json_expect_status(
+                                &client,
+                                reqwest::Method::POST,
+                                &format!("{base_url}/users/me/email/verify-current"),
+                                Some(&json!({"flow_token": flow_token, "code": BENCH_EMAIL_CHANGE_OTP})),
+                                Some(&token),
+                                204,
+                            )
+                            .await;
+                            if !outcome.ok {
+                                return outcome;
+                            }
+
+                            // Step 3: submit new address.
+                            let outcome = send_json_expect_status(
+                                &client,
+                                reqwest::Method::POST,
+                                &format!("{base_url}/users/me/email/submit"),
+                                Some(&json!({"flow_token": flow_token, "new_email": new_email})),
+                                Some(&token),
+                                204,
+                            )
+                            .await;
+                            if !outcome.ok {
+                                return outcome;
+                            }
+
+                            // Inject known OTP into the updated flow state (now in NewVerify step).
+                            inject_known_otp_into_flow(&state.redis, &flow_token).await;
+
+                            // Step 4: confirm - commits the email change to the DB.
+                            send_json_expect_status(
+                                &client,
+                                reqwest::Method::POST,
+                                &format!("{base_url}/users/me/email/confirm"),
+                                Some(&json!({"flow_token": flow_token, "code": BENCH_EMAIL_CHANGE_OTP})),
+                                Some(&token),
+                                204,
+                            )
+                            .await
+                        })
+                    },
+                )
+                .await
+            }
+        },
+    )
+    .await
+}
+
+// Email-change benchmark helpers
+
+/// Parses `{"flow_token": "..."}` from the /email/start response body.
+fn parse_flow_token(payload: &str) -> Result<String> {
+    let val: Value =
+        serde_json::from_str(payload).context("invalid JSON in /email/start response")?;
+    val.get("flow_token")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+        .context("missing flow_token in /email/start response")
+}
+
+/// Replaces the `otp_hash` field inside `email_change_flow:{flow_token}` in Redis
+/// with the SHA-256 hash of `BENCH_EMAIL_CHANGE_OTP`, encoded as base64url.
+/// This lets the benchmark complete OTP verification steps without a real mail server.
+async fn inject_known_otp_into_flow(redis: &deadpool_redis::Pool, flow_token: &str) {
+    let key = format!("email_change_flow:{}", flow_token);
+    if let Ok(mut conn) = redis.get().await
+        && let Ok(raw) = conn.get::<_, String>(&key).await
+        && let Ok(mut val) = serde_json::from_str::<Value>(&raw)
+    {
+        let hash = rust_api::utils::crypto::sha256(BENCH_EMAIL_CHANGE_OTP.as_bytes());
+        let hash_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash);
+        val["otp_hash"] = Value::String(hash_b64);
+        if let Ok(updated) = serde_json::to_string(&val) {
+            let ttl: i64 = conn.ttl(&key).await.unwrap_or(900);
+            let _: Result<(), _> = conn.set_ex(&key, updated, ttl as u64).await;
+        }
+    }
+}
+
+/// Deletes the per-user email-change cooldown key so the next iteration can start a flow.
+async fn clear_email_change_cooldown_bench(state: &AppState, user_id: Uuid) {
+    if let Ok(mut conn) = state.redis.get().await {
+        let key = format!("email_change_cd:{}", user_id);
+        let _: Result<(), _> = conn.del(&key).await;
+    }
+}
+
+/// Cancels any in-progress email-change flow for the user so a fresh start succeeds.
+async fn cancel_email_change_flow_bench(state: &AppState, user_id: Uuid) {
+    if let Ok(mut conn) = state.redis.get().await {
+        let active_key = format!("email_change_active:{}", user_id);
+        if let Ok(Some(old_token)) = conn.get::<_, Option<String>>(&active_key).await {
+            let _: Result<(), _> = conn.del(format!("email_change_flow:{}", old_token)).await;
+            let _: Result<(), _> = conn.del(format!("email_change_fail:{}", old_token)).await;
+        }
+        let _: Result<(), _> = conn.del(&active_key).await;
+    }
+}
+
+// Session revocation helper
+
+/// Returns the UUIDs of all sessions for the authenticated user excluding the current one.
+async fn collect_non_current_session_ids(
+    client: &reqwest::Client,
+    base_url: &str,
+    access_token: &str,
+) -> Result<Vec<Uuid>> {
+    let (status, payload) = send_json(
+        client,
+        reqwest::Method::GET,
+        &format!("{base_url}/users/me/sessions"),
+        None,
+        Some(access_token),
+    )
+    .await?;
+
+    if status != 200 {
+        anyhow::bail!("GET /sessions returned {status}: {payload}");
+    }
+
+    let sessions: Value =
+        serde_json::from_str(&payload).context("invalid JSON from GET /sessions")?;
+    let ids = sessions
+        .as_array()
+        .context("expected JSON array from GET /sessions")?
+        .iter()
+        .filter(|s| {
+            !s.get("is_current")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .filter_map(|s| s.get("id").and_then(Value::as_str))
+        .filter_map(|id| Uuid::parse_str(id).ok())
+        .collect();
+
+    Ok(ids)
 }
 
 async fn run_http_scenario<WFut, WFn>(

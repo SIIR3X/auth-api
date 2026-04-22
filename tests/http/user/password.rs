@@ -82,6 +82,28 @@ async fn change_password_too_short() {
 }
 
 #[tokio::test]
+async fn change_password_too_long() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 5).await;
+
+    // 129-character password exceeds the 128-char cap.
+    let too_long = "A".repeat(129);
+
+    let res = app
+        .patch_auth(
+            "/users/me/password",
+            &user.access_token,
+            &serde_json::json!({
+                "current_password": user.password,
+                "new_password": too_long,
+            }),
+        )
+        .await;
+
+    assert_eq!(res.status().as_u16(), 422);
+}
+
+#[tokio::test]
 async fn change_password_revokes_current_access_token_immediately() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 4).await;
@@ -108,6 +130,7 @@ async fn concurrent_password_reset_token_use_only_succeeds_once() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 5).await;
     fixtures::activate_user(&app.db, user.id).await;
+    app.clear_reset_password_rate_limit("127.0.0.1").await;
 
     let raw_token = "reset-race-token";
     let token_hash = rust_api::utils::crypto::sha256(raw_token.as_bytes());
@@ -150,7 +173,9 @@ async fn concurrent_password_reset_token_use_only_succeeds_once() {
         "expected exactly one successful reset, got {status_a} and {status_b}"
     );
     assert!(
-        [status_a, status_b].into_iter().all(|status| status == 200 || status == 401),
+        [status_a, status_b]
+            .into_iter()
+            .all(|status| status == 200 || status == 401),
         "expected one success and one auth failure, got {status_a} and {status_b}"
     );
 }
