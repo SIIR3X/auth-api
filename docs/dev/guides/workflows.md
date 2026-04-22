@@ -6,17 +6,17 @@ All workflows are located in `.github/workflows/`. They run automatically on pul
 
 **Trigger:** pull request → `main`
 
-Runs the following checks in sequence:
+Three jobs running in parallel, followed by a report:
 
-| Step | Tool | What it checks |
-|------|------|----------------|
-| Formatting | `cargo fmt --check` | Code style compliance |
-| Linting | `cargo clippy` | Code correctness and best practices (warnings as errors) |
-| Dependency policy | `cargo deny` | License compliance, duplicate dependencies, banned crates, CVEs |
+| Job | Tool | What it checks |
+|-----|------|----------------|
+| fmt | `cargo fmt --check` | Code style compliance |
+| clippy | `cargo clippy` | Code correctness and best practices (warnings as errors) |
+| deny | `cargo deny` | License compliance, duplicate dependencies, banned crates, CVEs |
 
 `cargo-deny` is installed via `taiki-e/install-action` (pre-compiled binary, ~2s). It covers both dependency policy and security auditing — `cargo-audit` is not needed separately.
 
-Fails the PR if any check does not pass.
+A report comment is posted on the PR with the result of each check. Fails the PR if any job does not pass.
 
 ## tests.yml — Tests & Coverage
 
@@ -24,13 +24,16 @@ Fails the PR if any check does not pass.
 
 A single job with PostgreSQL 17 and Redis 7 as services.
 
-Installs Mailpit locally (tests spawn it as a process on random ports), then runs `cargo-tarpaulin` which executes the full test suite and produces a coverage report in one pass.
+- **cargo-nextest** runs the full test suite — faster than `cargo test`, better output
+- **cargo-tarpaulin** instruments the code and measures line coverage
 
-`cargo-tarpaulin` is installed via `taiki-e/install-action` (pre-compiled binary, ~2s).
+Both are installed via `taiki-e/install-action` (pre-compiled binaries, ~2s each).
 
 Each test gets an isolated PostgreSQL database cloned from a shared template — created once, dropped after the test. No test state leaks between runs.
 
-Posts a comment on the PR with the coverage percentage:
+A report comment is posted on the PR with:
+- Number of tests passed / failed / skipped
+- Line coverage percentage against 60% and 80% thresholds
 
 | Threshold | Icon |
 |-----------|------|
