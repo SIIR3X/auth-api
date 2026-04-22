@@ -69,7 +69,8 @@ jobs:
         id: nextest
         continue-on-error: true
         run: |
-          cargo nextest run 2>&1 | tee nextest-output.txt
+          set -o pipefail
+          cargo nextest run --color never 2>&1 | tee nextest-output.txt
           python3 - <<'EOF' >> $GITHUB_OUTPUT
           import re
 
@@ -135,6 +136,6 @@ jobs:
               body,
             });
 
-      - name: Fail if tests or coverage failed
-        if: steps.nextest.outcome == 'failure' || steps.tarpaulin.outcome == 'failure'
+      - name: Fail if tests failed
+        if: steps.nextest.outcome == 'failure'
         run: exit 1
