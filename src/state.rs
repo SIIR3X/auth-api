@@ -13,8 +13,6 @@ use reqwest::Client;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use tera::Tera;
-use webauthn_rs::Webauthn;
-use webauthn_rs::prelude::{Url, WebauthnBuilder};
 
 use crate::{
     config::{
@@ -42,8 +40,6 @@ pub enum AppStateError {
     Http(#[from] reqwest::Error),
     #[error("template engine error: {0}")]
     Templates(#[from] tera::Error),
-    #[error("webauthn configuration error: {0}")]
-    WebAuthn(String),
 }
 
 // State
@@ -57,7 +53,6 @@ pub struct AppState {
     pub templates: Arc<Tera>,
     pub config: Arc<Config>,
     pub geoip: GeoIp,
-    pub webauthn: Arc<Webauthn>,
 }
 
 impl AppState {
@@ -72,7 +67,6 @@ impl AppState {
         let http_client = build_http_client(&config.captcha)?;
         let templates = Arc::new(build_templates(&config.mail)?);
         let geoip = GeoIp::open(&config.risk.geoip_db_path);
-        let webauthn = Arc::new(build_webauthn(&config)?);
 
         if config.risk.geoip_required && !geoip.is_available() {
             return Err(AppStateError::Config(ConfigError::Invalid {
@@ -88,7 +82,6 @@ impl AppState {
             http_client,
             templates,
             geoip,
-            webauthn,
             config: Arc::new(config),
         })
     }
@@ -103,7 +96,6 @@ impl AppState {
         let http_client = build_http_client(&config.captcha)?;
         let templates = Arc::new(build_templates(&config.mail)?);
         let geoip = GeoIp::open(&config.risk.geoip_db_path);
-        let webauthn = Arc::new(build_webauthn(&config)?);
 
         if config.risk.geoip_required && !geoip.is_available() {
             return Err(AppStateError::Config(ConfigError::Invalid {
@@ -119,7 +111,6 @@ impl AppState {
             http_client,
             templates,
             geoip,
-            webauthn,
             config: Arc::new(config),
         })
     }
@@ -175,15 +166,26 @@ fn build_http_client(cfg: &CaptchaConfig) -> Result<Client, reqwest::Error> {
         .build()
 }
 
-fn build_webauthn(config: &Config) -> Result<Webauthn, AppStateError> {
-    let origin = Url::parse(&config.webauthn.rp_origin)
-        .map_err(|e| AppStateError::WebAuthn(format!("invalid WEBAUTHN_RP_ORIGIN: {e}")))?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    WebauthnBuilder::new(&config.webauthn.rp_id, &origin)
-        .map_err(|e| AppStateError::WebAuthn(e.to_string()))?
-        .rp_name(&config.webauthn.rp_name)
-        .build()
-        .map_err(|e| AppStateError::WebAuthn(e.to_string()))
+    #[test]
+    fn app_state_error_display_config_variant() {
+        let err = AppStateError::Config(crate::config::ConfigError::Missing("MY_KEY".into()));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("MY_KEY"),
+            "display must mention the missing key"
+        );
+    }
+
+    #[test]
+    fn app_state_error_display_database_variant() {
+        let err = AppStateError::Database(sqlx::Error::RowNotFound);
+        let msg = err.to_string();
+        assert!(!msg.is_empty());
+    }
 }
 
 /// Load all templates from `{templates_dir}/emails/**/*`.

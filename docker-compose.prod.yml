@@ -1,0 +1,23 @@
+services:
+  api:
+    image: ghcr.io/siir3x/rust-api:latest
+    env_file: config.prod.env
+    environment:
+      # Secrets — exported from pass before running
+      - DATABASE_URL
+      - REDIS_URL
+      - JWT_SECRET
+      - ENCRYPTION_KEY
+      - PREVIOUS_ENCRYPTION_KEY
+      - SMTP_USERNAME
+      - SMTP_PASSWORD
+      - CAPTCHA_SECRET
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

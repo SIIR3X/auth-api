@@ -24,7 +24,7 @@ pub async fn verify(state: &AppState, token: &str) -> Result<(), AppError> {
 
     let secret = match config.secret.as_deref() {
         Some(s) if !s.is_empty() => s,
-        // CAPTCHA not configured — skip verification.
+        // CAPTCHA not configured - skip verification.
         _ => return Ok(()),
     };
 

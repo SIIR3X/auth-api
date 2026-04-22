@@ -25,6 +25,7 @@ use crate::{
 
 // Template names (without locale prefix or extension)
 const TNAME_VERIFICATION: &str = "verification";
+const TNAME_EMAIL_CHANGE_OTP: &str = "email_change_otp";
 const TNAME_PASSWORD_RESET: &str = "password_reset";
 const TNAME_SUSPICIOUS_LOGIN: &str = "suspicious_login";
 const TNAME_EMAIL_OTP: &str = "email_otp";
@@ -111,6 +112,39 @@ pub async fn send_password_reset_email(
         to_email,
         username,
         "Reset your password",
+        body,
+    )
+    .await
+}
+
+pub async fn send_email_change_otp(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    code: &str,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("code", code);
+    ctx.insert("expires_in_minutes", &15i32);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_EMAIL_CHANGE_OTP,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(
+        mailer,
+        &mail_cfg.smtp,
+        to_email,
+        username,
+        "Your email change verification code",
         body,
     )
     .await
@@ -356,6 +390,11 @@ async fn send(
     subject: &str,
     html_body: String,
 ) -> Result<(), AppError> {
+    // Skip silently when no SMTP host is configured (e.g. in tests without mailpit).
+    if cfg.host.is_empty() {
+        return Ok(());
+    }
+
     let from: Mailbox = format!("{} <{}>", cfg.from_name, cfg.from_address)
         .parse()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid from address: {}", e)))?;

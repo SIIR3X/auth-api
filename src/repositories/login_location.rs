@@ -41,32 +41,6 @@ pub struct RiskHistoryEntry {
     pub last_seen: OffsetDateTime,
 }
 
-/// Fetch all locations seen within the last `history_days` days for a user.
-pub async fn find_recent(
-    pool: &PgPool,
-    user_id: Uuid,
-    history_days: u32,
-) -> Result<Vec<LoginLocation>, sqlx::Error> {
-    let history_days = i32::try_from(history_days).unwrap_or(i32::MAX);
-
-    sqlx::query_as::<_, LoginLocation>(
-        r#"
-        SELECT
-            id, user_id, country, city, user_agent,
-            ip_address,
-            latitude, longitude, last_seen, first_seen
-        FROM login_locations
-        WHERE user_id = $1
-          AND last_seen >= now() - make_interval(days => $2)
-        ORDER BY last_seen DESC
-        "#,
-    )
-    .bind(user_id)
-    .bind(history_days)
-    .fetch_all(pool)
-    .await
-}
-
 /// Fetch only the fields needed by risk scoring to reduce row width on the hot login path.
 pub async fn find_recent_for_risk(
     pool: &PgPool,

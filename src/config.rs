@@ -83,8 +83,10 @@ pub struct JwtConfig {
     pub previous_secret: Option<String>,
     /// Short-lived access token lifetime (default: 15 min).
     pub access_expiry_secs: u64,
-    /// Long-lived refresh token lifetime (default: 30 days).
+    /// Long-lived refresh token lifetime used when remember_me is true (default: 30 days).
     pub refresh_expiry_secs: u64,
+    /// Short-lived refresh token lifetime used when remember_me is false (default: 24 h).
+    pub short_session_expiry_secs: u64,
     /// When true, the refresh endpoint rejects requests whose IP differs from the
     /// one recorded at session creation. Useful for high-security deployments but
     /// breaks clients that roam between networks (e.g. mobile).
@@ -207,18 +209,6 @@ pub struct RiskConfig {
     pub history_days: u32,
 }
 
-// WebAuthn
-
-#[derive(Debug, Clone)]
-pub struct WebAuthnConfig {
-    /// Relying Party ID, usually the domain name (e.g. "example.com").
-    pub rp_id: String,
-    /// Relying Party origin, full URL (e.g. "https://example.com").
-    pub rp_origin: String,
-    /// Displayed name for the relying party in authenticator dialogs.
-    pub rp_name: String,
-}
-
 // Audit
 
 #[derive(Debug, Clone)]
@@ -271,7 +261,6 @@ pub struct Config {
     pub captcha: CaptchaConfig,
     pub audit: AuditConfig,
     pub risk: RiskConfig,
-    pub webauthn: WebAuthnConfig,
     pub log: LogConfig,
 }
 
@@ -311,6 +300,8 @@ impl Config {
                 access_expiry_secs: env_parse("JWT_ACCESS_EXPIRY_SECS").unwrap_or(900),
                 refresh_expiry_secs: env_parse("JWT_REFRESH_EXPIRY_SECS")
                     .unwrap_or(60 * 60 * 24 * 30),
+                short_session_expiry_secs: env_parse("JWT_SHORT_SESSION_EXPIRY_SECS")
+                    .unwrap_or(60 * 60 * 24),
                 strict_session_binding: env_parse("JWT_STRICT_SESSION_BINDING").unwrap_or(false),
                 max_session_lifetime_secs: env_parse("JWT_MAX_SESSION_LIFETIME_SECS")
                     .unwrap_or(60 * 60 * 24 * 90),
@@ -378,12 +369,6 @@ impl Config {
                 block_threshold: env_parse("RISK_BLOCK_THRESHOLD").unwrap_or(80),
                 history_days: env_parse("RISK_HISTORY_DAYS").unwrap_or(90),
             },
-            webauthn: WebAuthnConfig {
-                rp_id: env_string("WEBAUTHN_RP_ID").unwrap_or_else(|| "localhost".into()),
-                rp_origin: env_string("WEBAUTHN_RP_ORIGIN")
-                    .unwrap_or_else(|| "http://localhost:3000".into()),
-                rp_name: env_string("WEBAUTHN_RP_NAME").unwrap_or_else(|| "rust-api".into()),
-            },
             log: LogConfig {
                 level: env_string("LOG_LEVEL").unwrap_or_else(|| "info".into()),
                 format: env_parse("LOG_FORMAT").unwrap_or(LogFormat::Pretty),
@@ -413,12 +398,10 @@ impl Config {
         )?;
         validate_cors(&self.cors, self.is_production())?;
         validate_risk(&self.risk)?;
-        validate_webauthn(&self.webauthn)?;
         validate_security(&self.security)?;
 
         if self.is_production() {
             validate_https_url("APP_PUBLIC_URL", &self.server.public_url)?;
-            validate_https_url("WEBAUTHN_RP_ORIGIN", &self.webauthn.rp_origin)?;
 
             if self.captcha.secret.is_some() {
                 validate_https_url("CAPTCHA_VERIFY_URL", &self.captcha.verify_url)?;
@@ -484,11 +467,16 @@ fn validate_jwt_secret(secret: &str) -> Result<(), ConfigError> {
         });
     }
 
-    let unique_chars = secret.chars().collect::<std::collections::HashSet<_>>().len();
+    let unique_chars = secret
+        .chars()
+        .collect::<std::collections::HashSet<_>>()
+        .len();
     if unique_chars < 10 {
         return Err(ConfigError::Invalid {
             key: "JWT_SECRET".into(),
-            reason: "secret has insufficient entropy: use a random value (e.g. openssl rand -hex 32)".into(),
+            reason:
+                "secret has insufficient entropy: use a random value (e.g. openssl rand -hex 32)"
+                    .into(),
         });
     }
 
@@ -625,28 +613,6 @@ fn validate_risk(risk: &RiskConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_webauthn(webauthn: &WebAuthnConfig) -> Result<(), ConfigError> {
-    let parsed = reqwest::Url::parse(&webauthn.rp_origin).map_err(|e| ConfigError::Invalid {
-        key: "WEBAUTHN_RP_ORIGIN".into(),
-        reason: format!("invalid URL: {e}"),
-    })?;
-
-    match parsed.host_str() {
-        Some(host) if host == webauthn.rp_id => Ok(()),
-        Some(host) => Err(ConfigError::Invalid {
-            key: "WEBAUTHN_RP_ORIGIN".into(),
-            reason: format!(
-                "host '{host}' must match WEBAUTHN_RP_ID '{}'",
-                webauthn.rp_id
-            ),
-        }),
-        None => Err(ConfigError::Invalid {
-            key: "WEBAUTHN_RP_ORIGIN".into(),
-            reason: "must contain a host".into(),
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,6 +642,7 @@ mod tests {
                 previous_secret: None,
                 access_expiry_secs: 900,
                 refresh_expiry_secs: 3600,
+                short_session_expiry_secs: 3600,
                 strict_session_binding: false,
                 max_session_lifetime_secs: 86400,
             },
@@ -732,11 +699,6 @@ mod tests {
                 challenge_threshold: 60,
                 block_threshold: 80,
                 history_days: 90,
-            },
-            webauthn: WebAuthnConfig {
-                rp_id: "api.example.com".into(),
-                rp_origin: "https://api.example.com".into(),
-                rp_name: "Example".into(),
             },
             log: LogConfig {
                 level: "info".into(),
@@ -813,6 +775,278 @@ mod tests {
             .expect_err("zero recent reauth window should fail");
         assert!(
             matches!(err, ConfigError::Invalid { key, .. } if key == "SENSITIVE_ACTION_REAUTH_SECS")
+        );
+    }
+
+    #[test]
+    fn validate_rejects_low_entropy_jwt_secret() {
+        let mut config = valid_config();
+        // 32+ chars but only 2 unique characters → entropy too low.
+        config.jwt.secret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+
+        let err = config
+            .validate()
+            .expect_err("low-entropy JWT secret should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_SECRET"));
+    }
+
+    #[test]
+    fn validate_rejects_encryption_key_wrong_decoded_length() {
+        let mut config = valid_config();
+        // Valid base64 but decodes to 16 bytes, not 32.
+        config.crypto.encryption_key = "AAAAAAAAAAAAAAAAAAAAAA==".into(); // 16 bytes
+
+        let err = config
+            .validate()
+            .expect_err("wrong-length encryption key should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "ENCRYPTION_KEY"));
+    }
+
+    #[test]
+    fn validate_rejects_empty_cors_origins() {
+        let mut config = valid_config();
+        config.cors.allowed_origins = vec![];
+
+        let err = config
+            .validate()
+            .expect_err("empty CORS origins should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "CORS_ALLOWED_ORIGINS"));
+    }
+
+    #[test]
+    fn validate_rejects_wildcard_cors_in_production() {
+        let mut config = valid_config();
+        config.cors.allow_credentials = false;
+        config.cors.allowed_origins = vec!["*".into()];
+
+        let err = config
+            .validate()
+            .expect_err("wildcard CORS in production should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "CORS_ALLOWED_ORIGINS"));
+    }
+
+    #[test]
+    fn validate_rejects_non_https_cors_origin_in_production() {
+        let mut config = valid_config();
+        config.cors.allow_credentials = false;
+        config.cors.allowed_origins = vec!["http://app.example.com".into()];
+
+        let err = config
+            .validate()
+            .expect_err("http CORS origin in production should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "CORS_ALLOWED_ORIGINS"));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_cors_url() {
+        let mut config = valid_config();
+        config.env = Environment::Development;
+        config.cors.allowed_origins = vec!["not-a-url".into()];
+
+        let err = config.validate().expect_err("invalid CORS URL should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "CORS_ALLOWED_ORIGINS"));
+    }
+
+    #[test]
+    fn validate_rejects_inverted_risk_thresholds_alert_above_challenge() {
+        let mut config = valid_config();
+        config.risk.alert_threshold = 50;
+        config.risk.challenge_threshold = 30; // alert > challenge → invalid
+        config.risk.block_threshold = 80;
+
+        let err = config
+            .validate()
+            .expect_err("alert > challenge threshold should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "RISK_*_THRESHOLD"));
+    }
+
+    #[test]
+    fn validate_rejects_inverted_risk_thresholds_challenge_above_block() {
+        let mut config = valid_config();
+        config.risk.alert_threshold = 10;
+        config.risk.challenge_threshold = 90;
+        config.risk.block_threshold = 50; // challenge > block → invalid
+
+        let err = config
+            .validate()
+            .expect_err("challenge > block threshold should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "RISK_*_THRESHOLD"));
+    }
+
+    #[test]
+    fn validate_rejects_empty_smtp_username_in_production() {
+        let mut config = valid_config();
+        config.mail.smtp.username = String::new();
+
+        let err = config
+            .validate()
+            .expect_err("empty SMTP username in production should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "SMTP_USERNAME"));
+    }
+
+    #[test]
+    fn validate_rejects_non_https_captcha_url_in_production() {
+        let mut config = valid_config();
+        config.captcha.verify_url = "http://hcaptcha.com/siteverify".into();
+
+        let err = config
+            .validate()
+            .expect_err("http captcha URL in production should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "CAPTCHA_VERIFY_URL"));
+    }
+
+    #[test]
+    fn validate_accepts_development_config_without_smtp() {
+        let mut config = valid_config();
+        config.env = Environment::Development;
+        config.mail.smtp.username = String::new();
+        config.server.public_url = "http://localhost:3000".into();
+        config.cors.allowed_origins = vec!["http://localhost:5173".into()];
+        config.cors.allow_credentials = false;
+        config.captcha.secret = None;
+
+        assert!(
+            config.validate().is_ok(),
+            "development config without SMTP must be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_valid_previous_jwt_secret() {
+        let mut config = valid_config();
+        config.jwt.previous_secret = Some("previous-secret-with-enough-entropy-1234567".into());
+
+        assert!(
+            config.validate().is_ok(),
+            "valid previous JWT secret must be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_short_previous_jwt_secret() {
+        let mut config = valid_config();
+        config.jwt.previous_secret = Some("tooshort".into());
+
+        let err = config
+            .validate()
+            .expect_err("short previous JWT secret should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_SECRET"));
+    }
+
+    #[test]
+    fn validate_accepts_valid_previous_encryption_key() {
+        let mut config = valid_config();
+        config.crypto.previous_encryption_key =
+            Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBQ=".into());
+
+        assert!(
+            config.validate().is_ok(),
+            "valid previous encryption key must be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_invalid_previous_encryption_key() {
+        let mut config = valid_config();
+        config.crypto.previous_encryption_key = Some("not-base64!".into());
+
+        let err = config
+            .validate()
+            .expect_err("invalid previous encryption key should fail");
+        assert!(
+            matches!(err, ConfigError::Invalid { key, .. } if key == "PREVIOUS_ENCRYPTION_KEY")
+        );
+    }
+
+    #[test]
+    fn validate_rejects_geoip_required_when_file_missing() {
+        let mut config = valid_config();
+        config.risk.geoip_required = true;
+        config.risk.geoip_db_path = "/nonexistent/path/to/GeoIP.mmdb".into();
+
+        let err = config
+            .validate()
+            .expect_err("non-existent GeoIP file should fail when required");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "GEOIP_DB_PATH"));
+    }
+
+    // Environment / LogFormat FromStr
+
+    #[test]
+    fn environment_from_str_accepts_known_variants() {
+        assert_eq!(
+            "development".parse::<Environment>().unwrap(),
+            Environment::Development
+        );
+        assert_eq!(
+            "dev".parse::<Environment>().unwrap(),
+            Environment::Development
+        );
+        assert_eq!(
+            "production".parse::<Environment>().unwrap(),
+            Environment::Production
+        );
+        assert_eq!(
+            "prod".parse::<Environment>().unwrap(),
+            Environment::Production
+        );
+        assert_eq!("test".parse::<Environment>().unwrap(), Environment::Test);
+    }
+
+    #[test]
+    fn environment_from_str_rejects_unknown_value() {
+        let err = "staging".parse::<Environment>();
+        assert!(err.is_err(), "unknown environment should return Err");
+        assert!(err.unwrap_err().contains("staging"));
+    }
+
+    #[test]
+    fn log_format_from_str_accepts_known_variants() {
+        assert_eq!("pretty".parse::<LogFormat>().unwrap(), LogFormat::Pretty);
+        assert_eq!("json".parse::<LogFormat>().unwrap(), LogFormat::Json);
+    }
+
+    #[test]
+    fn log_format_from_str_rejects_unknown_value() {
+        let err = "xml".parse::<LogFormat>();
+        assert!(err.is_err(), "unknown log format should return Err");
+        assert!(err.unwrap_err().contains("xml"));
+    }
+
+    // is_production / is_test
+
+    #[test]
+    fn is_production_returns_true_only_for_production_env() {
+        let mut config = valid_config();
+        assert!(config.is_production());
+        config.env = Environment::Development;
+        assert!(!config.is_production());
+        config.env = Environment::Test;
+        assert!(!config.is_production());
+    }
+
+    #[test]
+    fn is_test_returns_true_only_for_test_env() {
+        let mut config = valid_config();
+        config.env = Environment::Test;
+        assert!(config.is_test());
+        config.env = Environment::Production;
+        assert!(!config.is_test());
+        config.env = Environment::Development;
+        assert!(!config.is_test());
+    }
+
+    // Production captcha: secret absent skips URL check
+
+    #[test]
+    fn validate_accepts_production_config_without_captcha_secret() {
+        let mut config = valid_config();
+        config.captcha.secret = None;
+        // Without a secret the captcha URL is never checked, so an http URL is fine.
+        config.captcha.verify_url = "http://hcaptcha.com/siteverify".into();
+        assert!(
+            config.validate().is_ok(),
+            "production config with no captcha secret must skip URL validation"
         );
     }
 }

@@ -21,10 +21,14 @@ static TEMPLATE_DB: OnceCell<String> = OnceCell::const_new();
 pub struct TestApp {
     pub base_url: String,
     pub db: PgPool,
+    pub db_url: String,
     pub redis: RedisPool,
     pub client: Client,
+    pub state: AppState,
     db_name: String,
     admin_url: String,
+    /// Set when the app was spawned with `spawn_with_mailpit()`.
+    mailpit_api_port: Option<u16>,
 }
 
 impl TestApp {
@@ -36,11 +40,11 @@ impl TestApp {
     where
         F: FnOnce(&mut Config),
     {
-        // Initialize tracing once — subsequent calls are no-ops.
+        // Initialize tracing once - subsequent calls are no-ops.
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| EnvFilter::new("rust_api=debug")),
+                    .unwrap_or_else(|_| EnvFilter::new("rust_api=error")),
             )
             .try_init();
 
@@ -84,6 +88,7 @@ impl TestApp {
             .expect("failed to build app state");
 
         let redis = state.redis.clone();
+        let state_clone = state.clone();
         let app = handlers::router(state);
 
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -108,11 +113,55 @@ impl TestApp {
         Self {
             base_url: format!("http://127.0.0.1:{port}"),
             db,
+            db_url,
             redis,
             client,
+            state: state_clone,
             db_name,
             admin_url,
+            mailpit_api_port: None,
         }
+    }
+
+    /// Spawn the app with SMTP wired to the shared Mailpit instance so that
+    /// emails sent during the test can be inspected via `self.mailpit()`.
+    pub async fn spawn_with_mailpit() -> Self {
+        Self::spawn_with_mailpit_and_config(|_| {}).await
+    }
+
+    /// Spawn with both Mailpit wiring and a custom config closure.
+    pub async fn spawn_with_mailpit_and_config<F>(configure: F) -> Self
+    where
+        F: FnOnce(&mut Config),
+    {
+        let ports = super::mailpit::mailpit_ports().await;
+
+        let smtp_port = ports.smtp_port;
+        let api_port = ports.api_port;
+
+        let mut app = Self::spawn_with_config(move |c| {
+            // Point SMTP at Mailpit.  Empty username triggers the plain
+            // (no-TLS) transport branch in build_mailer().
+            c.mail.smtp.host = "127.0.0.1".into();
+            c.mail.smtp.port = smtp_port;
+            c.mail.smtp.username = String::new();
+            c.mail.smtp.password = String::new();
+            configure(c);
+        })
+        .await;
+
+        app.mailpit_api_port = Some(api_port);
+        app
+    }
+
+    /// Return a Mailpit client for this app.
+    ///
+    /// Panics if the app was not spawned with `spawn_with_mailpit[_and_config]()`.
+    pub fn mailpit(&self) -> super::mailpit::MailpitClient {
+        let port = self
+            .mailpit_api_port
+            .expect("TestApp was not spawned with spawn_with_mailpit()");
+        super::mailpit::MailpitClient::new(port)
     }
 
     pub async fn post<B: Serialize>(&self, path: &str, body: &B) -> Response {
@@ -171,12 +220,83 @@ impl TestApp {
         }
     }
 
+    /// Read and brute-force the active OTP for an email-change flow token.
+    /// The OTP is stored as a base64url-encoded SHA-256 hash inside the Redis flow state.
+    pub async fn read_email_change_otp(&self, flow_token: &str) -> String {
+        use base64::Engine;
+
+        let mut conn = self.redis.get().await.expect("redis connection failed");
+        let key = format!("email_change_flow:{}", flow_token);
+        let raw: String = conn
+            .get::<_, String>(&key)
+            .await
+            .expect("email_change flow state not found in Redis");
+
+        let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let hash_b64 = state["otp_hash"]
+            .as_str()
+            .expect("otp_hash missing from flow state");
+        let hash_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(hash_b64)
+            .unwrap();
+
+        brute_force_otp(&hash_bytes)
+    }
+
+    /// Clear the per-user email-change cooldown so tests can run a second flow immediately.
+    pub async fn clear_email_change_cooldown(&self, user_id: uuid::Uuid) {
+        if let Ok(mut conn) = self.redis.get().await {
+            let key = format!("email_change_cd:{}", user_id);
+            let _: Result<(), _> = conn.del(&key).await;
+        }
+    }
+
     pub async fn clear_recent_reauth(&self, access_token: &str) {
         let claims = rust_api::utils::jwt::decode_token(access_token, TEST_JWT_SECRET)
             .expect("failed to decode test access token");
 
         if let Ok(mut conn) = self.redis.get().await {
             let key = format!("reauth:{}", claims.sid);
+            let _: Result<(), _> = conn.del(&key).await;
+        }
+    }
+
+    /// Clear the per-IP rate limit sorted set key (general bucket: `rl:{ip}`).
+    pub async fn clear_rate_limit_key(&self, ip: &str) {
+        if let Ok(mut conn) = self.redis.get().await {
+            let key = format!("rl:{}", ip);
+            let _: Result<(), _> = conn.del(&key).await;
+        }
+    }
+
+    /// Clear the per-IP auth rate limit sorted set key (auth bucket: `rl_auth:{ip}`).
+    pub async fn clear_auth_rate_limit_key(&self, ip: &str) {
+        if let Ok(mut conn) = self.redis.get().await {
+            let key = format!("rl_auth:{}", ip);
+            let _: Result<(), _> = conn.del(&key).await;
+        }
+    }
+
+    /// Clear the per-IP forgot-password rate limiter key (limit: 5/15 min).
+    pub async fn clear_forgot_password_rate_limit(&self, ip: &str) {
+        if let Ok(mut conn) = self.redis.get().await {
+            let key = format!("fp_req:{}", ip);
+            let _: Result<(), _> = conn.del(&key).await;
+        }
+    }
+
+    /// Clear the per-IP reset-password attempt counter (limit: 10/hour).
+    pub async fn clear_reset_password_rate_limit(&self, ip: &str) {
+        if let Ok(mut conn) = self.redis.get().await {
+            let key = format!("rp_fail:{}", ip);
+            let _: Result<(), _> = conn.del(&key).await;
+        }
+    }
+
+    /// Clear the per-IP email-verification attempt counter (limit: 10/hour).
+    pub async fn clear_verify_email_rate_limit(&self, ip: &str) {
+        if let Ok(mut conn) = self.redis.get().await {
+            let key = format!("vf_fail:{}", ip);
             let _: Result<(), _> = conn.del(&key).await;
         }
     }
@@ -202,7 +322,7 @@ impl Drop for TestApp {
         let admin_url = self.admin_url.clone();
         let db_name = self.db_name.clone();
 
-        // Best-effort cleanup — runs in a blocking context since Drop is sync.
+        // Best-effort cleanup - runs in a blocking context since Drop is sync.
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -247,9 +367,9 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
         },
         database: DatabaseConfig {
             url: db_url.into(),
-            max_connections: 5,
+            max_connections: 10,
             min_connections: 1,
-            acquire_timeout_secs: 5,
+            acquire_timeout_secs: 30,
         },
         redis: RedisConfig {
             url: redis_url.into(),
@@ -261,6 +381,7 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
             previous_secret: None,
             access_expiry_secs: 900,
             refresh_expiry_secs: 86400,
+            short_session_expiry_secs: 3600,
             strict_session_binding: false,
             max_session_lifetime_secs: 60 * 60 * 24 * 90,
         },
@@ -297,10 +418,10 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
         },
         mail: MailConfig {
             smtp: SmtpConfig {
-                host: "localhost".into(),
+                host: String::new(), // empty → send() skips silently, no WARN
                 port: 1025,
-                username: "test".into(),
-                password: "test".into(),
+                username: String::new(),
+                password: String::new(),
                 from_name: "Test".into(),
                 from_address: "test@example.com".into(),
             },
@@ -318,16 +439,41 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
             block_threshold: 80,
             history_days: 90,
         },
-        webauthn: WebAuthnConfig {
-            rp_id: "localhost".into(),
-            rp_origin: "http://localhost:3000".into(),
-            rp_name: "test".into(),
-        },
         log: LogConfig {
             level: "error".into(),
             format: LogFormat::Pretty,
         },
     }
+}
+
+/// Brute-force a 6-digit OTP from its SHA-256 hash (tries all 1 000 000 possibilities).
+fn brute_force_otp(expected_hash: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    for n in 0u32..1_000_000 {
+        let candidate = format!("{:06}", n);
+        let h = Sha256::digest(candidate.as_bytes());
+        if h.as_slice() == expected_hash {
+            return candidate;
+        }
+    }
+    panic!("OTP not found in 6-digit space - unexpected hash");
+}
+
+/// Return a Redis URL pointing at a specific logical DB number.
+/// Strips any existing `/N` DB suffix before appending the new one.
+pub fn redis_url_with_db(base: &str, db: u8) -> String {
+    // Strip an existing numeric DB suffix (e.g. "redis://host:6379/1" → "redis://host:6379")
+    let stripped = if let Some(pos) = base.rfind('/') {
+        let suffix = &base[pos + 1..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            &base[..pos]
+        } else {
+            base
+        }
+    } else {
+        base
+    };
+    format!("{}/{}", stripped, db)
 }
 
 // Replace the database name in a PostgreSQL connection URL.

@@ -21,6 +21,7 @@ CREATE TABLE sessions (
     replaced_by_session_id UUID REFERENCES sessions (id) ON DELETE SET NULL,
     ip_address INET,
     device_name VARCHAR(100),
+    remember_me BOOLEAN NOT NULL DEFAULT false,
     token_hash BYTEA NOT NULL,
     user_agent TEXT,
     compromise_reason session_compromise_reason,

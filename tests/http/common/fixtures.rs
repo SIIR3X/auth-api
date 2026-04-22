@@ -27,6 +27,14 @@ pub struct AuthenticatedUser {
     pub refresh_token: String,
 }
 
+pub struct PasswordResetToken {
+    pub raw: String,
+}
+
+pub struct EmailVerificationToken {
+    pub raw: String,
+}
+
 // Register a new user via the API and return their credentials.
 pub async fn register_user(app: &TestApp, index: usize) -> RegisteredUser {
     let username = format!("testuser{index}");
@@ -61,6 +69,90 @@ pub async fn register_user(app: &TestApp, index: usize) -> RegisteredUser {
     }
 }
 
+/// Inserts a valid password reset token directly in the DB with a known raw value.
+/// Returns the raw (plaintext) token to use in API calls.
+pub async fn create_password_reset_token(pool: &PgPool, user_id: Uuid) -> PasswordResetToken {
+    let raw = format!("test-reset-{}", user_id);
+    let hash = rust_api::utils::crypto::sha256(raw.as_bytes());
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+         VALUES ($1, $2, NOW() + INTERVAL '30 minutes')",
+    )
+    .bind(user_id)
+    .bind(&hash)
+    .execute(pool)
+    .await
+    .expect("failed to create password reset token");
+    PasswordResetToken { raw }
+}
+
+/// Inserts an already-expired password reset token.
+pub async fn create_expired_password_reset_token(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> PasswordResetToken {
+    let raw = format!("test-expired-reset-{}", user_id);
+    let hash = rust_api::utils::crypto::sha256(raw.as_bytes());
+    // Override created_at so expires_at > created_at (satisfies CHECK constraint)
+    // while both timestamps are in the past (token is expired).
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, created_at)
+         VALUES ($1, $2, NOW() - INTERVAL '1 hour', NOW() - INTERVAL '2 hours')",
+    )
+    .bind(user_id)
+    .bind(&hash)
+    .execute(pool)
+    .await
+    .expect("failed to create expired password reset token");
+    PasswordResetToken { raw }
+}
+
+/// Inserts an already-consumed password reset token.
+pub async fn create_used_password_reset_token(pool: &PgPool, user_id: Uuid) -> PasswordResetToken {
+    let raw = format!("test-used-reset-{}", user_id);
+    let hash = rust_api::utils::crypto::sha256(raw.as_bytes());
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, used_at)
+         VALUES ($1, $2, NOW() + INTERVAL '30 minutes', NOW())",
+    )
+    .bind(user_id)
+    .bind(&hash)
+    .execute(pool)
+    .await
+    .expect("failed to create used password reset token");
+    PasswordResetToken { raw }
+}
+
+/// Inserts a valid email verification token directly in the DB.
+/// Revokes any existing active tokens first (only one active token per user is allowed).
+pub async fn create_email_verification_token(
+    pool: &PgPool,
+    user_id: Uuid,
+    email: &str,
+) -> EmailVerificationToken {
+    let raw = format!("test-verify-{}", user_id);
+    let hash = rust_api::utils::crypto::sha256(raw.as_bytes());
+    // register_user already creates an active token; mark it used before inserting ours.
+    sqlx::query(
+        "UPDATE email_verification_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .expect("failed to revoke existing email verification tokens");
+    sqlx::query(
+        "INSERT INTO email_verification_tokens (user_id, token_hash, expires_at, target_email)
+         VALUES ($1, $2, NOW() + INTERVAL '24 hours', $3)",
+    )
+    .bind(user_id)
+    .bind(&hash)
+    .bind(email)
+    .execute(pool)
+    .await
+    .expect("failed to create email verification token");
+    EmailVerificationToken { raw }
+}
+
 // Activate a user directly in the DB (skip email verification flow).
 pub async fn activate_user(pool: &PgPool, user_id: Uuid) {
     sqlx::query("UPDATE users SET status = 'active', email_verified_at = NOW() WHERE id = $1")
@@ -70,7 +162,7 @@ pub async fn activate_user(pool: &PgPool, user_id: Uuid) {
         .expect("failed to activate user");
 }
 
-// Register, activate, and login — returns tokens ready for authenticated requests.
+// Register, activate, and login - returns tokens ready for authenticated requests.
 pub async fn authenticated_user(app: &TestApp, index: usize) -> AuthenticatedUser {
     let user = register_user(app, index).await;
     activate_user(&app.db, user.id).await;

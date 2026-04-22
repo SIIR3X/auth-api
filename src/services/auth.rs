@@ -37,6 +37,7 @@ use crate::{
 use ::time::Duration as TimeDuration;
 
 use super::{email, email_2fa, reauth, risk_score};
+use crate::utils::backoff;
 
 // Constants
 
@@ -81,10 +82,6 @@ const MAX_RECOVERY_FAILURES_BY_USER: i64 = 10;
 const RECOVERY_FAILURE_USER_WINDOW_SECS: u64 = 3600;
 /// Redis key prefix for the per-user recovery code failure counter.
 const RC_USER_FAIL_PREFIX: &str = "rc_user_fail:";
-/// Initial backoff delay after the first 2FA failure (seconds).
-const BACKOFF_BASE_SECS: u64 = 1;
-/// Maximum backoff delay cap (seconds). Doubles each attempt: 1, 2, 4, 8, 16, capped.
-const BACKOFF_MAX_SECS: u64 = 16;
 /// Max verify-email or reset-password token submission attempts per IP within the window.
 const MAX_TOKEN_SUBMIT_BY_IP: i64 = 10;
 /// Sliding window for token submission rate limiting (1 hour).
@@ -111,7 +108,7 @@ pub struct AuthTokens {
 pub enum LoginResult {
     Complete(AuthTokens),
     /// 2FA is required; submit this token with the code to complete login.
-    /// method: "totp" or "webauthn"
+    /// method: "totp" or "email"
     TwoFactorRequired {
         pre_auth_token: String,
         method: String,
@@ -122,6 +119,9 @@ pub enum LoginResult {
 pub struct PreAuthState {
     pub user_id: Uuid,
     pub risk: Option<CachedRiskEvaluation>,
+    /// Propagated from the login request so the correct token TTL is used after 2FA completes.
+    #[serde(default)]
+    pub remember_me: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,6 +299,7 @@ pub async fn register(
 
 // Login
 
+#[allow(clippy::too_many_arguments)]
 pub async fn login(
     state: &AppState,
     identifier: &str,
@@ -306,6 +307,7 @@ pub async fn login(
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
     device_name: Option<&str>,
+    remember_me: bool,
     request_id: Option<Uuid>,
 ) -> Result<LoginResult, AppError> {
     let brute_force_cutoff = time::now() - TimeDuration::seconds(BRUTE_FORCE_WINDOW_SECS);
@@ -507,7 +509,6 @@ pub async fn login(
 
     if has_2fa || force_challenge {
         let method = match primary_method.as_ref().map(|m| &m.method_type) {
-            Some(crate::domain::two_factor::TwoFactorType::Webauthn) => "webauthn",
             Some(crate::domain::two_factor::TwoFactorType::Email) => "email",
             None if force_challenge => "email",
             _ => "totp",
@@ -519,6 +520,7 @@ pub async fn login(
         let pre_auth_state = PreAuthState {
             user_id: user.id,
             risk: Some(CachedRiskEvaluation::capture(&risk_ctx, risk.as_ref().ok())),
+            remember_me,
         };
         let serialized =
             serde_json::to_string(&pre_auth_state).map_err(|e| AppError::Internal(e.into()))?;
@@ -543,7 +545,7 @@ pub async fn login(
         });
     }
 
-    let tokens = issue_tokens(state, user.id, ip, user_agent, device_name).await?;
+    let tokens = issue_tokens(state, user.id, ip, user_agent, device_name, remember_me).await?;
     let cached_risk = CachedRiskEvaluation::capture(&risk_ctx, risk.as_ref().ok());
 
     tokio::try_join!(
@@ -629,6 +631,7 @@ pub async fn complete_two_factor_login(
     // Do NOT consume yet; only consume on success so failures can be retried
     // within the attempt budget (token stays valid until TTL or budget exhausted).
     let user_id = pre_auth_state.user_id;
+    let remember_me = pre_auth_state.remember_me;
 
     let user = user_repo::find_by_id(&state.db, user_id)
         .await
@@ -720,7 +723,7 @@ pub async fn complete_two_factor_login(
         let _: Result<(), _> = c.del(&fail_key).await;
     }
 
-    let tokens = issue_tokens(state, user.id, ip, user_agent, device_name).await?;
+    let tokens = issue_tokens(state, user.id, ip, user_agent, device_name, remember_me).await?;
 
     tokio::try_join!(
         async {
@@ -880,15 +883,22 @@ pub async fn refresh_token(
     let new_raw_token = crypto::generate_token();
     let new_hash = crypto::sha256(new_raw_token.as_bytes());
 
+    let refresh_expiry = if session.remember_me {
+        state.config.jwt.refresh_expiry_secs
+    } else {
+        state.config.jwt.short_session_expiry_secs
+    };
+
     let new_session = match session_repo::rotate(
         &state.db,
         session.id,
         &NewSession {
             user_id: user.id,
             session_family_id: session.session_family_id,
-            expires_at: time::in_secs(state.config.jwt.refresh_expiry_secs),
+            expires_at: time::in_secs(refresh_expiry),
             ip_address: ip,
             device_name: session.device_name.as_deref(),
+            remember_me: session.remember_me,
             token_hash: &new_hash,
             user_agent,
         },
@@ -1064,7 +1074,12 @@ pub async fn forgot_password(
 
     let user = match user_repo::find_by_email(&state.db, email).await? {
         Some(u) => u,
-        None => return Ok(()),
+        None => {
+            // Normalize timing so callers cannot distinguish "email not found"
+            // from "email found" via response latency (2 DB writes normally happen).
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            return Ok(());
+        }
     };
 
     // Revoke any previous pending reset before issuing a new one
@@ -1217,7 +1232,7 @@ pub async fn reset_password(
 // Internal helpers
 
 /// Record login location and send new-device notification if applicable.
-/// Public so WebAuthn and other 2FA handlers can call it after issuing tokens.
+/// Record login location and send new-device notification if applicable.
 pub async fn post_login_hooks(
     state: &AppState,
     user: &User,
@@ -1229,35 +1244,32 @@ pub async fn post_login_hooks(
     maybe_notify_new_device(state, user, ip, user_agent, request_id, cached_risk).await;
 }
 
-/// Public wrapper so WebAuthn and future handlers can issue tokens after 2FA verification.
-pub async fn issue_session_tokens(
-    state: &AppState,
-    user: &crate::domain::user::User,
-    ip: Option<IpNetwork>,
-    user_agent: Option<&str>,
-    device_name: Option<&str>,
-) -> Result<AuthTokens, AppError> {
-    issue_tokens(state, user.id, ip, user_agent, device_name).await
-}
-
 async fn issue_tokens(
     state: &AppState,
     user_id: Uuid,
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
     device_name: Option<&str>,
+    remember_me: bool,
 ) -> Result<AuthTokens, AppError> {
     let raw_token = crypto::generate_token();
     let token_hash = crypto::sha256(raw_token.as_bytes());
+
+    let expiry_secs = if remember_me {
+        state.config.jwt.refresh_expiry_secs
+    } else {
+        state.config.jwt.short_session_expiry_secs
+    };
 
     let session = session_repo::create(
         &state.db,
         &NewSession {
             user_id,
             session_family_id: Uuid::new_v4(),
-            expires_at: time::in_secs(state.config.jwt.refresh_expiry_secs),
+            expires_at: time::in_secs(expiry_secs),
             ip_address: ip,
             device_name,
+            remember_me,
             token_hash: &token_hash,
             user_agent,
         },
@@ -1294,10 +1306,15 @@ async fn track_credential_stuffing(state: &AppState, ip: Option<IpNetwork>, iden
         Some(i) => i,
         None => return,
     };
-    if let Ok(mut conn) = state.redis.get().await {
-        let key = format!("{}{}", CS_HLL_PREFIX, ip_val.ip());
-        let _: Result<(), _> = conn.pfadd(&key, identifier).await;
-        let _: Result<(), _> = conn.expire(&key, CS_WINDOW_SECS as i64).await;
+    match state.redis.get().await {
+        Ok(mut conn) => {
+            let key = format!("{}{}", CS_HLL_PREFIX, ip_val.ip());
+            let _: Result<(), _> = conn.pfadd(&key, identifier).await;
+            let _: Result<(), _> = conn.expire(&key, CS_WINDOW_SECS as i64).await;
+        }
+        Err(e) => {
+            tracing::warn!(ip = %ip_val.ip(), error = %e, "credential-stuffing tracking skipped: Redis unavailable");
+        }
     }
 }
 
@@ -1323,77 +1340,6 @@ async fn record_failure(
     .await;
 }
 
-// Re-send email verification (called from user service when email changes)
-#[allow(clippy::too_many_arguments)]
-pub async fn resend_verification_email(
-    state: &AppState,
-    user_id: Uuid,
-    email: &str,
-    username: &str,
-    locale: &str,
-    ip: Option<IpNetwork>,
-    user_agent: Option<&str>,
-    request_id: Option<Uuid>,
-) -> Result<(), AppError> {
-    token::revoke_active_verification_by_user(&state.db, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    let raw_token = crypto::generate_token();
-    let hash = crypto::sha256(raw_token.as_bytes());
-
-    token::create_verification(
-        &state.db,
-        &NewEmailVerificationToken {
-            user_id,
-            token_hash: &hash,
-            expires_at: time::in_secs(EMAIL_TOKEN_EXPIRY_SECS),
-            request_ip: ip,
-            request_user_agent: user_agent,
-            target_email: email,
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    let mailer = state.mailer.clone();
-    let templates = state.templates.clone();
-    let mail_cfg = state.config.mail.clone();
-    let email_to = email.to_string();
-    let username = username.to_string();
-    let locale = locale.to_string();
-    let raw_token = raw_token.to_string();
-    let public_url = state.config.server.public_url.clone();
-    email::dispatch_best_effort("verification_email_resend", async move {
-        email::send_verification_email(
-            &mailer,
-            templates.as_ref(),
-            &mail_cfg,
-            &email_to,
-            &username,
-            &locale,
-            &raw_token,
-            &public_url,
-        )
-        .await
-    });
-
-    audit::append(
-        &state.db,
-        &NewAuditEntry {
-            user_id: Some(user_id),
-            request_id,
-            action: AuditAction::EmailVerificationSent,
-            ip_address: ip,
-            metadata: json!({}),
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    Ok(())
-}
-
 // Complete 2FA login with an Email OTP code
 
 pub async fn complete_email_2fa_login(
@@ -1416,6 +1362,7 @@ pub async fn complete_email_2fa_login(
     drop(conn);
 
     let user_id = pre_auth_state.user_id;
+    let remember_me = pre_auth_state.remember_me;
 
     let user = user_repo::find_by_id(&state.db, user_id)
         .await
@@ -1433,7 +1380,7 @@ pub async fn complete_email_2fa_login(
         let _: Result<(), _> = c.del(&redis_key).await;
     }
 
-    let tokens = issue_tokens(state, user.id, ip, user_agent, device_name).await?;
+    let tokens = issue_tokens(state, user.id, ip, user_agent, device_name, remember_me).await?;
 
     tokio::try_join!(
         async {
@@ -1500,6 +1447,7 @@ pub async fn complete_login_with_recovery(
 
     // Keep the pre-auth token alive until success; consume on success below.
     let user_id = pre_auth_state.user_id;
+    let remember_me = pre_auth_state.remember_me;
 
     // Cross-session guard: reject if the user already burned too many recovery attempts
     // within the rolling window, regardless of how many pre-auth tokens they cycled through.
@@ -1572,7 +1520,7 @@ pub async fn complete_login_with_recovery(
         let _: Result<(), _> = c.del(&user_fail_key).await;
     }
 
-    let tokens = issue_tokens(state, user.id, ip, user_agent, None).await?;
+    let tokens = issue_tokens(state, user.id, ip, user_agent, None, remember_me).await?;
 
     tokio::try_join!(
         async {
@@ -1655,18 +1603,8 @@ fn rt_hash_key(token_hash: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_hash)
 }
 
-/// Apply an exponential backoff delay based on how many failures are recorded.
-/// The delay is 2^(failures-1) seconds, capped at BACKOFF_MAX_SECS.
-/// Called *before* returning a failure response so attackers can't pipeline requests.
 async fn apply_backoff(failures: i64) {
-    if failures <= 0 {
-        return;
-    }
-    let exp = (failures - 1).min(4) as u32; // 2^4 = 16 = cap
-    let secs = BACKOFF_BASE_SECS
-        .saturating_mul(2u64.pow(exp))
-        .min(BACKOFF_MAX_SECS);
-    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+    backoff::apply(failures).await;
 }
 
 /// Write a JTI to the Redis blocklist with TTL = remaining token lifetime.
@@ -1697,15 +1635,15 @@ pub async fn is_jti_blocked(state: &AppState, jti: Uuid) -> bool {
 /// On cache miss, queries the database and caches the result for SESSION_CACHE_TTL_SECS.
 /// Both active and inactive results are cached: inactive prevents DB hammering from
 /// replayed revoked tokens (JTI blocklist covers the logout case directly).
-/// Fails open on Redis errors — falls back to a direct DB query.
+/// Fails open on Redis errors - falls back to a direct DB query.
 pub async fn check_session_validity(state: &AppState, session_id: Uuid) -> Result<bool, AppError> {
     let key = format!("{SESSION_CACHE_PREFIX}{session_id}");
 
     // Fast path: check Redis cache first.
-    if let Ok(mut conn) = state.redis.get().await {
-        if let Ok(Some(cached)) = conn.get::<_, Option<u8>>(&key).await {
-            return Ok(cached == 1);
-        }
+    if let Ok(mut conn) = state.redis.get().await
+        && let Ok(Some(cached)) = conn.get::<_, Option<u8>>(&key).await
+    {
+        return Ok(cached == 1);
     }
 
     // Slow path: query the database on cache miss.
@@ -1744,10 +1682,11 @@ pub async fn invalidate_session_caches(state: &AppState, session_ids: &[Uuid]) {
     }
 
     if let Ok(mut conn) = state.redis.get().await {
-        for session_id in session_ids {
-            let key = format!("{SESSION_CACHE_PREFIX}{session_id}");
-            let _: Result<(), _> = conn.del(&key).await;
-        }
+        let keys: Vec<String> = session_ids
+            .iter()
+            .map(|id| format!("{SESSION_CACHE_PREFIX}{id}"))
+            .collect();
+        let _: Result<(), _> = conn.del(keys).await;
     }
 }
 
@@ -1922,6 +1861,7 @@ fn parse_pre_auth_state(raw: &str) -> Result<PreAuthState, AppError> {
         return Ok(PreAuthState {
             user_id,
             risk: None,
+            remember_me: false,
         });
     }
 

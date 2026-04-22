@@ -6,7 +6,7 @@ use rust_api::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// helpers
 
 /// Enable Email 2FA for a user. Returns the method UUID.
 /// The setup handler already sends the first code, so we read it from the DB.
@@ -66,7 +66,7 @@ fn brute_force_otp(expected_hash: &[u8]) -> String {
             return candidate;
         }
     }
-    panic!("OTP not found in 6-digit space — unexpected hash");
+    panic!("OTP not found in 6-digit space - unexpected hash");
 }
 
 async fn active_email_code_hashes(app: &TestApp, user_id: uuid::Uuid) -> Vec<Vec<u8>> {
@@ -95,7 +95,7 @@ async fn recovery_code_hashes(app: &TestApp, user_id: uuid::Uuid) -> Vec<Vec<u8>
     .unwrap()
 }
 
-// ── tests ─────────────────────────────────────────────────────────────────────
+// tests
 
 #[tokio::test]
 async fn email_2fa_setup_and_login() {
@@ -282,7 +282,7 @@ async fn email_2fa_lockout_after_max_failures() {
         .await;
     }
 
-    // 6th attempt (correct OTP) must be rejected — token is burned.
+    // 6th attempt (correct OTP) must be rejected - token is burned.
     let otp = read_otp_from_db(&app, user.id).await;
     let res = app
         .post(
@@ -471,4 +471,192 @@ async fn email_2fa_code_replacement_rolls_back_on_insert_failure() {
         active_email_code_hashes(&app, user.id).await,
         vec![old_hash]
     );
+}
+
+// P3 remaining: Email 2FA setup edge cases
+
+#[tokio::test]
+async fn email_2fa_setup_send_code_resends_otp() {
+    // The /two-factor/email/:id/send route must return 204 and produce a new
+    // OTP code (the old one is superseded).
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 110).await;
+
+    // 1. Start setup - server sends first code automatically.
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/email/setup",
+            &user.access_token,
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+    let body: Value = res.json().await.unwrap();
+    let _method_id = body["method_id"].as_str().unwrap().to_owned();
+
+    // Read the first code hash.
+    let first_hashes = active_email_code_hashes(&app, user.id).await;
+    assert!(
+        !first_hashes.is_empty(),
+        "setup must have sent an initial OTP"
+    );
+
+    // 2. Clear cooldown so we can resend immediately.
+    app.clear_email_2fa_cooldown(user.id).await;
+
+    // 3. Call the /send route (no method_id - shared per-user endpoint).
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/email/send",
+            &user.access_token,
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204, "/send must return 204");
+
+    // 4. A new code must now be active.
+    let second_hashes = active_email_code_hashes(&app, user.id).await;
+    assert!(!second_hashes.is_empty(), "resend must produce a new OTP");
+    // The code should have changed (new hash).
+    assert_ne!(
+        first_hashes, second_hashes,
+        "resent code hash must differ from the original"
+    );
+}
+
+#[tokio::test]
+async fn email_2fa_setup_send_code_cooldown_enforced() {
+    // A second /send within 60 seconds must return 429.
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 111).await;
+
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/email/setup",
+            &user.access_token,
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+    let body: Value = res.json().await.unwrap();
+    let method_id = body["method_id"].as_str().unwrap().to_owned();
+
+    // Do NOT clear the cooldown - it was just armed by setup.
+    let _ = method_id; // unused after route correction
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/email/send",
+            &user.access_token,
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        429,
+        "/send within cooldown must return 429"
+    );
+}
+
+#[tokio::test]
+async fn email_2fa_setup_verify_wrong_code_rejected() {
+    // /two-factor/email/:id/verify with a wrong code must return 401.
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 112).await;
+
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/email/setup",
+            &user.access_token,
+            &serde_json::json!({}),
+        )
+        .await;
+    let body: Value = res.json().await.unwrap();
+    let method_id = body["method_id"].as_str().unwrap().to_owned();
+
+    let res = app
+        .post_auth(
+            &format!("/users/me/two-factor/email/{}/verify", method_id),
+            &user.access_token,
+            &serde_json::json!({ "code": "000000" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 401, "wrong code must return 401");
+}
+
+#[tokio::test]
+async fn email_2fa_setup_verify_lockout_after_max_failures() {
+    // 5 consecutive wrong codes must lock the setup attempt (429).
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 113).await;
+
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/email/setup",
+            &user.access_token,
+            &serde_json::json!({}),
+        )
+        .await;
+    let body: Value = res.json().await.unwrap();
+    let method_id = body["method_id"].as_str().unwrap().to_owned();
+
+    for _ in 0..5 {
+        app.post_auth(
+            &format!("/users/me/two-factor/email/{}/verify", method_id),
+            &user.access_token,
+            &serde_json::json!({ "code": "000000" }),
+        )
+        .await;
+    }
+
+    // 6th attempt must be rate-limited.
+    let res = app
+        .post_auth(
+            &format!("/users/me/two-factor/email/{}/verify", method_id),
+            &user.access_token,
+            &serde_json::json!({ "code": "000000" }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        429,
+        "6th wrong code must trigger 429 lockout"
+    );
+}
+
+#[tokio::test]
+async fn email_2fa_setup_verify_expired_code_rejected() {
+    // Force-expire all active codes for the user then attempt verify.
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 114).await;
+
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/email/setup",
+            &user.access_token,
+            &serde_json::json!({}),
+        )
+        .await;
+    let body: Value = res.json().await.unwrap();
+    let method_id = body["method_id"].as_str().unwrap().to_owned();
+
+    // Expire the code by backdating expires_at in the DB.
+    sqlx::query(
+        "UPDATE email_2fa_codes SET expires_at = NOW() - INTERVAL '1 second'
+         WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .expect("failed to expire 2fa codes");
+
+    // Read the (now expired) code and try to verify - must return 401.
+    let expired_otp = read_otp_from_db(&app, user.id).await;
+    let res = app
+        .post_auth(
+            &format!("/users/me/two-factor/email/{}/verify", method_id),
+            &user.access_token,
+            &serde_json::json!({ "code": expired_otp }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 401, "expired code must return 401");
 }

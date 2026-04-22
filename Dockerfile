@@ -1,94 +1,62 @@
-# syntax=docker/dockerfile:1.7
+# =============================================================================
+# Stage 1: Chef — installe cargo-chef
+# =============================================================================
+FROM rust:1.88-slim-bookworm AS chef
 
-ARG RUST_VERSION=1.94.0
-ARG ALPINE_VERSION=3.22
-ARG SQLX_CLI_VERSION=0.8.6
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-FROM rust:${RUST_VERSION}-alpine${ALPINE_VERSION} AS rust-base
-
-WORKDIR /build
-
-RUN apk add --no-cache \
-    binutils \
-    build-base \
-    ca-certificates \
-    musl-dev \
-    openssl-dev \
-    openssl-libs-static \
-    perl \
-    pkgconfig
-
-ENV OPENSSL_STATIC=1
-
-FROM rust-base AS api-builder
-
-COPY Cargo.toml Cargo.lock ./
-COPY benches ./benches
-COPY src ./src
-COPY templates ./templates
-COPY tests ./tests
-COPY vendor ./vendor
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target \
-    cargo build --release --locked --bin rust-api && \
-    cp target/release/rust-api /tmp/rust-api && \
-    strip /tmp/rust-api
-
-FROM rust-base AS migrations-builder
-
-ARG SQLX_CLI_VERSION
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/tmp/sqlx-target \
-    CARGO_TARGET_DIR=/tmp/sqlx-target \
-    cargo install \
-      --locked \
-      --root /tmp/sqlx-cli \
-      --no-default-features \
-      --features rustls,postgres \
-      --version ${SQLX_CLI_VERSION} \
-      sqlx-cli && \
-    strip /tmp/sqlx-cli/bin/sqlx
-
-FROM alpine:${ALPINE_VERSION} AS migrations
-
-RUN apk add --no-cache ca-certificates && \
-    addgroup -S migrate && \
-    adduser -S -D -H -h /migrations -s /sbin/nologin -G migrate migrate
-
-WORKDIR /migrations
-
-COPY --from=migrations-builder /tmp/sqlx-cli/bin/sqlx /usr/local/bin/sqlx
-COPY migrations ./migrations
-
-RUN chown -R migrate:migrate /migrations
-
-USER migrate:migrate
-
-ENTRYPOINT ["/usr/local/bin/sqlx", "migrate", "run", "--source", "/migrations/migrations"]
-
-FROM alpine:${ALPINE_VERSION} AS runtime
-
-RUN apk add --no-cache ca-certificates && \
-    addgroup -S app && \
-    adduser -S -D -H -h /app -s /sbin/nologin -G app app
+RUN cargo install cargo-chef --locked
 
 WORKDIR /app
 
-COPY --from=api-builder /tmp/rust-api /usr/local/bin/rust-api
-COPY --from=api-builder /build/templates /app/templates
+# =============================================================================
+# Stage 2: Planner — génère la recette des dépendances
+# =============================================================================
+FROM chef AS planner
 
-RUN mkdir -p /app/data && \
-    chown -R app:app /app
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-ENV APP_ENV=production \
-    SERVER_HOST=0.0.0.0 \
-    SERVER_PORT=3000 \
-    MAIL_TEMPLATES_DIR=/app/templates
+# =============================================================================
+# Stage 3: Builder — compile les dépendances puis le binaire
+# =============================================================================
+FROM chef AS builder
 
-USER app:app
+COPY --from=planner /app/recipe.json recipe.json
+
+# Cache layer : compile uniquement les dépendances
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Compile le binaire
+COPY . .
+RUN cargo build --release --bin rust-api
+
+# =============================================================================
+# Stage 4: Runtime
+# =============================================================================
+FROM debian:bookworm-slim AS runtime
+
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --uid 1001 --no-create-home --shell /bin/false appuser
+
+WORKDIR /app
+
+COPY --from=builder /app/target/release/rust-api ./rust-api
+COPY --from=builder /app/templates ./templates
+
+RUN chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 3000
 
-ENTRYPOINT ["/usr/local/bin/rust-api"]
+CMD ["./rust-api"]
