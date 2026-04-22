@@ -22,7 +22,7 @@ async fn account_locked_after_threshold_failures() {
         assert_eq!(res.status().as_u16(), 401);
     }
 
-    // The next attempt — even with the correct password — should be locked.
+    // The next attempt - even with the correct password - should be locked.
     let res = app
         .post(
             "/auth/login",

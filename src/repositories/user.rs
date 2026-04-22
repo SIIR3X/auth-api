@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::domain::user::{User, UserStatus};
+use crate::domain::user::User;
 
 pub const FIND_BY_EMAIL_SQL: &str = "SELECT * FROM users WHERE email = $1::citext";
 pub const FIND_BY_USERNAME_SQL: &str = "SELECT * FROM users WHERE username = $1::citext";
@@ -56,35 +56,10 @@ pub async fn update_username(pool: &PgPool, id: Uuid, username: &str) -> Result<
     Ok(())
 }
 
-/// Resets email verification state so the new address must be re-verified.
-pub async fn update_email(pool: &PgPool, id: Uuid, email: &str) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE users
-         SET email = $2,
-             email_verified_at = NULL,
-             status = 'pending_verification'::user_status
-         WHERE id = $1",
-    )
-    .bind(id)
-    .bind(email)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 pub async fn update_locale(pool: &PgPool, id: Uuid, locale: &str) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE users SET preferred_locale = $2 WHERE id = $1")
         .bind(id)
         .bind(locale)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
-pub async fn update_status(pool: &PgPool, id: Uuid, status: UserStatus) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
-        .bind(id)
-        .bind(status)
         .execute(pool)
         .await?;
     Ok(())

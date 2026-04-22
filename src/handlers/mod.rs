@@ -27,7 +27,6 @@ pub mod extractors;
 pub mod session;
 pub mod two_factor;
 pub mod user;
-pub mod webauthn;
 
 pub fn router(state: AppState) -> Router {
     let rl_general = RateLimitState {
@@ -36,13 +35,19 @@ pub fn router(state: AppState) -> Router {
         trusted_proxy_cidrs: state.config.server.trusted_proxy_cidrs.clone(),
         fail_open_on_redis_error: state.config.rate_limit.fail_open_on_redis_error,
         allow_requests_without_ip: state.config.rate_limit.allow_requests_without_ip,
+        key_prefix: "rl",
     };
+    // Auth and reauth routes use a separate, stricter bucket ("rl_auth:{ip}") so
+    // their limit is independent of the general bucket.  If both shared "rl:{ip}",
+    // each auth request would consume two tokens (once per layer) and the effective
+    // limit would be halved.
     let rl_auth = RateLimitState {
         redis: state.redis.clone(),
         limit: state.config.rate_limit.auth_requests_per_minute,
         trusted_proxy_cidrs: state.config.server.trusted_proxy_cidrs.clone(),
         fail_open_on_redis_error: state.config.rate_limit.fail_open_on_redis_error,
         allow_requests_without_ip: state.config.rate_limit.allow_requests_without_ip,
+        key_prefix: "rl_auth",
     };
     let security_headers_state = security_headers::SecurityHeadersState {
         enable_hsts: state.config.is_production()
@@ -50,6 +55,16 @@ pub fn router(state: AppState) -> Router {
     };
 
     let cors = build_cors(&state.config.cors);
+
+    // Reauth shares the strict auth bucket to cap password-guessing attempts
+    // made with a stolen access token. It is merged separately so that other
+    // /users/me routes only consume from the larger general bucket.
+    let me_with_strict_reauth = me_strict_router()
+        .layer(middleware::from_fn_with_state(
+            rl_auth.clone(),
+            rate_limit::layer_with_state,
+        ))
+        .merge(me_router());
 
     Router::new()
         .nest(
@@ -59,7 +74,11 @@ pub fn router(state: AppState) -> Router {
                 rate_limit::layer_with_state,
             )),
         )
-        .nest("/users/me", me_router())
+        // Logout is authenticated (requires a valid JWT via AuthUser) but intentionally
+        // placed outside the auth rate-limit bucket. Exhausting that bucket during a
+        // brute-force attack must not prevent the legitimate user from ending their session.
+        .route("/auth/logout", post(auth::logout))
+        .nest("/users/me", me_with_strict_reauth)
         .layer(cors)
         .layer(middleware::from_fn_with_state(
             rl_general,
@@ -106,15 +125,17 @@ fn build_cors(cfg: &crate::config::CorsConfig) -> CorsLayer {
     }
 }
 
-// Public auth routes
+// Public auth routes (all share the strict auth rate-limit bucket).
+// /logout is registered separately in router() under the general bucket.
 
 fn auth_router() -> Router<AppState> {
     Router::new()
         .route("/register", post(auth::register))
         .route("/login", post(auth::login))
-        .route("/logout", post(auth::logout))
         .route("/refresh", post(auth::refresh))
-        .route("/verify-email", get(auth::verify_email))
+        // Token delivered in the body (POST) to keep it out of access logs and
+        // browser history. Switched from GET /verify-email?token= for this reason.
+        .route("/verify-email", post(auth::verify_email))
         .route("/forgot-password", post(auth::forgot_password))
         .route("/reset-password", post(auth::reset_password))
         .route("/two-factor/complete", post(auth::complete_two_factor))
@@ -127,25 +148,29 @@ fn auth_router() -> Router<AppState> {
             "/two-factor/email/resend",
             post(auth::resend_email_two_factor),
         )
-        .route(
-            "/two-factor/webauthn/start",
-            post(webauthn::start_authentication),
-        )
-        .route(
-            "/two-factor/webauthn/finish",
-            post(webauthn::finish_authentication),
-        )
 }
 
-// Protected routes under /users/me (all require a valid JWT)
+// Sensitive authenticated routes placed under the strict auth rate-limit bucket.
+// The email-change flow is included here because each step involves OTP dispatch
+// or verification - the same threat model as the reauth endpoint.
+
+fn me_strict_router() -> Router<AppState> {
+    Router::new()
+        .route("/reauth", post(user::reauthenticate))
+        .route("/email/start", post(user::start_email_change))
+        .route("/email/verify-current", post(user::verify_current_email))
+        .route("/email/submit", post(user::submit_new_email))
+        .route("/email/confirm", post(user::confirm_new_email))
+}
+
+// Protected routes under /users/me (all require a valid JWT).
+// /reauth is registered in me_strict_router() with the tighter rate limit.
 
 fn me_router() -> Router<AppState> {
     Router::new()
         // Profile
         .route("/", get(user::me))
-        .route("/reauth", post(user::reauthenticate))
         .route("/username", patch(user::change_username))
-        .route("/email", patch(user::change_email))
         .route("/password", patch(user::change_password))
         .route("/locale", patch(user::change_locale))
         .route("/", delete(user::delete_account))
@@ -181,18 +206,5 @@ fn me_router() -> Router<AppState> {
         .route(
             "/two-factor/email/{id}",
             delete(two_factor::disable_email_otp),
-        )
-        // Two-factor: WebAuthn/passkey
-        .route(
-            "/two-factor/webauthn/register/start",
-            post(webauthn::start_registration),
-        )
-        .route(
-            "/two-factor/webauthn/register/finish",
-            post(webauthn::finish_registration),
-        )
-        .route(
-            "/two-factor/webauthn/{id}",
-            delete(webauthn::disable_webauthn),
         )
 }

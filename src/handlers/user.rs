@@ -4,9 +4,13 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{error::AppError, services::{reauth as reauth_svc, user as user_svc}, state::AppState};
+use crate::{
+    error::AppError,
+    services::{email_change as email_change_svc, reauth as reauth_svc, user as user_svc},
+    state::AppState,
+};
 
-use super::extractors::{AuthUser, ClientIp, UserAgent};
+use super::extractors::{AuthUser, ClientIp};
 
 // Request types
 
@@ -16,10 +20,27 @@ pub struct ChangeUsernameRequest {
     pub current_password: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct FlowTokenResponse {
+    pub flow_token: String,
+}
+
 #[derive(Deserialize)]
-pub struct ChangeEmailRequest {
-    pub email: String,
-    pub current_password: Option<String>,
+pub struct VerifyCurrentEmailRequest {
+    pub flow_token: String,
+    pub code: String,
+}
+
+#[derive(Deserialize)]
+pub struct SubmitNewEmailRequest {
+    pub flow_token: String,
+    pub new_email: String,
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmNewEmailRequest {
+    pub flow_token: String,
+    pub code: String,
 }
 
 #[derive(Deserialize)]
@@ -90,7 +111,11 @@ pub async fn change_username(
             "username must be 3 to 30 characters".into(),
         ));
     }
-    if !body.username.chars().all(|c| c.is_alphanumeric() || c == '_') {
+    if !body
+        .username
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_')
+    {
         return Err(AppError::Validation(
             "username may only contain letters, digits and underscores".into(),
         ));
@@ -111,24 +136,58 @@ pub async fn change_username(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn change_email(
+pub async fn start_email_change(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    UserAgent(ua): UserAgent,
     auth: AuthUser,
-    Json(body): Json<ChangeEmailRequest>,
+) -> Result<Json<FlowTokenResponse>, AppError> {
+    let flow_token = email_change_svc::start(&state, auth.user_id, ip, auth.request_id).await?;
+    Ok(Json(FlowTokenResponse { flow_token }))
+}
+
+pub async fn verify_current_email(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<VerifyCurrentEmailRequest>,
 ) -> Result<StatusCode, AppError> {
-    if !email_address::EmailAddress::is_valid(&body.email) {
+    email_change_svc::verify_current(&state, auth.user_id, &body.flow_token, &body.code).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn submit_new_email(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    auth: AuthUser,
+    Json(body): Json<SubmitNewEmailRequest>,
+) -> Result<StatusCode, AppError> {
+    if !email_address::EmailAddress::is_valid(&body.new_email) {
         return Err(AppError::Validation("invalid email address".into()));
     }
-    user_svc::change_email(
+    email_change_svc::submit_new(
+        &state,
+        auth.user_id,
+        &body.flow_token,
+        &body.new_email,
+        ip,
+        auth.request_id,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn confirm_new_email(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    auth: AuthUser,
+    Json(body): Json<ConfirmNewEmailRequest>,
+) -> Result<StatusCode, AppError> {
+    email_change_svc::confirm_new(
         &state,
         auth.user_id,
         auth.session_id,
-        &body.email,
-        body.current_password.as_deref(),
+        &body.flow_token,
+        &body.code,
         ip,
-        ua.as_deref(),
         auth.request_id,
     )
     .await?;
@@ -141,11 +200,7 @@ pub async fn change_password(
     auth: AuthUser,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<StatusCode, AppError> {
-    if body.new_password.len() < 8 {
-        return Err(AppError::Validation(
-            "password must be at least 8 characters".into(),
-        ));
-    }
+    validate_password(&body.new_password)?;
 
     user_svc::change_password(
         &state,
@@ -179,6 +234,48 @@ pub fn validate_locale(locale: &str) -> Result<(), AppError> {
             "unsupported locale; accepted values: {}",
             SUPPORTED_LOCALES.join(", ")
         )));
+    }
+    Ok(())
+}
+
+/// Validates a plaintext password against the application password policy.
+///
+/// Rules (all must be satisfied):
+///   - at least 10 characters
+///   - no more than 128 characters (Argon2id DoS guard)
+///   - at least one ASCII digit (0-9)
+///   - at least one ASCII uppercase letter (A-Z)
+///   - at least one ASCII punctuation / symbol character
+///
+/// Note: NIST SP 800-63B recommends favouring length over composition rules.
+/// These constraints are intentionally modest; raising the minimum length is
+/// more effective than adding more character-class requirements.
+pub fn validate_password(password: &str) -> Result<(), AppError> {
+    if password.len() < 10 {
+        return Err(AppError::Validation(
+            "password must be at least 10 characters".into(),
+        ));
+    }
+    if password.len() > 128 {
+        return Err(AppError::Validation(
+            "password must not exceed 128 characters".into(),
+        ));
+    }
+    if !password.chars().any(|c| c.is_ascii_digit()) {
+        return Err(AppError::Validation(
+            "password must contain at least one digit (0-9)".into(),
+        ));
+    }
+    if !password.chars().any(|c| c.is_ascii_uppercase()) {
+        return Err(AppError::Validation(
+            "password must contain at least one uppercase letter (A-Z)".into(),
+        ));
+    }
+    // is_ascii_punctuation covers: !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
+    if !password.chars().any(|c| c.is_ascii_punctuation()) {
+        return Err(AppError::Validation(
+            "password must contain at least one special character (!@#$... etc.)".into(),
+        ));
     }
     Ok(())
 }

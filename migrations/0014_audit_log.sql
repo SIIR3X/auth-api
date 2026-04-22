@@ -28,7 +28,10 @@ CREATE TYPE audit_action AS ENUM (
     'suspicious_login',
     'new_device_login',
     'account_deleted',
-    'reauthenticated'
+    'reauthenticated',
+    'username_changed',
+    'recovery_code_used',
+    'email_changed'
 );
 
 
@@ -107,6 +110,12 @@ BEGIN
             RETURN;
         WHEN undefined_file THEN
             RAISE NOTICE 'pg_cron extension is not available on this PostgreSQL instance; schedule rotate_audit_log_partitions() externally.';
+            RETURN;
+        WHEN feature_not_supported THEN
+            RAISE NOTICE 'pg_cron extension is not supported on this PostgreSQL instance; schedule rotate_audit_log_partitions() externally.';
+            RETURN;
+        WHEN others THEN
+            RAISE NOTICE 'pg_cron extension could not be loaded (%), schedule rotate_audit_log_partitions() externally.', SQLERRM;
             RETURN;
     END;
 

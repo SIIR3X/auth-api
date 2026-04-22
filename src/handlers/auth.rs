@@ -1,11 +1,7 @@
 //! Authentication handlers: register, login, logout, token refresh,
 //! email verification, password reset, and 2FA challenge completion.
 
-use axum::{
-    Json,
-    extract::{Query, State},
-    http::StatusCode,
-};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -17,7 +13,7 @@ use crate::{
 
 use super::{
     extractors::{AuthUser, ClientIp, RequestId, UserAgent},
-    user::{user_status_str, validate_locale},
+    user::{user_status_str, validate_locale, validate_password},
 };
 
 // Request types
@@ -37,6 +33,9 @@ pub struct LoginRequest {
     pub identifier: String,
     pub password: String,
     pub device_name: Option<String>,
+    /// When true, issues a long-lived refresh token (30 days).
+    /// When false or omitted, issues a short-lived token (24 h).
+    pub remember_me: Option<bool>,
     pub captcha_token: Option<String>,
 }
 
@@ -46,7 +45,7 @@ pub struct RefreshRequest {
 }
 
 #[derive(Deserialize)]
-pub struct VerifyEmailQuery {
+pub struct VerifyEmailRequest {
     pub token: String,
 }
 
@@ -111,7 +110,7 @@ pub enum LoginResponse {
     },
     TwoFactor {
         two_factor_required: bool,
-        /// "totp" or "webauthn"
+        /// "totp" or "email"
         two_factor_method: String,
         pre_auth_token: String,
     },
@@ -178,6 +177,7 @@ pub async fn login(
         ip,
         ua.as_deref(),
         body.device_name.as_deref(),
+        body.remember_me.unwrap_or(false),
         rid,
     )
     .await?;
@@ -233,13 +233,15 @@ pub async fn refresh(
     }))
 }
 
+// Accepts the token in the request body rather than in the URL query string so
+// that it is not captured in server access logs, browser history, or Referer headers.
 pub async fn verify_email(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     RequestId(rid): RequestId,
-    Query(q): Query<VerifyEmailQuery>,
+    Json(body): Json<VerifyEmailRequest>,
 ) -> Result<StatusCode, AppError> {
-    auth_svc::verify_email(&state, &q.token, ip, rid).await?;
+    auth_svc::verify_email(&state, &body.token, ip, rid).await?;
     Ok(StatusCode::OK)
 }
 
@@ -358,20 +360,6 @@ pub async fn resend_email_two_factor(
 fn validate_email(email: &str) -> Result<(), AppError> {
     if !email_address::EmailAddress::is_valid(email) {
         return Err(AppError::Validation("invalid email address".into()));
-    }
-    Ok(())
-}
-
-fn validate_password(password: &str) -> Result<(), AppError> {
-    if password.len() < 8 {
-        return Err(AppError::Validation(
-            "password must be at least 8 characters".into(),
-        ));
-    }
-    if password.len() > 128 {
-        return Err(AppError::Validation(
-            "password must not exceed 128 characters".into(),
-        ));
     }
     Ok(())
 }

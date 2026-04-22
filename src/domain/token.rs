@@ -71,3 +71,57 @@ impl OneTimeToken for PasswordResetToken {
         self.expires_at
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_reset_token(used: bool, expires_in_secs: i64) -> PasswordResetToken {
+        let now = OffsetDateTime::now_utc();
+        PasswordResetToken {
+            id: uuid::Uuid::new_v4(),
+            user_id: uuid::Uuid::new_v4(),
+            token_hash: vec![0u8; 32],
+            created_at: now,
+            expires_at: now + time::Duration::seconds(expires_in_secs),
+            used_at: if used { Some(now) } else { None },
+            request_ip: None,
+            request_user_agent: None,
+        }
+    }
+
+    #[test]
+    fn is_used_true_when_used_at_set() {
+        assert!(make_reset_token(true, 3600).is_used());
+    }
+
+    #[test]
+    fn is_used_false_when_not_used() {
+        assert!(!make_reset_token(false, 3600).is_used());
+    }
+
+    #[test]
+    fn is_expired_true_when_past() {
+        assert!(make_reset_token(false, -1).is_expired());
+    }
+
+    #[test]
+    fn is_expired_false_when_future() {
+        assert!(!make_reset_token(false, 3600).is_expired());
+    }
+
+    #[test]
+    fn is_valid_true_when_unused_and_not_expired() {
+        assert!(make_reset_token(false, 3600).is_valid());
+    }
+
+    #[test]
+    fn is_valid_false_when_used() {
+        assert!(!make_reset_token(true, 3600).is_valid());
+    }
+
+    #[test]
+    fn is_valid_false_when_expired() {
+        assert!(!make_reset_token(false, -1).is_valid());
+    }
+}
