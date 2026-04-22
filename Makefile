@@ -61,16 +61,12 @@ fmt-check: ## Check formatting without modifying files
 clippy: ## Run Clippy linter
 	cargo clippy -- -D warnings
 
-.PHONY: audit
-audit: ## Check dependencies for known vulnerabilities (cargo-audit)
-	cargo audit
-
 .PHONY: deny
-deny: ## Enforce dependency policy (cargo-deny)
+deny: ## Enforce dependency policy and security audit (cargo-deny)
 	cargo deny check
 
 .PHONY: quality
-quality: fmt-check clippy audit deny ## Run all code quality checks
+quality: fmt-check clippy deny ## Run all code quality checks
 
 # =============================================================================
 # Tests
