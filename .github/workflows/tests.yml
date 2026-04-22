@@ -13,55 +13,7 @@ env:
 
 jobs:
   test:
-    name: Tests
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install Mailpit
-        run: |
-          curl -sSL https://github.com/axllent/mailpit/releases/latest/download/mailpit-linux-amd64.tar.gz \
-            | tar -xz mailpit
-          sudo mv mailpit /usr/local/bin/mailpit
-
-      - name: Run tests
-        run: cargo test
-
-  coverage:
-    name: Coverage
+    name: Tests & Coverage
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -108,7 +60,9 @@ jobs:
           sudo mv mailpit /usr/local/bin/mailpit
 
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
 
       - name: Run coverage
         id: tarpaulin
