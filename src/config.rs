@@ -162,7 +162,7 @@ impl FromStr for LogFormat {
 
 #[derive(Debug, Clone)]
 pub struct LogConfig {
-    /// Directive passed to EnvFilter, e.g. "info" or "rust_api=debug,tower_http=info".
+    /// Directive passed to EnvFilter, e.g. "info" or "auth_api=debug,tower_http=info".
     pub level: String,
     pub format: LogFormat,
 }
@@ -310,7 +310,7 @@ impl Config {
                 argon2_memory_kib: env_parse("ARGON2_MEMORY_KIB").unwrap_or(65_536), // 64 MB
                 argon2_iterations: env_parse("ARGON2_ITERATIONS").unwrap_or(3),
                 argon2_parallelism: env_parse("ARGON2_PARALLELISM").unwrap_or(4),
-                totp_issuer: env_string("TOTP_ISSUER").unwrap_or_else(|| "rust-api".into()),
+                totp_issuer: env_string("TOTP_ISSUER").unwrap_or_else(|| "auth-api".into()),
                 encryption_key: env_require("ENCRYPTION_KEY")?,
                 previous_encryption_key: env_string("PREVIOUS_ENCRYPTION_KEY"),
                 totp_skew: env_parse("TOTP_SKEW").unwrap_or(1),
@@ -336,7 +336,7 @@ impl Config {
                     port: env_parse("SMTP_PORT").unwrap_or(587),
                     username: env_require("SMTP_USERNAME")?,
                     password: env_require("SMTP_PASSWORD")?,
-                    from_name: env_string("SMTP_FROM_NAME").unwrap_or_else(|| "rust-api".into()),
+                    from_name: env_string("SMTP_FROM_NAME").unwrap_or_else(|| "auth-api".into()),
                     from_address: env_require("SMTP_FROM_ADDRESS")?,
                 },
                 templates_dir: env_string("MAIL_TEMPLATES_DIR")

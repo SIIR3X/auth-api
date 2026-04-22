@@ -1,6 +1,6 @@
 services:
   api:
-    image: ghcr.io/siir3x/rust-api:latest
+    image: ghcr.io/siir3x/auth-api:latest
     env_file: config.prod.env
     environment:
       # Secrets — exported from pass before running

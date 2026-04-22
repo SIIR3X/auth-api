@@ -38,5 +38,5 @@ This triggers the `docker-publish` workflow. The image and the GitHub Release ar
 ### 4. Verify
 
 - Check the workflow run on GitHub Actions
-- Confirm the image is available on GHCR: `ghcr.io/siir3x/rust-api:v1.2.3`
+- Confirm the image is available on GHCR: `ghcr.io/siir3x/auth-api:v1.2.3`
 - Confirm the GitHub Release includes the `migrations.tar.gz` asset

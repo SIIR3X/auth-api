@@ -33,7 +33,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 # Compile le binaire
 COPY . .
-RUN cargo build --release --bin rust-api
+RUN cargo build --release --bin auth-api
 
 # =============================================================================
 # Stage 4: Runtime
@@ -50,7 +50,7 @@ RUN useradd --uid 1001 --no-create-home --shell /bin/false appuser
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/rust-api ./rust-api
+COPY --from=builder /app/target/release/auth-api ./auth-api
 COPY --from=builder /app/templates ./templates
 
 RUN chown -R appuser:appuser /app
@@ -59,4 +59,4 @@ USER appuser
 
 EXPOSE 3000
 
-CMD ["./rust-api"]
+CMD ["./auth-api"]

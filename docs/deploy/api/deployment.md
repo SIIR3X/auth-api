@@ -11,7 +11,7 @@ git tag v1.2.3
     ↓
 GitHub Actions builds the image
     ↓
-Image pushed to ghcr.io/siir3x/rust-api:latest
+Image pushed to ghcr.io/siir3x/auth-api:latest
     ↓
 VPS: docker compose pull && docker compose up -d
 ```
@@ -41,10 +41,10 @@ echo "<YOUR_GITHUB_TOKEN>" | docker login ghcr.io -u SIIR3X --password-stdin
 Only two files are needed on the VPS — no need to clone the full repository.
 
 ```bash
-mkdir -p /srv/rust-api && cd /srv/rust-api
+mkdir -p /srv/auth-api && cd /srv/auth-api
 
-curl -O https://raw.githubusercontent.com/SIIR3X/rust-api/main/docker-compose.prod.yml
-curl -O https://raw.githubusercontent.com/SIIR3X/rust-api/main/config.prod.env
+curl -O https://raw.githubusercontent.com/SIIR3X/auth-api/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/SIIR3X/auth-api/main/config.prod.env
 ```
 
 ---
@@ -70,13 +70,13 @@ Key values to update:
 ### 1.5 Export secrets and deploy
 
 ```bash
-export DATABASE_URL=$(pass prod/rust-api/database-url)
-export REDIS_URL=$(pass prod/rust-api/redis-url)
-export JWT_SECRET=$(pass prod/rust-api/jwt-secret)
-export ENCRYPTION_KEY=$(pass prod/rust-api/encryption-key)
-export SMTP_USERNAME=$(pass prod/rust-api/smtp-username)
-export SMTP_PASSWORD=$(pass prod/rust-api/smtp-password)
-export CAPTCHA_SECRET=$(pass prod/rust-api/captcha-secret)
+export DATABASE_URL=$(pass prod/auth-api/database-url)
+export REDIS_URL=$(pass prod/auth-api/redis-url)
+export JWT_SECRET=$(pass prod/auth-api/jwt-secret)
+export ENCRYPTION_KEY=$(pass prod/auth-api/encryption-key)
+export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
+export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
+export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
 
 docker compose -f docker-compose.prod.yml up -d
 ```

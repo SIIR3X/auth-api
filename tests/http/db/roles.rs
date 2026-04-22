@@ -5,7 +5,7 @@
 //! All tests use `app.db` directly so they exercise repository functions
 //! without going through the HTTP layer.
 
-use rust_api::repositories::role as role_repo;
+use auth_api::repositories::role as role_repo;
 use uuid::Uuid;
 
 use crate::common::{app::TestApp, fixtures};

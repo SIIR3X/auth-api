@@ -168,7 +168,7 @@ fn create_test_database(admin: &mut Client, template_name: Option<&str>) -> Stri
     let mut last_error = None;
 
     for _attempt in 0..5 {
-        let db_name = format!("rust_api_test_{}_{}", std::process::id(), unique_suffix());
+        let db_name = format!("auth_api_test_{}_{}", std::process::id(), unique_suffix());
         let sql = match template_name {
             Some(template_name) => {
                 format!("CREATE DATABASE \"{db_name}\" TEMPLATE \"{template_name}\"")
@@ -193,7 +193,7 @@ fn create_test_database(admin: &mut Client, template_name: Option<&str>) -> Stri
 fn ensure_template_database(admin_config: &Config, base_config: &Config) -> String {
     TEMPLATE_DB_NAME
         .get_or_init(|| {
-            let template_db = format!("rust_api_db_template_{}", std::process::id());
+            let template_db = format!("auth_api_db_template_{}", std::process::id());
 
             let mut admin = admin_config
                 .clone()

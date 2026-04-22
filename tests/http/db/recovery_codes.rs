@@ -5,7 +5,7 @@
 //! Covers `create_batch`, `replace_all_by_user`, `find_unused_by_user`,
 //! and the empty-batch early-return inside `insert_batch_in_tx`.
 
-use rust_api::{repositories::recovery_code, utils::crypto};
+use auth_api::{repositories::recovery_code, utils::crypto};
 
 use crate::common::{app::TestApp, fixtures};
 

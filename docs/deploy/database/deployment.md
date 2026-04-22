@@ -130,9 +130,9 @@ sudo -u postgres psql
 ```
 
 ```sql
-CREATE USER rust_api WITH PASSWORD 'your-strong-password';
-CREATE DATABASE rust_api OWNER rust_api;
-GRANT ALL PRIVILEGES ON DATABASE rust_api TO rust_api;
+CREATE USER auth_api WITH PASSWORD 'your-strong-password';
+CREATE DATABASE auth_api OWNER auth_api;
+GRANT ALL PRIVILEGES ON DATABASE auth_api TO auth_api;
 \q
 ```
 
@@ -149,7 +149,7 @@ listen_addresses = '10.0.0.2'
 Edit `/etc/postgresql/<version>/main/pg_hba.conf` — allow the API VPS via its VPN IP only:
 
 ```conf
-host    rust_api    rust_api    10.0.0.1/32    scram-sha-256
+host    auth_api    auth_api    10.0.0.1/32    scram-sha-256
 ```
 
 Restart PostgreSQL:
@@ -175,7 +175,7 @@ sudo ufw allow from 10.0.0.1 to any port 5432
 **On the API VPS:**
 
 ```bash
-psql "$(pass prod/rust-api/database-url)"
+psql "$(pass prod/auth-api/database-url)"
 ```
 
 ---
@@ -193,10 +193,10 @@ cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
 Fetch and run migrations:
 
 ```bash
-curl -sL https://github.com/SIIR3X/rust-api/releases/latest/download/migrations.tar.gz \
+curl -sL https://github.com/SIIR3X/auth-api/releases/latest/download/migrations.tar.gz \
   | tar -xz -C /dev/shm
 
-DATABASE_URL=$(pass prod/rust-api/database-url) \
+DATABASE_URL=$(pass prod/auth-api/database-url) \
   sqlx migrate run --source /dev/shm/migrations
 
 rm -rf /dev/shm/migrations
@@ -218,7 +218,7 @@ sudo apt install -y redis-server
 **On the DB VPS** — inject the password from `pass` and bind to the VPN interface:
 
 ```bash
-REDIS_PASSWORD=$(pass prod/rust-api/redis-password)
+REDIS_PASSWORD=$(pass prod/auth-api/redis-password)
 sudo sed -i "s/^# requirepass .*/requirepass ${REDIS_PASSWORD}/" /etc/redis/redis.conf
 sudo sed -i "s/^bind .*/bind 10.0.0.2/" /etc/redis/redis.conf
 ```
