@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
 
     services:
       postgres:
@@ -66,76 +65,11 @@ jobs:
           tool: cargo-nextest,cargo-tarpaulin
 
       - name: Run tests
-        id: nextest
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          cargo nextest run --color never 2>&1 | tee nextest-output.txt
-          python3 - <<'EOF' >> $GITHUB_OUTPUT
-          import re
-
-          content = open('nextest-output.txt').read()
-          passed  = re.search(r'(\d+) passed',  content)
-          failed  = re.search(r'(\d+) failed',  content)
-          skipped = re.search(r'(\d+) skipped', content)
-          print(f"passed={passed.group(1) if passed else '0'}")
-          print(f"failed={failed.group(1) if failed else '0'}")
-          print(f"skipped={skipped.group(1) if skipped else '0'}")
-          EOF
+        run: cargo nextest run
 
       - name: Run coverage
-        id: tarpaulin
-        continue-on-error: true
         run: |
           cargo tarpaulin --tests \
             --skip-clean \
             --exclude-files "src/main.rs" "src/bin/*" \
-            --out json --output-dir .
-          COVERAGE=$(python3 -c "import json; data=json.load(open('tarpaulin-report.json')); print(f\"{data['coverage']:.1f}\")")
-          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
-
-      - name: Post report
-        if: always()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const passed   = '${{ steps.nextest.outputs.passed }}'   || '?';
-            const failed   = '${{ steps.nextest.outputs.failed }}'   || '?';
-            const skipped  = '${{ steps.nextest.outputs.skipped }}'  || '?';
-            const coverage = '${{ steps.tarpaulin.outputs.coverage }}' || '?';
-            const testOk   = '${{ steps.nextest.outcome }}'   === 'success';
-            const covOk    = '${{ steps.tarpaulin.outcome }}' === 'success';
-            const covValue = parseFloat(coverage);
-            const covIcon  = !covOk ? '❌' : covValue >= 80 ? '✅' : covValue >= 60 ? '⚠️' : '❌';
-
-            const body = [
-              '## Tests & Coverage',
-              '',
-              '### Tests',
-              '',
-              '| Result | Count |',
-              '|--------|-------|',
-              `| ✅ Passed  | ${passed}  |`,
-              `| ❌ Failed  | ${failed}  |`,
-              `| ⏭️ Skipped | ${skipped} |`,
-              '',
-              '### Coverage',
-              '',
-              `${covIcon} **${coverage}%** line coverage`,
-              '',
-              '| Threshold | Status |',
-              '|-----------|--------|',
-              `| 80% | ${covOk && covValue >= 80 ? '✅ Reached' : '❌ Not reached'} |`,
-              `| 60% | ${covOk && covValue >= 60 ? '✅ Reached' : '❌ Not reached'} |`,
-            ].join('\n');
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body,
-            });
-
-      - name: Fail if tests failed
-        if: steps.nextest.outcome == 'failure'
-        run: exit 1
+            --out html --output-dir reports/coverage
