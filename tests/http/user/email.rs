@@ -368,7 +368,7 @@ async fn email_change_cooldown_lifted_allows_new_flow() {
 async fn start_and_verify_current(app: &TestApp, token: &str) -> String {
     let user_id = {
         let claims =
-            rust_api::utils::jwt::decode_token(token, "test-secret-that-is-long-enough-for-hs256")
+            auth_api::utils::jwt::decode_token(token, "test-secret-that-is-long-enough-for-hs256")
                 .expect("failed to decode access token");
         claims.sub
     };

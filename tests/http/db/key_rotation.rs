@@ -2,7 +2,7 @@
 //!
 //! Tests index range 900–919.
 
-use rust_api::{services::key_rotation::rotate_totp_encryption_key, state::AppState};
+use auth_api::{services::key_rotation::rotate_totp_encryption_key, state::AppState};
 
 use crate::common::{app::TestApp, fixtures};
 
@@ -67,7 +67,7 @@ async fn rotate_succeeds_with_no_totp_methods_returns_zero_counts() {
 
 #[tokio::test]
 async fn rotate_re_encrypts_totp_secret_with_new_key() {
-    use rust_api::utils::crypto;
+    use auth_api::utils::crypto;
 
     let key_a = crypto::decode_encryption_key(KEY_A).unwrap();
     let key_b = crypto::decode_encryption_key(KEY_B).unwrap();

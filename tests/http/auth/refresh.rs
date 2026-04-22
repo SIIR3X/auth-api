@@ -281,7 +281,7 @@ async fn refresh_rejects_mismatched_ip_with_strict_binding() {
 
     // Forge a different IP in the session record to simulate an IP change.
     sqlx::query("UPDATE sessions SET ip_address = '10.0.0.1/32' WHERE token_hash = $1")
-        .bind(rust_api::utils::crypto::sha256(user.refresh_token.as_bytes()).as_ref())
+        .bind(auth_api::utils::crypto::sha256(user.refresh_token.as_bytes()).as_ref())
         .execute(&app.db)
         .await
         .expect("failed to update session IP");

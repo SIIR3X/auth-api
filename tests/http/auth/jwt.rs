@@ -79,7 +79,7 @@ async fn tampered_jwt_signature_returns_401() {
 
 #[tokio::test]
 async fn jwt_signed_with_wrong_secret_returns_401() {
-    use rust_api::utils::jwt;
+    use auth_api::utils::jwt;
 
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 351).await;
@@ -104,7 +104,7 @@ async fn jwt_signed_with_wrong_secret_returns_401() {
 
 #[tokio::test]
 async fn expired_access_token_returns_401() {
-    use rust_api::utils::jwt::{self, Claims};
+    use auth_api::utils::jwt::{self, Claims};
 
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 352).await;

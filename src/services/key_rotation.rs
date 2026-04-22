@@ -5,7 +5,7 @@
 //! server is either stopped or in a maintenance window.
 //!
 //! Usage:
-//!   PREVIOUS_ENCRYPTION_KEY=<old_b64_key> ./rust-api --rotate-totp-keys
+//!   PREVIOUS_ENCRYPTION_KEY=<old_b64_key> ./auth-api --rotate-totp-keys
 
 use serde_json::json;
 

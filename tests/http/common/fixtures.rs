@@ -73,7 +73,7 @@ pub async fn register_user(app: &TestApp, index: usize) -> RegisteredUser {
 /// Returns the raw (plaintext) token to use in API calls.
 pub async fn create_password_reset_token(pool: &PgPool, user_id: Uuid) -> PasswordResetToken {
     let raw = format!("test-reset-{}", user_id);
-    let hash = rust_api::utils::crypto::sha256(raw.as_bytes());
+    let hash = auth_api::utils::crypto::sha256(raw.as_bytes());
     sqlx::query(
         "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
          VALUES ($1, $2, NOW() + INTERVAL '30 minutes')",
@@ -92,7 +92,7 @@ pub async fn create_expired_password_reset_token(
     user_id: Uuid,
 ) -> PasswordResetToken {
     let raw = format!("test-expired-reset-{}", user_id);
-    let hash = rust_api::utils::crypto::sha256(raw.as_bytes());
+    let hash = auth_api::utils::crypto::sha256(raw.as_bytes());
     // Override created_at so expires_at > created_at (satisfies CHECK constraint)
     // while both timestamps are in the past (token is expired).
     sqlx::query(
@@ -110,7 +110,7 @@ pub async fn create_expired_password_reset_token(
 /// Inserts an already-consumed password reset token.
 pub async fn create_used_password_reset_token(pool: &PgPool, user_id: Uuid) -> PasswordResetToken {
     let raw = format!("test-used-reset-{}", user_id);
-    let hash = rust_api::utils::crypto::sha256(raw.as_bytes());
+    let hash = auth_api::utils::crypto::sha256(raw.as_bytes());
     sqlx::query(
         "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, used_at)
          VALUES ($1, $2, NOW() + INTERVAL '30 minutes', NOW())",
@@ -131,7 +131,7 @@ pub async fn create_email_verification_token(
     email: &str,
 ) -> EmailVerificationToken {
     let raw = format!("test-verify-{}", user_id);
-    let hash = rust_api::utils::crypto::sha256(raw.as_bytes());
+    let hash = auth_api::utils::crypto::sha256(raw.as_bytes());
     // register_user already creates an active token; mark it used before inserting ours.
     sqlx::query(
         "UPDATE email_verification_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL",

@@ -14,7 +14,7 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
-use rust_api::{
+use auth_api::{
     config::{
         AuditConfig, CaptchaConfig, Config, CorsConfig, CryptoConfig, DatabaseConfig, Environment,
         JwtConfig, LogConfig, LogFormat, MailConfig, RateLimitConfig, RedisConfig, RiskConfig,
@@ -124,7 +124,7 @@ pub fn init_tracing_once() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| EnvFilter::new("rust_api=error,sqlx=warn")),
+                    .unwrap_or_else(|_| EnvFilter::new("auth_api=error,sqlx=warn")),
             )
             .try_init();
     });

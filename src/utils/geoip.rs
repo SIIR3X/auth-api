@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn open_nonexistent_path_returns_unavailable_instance() {
-        let geoip = GeoIp::open("/tmp/does_not_exist_rust_api_test.mmdb");
+        let geoip = GeoIp::open("/tmp/does_not_exist_auth_api_test.mmdb");
         assert!(!geoip.is_available());
     }
 

@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use rust_api::repositories::{
+use auth_api::repositories::{
     login_attempt, login_location, session as session_repo, user as user_repo,
 };
 
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
     let admin_url = bench_support::required_admin_database_url()?;
     let report_dir = bench_support::report_section_dir("sql")?;
 
-    let db = bench_support::EphemeralDatabase::create("rust_api_sql_bench", &admin_url).await?;
+    let db = bench_support::EphemeralDatabase::create("auth_api_sql_bench", &admin_url).await?;
     let seed = seed_sql_dataset(&db.pool).await?;
     let brute_force_cutoff = OffsetDateTime::now_utc() - time::Duration::minutes(15);
     let consecutive_limit = 10_i64;

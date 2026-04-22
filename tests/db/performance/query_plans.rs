@@ -1,5 +1,5 @@
 use postgres::Client;
-use rust_api::repositories::{
+use auth_api::repositories::{
     login_attempt, login_location, session as session_repo, user as user_repo,
 };
 use time::OffsetDateTime;

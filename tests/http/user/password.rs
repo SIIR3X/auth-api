@@ -133,7 +133,7 @@ async fn concurrent_password_reset_token_use_only_succeeds_once() {
     app.clear_reset_password_rate_limit("127.0.0.1").await;
 
     let raw_token = "reset-race-token";
-    let token_hash = rust_api::utils::crypto::sha256(raw_token.as_bytes());
+    let token_hash = auth_api::utils::crypto::sha256(raw_token.as_bytes());
 
     sqlx::query(
         "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)

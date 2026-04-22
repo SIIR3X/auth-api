@@ -1,4 +1,4 @@
-use rust_api::{
+use auth_api::{
     config::{Config, LogFormat},
     handlers,
     services::key_rotation,
@@ -61,7 +61,7 @@ async fn rotate_audit_log(db: &sqlx::PgPool, retention_months: u32) -> Result<()
     Ok(())
 }
 
-fn init_tracing(cfg: &rust_api::config::LogConfig) {
+fn init_tracing(cfg: &auth_api::config::LogConfig) {
     use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
     let filter = EnvFilter::try_new(&cfg.level).unwrap_or_else(|_| EnvFilter::new("info"));

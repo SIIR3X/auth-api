@@ -6,11 +6,11 @@
 
 DEV_COMPOSE    := docker-compose.dev.yml
 TEST_COMPOSE   := docker-compose.test.yml
-TEST_PROJECT   := rust-api-test
+TEST_PROJECT   := auth-api-test
 TEST_DB_URL    := postgres://postgres:postgres@localhost:5433/postgres
 TEST_REDIS_URL := redis://127.0.0.1:6380
-IMAGE_LOCAL    := rust-api:local
-IMAGE_DEV      := rust-api:dev
+IMAGE_LOCAL    := auth-api:local
+IMAGE_DEV      := auth-api:dev
 
 # =============================================================================
 # Help
