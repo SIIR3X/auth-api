@@ -32,6 +32,7 @@ pub struct NewSession<'a> {
     pub expires_at: OffsetDateTime,
     pub ip_address: Option<IpNetwork>,
     pub device_name: Option<&'a str>,
+    pub remember_me: bool,
     pub token_hash: &'a [u8],
     pub user_agent: Option<&'a str>,
 }
@@ -64,8 +65,8 @@ impl SessionValidation {
 pub async fn create(pool: &PgPool, input: &NewSession<'_>) -> Result<Session, sqlx::Error> {
     sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, token_hash, user_agent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -73,6 +74,7 @@ pub async fn create(pool: &PgPool, input: &NewSession<'_>) -> Result<Session, sq
     .bind(input.expires_at)
     .bind(input.ip_address)
     .bind(input.device_name)
+    .bind(input.remember_me)
     .bind(input.token_hash)
     .bind(input.user_agent)
     .fetch_one(pool)
@@ -88,11 +90,12 @@ pub async fn rotate(
 ) -> Result<Session, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
-    let old_session = sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1 FOR UPDATE")
-        .bind(old_session_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
+    let old_session =
+        sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = $1 FOR UPDATE")
+            .bind(old_session_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
 
     if old_session.revoked_at.is_some() {
         return Err(sqlx::Error::RowNotFound);
@@ -100,8 +103,8 @@ pub async fn rotate(
 
     let new_session = sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, token_hash, user_agent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -109,6 +112,7 @@ pub async fn rotate(
     .bind(input.expires_at)
     .bind(input.ip_address)
     .bind(input.device_name)
+    .bind(input.remember_me)
     .bind(input.token_hash)
     .bind(input.user_agent)
     .fetch_one(&mut *tx)
@@ -143,23 +147,6 @@ pub async fn revoke_all_by_user(pool: &PgPool, user_id: Uuid) -> Result<u64, sql
         "UPDATE sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
     )
     .bind(user_id)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected())
-}
-
-/// Revokes all active sessions for a user except the given session.
-pub async fn revoke_all_except(
-    pool: &PgPool,
-    user_id: Uuid,
-    except_session_id: Uuid,
-) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE sessions SET revoked_at = NOW()
-         WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL",
-    )
-    .bind(user_id)
-    .bind(except_session_id)
     .execute(pool)
     .await?;
     Ok(result.rows_affected())

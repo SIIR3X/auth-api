@@ -48,7 +48,7 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
 
     if old_key == new_key {
         return Err(AppError::Internal(anyhow::anyhow!(
-            "PREVIOUS_ENCRYPTION_KEY and ENCRYPTION_KEY are identical — nothing to rotate"
+            "PREVIOUS_ENCRYPTION_KEY and ENCRYPTION_KEY are identical - nothing to rotate"
         )));
     }
 
@@ -65,12 +65,12 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
             Ok(new_secret) => match tf_repo::update_totp_secret(&state.db, id, &new_secret).await {
                 Ok(_) => rotated += 1,
                 Err(e) => {
-                    tracing::error!(method_id = %id, error = ?e, "failed to update TOTP secret during rotation");
+                    tracing::warn!(method_id = %id, error = ?e, "failed to update TOTP secret during rotation");
                     failed += 1;
                 }
             },
             Err(e) => {
-                tracing::error!(method_id = %id, error = ?e, "failed to re-encrypt TOTP secret during rotation");
+                tracing::warn!(method_id = %id, error = ?e, "failed to re-encrypt TOTP secret during rotation");
                 failed += 1;
             }
         }

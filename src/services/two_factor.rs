@@ -44,11 +44,22 @@ pub struct TotpSetupResult {
 /// Creates an unverified TOTP method for the user and returns setup data.
 /// The user must call `verify_setup` with a valid code to activate it.
 pub async fn setup_totp(state: &AppState, user_id: Uuid) -> Result<TotpSetupResult, AppError> {
+    // Fetch the user to populate the account label in the QR URI so that
+    // authenticator apps display the correct email and issuer combination.
+    let user = user_repo::find_by_id(&state.db, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or(AppError::NotFound)?;
+
     let enc_key = crypto::decode_encryption_key(&state.config.crypto.encryption_key)
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let base32_secret = totp::generate_secret();
-    let qr_uri = totp::qr_uri(&base32_secret, "", &state.config.crypto.totp_issuer);
+    let qr_uri = totp::qr_uri(
+        &base32_secret,
+        &user.email,
+        &state.config.crypto.totp_issuer,
+    );
     let encrypted =
         crypto::encrypt(&base32_secret, &enc_key).map_err(|e| AppError::Internal(e.into()))?;
 
@@ -58,8 +69,6 @@ pub async fn setup_totp(state: &AppState, user_id: Uuid) -> Result<TotpSetupResu
             user_id,
             method_type: TwoFactorType::Totp,
             totp_secret: Some(&encrypted),
-            webauthn_credential_id: None,
-            webauthn_public_key: None,
         },
     )
     .await
@@ -82,11 +91,9 @@ pub async fn verify_setup(
     code: &str,
     request_id: Option<Uuid>,
 ) -> Result<Vec<String>, AppError> {
-    let method = tf_repo::find_by_user(&state.db, user_id)
+    let method = tf_repo::find_by_id_and_user(&state.db, method_id, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
-        .into_iter()
-        .find(|m| m.id == method_id)
         .ok_or(AppError::NotFound)?;
 
     if method.is_verified {
@@ -222,11 +229,14 @@ async fn create_recovery_codes(state: &AppState, user_id: Uuid) -> Result<Vec<St
     Ok(plaintext)
 }
 
-/// Validates and consumes a recovery code in lieu of a TOTP code.
+/// Validates and consumes a recovery code submitted by an already-authenticated user.
+/// Records the event in the audit log; returns an error if the code is invalid, already
+/// used, expired, or if the failure budget has been exhausted.
 pub async fn use_recovery_code(
     state: &AppState,
     user_id: Uuid,
     code: &str,
+    request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     let fail_key = format!("rc_fail_user:{}", user_id);
 
@@ -278,6 +288,19 @@ pub async fn use_recovery_code(
     if let Ok(mut conn) = state.redis.get().await {
         let _: Result<(), _> = conn.del(&fail_key).await;
     }
+
+    audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(user_id),
+            request_id,
+            action: AuditAction::RecoveryCodeUsed,
+            ip_address: None,
+            metadata: json!({}),
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(())
 }

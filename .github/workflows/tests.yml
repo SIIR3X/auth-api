@@ -1,0 +1,146 @@
+name: Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+  TEST_REDIS_URL: redis://127.0.0.1:6379
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Mailpit
+        run: |
+          curl -sSL https://github.com/axllent/mailpit/releases/latest/download/mailpit-linux-amd64.tar.gz \
+            | tar -xz mailpit
+          sudo mv mailpit /usr/local/bin/mailpit
+
+      - name: Run tests
+        run: cargo test
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Mailpit
+        run: |
+          curl -sSL https://github.com/axllent/mailpit/releases/latest/download/mailpit-linux-amd64.tar.gz \
+            | tar -xz mailpit
+          sudo mv mailpit /usr/local/bin/mailpit
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Run coverage
+        id: tarpaulin
+        run: |
+          cargo tarpaulin --tests \
+            --exclude-files "src/main.rs" "src/bin/*" \
+            --out json --output-dir .
+          COVERAGE=$(python3 -c "import json; data=json.load(open('tarpaulin-report.json')); print(f\"{data['coverage']:.1f}\")")
+          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+
+      - name: Post coverage comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const coverage = '${{ steps.tarpaulin.outputs.coverage }}';
+            const value    = parseFloat(coverage);
+            const icon     = value >= 80 ? '✅' : value >= 60 ? '⚠️' : '❌';
+
+            const body = [
+              '## Coverage Report',
+              '',
+              `${icon} **${coverage}%** line coverage`,
+              '',
+              '| Threshold | Status |',
+              '|-----------|--------|',
+              `| 80% | ${value >= 80 ? '✅ Reached' : '❌ Not reached'} |`,
+              `| 60% | ${value >= 60 ? '✅ Reached' : '❌ Not reached'} |`,
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

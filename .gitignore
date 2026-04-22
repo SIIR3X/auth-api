@@ -1,5 +1,7 @@
 /target
 .env
+.env.*
+!.env.dev
 vendor
 sbom.json
 reports/bench/

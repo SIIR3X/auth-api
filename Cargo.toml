@@ -33,7 +33,6 @@ async-trait = "0.1.89"
 tower-http = { version = "0.6.8", features = ["cors"] }
 email_address = "0.2.9"
 maxminddb = "0.27.3"
-webauthn-rs = { version = "0.5.1", features = ["resident-key-support", "danger-allow-state-serialisation"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "form"] }
 
 [dev-dependencies]
@@ -44,7 +43,6 @@ serde_json = "1.0"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "derive", "json", "ipnetwork", "migrate"] }
 tokio = { version = "1.50.0", features = ["full"] }
 uuid = { version = "1.22.0", features = ["v4"] }
-webauthn-authenticator-rs = { version = "0.5.4", features = ["softpasskey"] }
 
 
 [[test]]

@@ -1,7 +1,13 @@
+mod captcha;
+mod headers;
+mod jwt;
 mod lockout;
 mod login;
+mod password_reset;
+mod redis_resilience;
 mod refresh;
 mod register;
+mod risk;
 mod security;
+mod totp;
 mod two_factor;
-mod webauthn;

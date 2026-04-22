@@ -25,7 +25,7 @@ use crate::{
         user as user_repo,
     },
     state::AppState,
-    utils::{crypto, time},
+    utils::{backoff, crypto, time},
 };
 
 use super::{email as email_svc, reauth as reauth_svc};
@@ -48,8 +48,6 @@ pub async fn setup(state: &AppState, user_id: Uuid) -> Result<Uuid, AppError> {
             user_id,
             method_type: TwoFactorType::Email,
             totp_secret: None,
-            webauthn_credential_id: None,
-            webauthn_public_key: None,
         },
     )
     .await
@@ -264,10 +262,6 @@ pub async fn verify_login_code(
 
 // Shared OTP verification logic
 
-// Backoff constants (mirror those in auth.rs)
-const BACKOFF_BASE_SECS: u64 = 1;
-const BACKOFF_MAX_SECS: u64 = 16;
-
 async fn verify_otp(
     state: &AppState,
     user_id: Uuid,
@@ -335,18 +329,16 @@ async fn increment_fail(state: &AppState, key: &str, window_secs: u64) -> i64 {
 }
 
 async fn apply_backoff(failures: i64) {
-    if failures <= 0 {
-        return;
-    }
-    let exp = (failures - 1).min(4) as u32;
-    let secs = BACKOFF_BASE_SECS
-        .saturating_mul(2u64.pow(exp))
-        .min(BACKOFF_MAX_SECS);
-    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+    backoff::apply(failures).await;
 }
 
 // OTP generation
 
+/// Generates a 6-digit numeric OTP (000000..999999, ~20 bits of entropy).
+///
+/// Security does not rest on the code entropy alone: a 5-attempt failure budget,
+/// exponential backoff, and a 10-minute TTL together make brute-forcing infeasible
+/// in practice. This matches common Email OTP implementations (RFC 4226 / HOTP style).
 fn generate_otp() -> String {
     let code: u32 = rand::rng().random_range(0..1_000_000);
     format!("{:06}", code)

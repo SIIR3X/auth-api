@@ -134,3 +134,116 @@ async fn register_username_too_short() {
 
     assert_eq!(res.status().as_u16(), 422);
 }
+
+#[tokio::test]
+async fn register_username_too_long() {
+    let app = TestApp::spawn().await;
+    // 31 characters - one over the 30-char maximum.
+    let long_name = "a".repeat(31);
+
+    let res = app
+        .post(
+            "/auth/register",
+            &serde_json::json!({
+                "username": long_name,
+                "email": "toolong@example.com",
+                "password": "SecurePass1!",
+            }),
+        )
+        .await;
+
+    assert_eq!(res.status().as_u16(), 422);
+}
+
+#[tokio::test]
+async fn register_username_invalid_chars_rejected() {
+    let app = TestApp::spawn().await;
+
+    let res = app
+        .post(
+            "/auth/register",
+            &serde_json::json!({
+                "username": "bad name!",
+                "email": "badchars@example.com",
+                "password": "SecurePass1!",
+            }),
+        )
+        .await;
+
+    assert_eq!(res.status().as_u16(), 422);
+}
+
+#[tokio::test]
+async fn register_password_too_long() {
+    let app = TestApp::spawn().await;
+    // 129 characters - one over the 128-char maximum.
+    let too_long = format!("{}A1!", "x".repeat(126));
+    assert_eq!(too_long.len(), 129);
+
+    let res = app
+        .post(
+            "/auth/register",
+            &serde_json::json!({
+                "username": "validuser",
+                "email": "toolong@example.com",
+                "password": too_long,
+            }),
+        )
+        .await;
+
+    assert_eq!(res.status().as_u16(), 422);
+}
+
+#[tokio::test]
+async fn register_password_missing_digit_rejected() {
+    let app = TestApp::spawn().await;
+
+    let res = app
+        .post(
+            "/auth/register",
+            &serde_json::json!({
+                "username": "validuser",
+                "email": "nodigit@example.com",
+                "password": "NoDigitHere!",
+            }),
+        )
+        .await;
+
+    assert_eq!(res.status().as_u16(), 422);
+}
+
+#[tokio::test]
+async fn register_password_missing_uppercase_rejected() {
+    let app = TestApp::spawn().await;
+
+    let res = app
+        .post(
+            "/auth/register",
+            &serde_json::json!({
+                "username": "validuser",
+                "email": "noupper@example.com",
+                "password": "nouppercase1!",
+            }),
+        )
+        .await;
+
+    assert_eq!(res.status().as_u16(), 422);
+}
+
+#[tokio::test]
+async fn register_password_missing_special_char_rejected() {
+    let app = TestApp::spawn().await;
+
+    let res = app
+        .post(
+            "/auth/register",
+            &serde_json::json!({
+                "username": "validuser",
+                "email": "nospecial@example.com",
+                "password": "NoSpecialChar1",
+            }),
+        )
+        .await;
+
+    assert_eq!(res.status().as_u16(), 422);
+}

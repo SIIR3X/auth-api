@@ -18,7 +18,7 @@ use rust_api::{
     config::{
         AuditConfig, CaptchaConfig, Config, CorsConfig, CryptoConfig, DatabaseConfig, Environment,
         JwtConfig, LogConfig, LogFormat, MailConfig, RateLimitConfig, RedisConfig, RiskConfig,
-        SecurityConfig, ServerConfig, SmtpConfig, WebAuthnConfig,
+        SecurityConfig, ServerConfig, SmtpConfig,
     },
     handlers,
     state::AppState,
@@ -192,9 +192,6 @@ pub fn benchmark_config(db_url: &str, redis_url: &str) -> Config {
     };
     config.cors.allowed_origins = vec!["*".into()];
     config.cors.allow_credentials = false;
-    config.webauthn.rp_id = "localhost".into();
-    config.webauthn.rp_origin = "http://localhost:3000".into();
-    config.webauthn.rp_name = "bench".into();
     config.log.level = "error".into();
     config.log.format = LogFormat::Pretty;
 
@@ -330,6 +327,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             previous_secret: None,
             access_expiry_secs: 900,
             refresh_expiry_secs: 86400,
+            short_session_expiry_secs: 3600,
             strict_session_binding: false,
             max_session_lifetime_secs: 60 * 60 * 24 * 90,
         },
@@ -386,11 +384,6 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             challenge_threshold: 60,
             block_threshold: 80,
             history_days: 90,
-        },
-        webauthn: WebAuthnConfig {
-            rp_id: "localhost".into(),
-            rp_origin: "http://localhost:3000".into(),
-            rp_name: "bench".into(),
         },
         log: LogConfig {
             level: "error".into(),

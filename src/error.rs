@@ -157,7 +157,7 @@ impl IntoResponse for AppError {
             Self::Conflict(field) => {
                 // field is a static str like "email" or "username", safe to log
                 let body = ErrorBody::new("conflict", "A resource with this value already exists.");
-                error!(field, "conflict on unique field");
+                tracing::warn!(field, "conflict on unique field");
                 (StatusCode::CONFLICT, body)
             }
 
@@ -188,7 +188,7 @@ impl IntoResponse for AppError {
 
             // 503
             Self::ServiceUnavailable(dependency) => {
-                error!(dependency, "required upstream dependency is unavailable");
+                tracing::warn!(dependency, "required upstream dependency is unavailable");
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     ErrorBody::new(
@@ -229,5 +229,181 @@ impl From<deadpool_redis::PoolError> for AppError {
 impl From<anyhow::Error> for AppError {
     fn from(e: anyhow::Error) -> Self {
         Self::Internal(e)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::to_bytes, response::IntoResponse};
+
+    fn status(err: AppError) -> u16 {
+        err.into_response().status().as_u16()
+    }
+
+    async fn body_code(err: AppError) -> String {
+        let resp = err.into_response();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        v["code"].as_str().unwrap().to_owned()
+    }
+
+    // 401
+
+    #[test]
+    fn unauthorized_is_401() {
+        assert_eq!(status(AppError::Unauthorized), 401);
+    }
+
+    #[test]
+    fn invalid_credentials_is_401() {
+        assert_eq!(status(AppError::InvalidCredentials), 401);
+    }
+
+    #[test]
+    fn two_factor_failed_is_401() {
+        assert_eq!(status(AppError::TwoFactorFailed), 401);
+    }
+
+    #[test]
+    fn token_expired_is_401() {
+        assert_eq!(status(AppError::TokenExpired), 401);
+    }
+
+    #[test]
+    fn token_invalid_is_401() {
+        assert_eq!(status(AppError::TokenInvalid), 401);
+    }
+
+    // 403
+
+    #[test]
+    fn forbidden_is_403() {
+        assert_eq!(status(AppError::Forbidden), 403);
+    }
+
+    #[test]
+    fn email_not_verified_is_403() {
+        assert_eq!(status(AppError::EmailNotVerified), 403);
+    }
+
+    #[test]
+    fn account_suspended_is_403() {
+        assert_eq!(status(AppError::AccountSuspended), 403);
+    }
+
+    #[test]
+    fn account_inactive_is_403() {
+        assert_eq!(status(AppError::AccountInactive), 403);
+    }
+
+    #[test]
+    fn account_locked_is_403() {
+        assert_eq!(status(AppError::AccountLocked), 403);
+    }
+
+    #[test]
+    fn two_factor_required_is_403() {
+        assert_eq!(status(AppError::TwoFactorRequired), 403);
+    }
+
+    #[test]
+    fn login_blocked_is_403() {
+        assert_eq!(status(AppError::LoginBlocked), 403);
+    }
+
+    #[test]
+    fn reauthentication_required_is_403() {
+        assert_eq!(status(AppError::ReauthenticationRequired), 403);
+    }
+
+    // 404
+
+    #[test]
+    fn not_found_is_404() {
+        assert_eq!(status(AppError::NotFound), 404);
+    }
+
+    // 409
+
+    #[tokio::test]
+    async fn conflict_is_409_with_correct_code() {
+        assert_eq!(status(AppError::Conflict("email")), 409);
+        assert_eq!(body_code(AppError::Conflict("username")).await, "conflict");
+    }
+
+    // 422
+
+    #[tokio::test]
+    async fn validation_is_422() {
+        assert_eq!(status(AppError::Validation("bad".into())), 422);
+        assert_eq!(
+            body_code(AppError::Validation("bad".into())).await,
+            "validation_error"
+        );
+    }
+
+    #[tokio::test]
+    async fn captcha_failed_is_422() {
+        assert_eq!(status(AppError::CaptchaFailed), 422);
+        assert_eq!(body_code(AppError::CaptchaFailed).await, "captcha_failed");
+    }
+
+    // 429
+
+    #[tokio::test]
+    async fn rate_limit_exceeded_is_429() {
+        assert_eq!(status(AppError::RateLimitExceeded), 429);
+        assert_eq!(
+            body_code(AppError::RateLimitExceeded).await,
+            "rate_limit_exceeded"
+        );
+    }
+
+    // 503
+
+    #[tokio::test]
+    async fn service_unavailable_is_503() {
+        assert_eq!(status(AppError::ServiceUnavailable("captcha")), 503);
+        assert_eq!(
+            body_code(AppError::ServiceUnavailable("captcha")).await,
+            "service_unavailable"
+        );
+    }
+
+    // 500
+
+    #[tokio::test]
+    async fn internal_is_500() {
+        assert_eq!(
+            status(AppError::Internal(anyhow::anyhow!("test error"))),
+            500
+        );
+        assert_eq!(
+            body_code(AppError::Internal(anyhow::anyhow!("test error"))).await,
+            "internal_error"
+        );
+    }
+
+    // From impls
+
+    #[test]
+    fn from_anyhow_produces_internal() {
+        let err: AppError = anyhow::anyhow!("wrapped").into();
+        assert_eq!(status(err), 500);
+    }
+
+    #[test]
+    fn from_sqlx_error_produces_internal() {
+        let sqlx_err = sqlx::Error::RowNotFound;
+        let err: AppError = sqlx_err.into();
+        assert_eq!(status(err), 500);
+    }
+
+    #[test]
+    fn from_deadpool_redis_pool_error_produces_internal() {
+        let pool_err = deadpool_redis::PoolError::NoRuntimeSpecified;
+        let err: AppError = pool_err.into();
+        assert_eq!(status(err), 500);
     }
 }

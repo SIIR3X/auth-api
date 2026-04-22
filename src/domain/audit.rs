@@ -37,6 +37,9 @@ pub enum AuditAction {
     NewDeviceLogin,
     AccountDeleted,
     Reauthenticated,
+    UsernameChanged,
+    RecoveryCodeUsed,
+    EmailChanged,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

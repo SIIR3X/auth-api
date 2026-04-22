@@ -1,17 +1,26 @@
-*
-!Cargo.toml
-!Cargo.lock
-!benches/
-!benches/**
-!migrations/
-!migrations/**
-!src/
-!src/**
-!templates/
-!templates/**
-!tests/
-!tests/**
-!vendor/
-!vendor/**
-!Dockerfile
-!.dockerignore
+# Git
+.git
+.gitignore
+.gitleaks.toml
+
+# Rust build artifacts
+target/
+
+# Environment files
+.env
+.env.*
+!.env.dev
+
+# Documentation
+docs/
+reports/
+README.md
+LICENSE
+
+# Dev tooling
+.github/
+
+# Docker files (avoid recursive COPY issues)
+docker-compose*.yml
+Dockerfile*
+docker/

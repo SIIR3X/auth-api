@@ -4,7 +4,9 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+  { id = "RUSTSEC-2023-0071", reason = "rsa via sqlx-mysql, no fix available upstream, project uses PostgreSQL exclusively" },
+]
 
 [bans]
 multiple-versions = "warn"
