@@ -58,7 +58,6 @@ lint → build → scan → report
 | scan | Trivy | CVEs in OS packages and Cargo dependencies (CRITICAL/HIGH, fixed only), leaked secrets |
 | report | GitHub Script | Posts a summary comment on the PR |
 
-The scan job uploads results in SARIF format to the GitHub Security tab.
 
 ## docker-publish.yml — Publish Docker Image
 
