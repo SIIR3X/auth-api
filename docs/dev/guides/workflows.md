@@ -12,8 +12,9 @@ Runs the following checks in sequence:
 |------|------|----------------|
 | Formatting | `cargo fmt --check` | Code style compliance |
 | Linting | `cargo clippy` | Code correctness and best practices (warnings as errors) |
-| Security audit | `cargo audit` | Known CVEs in Cargo dependencies |
-| Dependency policy | `cargo deny` | License compliance, duplicate dependencies, banned crates |
+| Dependency policy | `cargo deny` | License compliance, duplicate dependencies, banned crates, CVEs |
+
+`cargo-deny` is installed via `taiki-e/install-action` (pre-compiled binary, ~2s). It covers both dependency policy and security auditing — `cargo-audit` is not needed separately.
 
 Fails the PR if any check does not pass.
 
@@ -21,21 +22,15 @@ Fails the PR if any check does not pass.
 
 **Trigger:** pull request → `main`
 
-Two jobs run in parallel, both with PostgreSQL 17 and Redis 7 as services.
+A single job with PostgreSQL 17 and Redis 7 as services.
 
-### Tests job
+Installs Mailpit locally (tests spawn it as a process on random ports), then runs `cargo-tarpaulin` which executes the full test suite and produces a coverage report in one pass.
 
-Installs Mailpit locally (tests spawn it as a process on random ports), then runs `cargo test`.
+`cargo-tarpaulin` is installed via `taiki-e/install-action` (pre-compiled binary, ~2s).
 
 Each test gets an isolated PostgreSQL database cloned from a shared template — created once, dropped after the test. No test state leaks between runs.
 
----
-
-### Coverage job
-
-Runs `cargo-tarpaulin` on the test suite, excluding `src/main.rs` and `src/bin/*`. Produces a JSON report and posts a comment on the PR with the coverage percentage.
-
-Coverage thresholds (informational only, does not block the PR):
+Posts a comment on the PR with the coverage percentage:
 
 | Threshold | Icon |
 |-----------|------|
