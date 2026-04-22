@@ -45,6 +45,14 @@ dev-reset: ## Stop the development stack and remove volumes (reset DB)
 dev-logs: ## Stream logs from the development stack
 	docker compose -f $(DEV_COMPOSE) logs -f
 
+.PHONY: dev-admin
+dev-admin: ## Start the development stack with the Appsmith admin panel (http://localhost:8080)
+	docker compose -f $(DEV_COMPOSE) --profile admin up --build -d
+
+.PHONY: dev-admin-stop
+dev-admin-stop: ## Stop the development stack including Appsmith
+	docker compose -f $(DEV_COMPOSE) --profile admin down
+
 # =============================================================================
 # Code Quality
 # =============================================================================

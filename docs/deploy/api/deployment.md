@@ -55,7 +55,7 @@ Only two files are needed on the VPS — no need to clone the full repository.
 ```bash
 mkdir -p /srv/auth-api && cd /srv/auth-api
 
-curl -O https://raw.githubusercontent.com/SIIR3X/auth-api/main/docker-compose.prod.yml
+curl -O https://raw.githubusercontent.com/SIIR3X/auth-api/main/docker-compose.api.yml
 curl -O https://raw.githubusercontent.com/SIIR3X/auth-api/main/config.prod.env
 ```
 
@@ -90,6 +90,6 @@ export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
 export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
 export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
 
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.api.yml up -d
 ```
 

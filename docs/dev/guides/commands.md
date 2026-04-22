@@ -11,6 +11,8 @@ All commands are available via `make`. Run `make help` to list them.
 | `make dev-stop` | Stop the development stack |
 | `make dev-reset` | Stop the development stack and delete all volumes (resets the database) |
 | `make dev-logs` | Stream logs from all development services |
+| `make dev-admin` | Start the development stack with the Appsmith admin panel (`http://localhost:8080`) |
+| `make dev-admin-stop` | Stop the development stack including Appsmith |
 
 ## Code Quality
 

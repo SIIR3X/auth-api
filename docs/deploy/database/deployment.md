@@ -92,7 +92,7 @@ sudo systemctl enable --now wg-quick@wg10
 
 ---
 
-### 1.5 Open the firewall for WireGuard
+### 1.5 Open the firewall
 
 **On the DB VPS** — allow the WireGuard UDP port from the API VPS public IP only:
 
@@ -202,7 +202,69 @@ DATABASE_URL=$(pass prod/auth-api/database-url) \
 rm -rf /dev/shm/migrations
 ```
 
-## 3. Redis
+## 3. Appsmith
+
+**On the DB VPS** — install Docker:
+
+```bash
+curl -fsSL https://get.docker.com | sh
+```
+
+---
+
+### 3.1 Create the Appsmith user
+
+```bash
+sudo -u postgres psql -d auth_api
+```
+
+```sql
+CREATE USER appsmith WITH PASSWORD '<strong-password>';
+GRANT CONNECT ON DATABASE auth_api TO appsmith;
+GRANT USAGE ON SCHEMA public TO appsmith;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO appsmith;
+ALTER DEFAULT PRIVILEGES FOR ROLE auth_api IN SCHEMA public
+    GRANT SELECT ON TABLES TO appsmith;
+\q
+```
+
+---
+
+### 3.2 Deploy Appsmith
+
+```bash
+mkdir -p /srv/auth-api && cd /srv/auth-api
+curl -O https://raw.githubusercontent.com/SIIR3X/auth-api/main/docker-compose.db.yml
+docker compose -f docker-compose.db.yml up -d
+```
+
+Appsmith is bound to `127.0.0.1:8080` — never exposed publicly.
+
+---
+
+### 3.3 Access the panel
+
+From your local machine, open an SSH tunnel:
+
+```powershell
+ssh -L 8080:127.0.0.1:8080 -p 2222 <username>@<db-vps-vpn-ip>
+```
+
+Then open `http://localhost:8080`.
+
+---
+
+### 3.4 Connect to the database
+
+In Appsmith: **Settings → Datasources → New datasource → PostgreSQL**
+
+- Host: `localhost`
+- Port: `5432`
+- Database: `auth_api`
+- Username: `appsmith`
+- Password: the password set in 3.1
+
+## 4. Redis
 
 **On the DB VPS** — install Redis:
 
@@ -213,7 +275,7 @@ sudo apt install -y redis-server
 
 ---
 
-### 3.1 Configure authentication and binding
+### 4.1 Configure authentication and binding
 
 **On the DB VPS** — inject the password from `pass` and bind to the VPN interface:
 
@@ -231,7 +293,7 @@ sudo systemctl restart redis
 
 ---
 
-### 3.2 Open the firewall
+### 4.2 Open the firewall
 
 **On the DB VPS:**
 
@@ -241,7 +303,7 @@ sudo ufw allow from 10.0.0.1 to any port 6379
 
 ---
 
-### 3.3 Verify connectivity
+### 4.3 Verify connectivity
 
 **On the API VPS:**
 

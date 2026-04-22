@@ -23,6 +23,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
+      - ./docker/init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U auth_api -d auth_api"]
       interval: 5s
@@ -50,6 +51,19 @@ services:
       - "8025:8025"   # Web UI
     restart: unless-stopped
 
+  appsmith:
+    image: appsmith/appsmith-ce
+    profiles: [admin]
+    ports:
+      - "8080:80"
+    volumes:
+      - appsmith_data:/appsmith-stacks
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_dev_data:
   redis_dev_data:
+  appsmith_data:
