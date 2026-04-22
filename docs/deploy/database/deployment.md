@@ -31,8 +31,8 @@ Keys are stored in a dedicated directory with restricted permissions.
 sudo mkdir -p /etc/wireguard/keys
 sudo chmod 700 /etc/wireguard/keys
 
-wg genkey | sudo tee /etc/wireguard/keys/wg0_private.key | wg pubkey | sudo tee /etc/wireguard/keys/wg0_public.key
-sudo chmod 600 /etc/wireguard/keys/wg0_private.key
+wg genkey | sudo tee /etc/wireguard/keys/wg10_private.key | wg pubkey | sudo tee /etc/wireguard/keys/wg10_public.key
+sudo chmod 600 /etc/wireguard/keys/wg10_private.key
 ```
 
 **On the API VPS:**
@@ -41,24 +41,24 @@ sudo chmod 600 /etc/wireguard/keys/wg0_private.key
 sudo mkdir -p /etc/wireguard/keys
 sudo chmod 700 /etc/wireguard/keys
 
-wg genkey | sudo tee /etc/wireguard/keys/wg0_private.key | wg pubkey | sudo tee /etc/wireguard/keys/wg0_public.key
-sudo chmod 600 /etc/wireguard/keys/wg0_private.key
+wg genkey | sudo tee /etc/wireguard/keys/wg10_private.key | wg pubkey | sudo tee /etc/wireguard/keys/wg10_public.key
+sudo chmod 600 /etc/wireguard/keys/wg10_private.key
 ```
 
 ---
 
 ### 1.2 Configure WireGuard on the DB VPS
 
-**On the DB VPS** — create `/etc/wireguard/wg0.conf`:
+**On the DB VPS** — create `/etc/wireguard/wg10.conf`:
 
 ```ini
 [Interface]
 Address = 10.0.0.2/24
-PrivateKey = <contents of /etc/wireguard/keys/wg0_private.key>
+PrivateKey = <contents of /etc/wireguard/keys/wg10_private.key>
 ListenPort = 51820
 
 [Peer]
-PublicKey = <contents of /etc/wireguard/keys/wg0_public.key from the API VPS>
+PublicKey = <contents of /etc/wireguard/keys/wg10_public.key from the API VPS>
 AllowedIPs = 10.0.0.1/32
 ```
 
@@ -66,15 +66,15 @@ AllowedIPs = 10.0.0.1/32
 
 ### 1.3 Configure WireGuard on the API VPS
 
-**On the API VPS** — create `/etc/wireguard/wg0.conf`:
+**On the API VPS** — create `/etc/wireguard/wg10.conf`:
 
 ```ini
 [Interface]
 Address = 10.0.0.1/24
-PrivateKey = <contents of /etc/wireguard/keys/wg0_private.key>
+PrivateKey = <contents of /etc/wireguard/keys/wg10_private.key>
 
 [Peer]
-PublicKey = <contents of /etc/wireguard/keys/wg0_public.key from the DB VPS>
+PublicKey = <contents of /etc/wireguard/keys/wg10_public.key from the DB VPS>
 Endpoint = <DB_VPS_PUBLIC_IP>:51820
 AllowedIPs = 10.0.0.2/32
 PersistentKeepalive = 25
@@ -87,7 +87,7 @@ PersistentKeepalive = 25
 **On both VPS:**
 
 ```bash
-sudo systemctl enable --now wg-quick@wg0
+sudo systemctl enable --now wg-quick@wg10
 ```
 
 ---
