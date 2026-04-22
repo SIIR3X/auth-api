@@ -42,6 +42,14 @@ docker compose version
 cargo install cargo-deny --locked
 ```
 
+## For tests (`make test`)
+
+### cargo-nextest
+
+```bash
+cargo install cargo-nextest --locked
+```
+
 ## For coverage (`make coverage`)
 
 ### cargo-tarpaulin
