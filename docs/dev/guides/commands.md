@@ -19,8 +19,7 @@ All commands are available via `make`. Run `make help` to list them.
 | `make fmt` | Format the code with `rustfmt` |
 | `make fmt-check` | Check formatting without modifying files |
 | `make clippy` | Run the Clippy linter (warnings treated as errors) |
-| `make audit` | Check dependencies for known CVEs via `cargo-audit` |
-| `make deny` | Enforce dependency policy via `cargo-deny` |
+| `make deny` | Enforce dependency policy and security audit via `cargo-deny` |
 | `make quality` | Run all of the above checks in sequence |
 
 ## Tests

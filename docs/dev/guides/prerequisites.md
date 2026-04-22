@@ -36,14 +36,6 @@ docker compose version
 
 ## For code quality checks (`make quality`)
 
-### cargo-audit
-
-```bash
-cargo install cargo-audit --locked
-```
-
----
-
 ### cargo-deny
 
 ```bash
