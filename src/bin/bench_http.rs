@@ -19,7 +19,7 @@ use sqlx::PgPool;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 
-use rust_api::{
+use auth_api::{
     repositories::{
         email_2fa as email_2fa_repo,
         user::{self as user_repo, NewUser},
@@ -134,7 +134,7 @@ async fn main() -> Result<()> {
     let redis_url = bench_support::benchmark_redis_url();
     let report_dir = bench_support::report_section_dir("http")?;
 
-    let db = bench_support::EphemeralDatabase::create("rust_api_http_bench", &admin_url).await?;
+    let db = bench_support::EphemeralDatabase::create("auth_api_http_bench", &admin_url).await?;
     let state = bench_support::build_state(&db.db_url, &redis_url, db.pool.clone()).await?;
     let dataset = seed_dataset(&state, concurrency).await?;
     let (base_url, client) = bench_support::spawn_app(state.clone()).await?;
@@ -1850,7 +1850,7 @@ async fn inject_known_otp_into_flow(redis: &deadpool_redis::Pool, flow_token: &s
         && let Ok(raw) = conn.get::<_, String>(&key).await
         && let Ok(mut val) = serde_json::from_str::<Value>(&raw)
     {
-        let hash = rust_api::utils::crypto::sha256(BENCH_EMAIL_CHANGE_OTP.as_bytes());
+        let hash = auth_api::utils::crypto::sha256(BENCH_EMAIL_CHANGE_OTP.as_bytes());
         let hash_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash);
         val["otp_hash"] = Value::String(hash_b64);
         if let Ok(updated) = serde_json::to_string(&val) {

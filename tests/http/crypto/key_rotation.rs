@@ -16,7 +16,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use uuid::Uuid;
 
-use rust_api::{
+use auth_api::{
     services::key_rotation::rotate_totp_encryption_key, state::AppState, utils::crypto,
 };
 
@@ -73,7 +73,7 @@ async fn build_rotation_state(
     redis_url: &str,
 ) -> AppState {
     #[allow(unused_imports)]
-    use rust_api::config::*;
+    use auth_api::config::*;
 
     let mut config = Config {
         env: Environment::Test,

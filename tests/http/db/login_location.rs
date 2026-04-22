@@ -9,7 +9,7 @@ use std::str::FromStr;
 
 use ipnetwork::IpNetwork;
 
-use rust_api::repositories::login_location;
+use auth_api::repositories::login_location;
 
 use crate::common::{app::TestApp, fixtures};
 

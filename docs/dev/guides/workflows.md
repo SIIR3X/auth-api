@@ -66,7 +66,7 @@ The scan job uploads results in SARIF format to the GitHub Security tab.
 
 **Trigger:** git tag matching `v*`
 
-Builds the production image and pushes it to GitHub Container Registry (`ghcr.io/siir3x/rust-api`).
+Builds the production image and pushes it to GitHub Container Registry (`ghcr.io/siir3x/auth-api`).
 
 Tags applied to the image:
 
