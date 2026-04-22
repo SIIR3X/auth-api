@@ -16,7 +16,7 @@ Three jobs running in parallel, followed by a report:
 
 `cargo-deny` is installed via `taiki-e/install-action` (pre-compiled binary, ~2s). It covers both dependency policy and security auditing — `cargo-audit` is not needed separately.
 
-A report comment is posted on the PR with the result of each check. Fails the PR if any job does not pass.
+Fails the PR if any job does not pass.
 
 ## tests.yml — Tests & Coverage
 
@@ -31,15 +31,7 @@ Both are installed via `taiki-e/install-action` (pre-compiled binaries, ~2s each
 
 Each test gets an isolated PostgreSQL database cloned from a shared template — created once, dropped after the test. No test state leaks between runs.
 
-A report comment is posted on the PR with:
-- Number of tests passed / failed / skipped
-- Line coverage percentage against 60% and 80% thresholds
-
-| Threshold | Icon |
-|-----------|------|
-| ≥ 80% | ✅ |
-| 60–79% | ⚠️ |
-| < 60% | ❌ |
+Fails the PR if tests fail. Coverage is produced as an HTML report in `reports/coverage/`.
 
 ## docker-checks.yml — Docker Checks
 
