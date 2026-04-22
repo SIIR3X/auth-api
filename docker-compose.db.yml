@@ -1,0 +1,11 @@
+services:
+  appsmith:
+    image: appsmith/appsmith-ce
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - appsmith_data:/appsmith-stacks
+    restart: unless-stopped
+
+volumes:
+  appsmith_data:

@@ -3,5 +3,4 @@
 -- sensible defaults: standard roles and the initial permission catalog.
 -- This migration provides the minimum RBAC dataset expected by the API.
 INSERT INTO roles (name, description, is_default) VALUES
-    ('user', 'Default role assigned on registration', TRUE),
-    ('admin', 'Full access to all resources', FALSE);
+    ('user', 'Default role assigned on registration', TRUE);

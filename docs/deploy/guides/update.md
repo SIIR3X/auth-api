@@ -43,8 +43,8 @@ export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
 export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
 export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
 
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.api.yml pull
+docker compose -f docker-compose.api.yml up -d
 ```
 
 `up -d` recreates the container only if the image has changed. Downtime is a few seconds.
