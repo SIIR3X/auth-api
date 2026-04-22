@@ -26,8 +26,8 @@ All commands are available via `make`. Run `make help` to list them.
 
 | Command | Description |
 |---------|-------------|
-| `make test` | Start test infrastructure, run all tests, then stop infrastructure |
-| `make test-verbose` | Same as `make test` with full output (`--nocapture`) |
+| `make test` | Start test infrastructure, run all tests via `cargo-nextest`, then stop infrastructure |
+| `make test-verbose` | Same as `make test` with full output (`--no-capture`) |
 | `make test-infra-up` | Start PostgreSQL and Redis for tests (ports 5433 / 6380) |
 | `make test-infra-down` | Stop the test infrastructure |
 | `make coverage` | Run tests with coverage report (HTML + JSON in `reports/coverage/`) |

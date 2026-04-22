@@ -12,6 +12,8 @@ jobs:
   lint:
     name: Lint Dockerfile
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,6 +27,8 @@ jobs:
     name: Build Image
     runs-on: ubuntu-latest
     needs: lint
+    permissions:
+      contents: read
     outputs:
       image-size: ${{ steps.size.outputs.size }}
     steps:
@@ -56,6 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     permissions:
+      contents: read
       security-events: write
     steps:
       - name: Checkout
@@ -108,24 +113,27 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - name: Commentaire sur la PR
+      - name: Post report
         uses: actions/github-script@v7
         with:
           script: |
+            const lint  = '${{ needs.lint.result }}';
+            const build = '${{ needs.build.result }}';
             const scan  = '${{ needs.scan.result }}';
             const size  = '${{ needs.build.outputs.image-size }}';
-            const icon  = scan === 'success' ? '✅' : '❌';
-            const label = scan === 'success' ? 'Aucune CVE critique/élevée détectée' : 'CVE critiques/élevées détectées';
+
+            const icon  = r => r === 'success' ? '✅' : r === 'skipped' ? '⏭️' : '❌';
+            const label = scan === 'success' ? 'No critical/high CVEs detected' : 'Critical/high CVEs detected';
 
             const body = [
               '## Docker Checks',
               '',
-              `| Check | Résultat |`,
-              `|-------|----------|`,
-              `| Lint Dockerfile | ${{ needs.lint.result === 'success' && '✅ OK' || '❌ Échec' }} |`,
-              `| Build image     | ${{ needs.build.result === 'success' && '✅ OK' || '❌ Échec' }} |`,
-              `| Scan sécurité   | ${icon} ${label} |`,
-              `| Taille image    | 📦 ${size} |`,
+              '| Check | Result |',
+              '|-------|--------|',
+              `| Dockerfile lint | ${icon(lint)} |`,
+              `| Image build     | ${icon(build)} |`,
+              `| Security scan   | ${icon(scan)} ${label} |`,
+              `| Image size      | 📦 ${size} |`,
             ].join('\n');
 
             await github.rest.issues.createComment({

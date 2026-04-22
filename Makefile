@@ -82,12 +82,12 @@ test-infra-down: ## Stop test infrastructure
 
 .PHONY: test
 test: test-infra-up ## Run all tests (starts/stops infrastructure automatically)
-	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) cargo test; \
+	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) cargo nextest run; \
 	EXIT=$$?; $(MAKE) test-infra-down; exit $$EXIT
 
 .PHONY: test-verbose
 test-verbose: test-infra-up ## Run all tests with detailed output
-	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) cargo test -- --nocapture; \
+	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) cargo nextest run --no-capture; \
 	EXIT=$$?; $(MAKE) test-infra-down; exit $$EXIT
 
 .PHONY: coverage
