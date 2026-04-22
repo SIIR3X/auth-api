@@ -1,7 +1,7 @@
-use postgres::Client;
 use auth_api::repositories::{
     login_attempt, login_location, session as session_repo, user as user_repo,
 };
+use postgres::Client;
 use time::OffsetDateTime;
 
 use crate::common::{

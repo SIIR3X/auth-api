@@ -1,7 +1,5 @@
 use std::hint::black_box;
 
-use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
-use ipnetwork::IpNetwork;
 use auth_api::{
     config::CryptoConfig,
     repositories::login_location::RiskHistoryEntry,
@@ -11,6 +9,8 @@ use auth_api::{
     },
     utils::{geoip::GeoLocation, jwt, password, totp},
 };
+use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
+use ipnetwork::IpNetwork;
 use time::{Duration, OffsetDateTime};
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
