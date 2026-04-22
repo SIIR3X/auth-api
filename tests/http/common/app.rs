@@ -9,7 +9,7 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::{net::TcpListener, sync::OnceCell};
 use tracing_subscriber::EnvFilter;
 
-use rust_api::{config::Config, handlers, state::AppState};
+use auth_api::{config::Config, handlers, state::AppState};
 
 // Environment variable names for test infrastructure
 const TEST_DATABASE_URL: &str = "TEST_DATABASE_URL";
@@ -44,7 +44,7 @@ impl TestApp {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| EnvFilter::new("rust_api=error")),
+                    .unwrap_or_else(|_| EnvFilter::new("auth_api=error")),
             )
             .try_init();
 
@@ -54,7 +54,7 @@ impl TestApp {
         let redis_url =
             std::env::var(TEST_REDIS_URL).unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
 
-        let db_name = format!("rust_api_http_test_{}", uuid::Uuid::new_v4().simple());
+        let db_name = format!("auth_api_http_test_{}", uuid::Uuid::new_v4().simple());
         let template_db = ensure_template_database(&admin_url).await;
 
         // Create isolated test database
@@ -252,7 +252,7 @@ impl TestApp {
     }
 
     pub async fn clear_recent_reauth(&self, access_token: &str) {
-        let claims = rust_api::utils::jwt::decode_token(access_token, TEST_JWT_SECRET)
+        let claims = auth_api::utils::jwt::decode_token(access_token, TEST_JWT_SECRET)
             .expect("failed to decode test access token");
 
         if let Ok(mut conn) = self.redis.get().await {
@@ -355,7 +355,7 @@ impl Drop for TestApp {
 // Build a test config without needing a full .env file.
 fn test_config(db_url: &str, redis_url: &str) -> Config {
     #[allow(unused_imports)]
-    use rust_api::config::*;
+    use auth_api::config::*;
 
     Config {
         env: Environment::Test,
@@ -489,7 +489,7 @@ fn replace_db_name(url: &str, new_db: &str) -> String {
 async fn ensure_template_database(admin_url: &str) -> String {
     TEMPLATE_DB
         .get_or_init(|| async {
-            let template_db = format!("rust_api_http_template_{}", std::process::id());
+            let template_db = format!("auth_api_http_template_{}", std::process::id());
 
             let admin_pool = PgPoolOptions::new()
                 .max_connections(1)

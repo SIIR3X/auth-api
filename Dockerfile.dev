@@ -34,7 +34,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 # Compile le binaire
 COPY . .
-RUN cargo build --release --bin rust-api
+RUN cargo build --release --bin auth-api
 
 # =============================================================================
 # Stage 4: Runtime dev — inclut migrations, sqlx-cli et postgresql-client
@@ -51,7 +51,7 @@ RUN useradd --uid 1001 --no-create-home --shell /bin/false appuser
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/rust-api ./rust-api
+COPY --from=builder /app/target/release/auth-api ./auth-api
 COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
 COPY --from=builder /app/migrations ./migrations
 COPY --from=builder /app/templates ./templates
@@ -62,4 +62,4 @@ USER appuser
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "sqlx migrate run --database-url $DATABASE_URL && ./rust-api"]
+CMD ["sh", "-c", "sqlx migrate run --database-url $DATABASE_URL && ./auth-api"]

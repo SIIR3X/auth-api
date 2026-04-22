@@ -1,5 +1,5 @@
 use crate::common::{app::TestApp, fixtures};
-use rust_api::{
+use auth_api::{
     repositories::{email_2fa as email_2fa_repo, recovery_code as recovery_code_repo},
     utils::time,
 };

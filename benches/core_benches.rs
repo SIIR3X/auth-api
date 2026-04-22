@@ -2,7 +2,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
 use ipnetwork::IpNetwork;
-use rust_api::{
+use auth_api::{
     config::CryptoConfig,
     repositories::login_location::RiskHistoryEntry,
     services::{
@@ -114,7 +114,7 @@ fn totp_benches(c: &mut Criterion) {
     let mut group = c.benchmark_group("totp");
     let secret = totp::generate_secret();
     let encryption_key = [7u8; 32];
-    let encrypted = rust_api::utils::crypto::encrypt(&secret, &encryption_key)
+    let encrypted = auth_api::utils::crypto::encrypt(&secret, &encryption_key)
         .expect("failed to encrypt benchmark secret");
     let secret_bytes = Secret::Encoded(secret.clone())
         .to_bytes()

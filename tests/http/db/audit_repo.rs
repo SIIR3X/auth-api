@@ -6,7 +6,7 @@
 //! auditable action; these tests cover the three read paths that are not
 //! reached via the HTTP layer.
 
-use rust_api::{
+use auth_api::{
     domain::audit::AuditAction,
     repositories::audit::{self, NewAuditEntry},
 };

@@ -6,7 +6,7 @@ on:
       - main
 
 env:
-  IMAGE_NAME: rust-api:pr-${{ github.event.pull_request.number }}
+  IMAGE_NAME: auth-api:pr-${{ github.event.pull_request.number }}
 
 jobs:
   lint:

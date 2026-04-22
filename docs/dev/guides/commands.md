@@ -46,8 +46,8 @@ All commands are available via `make`. Run `make help` to list them.
 | Command | Description |
 |---------|-------------|
 | `make build` | Compile the project in release mode |
-| `make docker-build` | Build the production Docker image (`rust-api:local`) |
-| `make docker-build-dev` | Build the development Docker image (`rust-api:dev`) |
+| `make docker-build` | Build the production Docker image (`auth-api:local`) |
+| `make docker-build-dev` | Build the development Docker image (`auth-api:dev`) |
 
 ## Docker Security
 

@@ -5,7 +5,7 @@
 //! Covers `find_by_type` and `find_all_by_type`, which are used by the
 //! email-2FA flow but never directly tested.
 
-use rust_api::{domain::two_factor::TwoFactorType, repositories::two_factor as tf_repo};
+use auth_api::{domain::two_factor::TwoFactorType, repositories::two_factor as tf_repo};
 
 use crate::common::{app::TestApp, fixtures};
 

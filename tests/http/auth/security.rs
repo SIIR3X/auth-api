@@ -1,5 +1,5 @@
 use crate::common::app::{TestApp, redis_url_with_db};
-use rust_api::config::Environment;
+use auth_api::config::Environment;
 
 #[tokio::test]
 async fn auth_routes_fail_closed_when_rate_limiter_backend_is_down() {
