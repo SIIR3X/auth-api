@@ -18,20 +18,19 @@ Three jobs running in parallel, followed by a report:
 
 Fails the PR if any job does not pass.
 
-## tests.yml — Tests & Coverage
+## tests.yml — Tests
 
 **Trigger:** pull request → `main`
 
-A single job with PostgreSQL 17 and Redis 7 as services.
+A single job with PostgreSQL 17, Redis 7 and Mailpit as services.
 
 - **cargo-nextest** runs the full test suite — faster than `cargo test`, better output
-- **cargo-tarpaulin** instruments the code and measures line coverage
 
-Both are installed via `taiki-e/install-action` (pre-compiled binaries, ~2s each).
+Installed via `taiki-e/install-action` (pre-compiled binary, ~2s).
 
 Each test gets an isolated PostgreSQL database cloned from a shared template — created once, dropped after the test. No test state leaks between runs.
 
-Fails the PR if tests fail. Coverage is produced as an HTML report in `reports/coverage/`.
+Fails the PR if tests fail.
 
 ## docker-checks.yml — Docker Checks
 
