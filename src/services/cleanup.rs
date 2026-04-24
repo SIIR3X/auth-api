@@ -32,35 +32,53 @@ pub fn spawn_cleanup_task(db: PgPool, config: Arc<Config>) {
 async fn run_all(db: &PgPool, config: &Config) {
     let c = &config.cleanup;
 
-    run(db, "cleanup_expired_sessions",
+    run(
+        db,
+        "cleanup_expired_sessions",
         "SELECT cleanup_expired_sessions($1::interval)",
         &format!("{} days", c.sessions_grace_days),
-    ).await;
+    )
+    .await;
 
-    run(db, "cleanup_expired_email_2fa_codes",
+    run(
+        db,
+        "cleanup_expired_email_2fa_codes",
         "SELECT cleanup_expired_email_2fa_codes($1::interval)",
         &format!("{} days", c.tokens_grace_days),
-    ).await;
+    )
+    .await;
 
-    run(db, "cleanup_expired_email_verification_tokens",
+    run(
+        db,
+        "cleanup_expired_email_verification_tokens",
         "SELECT cleanup_expired_email_verification_tokens($1::interval)",
         &format!("{} days", c.tokens_grace_days),
-    ).await;
+    )
+    .await;
 
-    run(db, "cleanup_expired_password_reset_tokens",
+    run(
+        db,
+        "cleanup_expired_password_reset_tokens",
         "SELECT cleanup_expired_password_reset_tokens($1::interval)",
         &format!("{} days", c.tokens_grace_days),
-    ).await;
+    )
+    .await;
 
-    run(db, "cleanup_expired_recovery_codes",
+    run(
+        db,
+        "cleanup_expired_recovery_codes",
         "SELECT cleanup_expired_recovery_codes($1::interval)",
         &format!("{} days", c.recovery_codes_grace_days),
-    ).await;
+    )
+    .await;
 
-    run(db, "cleanup_old_login_attempts",
+    run(
+        db,
+        "cleanup_old_login_attempts",
         "SELECT cleanup_old_login_attempts($1::interval)",
         &format!("{} days", c.login_attempts_retention_days),
-    ).await;
+    )
+    .await;
 }
 
 async fn run(db: &PgPool, name: &str, sql: &str, interval: &str) {
