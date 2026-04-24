@@ -65,11 +65,9 @@ pub async fn verify_setup(
     submitted_code: &str,
     request_id: Option<Uuid>,
 ) -> Result<Vec<String>, AppError> {
-    let method = tf_repo::find_by_user(&state.db, user_id)
+    let method = tf_repo::find_by_id_and_user(&state.db, method_id, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
-        .into_iter()
-        .find(|m| m.id == method_id)
         .ok_or(AppError::NotFound)?;
 
     if method.is_verified {

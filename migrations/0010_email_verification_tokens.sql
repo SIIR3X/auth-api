@@ -10,7 +10,7 @@ CREATE TABLE email_verification_tokens (
     expires_at TIMESTAMPTZ NOT NULL,
     used_at TIMESTAMPTZ,
     request_ip INET,
-    request_user_agent VARCHAR(255),
+    request_user_agent TEXT,
     target_email CITEXT NOT NULL,
 
     CONSTRAINT email_verification_tokens_token_hash_key UNIQUE (token_hash),
@@ -33,3 +33,20 @@ ALTER TABLE email_verification_tokens SET (
     autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_threshold = 500
 );
+
+CREATE OR REPLACE FUNCTION cleanup_expired_email_verification_tokens(
+    grace_interval INTERVAL DEFAULT '1 day'
+)
+RETURNS INTEGER AS $$
+DECLARE
+    deleted INTEGER;
+BEGIN
+    WITH deleted_rows AS (
+        DELETE FROM email_verification_tokens
+        WHERE expires_at < NOW() - grace_interval
+        RETURNING id
+    )
+    SELECT count(*) INTO deleted FROM deleted_rows;
+    RETURN deleted;
+END;
+$$ LANGUAGE plpgsql;

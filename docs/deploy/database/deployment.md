@@ -311,3 +311,111 @@ sudo ufw allow from 10.0.0.1 to any port 6379
 redis-cli -h 10.0.0.2 ping
 ```
 
+## 5. Backups
+
+Backups are encrypted with [age](https://github.com/FiloSottile/age) before touching disk.
+The private key never lives on the DB VPS — only the public key is needed to encrypt.
+
+---
+
+### 5.1 Generate a key pair
+
+Run this **on a secure machine** (your laptop, a password manager export, etc.) — not the DB VPS.
+
+**Linux / macOS:**
+
+```bash
+age-keygen -o backup.key
+```
+
+**Windows (WSL):**
+
+```bash
+sudo apt install age
+age-keygen -o backup.key
+```
+
+**Windows (native) — via winget:**
+
+```powershell
+winget install FiloSottile.age
+age-keygen.exe -o backup.key
+```
+
+Output looks like:
+
+```
+# created: 2026-01-01T00:00:00+00:00
+# public key: age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+AGE-SECRET-KEY-1...
+```
+
+Store `backup.key` somewhere safe and offline (e.g. alongside your other secrets in `pass`).
+
+---
+
+### 5.2 Install age on the DB VPS
+
+```bash
+sudo apt update
+sudo apt install -y age
+```
+
+---
+
+### 5.3 Deploy the backup script
+
+**On the DB VPS** — fetch the script from the repository, then set the public key:
+
+```bash
+sudo mkdir -p /opt/auth-api
+curl -sL https://raw.githubusercontent.com/SIIR3X/auth-api/main/scripts/backup-db.sh \
+    | sudo tee /opt/auth-api/backup-db.sh > /dev/null
+sudo chmod 700 /opt/auth-api/backup-db.sh
+sudo chown root:root /opt/auth-api/backup-db.sh
+```
+
+Edit the script and replace `AGE_PUBLIC_KEY` with the public key from step 5.1:
+
+```bash
+sudo nano /opt/auth-api/backup-db.sh
+# AGE_PUBLIC_KEY="age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+---
+
+### 5.4 Test the script
+
+```bash
+sudo /opt/auth-api/backup-db.sh
+ls -lh /var/backups/auth-api/
+```
+
+---
+
+### 5.5 Schedule via cron
+
+```bash
+sudo crontab -e
+```
+
+Add:
+
+```
+0 2 * * * /opt/auth-api/backup-db.sh >> /var/log/auth-api-backup.log 2>&1
+```
+
+Backups run nightly at 2:00 AM and are retained for 7 days.
+
+---
+
+### 5.6 Restore a backup
+
+On any machine that has the private key and `psql` available:
+
+```bash
+age --decrypt -i backup.key auth_api_YYYYMMDD_HHMMSS.sql.gz.age \
+    | gunzip \
+    | psql "postgres://auth_api:<password>@<host>/auth_api"
+```
+

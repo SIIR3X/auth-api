@@ -10,7 +10,7 @@ CREATE TABLE password_reset_tokens (
     expires_at TIMESTAMPTZ NOT NULL,
     used_at TIMESTAMPTZ,
     request_ip INET,
-    request_user_agent VARCHAR(255),
+    request_user_agent TEXT,
 
     CONSTRAINT password_reset_tokens_token_hash_key UNIQUE (token_hash),
     CONSTRAINT password_reset_tokens_token_hash_length CHECK (octet_length(token_hash) = 32),
@@ -29,3 +29,20 @@ ALTER TABLE password_reset_tokens SET (
     autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_threshold = 500
 );
+
+CREATE OR REPLACE FUNCTION cleanup_expired_password_reset_tokens(
+    grace_interval INTERVAL DEFAULT '1 day'
+)
+RETURNS INTEGER AS $$
+DECLARE
+    deleted INTEGER;
+BEGIN
+    WITH deleted_rows AS (
+        DELETE FROM password_reset_tokens
+        WHERE expires_at < NOW() - grace_interval
+        RETURNING id
+    )
+    SELECT count(*) INTO deleted FROM deleted_rows;
+    RETURN deleted;
+END;
+$$ LANGUAGE plpgsql;

@@ -27,6 +27,7 @@ fn migrations_are_sorted_and_contiguous() {
         "0014_audit_log.sql",
         "0015_login_locations.sql",
         "0016_seed.sql",
+        "0017_cleanup_schedule.sql",
     ];
 
     assert_eq!(names, expected);

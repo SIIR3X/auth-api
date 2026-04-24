@@ -22,7 +22,7 @@ CREATE TABLE login_attempts (
     was_successful BOOLEAN NOT NULL,
     failure_reason login_failure_reason,
     request_ip INET,
-    request_user_agent VARCHAR(255),
+    request_user_agent TEXT,
 
     CONSTRAINT login_attempts_identifier_not_blank CHECK (
         char_length(btrim(attempted_identifier::TEXT)) > 0
@@ -43,6 +43,7 @@ CREATE INDEX idx_login_attempts_failed_ip_time
     ON login_attempts (request_ip, attempted_at DESC)
     WHERE was_successful = FALSE AND request_ip IS NOT NULL;
 CREATE INDEX idx_login_attempts_attempted_at ON login_attempts (attempted_at);
+CREATE INDEX idx_login_attempts_time_brin ON login_attempts USING BRIN (attempted_at);
 
 ALTER TABLE login_attempts SET (
     autovacuum_vacuum_scale_factor = 0.05,
@@ -50,3 +51,20 @@ ALTER TABLE login_attempts SET (
     autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_threshold = 500
 );
+
+CREATE OR REPLACE FUNCTION cleanup_old_login_attempts(
+    retention_interval INTERVAL DEFAULT '90 days'
+)
+RETURNS INTEGER AS $$
+DECLARE
+    deleted INTEGER;
+BEGIN
+    WITH deleted_rows AS (
+        DELETE FROM login_attempts
+        WHERE attempted_at < NOW() - retention_interval
+        RETURNING id
+    )
+    SELECT count(*) INTO deleted FROM deleted_rows;
+    RETURN deleted;
+END;
+$$ LANGUAGE plpgsql;
