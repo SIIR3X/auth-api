@@ -468,7 +468,7 @@ async fn email_change_confirm_new_lockout_after_max_failures() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 13).await;
 
-    // Complete steps 1–3 correctly.
+    // Complete steps 1-3 correctly.
     let flow_token = start_and_verify_current(&app, &user.access_token).await;
     app.post_auth(
         "/users/me/email/submit",

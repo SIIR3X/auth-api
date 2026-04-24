@@ -1,6 +1,6 @@
 //! JWT / auth-middleware edge-case tests.
 //!
-//! Tests index range 350–369.
+//! Tests index range 350-369.
 
 use crate::common::{app::TestApp, fixtures};
 

@@ -1,6 +1,6 @@
 //! Login location repository tests.
 //!
-//! Tests index range 950–959.
+//! Tests index range 950-959.
 //!
 //! Covers `find_recent_for_risk`, `find_last`, and `upsert` (the only paths
 //! not exercised by the HTTP login flow directly).
@@ -101,7 +101,7 @@ async fn upsert_deduplicates_same_user_country_city_agent() {
     let user = fixtures::register_user(&app, 954).await;
 
     insert_location(&app, user.id, "FR", "Lyon").await;
-    insert_location(&app, user.id, "FR", "Lyon").await; // same key → upsert
+    insert_location(&app, user.id, "FR", "Lyon").await; // same key --> upsert
 
     let entries = login_location::find_recent_for_risk(&app.db, user.id, 90)
         .await

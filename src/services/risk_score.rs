@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn compute_score_empty_history_no_geo_no_ua_returns_zero() {
-        // No history, no geo, empty UA, normal hour → zero signals.
+        // No history, no geo, empty UA, normal hour -- zero signals.
         let login_ctx = ctx("", "", "", None, None, 10);
         let (score, signals) = compute_score(&login_ctx, &[]);
         assert_eq!(score, 0, "expected zero score, got signals: {signals:?}");
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn compute_score_known_country_and_city_no_geo_signal() {
-        // Exact country+city match → no geo signal.
+        // Exact country+city match -- no geo signal.
         let history = vec![history_entry("FR", "Paris", "agent/1.0", None, None, 3600)];
         let login_ctx = ctx("FR", "Paris", "agent/1.0", None, None, 10);
         let (score, signals) = compute_score(&login_ctx, &history);
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn compute_score_unusual_hour_adds_15() {
-        // Hour 3 is within the 00–05 window.
+        // Hour 3 is within the 00-05 window.
         let login_ctx = ctx("", "", "", None, None, 3);
         let (score, signals) = compute_score(&login_ctx, &[]);
         assert!(
@@ -430,16 +430,16 @@ mod tests {
         let (score, signals) = compute_score(&login_ctx, &history);
         assert!(
             score >= SCORE_NEW_COUNTRY + SCORE_NEW_DEVICE + SCORE_UNUSUAL_HOUR,
-            "expected ≥{} for 3 signals, got {score}: {signals:?}",
+            "expected >= {} for 3 signals, got {score}: {signals:?}",
             SCORE_NEW_COUNTRY + SCORE_NEW_DEVICE + SCORE_UNUSUAL_HOUR
         );
     }
 
     #[test]
     fn compute_score_impossible_travel_adds_50() {
-        // Previous location: Tokyo (35.6°N, 139.7°E), 1 hour ago.
-        // Current location: New York (40.7°N, -74.0°W).
-        // Distance ≈ 10,838 km, elapsed = 1 h → speed ≈ 10,838 km/h >> 500 km/h limit.
+        // Previous location: Tokyo (35.6N, 139.7E), 1 hour ago.
+        // Current location: New York (40.7N, -74.0W).
+        // Distance ~10,838 km, elapsed = 1 h -- speed ~10,838 km/h >> 500 km/h limit.
         let history = vec![history_entry(
             "JP",
             "Tokyo",
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn compute_score_normal_speed_no_impossible_travel() {
-        // Paris to Lyon: ≈ 392 km, 2 hours ago → speed ≈ 196 km/h (well below 500 km/h).
+        // Paris to Lyon: ~392 km, 2 hours ago -- speed ~196 km/h (well below 500 km/h).
         let history = vec![history_entry(
             "FR",
             "Paris",

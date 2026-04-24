@@ -1701,7 +1701,7 @@ async fn bench_email_change_full(
 
     run_http_scenario(
         "email_change_full",
-        "Complete 4-step email change pipeline: start → verify-current → submit → confirm. OTPs are injected directly into Redis; email send is fire-and-forget.",
+        "Complete 4-step email change pipeline: start > verify-current > submit > confirm. OTPs are injected directly into Redis; email send is fire-and-forget.",
         concurrency,
         iterations,
         warmup,

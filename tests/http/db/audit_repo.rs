@@ -1,6 +1,6 @@
 //! Audit repository read-function tests.
 //!
-//! Tests index range 940–949.
+//! Tests index range 940-949.
 //!
 //! `append` is exercised by every HTTP integration test that triggers an
 //! auditable action; these tests cover the three read paths that are not

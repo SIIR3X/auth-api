@@ -1,12 +1,12 @@
 //! Captcha service tests.
 //!
 //! Test categories:
-//!   1. Secret not configured → verification skipped.
-//!   2. Empty token with secret configured → 422 immediately.
-//!   3. Mock server: success:true → ok, success:false → 422.
-//!   4. Upstream unreachable: fail_open → ok, fail_closed → 503.
-//!   5. Upstream returns non-2xx: fail_open → ok, fail_closed → 503.
-//!   6. Upstream returns non-JSON body: fail_open → ok, fail_closed → 503.
+//!   1. Secret not configured --> verification skipped.
+//!   2. Empty token with secret configured --> 422 immediately.
+//!   3. Mock server: success:true --> ok, success:false --> 422.
+//!   4. Upstream unreachable: fail_open --> ok, fail_closed --> 503.
+//!   5. Upstream returns non-2xx: fail_open --> ok, fail_closed --> 503.
+//!   6. Upstream returns non-JSON body: fail_open --> ok, fail_closed --> 503.
 
 use std::net::SocketAddr;
 
@@ -56,7 +56,7 @@ async fn try_register(app: &TestApp, index: usize, captcha_token: Option<&str>) 
 
 #[tokio::test]
 async fn captcha_disabled_register_succeeds_without_token() {
-    // Default test config has captcha.secret = None → verification is skipped.
+    // Default test config has captcha.secret = None --> verification is skipped.
     let app = TestApp::spawn().await;
     let status = try_register(&app, 1, None).await;
     assert_eq!(
