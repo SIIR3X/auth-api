@@ -11,3 +11,20 @@ CREATE TABLE email_2fa_codes (
 );
 
 CREATE INDEX idx_email_2fa_codes_user ON email_2fa_codes (user_id, expires_at DESC);
+
+CREATE OR REPLACE FUNCTION cleanup_expired_email_2fa_codes(
+    grace_interval INTERVAL DEFAULT '1 day'
+)
+RETURNS INTEGER AS $$
+DECLARE
+    deleted INTEGER;
+BEGIN
+    WITH deleted_rows AS (
+        DELETE FROM email_2fa_codes
+        WHERE expires_at < NOW() - grace_interval
+        RETURNING id
+    )
+    SELECT count(*) INTO deleted FROM deleted_rows;
+    RETURN deleted;
+END;
+$$ LANGUAGE plpgsql;

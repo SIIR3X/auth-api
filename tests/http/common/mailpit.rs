@@ -1,73 +1,30 @@
-//! Mailpit helper - starts a shared Mailpit process once per test binary,
-//! then exposes a typed client to query captured messages.
+//! Mailpit helper - connects to the shared Mailpit instance started by the
+//! test infrastructure (docker-compose.test.yml) and exposes a typed client
+//! to query captured messages.
 //!
 //! Usage:
 //! ```
 //! let app = TestApp::spawn_with_mailpit().await;
 //! // … trigger an action that sends an email …
-//! let msg = app.mailpit().wait_for_message("user@example.com").await.unwrap();
+//! let msg = app.mailpit().wait_for_message("user@example.com", "Subject").await.unwrap();
 //! assert!(msg.html.contains("verify"));
 //! ```
 
 use serde::Deserialize;
 use time;
-use tokio::sync::OnceCell;
 
-static MAILPIT: OnceCell<MailpitPorts> = OnceCell::const_new();
-
+/// Fixed ports matching docker-compose.test.yml.
 pub struct MailpitPorts {
     pub smtp_port: u16,
     pub api_port: u16,
 }
 
-/// Returns the ports of the shared Mailpit instance, starting it if needed.
-pub async fn mailpit_ports() -> &'static MailpitPorts {
-    MAILPIT
-        .get_or_init(|| async {
-            let smtp_port = free_port();
-            let api_port = free_port();
-
-            std::process::Command::new("mailpit")
-                .args([
-                    "--smtp",
-                    &format!("127.0.0.1:{smtp_port}"),
-                    "--listen",
-                    &format!("127.0.0.1:{api_port}"),
-                    "--smtp-auth-accept-any",
-                    "--smtp-auth-allow-insecure",
-                    "--quiet",
-                ])
-                .spawn()
-                .expect("failed to start mailpit - is it installed and on $PATH?");
-
-            // Poll the HTTP API until Mailpit is ready (up to 5 s).
-            let client = reqwest::Client::new();
-            for _ in 0..100 {
-                if client
-                    .get(format!("http://127.0.0.1:{api_port}/api/v1/info"))
-                    .send()
-                    .await
-                    .is_ok()
-                {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-
-            MailpitPorts {
-                smtp_port,
-                api_port,
-            }
-        })
-        .await
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// Returns the ports of the shared Mailpit instance (Docker service).
+pub fn mailpit_ports() -> MailpitPorts {
+    MailpitPorts {
+        smtp_port: 1026,
+        api_port: 8026,
+    }
 }
 
 // Response types

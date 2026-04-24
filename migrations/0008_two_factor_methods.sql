@@ -32,3 +32,4 @@ CREATE INDEX idx_2fa_user_verified ON two_factor_methods (user_id) WHERE is_veri
 CREATE UNIQUE INDEX idx_2fa_user_totp ON two_factor_methods (user_id) WHERE method_type = 'totp';
 CREATE UNIQUE INDEX idx_2fa_user_email ON two_factor_methods (user_id) WHERE method_type = 'email';
 CREATE UNIQUE INDEX idx_2fa_user_primary ON two_factor_methods (user_id) WHERE is_primary = TRUE;
+CREATE INDEX idx_2fa_user_created ON two_factor_methods (user_id, created_at DESC);

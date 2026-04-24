@@ -49,8 +49,11 @@ fn user_roles_join_to_permissions_correctly() {
     let user_id = insert_user(db.client(), 42);
     let role_id = db
         .client()
-        .query_one("SELECT id FROM roles WHERE name = 'admin'", &[])
-        .expect("failed to load admin role")
+        .query_one(
+            "INSERT INTO roles (name, is_default) VALUES ('test_role_perm', FALSE) RETURNING id",
+            &[],
+        )
+        .expect("failed to insert test role")
         .get::<_, uuid::Uuid>(0);
     let permission_id = insert_permission(db.client(), "users", "write");
 

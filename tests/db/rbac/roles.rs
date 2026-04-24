@@ -30,7 +30,7 @@ fn roles_seed_contains_expected_names() {
         .map(|row| row.get::<_, String>(0))
         .collect::<Vec<_>>();
 
-    assert_eq!(names, vec!["admin".to_owned(), "user".to_owned()]);
+    assert_eq!(names, vec!["user".to_owned()]);
 }
 
 #[test]

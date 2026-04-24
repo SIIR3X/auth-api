@@ -146,6 +146,13 @@ async fn build_rotation_state(
             templates_dir: "templates".into(),
             default_locale: "en".into(),
         },
+        cleanup: CleanupConfig {
+            interval_secs: 3600,
+            sessions_grace_days: 7,
+            tokens_grace_days: 1,
+            login_attempts_retention_days: 90,
+            recovery_codes_grace_days: 7,
+        },
         audit: AuditConfig {
             retention_months: 6,
         },
