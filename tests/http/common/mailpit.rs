@@ -76,7 +76,7 @@ impl MailpitClient {
         // messages that happen to match the same email + subject.
         let not_before = time::OffsetDateTime::now_utc() - time::Duration::milliseconds(500); // small back-buffer for clock skew
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(10_000);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(5_000);
         while std::time::Instant::now() < deadline {
             if let Some(m) = self.find_by_subject(email, subject, not_before).await {
                 return Some(m);
