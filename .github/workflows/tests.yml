@@ -69,18 +69,9 @@ jobs:
       - name: Run tests
         run: cargo nextest run
 
-      - name: Extend swap for tarpaulin linking
-        run: |
-          sudo swapoff /swapfile || true
-          sudo rm -f /swapfile
-          sudo fallocate -l 8G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-
       - name: Run coverage
         run: |
-          cargo tarpaulin --tests \
+          cargo tarpaulin --lib --tests \
             --skip-clean \
             --exclude-files "src/main.rs" "src/bin/*" \
             --out html --output-dir reports/coverage
