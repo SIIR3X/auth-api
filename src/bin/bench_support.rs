@@ -90,18 +90,25 @@ impl Drop for EphemeralDatabase {
                     .connect(&admin_url)
                     .await
                 else {
+                    eprintln!("bench cleanup: failed to connect to admin database for dropping {db_name}");
                     return;
                 };
 
-                let _ = sqlx::query(&format!(
+                if let Err(e) = sqlx::query(&format!(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{db_name}' AND pid <> pg_backend_pid()"
                 ))
                 .execute(&admin_pool)
-                .await;
+                .await
+                {
+                    eprintln!("bench cleanup: failed to terminate connections for {db_name}: {e}");
+                }
 
-                let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"))
+                if let Err(e) = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"))
                     .execute(&admin_pool)
-                    .await;
+                    .await
+                {
+                    eprintln!("bench cleanup: failed to drop {db_name}: {e}");
+                }
             });
         });
     }
@@ -336,7 +343,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             argon2_iterations: 3,
             argon2_parallelism: 1,
             totp_issuer: "bench".into(),
-            encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+            encryption_key: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
             previous_encryption_key: None,
             totp_skew: 1,
             recovery_code_expiry_days: 365,

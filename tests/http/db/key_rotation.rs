@@ -1,14 +1,14 @@
 //! Key-rotation service tests.
 //!
-//! Tests index range 900–919.
+//! Tests index range 900-919.
 
 use auth_api::{services::key_rotation::rotate_totp_encryption_key, state::AppState};
 
 use crate::common::{app::TestApp, fixtures};
 
 // Two distinct valid 32-byte base64 keys for rotation tests.
-const KEY_A: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-const KEY_B: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBQ=";
+const KEY_A: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+const KEY_B: &str = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=";
 
 /// Build an AppState sharing `app`'s DB pool but with overridden crypto keys.
 async fn rotation_state(app: &TestApp, active: &str, previous: &str) -> AppState {
@@ -101,7 +101,7 @@ async fn rotate_re_encrypts_totp_secret_with_new_key() {
     // Confirm it decrypts under KEY_A.
     let plaintext = crypto::decrypt(&before, &key_a).expect("must decrypt under KEY_A");
 
-    // Rotate KEY_A → KEY_B on the same isolated DB via a shared-pool state.
+    // Rotate KEY_A --> KEY_B on the same isolated DB via a shared-pool state.
     let rot_state = rotation_state(&app, KEY_B, KEY_A).await;
     let result = rotate_totp_encryption_key(&rot_state)
         .await
@@ -128,8 +128,8 @@ async fn rotate_re_encrypts_totp_secret_with_new_key() {
 
 #[tokio::test]
 async fn rotate_is_idempotent_when_run_twice() {
-    // First run: A → B (rotated=1, failed=0).
-    // Second run: A → B again, data already under B → re_encrypt fails per method.
+    // First run: A --> B (rotated=1, failed=0).
+    // Second run: A --> B again, data already under B --> re_encrypt fails per method.
     let app = TestApp::spawn_with_config(|c| {
         c.crypto.encryption_key = KEY_A.into();
     })

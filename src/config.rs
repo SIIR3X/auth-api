@@ -332,7 +332,7 @@ impl Config {
                 encryption_key: env_require("ENCRYPTION_KEY")?,
                 previous_encryption_key: env_string("PREVIOUS_ENCRYPTION_KEY"),
                 totp_skew: env_parse("TOTP_SKEW").unwrap_or(1),
-                recovery_code_expiry_days: env_parse("RECOVERY_CODE_EXPIRY_DAYS").unwrap_or(365),
+                recovery_code_expiry_days: env_parse("RECOVERY_CODE_EXPIRY_DAYS").unwrap_or(365), // 0 = never
             },
             rate_limit: RateLimitConfig {
                 requests_per_minute: env_parse("RATE_LIMIT_RPM").unwrap_or(300),
@@ -432,6 +432,10 @@ impl Config {
 
             if self.captcha.secret.is_some() {
                 validate_https_url("CAPTCHA_VERIFY_URL", &self.captcha.verify_url)?;
+            } else {
+                tracing::warn!(
+                    "CAPTCHA_SECRET is not set - CAPTCHA protection is disabled in production"
+                );
             }
 
             if self.mail.smtp.username.is_empty() {
@@ -498,12 +502,29 @@ fn validate_jwt_secret(secret: &str) -> Result<(), ConfigError> {
         .chars()
         .collect::<std::collections::HashSet<_>>()
         .len();
-    if unique_chars < 10 {
+    if unique_chars < 16 {
         return Err(ConfigError::Invalid {
             key: "JWT_SECRET".into(),
             reason:
-                "secret has insufficient entropy: use a random value (e.g. openssl rand -hex 32)"
+                "secret has insufficient entropy (fewer than 16 unique characters): use a random value (e.g. openssl rand -hex 32)"
                     .into(),
+        });
+    }
+
+    // Require at least 3 character classes (lowercase, uppercase, digit, other)
+    // to reject low-entropy secrets like all-lowercase or all-digit strings.
+    let has_lower = secret.chars().any(|c| c.is_ascii_lowercase());
+    let has_upper = secret.chars().any(|c| c.is_ascii_uppercase());
+    let has_digit = secret.chars().any(|c| c.is_ascii_digit());
+    let has_other = secret.chars().any(|c| !c.is_ascii_alphanumeric());
+    let classes = [has_lower, has_upper, has_digit, has_other]
+        .iter()
+        .filter(|&&v| v)
+        .count();
+    if classes < 3 {
+        return Err(ConfigError::Invalid {
+            key: "JWT_SECRET".into(),
+            reason: "secret must contain at least 3 character classes (lowercase, uppercase, digits, symbols): use a random value (e.g. openssl rand -base64 48)".into(),
         });
     }
 
@@ -528,6 +549,19 @@ fn validate_encryption_key(key_name: &str, value: &str) -> Result<(), ConfigErro
         return Err(ConfigError::Invalid {
             key: key_name.into(),
             reason: "must decode to exactly 32 bytes".into(),
+        });
+    }
+
+    // Reject low-entropy keys by checking byte variance.
+    // A truly random 32-byte key should have many distinct byte values.
+    let unique_bytes = decoded
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    if unique_bytes < 12 {
+        return Err(ConfigError::Invalid {
+            key: key_name.into(),
+            reason: "key has insufficient entropy (fewer than 12 unique byte values): use a cryptographically random key (e.g. openssl rand -base64 32)".into(),
         });
     }
 
@@ -665,7 +699,7 @@ mod tests {
                 wait_timeout_ms: 2000,
             },
             jwt: JwtConfig {
-                secret: "abcdefghijklmnopqrstuvwxyz123456".into(),
+                secret: "tR4!xK9@mW2#pL7&vN5*bQ8^jF1%cH6z".into(),
                 previous_secret: None,
                 access_expiry_secs: 900,
                 refresh_expiry_secs: 3600,
@@ -678,7 +712,7 @@ mod tests {
                 argon2_iterations: 1,
                 argon2_parallelism: 1,
                 totp_issuer: "test".into(),
-                encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                encryption_key: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
                 previous_encryption_key: None,
                 totp_skew: 1,
                 recovery_code_expiry_days: 365,
@@ -815,7 +849,7 @@ mod tests {
     #[test]
     fn validate_rejects_low_entropy_jwt_secret() {
         let mut config = valid_config();
-        // 32+ chars but only 2 unique characters → entropy too low.
+        // 32+ chars but only 2 unique characters -- entropy too low.
         config.jwt.secret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
 
         let err = config
@@ -885,7 +919,7 @@ mod tests {
     fn validate_rejects_inverted_risk_thresholds_alert_above_challenge() {
         let mut config = valid_config();
         config.risk.alert_threshold = 50;
-        config.risk.challenge_threshold = 30; // alert > challenge → invalid
+        config.risk.challenge_threshold = 30; // alert > challenge -- invalid
         config.risk.block_threshold = 80;
 
         let err = config
@@ -899,7 +933,7 @@ mod tests {
         let mut config = valid_config();
         config.risk.alert_threshold = 10;
         config.risk.challenge_threshold = 90;
-        config.risk.block_threshold = 50; // challenge > block → invalid
+        config.risk.block_threshold = 50; // challenge > block -- invalid
 
         let err = config
             .validate()
@@ -971,7 +1005,7 @@ mod tests {
     fn validate_accepts_valid_previous_encryption_key() {
         let mut config = valid_config();
         config.crypto.previous_encryption_key =
-            Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBQ=".into());
+            Some("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=".into());
 
         assert!(
             config.validate().is_ok(),

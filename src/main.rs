@@ -50,8 +50,10 @@ async fn main() -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
 
+    tracing::info!("shutdown complete");
     Ok(())
 }
 
@@ -61,6 +63,30 @@ async fn rotate_audit_log(db: &sqlx::PgPool, retention_months: u32) -> Result<()
         .execute(db)
         .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => tracing::info!("received Ctrl+C, starting graceful shutdown"),
+        () = terminate => tracing::info!("received SIGTERM, starting graceful shutdown"),
+    }
 }
 
 fn init_tracing(cfg: &auth_api::config::LogConfig) {

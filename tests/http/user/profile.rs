@@ -57,7 +57,7 @@ async fn delete_account_without_password_and_no_recent_reauth_rejected() {
     let user = fixtures::authenticated_user(&app, 12).await;
     app.clear_recent_reauth(&user.access_token).await;
 
-    // No password provided, no recent reauth → 403.
+    // No password provided, no recent reauth --> 403.
     let res = app
         .delete_auth_json("/users/me", &user.access_token, &serde_json::json!({}))
         .await;

@@ -1,6 +1,6 @@
 //! Role and permission repository tests.
 //!
-//! Tests index range 920–939.
+//! Tests index range 920-939.
 //!
 //! All tests use `app.db` directly so they exercise repository functions
 //! without going through the HTTP layer.
@@ -168,7 +168,7 @@ async fn assign_to_user_is_idempotent() {
         .expect("first assign failed");
 
     // Second assign will hit the conflict path and return no rows - expect Err from fetch_one.
-    // The ON CONFLICT DO NOTHING means zero rows → sqlx returns RowNotFound.
+    // The ON CONFLICT DO NOTHING means zero rows --> sqlx returns RowNotFound.
     // That's acceptable; the role is still assigned.
     let _ = role_repo::assign_to_user(&app.db, user.id, role_id, None).await;
 

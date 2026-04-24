@@ -34,8 +34,9 @@ use super::{email as email_svc, reauth as reauth_svc};
 const OTP_EXPIRY_SECS: u64 = 600;
 // Minimum delay between two sends per user (60 seconds anti-spam)
 const SEND_COOLDOWN_SECS: u64 = 60;
-// Max failed verification attempts per pre_auth_token
-const MAX_FAILURES: i64 = 5;
+// Max failed verification attempts per pre_auth_token.
+// Kept low (3) because a 6-digit OTP has only ~20 bits of entropy.
+const MAX_FAILURES: i64 = 3;
 
 // Setup (authenticated flow)
 
