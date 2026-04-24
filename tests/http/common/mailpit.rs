@@ -5,7 +5,7 @@
 //! Usage:
 //! ```
 //! let app = TestApp::spawn_with_mailpit().await;
-//! // … trigger an action that sends an email …
+//! // ... trigger an action that sends an email ...
 //! let msg = app.mailpit().wait_for_message("user@example.com", "Subject").await.unwrap();
 //! assert!(msg.html.contains("verify"));
 //! ```

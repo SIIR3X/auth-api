@@ -3,7 +3,7 @@ services:
     image: ghcr.io/siir3x/auth-api:latest
     env_file: config.prod.env
     environment:
-      # Secrets — exported from pass before running
+      # Secrets - exported from pass before running
       - DATABASE_URL
       - REDIS_URL
       - JWT_SECRET

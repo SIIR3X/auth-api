@@ -390,7 +390,7 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
             argon2_iterations: 1,
             argon2_parallelism: 1,
             totp_issuer: "test".into(),
-            encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+            encryption_key: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
             previous_encryption_key: None,
             totp_skew: 1,
             recovery_code_expiry_days: 365,
@@ -418,7 +418,7 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
         },
         mail: MailConfig {
             smtp: SmtpConfig {
-                host: String::new(), // empty → send() skips silently, no WARN
+                host: String::new(), // empty --> send() skips silently, no WARN
                 port: 1025,
                 username: String::new(),
                 password: String::new(),
@@ -469,7 +469,7 @@ fn brute_force_otp(expected_hash: &[u8]) -> String {
 /// Return a Redis URL pointing at a specific logical DB number.
 /// Strips any existing `/N` DB suffix before appending the new one.
 pub fn redis_url_with_db(base: &str, db: u8) -> String {
-    // Strip an existing numeric DB suffix (e.g. "redis://host:6379/1" → "redis://host:6379")
+    // Strip an existing numeric DB suffix (e.g. "redis://host:6379/1" --> "redis://host:6379")
     let stripped = if let Some(pos) = base.rfind('/') {
         let suffix = &base[pos + 1..];
         if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {

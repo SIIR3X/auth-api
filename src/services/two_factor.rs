@@ -32,6 +32,8 @@ const MAX_RC_FAILURES_BY_USER: i64 = 5;
 const RC_FAILURE_WINDOW_SECS: u64 = 900;
 /// Minimum delay between two recovery code regenerations (24 hours).
 const RC_REGEN_COOLDOWN_SECS: u64 = 86_400;
+/// Redis key prefix for consumed TOTP codes during setup (prevents code reuse within the window).
+const TOTP_SETUP_USED_PREFIX: &str = "totp_setup_used:";
 
 use super::reauth as reauth_svc;
 
@@ -114,6 +116,17 @@ pub async fn verify_setup(
 
     if !valid {
         return Err(AppError::TwoFactorFailed);
+    }
+
+    // Reject if this exact code was already consumed in the current TOTP window.
+    // Prevents replay attacks during the setup verification step.
+    let used_key = format!("{}{}:{}", TOTP_SETUP_USED_PREFIX, user_id, code);
+    if let Ok(mut conn) = state.redis.get().await {
+        let already_used: bool = conn.exists(&used_key).await.unwrap_or(false);
+        if already_used {
+            return Err(AppError::TwoFactorFailed);
+        }
+        let _: Result<(), _> = conn.set_ex(&used_key, 1u8, 60u64).await;
     }
 
     tf_repo::mark_verified(&state.db, method_id)

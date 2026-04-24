@@ -151,7 +151,7 @@ fn password_benches(c: &mut Criterion) {
         argon2_iterations: 3,
         argon2_parallelism: 1,
         totp_issuer: "bench".into(),
-        encryption_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+        encryption_key: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
         previous_encryption_key: None,
         totp_skew: 1,
         recovery_code_expiry_days: 365,

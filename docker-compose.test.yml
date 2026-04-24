@@ -28,7 +28,7 @@ services:
       retries: 10
 
   mailpit:
-    image: axllent/mailpit:latest
+    image: axllent/mailpit:v1.21
     ports:
       - "1026:1025"
       - "8026:8025"

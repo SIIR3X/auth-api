@@ -55,6 +55,16 @@ jobs:
           SIZE_MB=$(echo "scale=1; $SIZE / 1048576" | bc)
           echo "size=${SIZE_MB} MB" >> $GITHUB_OUTPUT
 
+      - name: Check image size threshold
+        run: |
+          SIZE=$(docker image inspect ${{ env.IMAGE_NAME }} --format='{{.Size}}')
+          MAX_SIZE=$((200 * 1048576))  # 200 MB
+          if [ "$SIZE" -gt "$MAX_SIZE" ]; then
+            SIZE_MB=$(echo "scale=1; $SIZE / 1048576" | bc)
+            echo "::error::Docker image size (${SIZE_MB} MB) exceeds 200 MB threshold"
+            exit 1
+          fi
+
   scan:
     name: Trivy Scan
     runs-on: ubuntu-latest

@@ -6,7 +6,7 @@
 
 /// Initial delay after the first failure: 1 second.
 pub const BASE_SECS: u64 = 1;
-/// Maximum delay cap: 16 seconds. Sequence: 1, 2, 4, 8, 16, 16, …
+/// Maximum delay cap: 16 seconds. Sequence: 1, 2, 4, 8, 16, 16, ...
 pub const MAX_SECS: u64 = 16;
 
 /// Sleeps for `2^(failures-1)` seconds (capped at [`MAX_SECS`]).
