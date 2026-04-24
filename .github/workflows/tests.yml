@@ -13,7 +13,7 @@ env:
 
 jobs:
   test:
-    name: Tests & Coverage
+    name: Tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -61,17 +61,10 @@ jobs:
           mailpit --smtp 127.0.0.1:1026 --listen 127.0.0.1:8026 &
           sleep 1
 
-      - name: Install cargo-nextest and cargo-tarpaulin
+      - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest,cargo-tarpaulin
+          tool: cargo-nextest
 
       - name: Run tests
         run: cargo nextest run
-
-      - name: Run coverage
-        run: |
-          cargo tarpaulin --lib --tests \
-            --skip-clean \
-            --exclude-files "src/main.rs" "src/bin/*" \
-            --out html --output-dir reports/coverage
