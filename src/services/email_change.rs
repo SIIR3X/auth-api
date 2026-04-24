@@ -1,4 +1,4 @@
-//! Email change flow: two-step OTP verification (current email → new email).
+//! Email change flow: two-step OTP verification (current email then new email).
 //!
 //! State machine stored in Redis, keyed by a short-lived flow_token.
 //!

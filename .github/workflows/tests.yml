@@ -54,10 +54,16 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install and start Mailpit
+        env:
+          MAILPIT_VERSION: "1.21.7"
+          MAILPIT_SHA256: "d945afe9a7652695498bca2581c5b7b8dd1fbb4e16eb7887fd7acc33f6796671"
         run: |
-          curl -sSL https://github.com/axllent/mailpit/releases/latest/download/mailpit-linux-amd64.tar.gz \
-            | tar -xz mailpit
+          curl -sSL "https://github.com/axllent/mailpit/releases/download/v${MAILPIT_VERSION}/mailpit-linux-amd64.tar.gz" \
+            -o mailpit.tar.gz
+          echo "${MAILPIT_SHA256}  mailpit.tar.gz" | sha256sum -c -
+          tar -xzf mailpit.tar.gz mailpit
           sudo mv mailpit /usr/local/bin/mailpit
+          rm mailpit.tar.gz
           mailpit --smtp 127.0.0.1:1026 --listen 127.0.0.1:8026 &
           sleep 1
 

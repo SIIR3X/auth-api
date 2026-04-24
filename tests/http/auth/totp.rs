@@ -361,7 +361,7 @@ async fn recovery_login_succeeds_with_valid_code() {
         .map(|v| v.as_str().unwrap().to_owned())
         .collect();
 
-    // Trigger login → TOTP challenge.
+    // Trigger login --> TOTP challenge.
     let login_res: Value = app
         .post(
             "/auth/login",
@@ -418,7 +418,7 @@ async fn recovery_login_replay_rejected() {
         .unwrap();
     let recovery_code = verify_res["recovery_codes"][0].as_str().unwrap().to_owned();
 
-    // First use: login → challenge → recovery.
+    // First use: login --> challenge --> recovery.
     let login1: Value = app
         .post(
             "/auth/login",

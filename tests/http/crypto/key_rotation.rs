@@ -2,7 +2,7 @@
 //!
 //! Strategy:
 //!   1. Spawn a TestApp with KEY_A (the default test encryption key).
-//!   2. Set up TOTP for a user via HTTP → secret stored encrypted with KEY_A.
+//!   2. Set up TOTP for a user via HTTP --> secret stored encrypted with KEY_A.
 //!   3. Build a second AppState (same DB pool, no HTTP server) configured with
 //!      previous_encryption_key = KEY_A and encryption_key = KEY_B.
 //!   4. Call `rotate_totp_encryption_key` directly.
@@ -24,10 +24,10 @@ use crate::common::{app::TestApp, fixtures};
 
 // Key constants
 
-/// The default test encryption key used by TestApp (32 zero bytes, base64-encoded).
-const KEY_A_B64: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-/// A distinct second key (32 bytes of value 1, base64-encoded).
-const KEY_B_B64: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+/// The default test encryption key used by TestApp (bytes 0..31, base64-encoded).
+const KEY_A_B64: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+/// A distinct second key (bytes 32..63, base64-encoded).
+const KEY_B_B64: &str = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=";
 
 // helpers
 
@@ -138,7 +138,7 @@ async fn build_rotation_state(
             smtp: SmtpConfig {
                 host: "localhost".into(),
                 port: 1025,
-                username: "".into(), // empty → builder_dangerous (no TLS, no auth)
+                username: "".into(), // empty --> builder_dangerous (no TLS, no auth)
                 password: "".into(),
                 from_name: "Test".into(),
                 from_address: "test@example.com".into(),
@@ -289,7 +289,7 @@ async fn rotate_totp_key_fails_when_previous_key_not_configured() {
 async fn rotate_totp_key_fails_when_keys_are_identical() {
     let app = TestApp::spawn().await;
 
-    // previous = current = KEY_A → should be caught and rejected.
+    // previous = current = KEY_A --> should be caught and rejected.
     let state =
         build_rotation_state(app.db.clone(), Some(KEY_A_B64), KEY_A_B64, &redis_url()).await;
 
@@ -302,7 +302,7 @@ async fn rotate_totp_key_fails_when_keys_are_identical() {
 
 #[tokio::test]
 async fn rotate_totp_key_no_op_when_no_totp_methods_exist() {
-    // No TOTP methods set up → rotated = 0, failed = 0, no error.
+    // No TOTP methods set up --> rotated = 0, failed = 0, no error.
     let app = TestApp::spawn().await;
     // Just register but don't set up TOTP.
     let _user = fixtures::authenticated_user(&app, 403).await;

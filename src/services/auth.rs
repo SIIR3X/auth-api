@@ -84,6 +84,8 @@ const RECOVERY_FAILURE_USER_WINDOW_SECS: u64 = 3600;
 const RC_USER_FAIL_PREFIX: &str = "rc_user_fail:";
 /// Max verify-email or reset-password token submission attempts per IP within the window.
 const MAX_TOKEN_SUBMIT_BY_IP: i64 = 10;
+/// Max submission attempts per token hash (limits distributed brute-force across many IPs).
+const MAX_TOKEN_SUBMIT_BY_HASH: i64 = 5;
 /// Sliding window for token submission rate limiting (1 hour).
 const TOKEN_SUBMIT_WINDOW_SECS: u64 = 3600;
 /// Email verification token lifetime.
@@ -238,6 +240,7 @@ pub async fn register(
         .await
         .map_err(|e| AppError::Internal(e.into()))?
     {
+        // Best-effort: default role assignment must not block registration.
         let _ = role::assign_to_user(&state.db, user.id, role.id, None).await;
     }
 
@@ -419,8 +422,8 @@ pub async fn login(
             if consecutive >= threshold {
                 let locked_until = time::now()
                     + TimeDuration::seconds(state.config.security.lockout_duration_secs as i64);
+                // Best-effort: lockout and audit must not leak timing information on the login path.
                 let _ = user_repo::set_locked_until(&state.db, u.id, locked_until).await;
-
                 let _ = audit::append(
                     &state.db,
                     &NewAuditEntry {
@@ -1010,6 +1013,25 @@ pub async fn verify_email(
 
     let hash = crypto::sha256(raw_token.as_bytes());
 
+    // Per-token-hash rate limit: cap attempts against the same token from any IP.
+    {
+        let tk_key = format!(
+            "vf_tok:{}",
+            hash[..8]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        if let Ok(mut conn) = state.redis.get().await {
+            let count: i64 = conn.get(&tk_key).await.unwrap_or(0);
+            if count >= MAX_TOKEN_SUBMIT_BY_HASH {
+                return Err(AppError::RateLimitExceeded);
+            }
+            let _: Result<(), _> = conn.incr(&tk_key, 1i64).await;
+            let _: Result<(), _> = conn.expire(&tk_key, TOKEN_SUBMIT_WINDOW_SECS as i64).await;
+        }
+    }
+
     let record = token::find_verification_by_hash(&state.db, &hash)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
@@ -1166,6 +1188,25 @@ pub async fn reset_password(
     }
 
     let hash = crypto::sha256(raw_token.as_bytes());
+
+    // Per-token-hash rate limit: cap attempts against the same token from any IP.
+    {
+        let tk_key = format!(
+            "rp_tok:{}",
+            hash[..8]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        if let Ok(mut conn) = state.redis.get().await {
+            let count: i64 = conn.get(&tk_key).await.unwrap_or(0);
+            if count >= MAX_TOKEN_SUBMIT_BY_HASH {
+                return Err(AppError::RateLimitExceeded);
+            }
+            let _: Result<(), _> = conn.incr(&tk_key, 1i64).await;
+            let _: Result<(), _> = conn.expire(&tk_key, TOKEN_SUBMIT_WINDOW_SECS as i64).await;
+        }
+    }
 
     let record = token::find_password_reset_by_hash(&state.db, &hash)
         .await
@@ -1636,6 +1677,10 @@ pub async fn is_jti_blocked(state: &AppState, jti: Uuid) -> bool {
 /// Both active and inactive results are cached: inactive prevents DB hammering from
 /// replayed revoked tokens (JTI blocklist covers the logout case directly).
 /// Fails open on Redis errors - falls back to a direct DB query.
+///
+/// **Limitation:** admin/bulk session revocations (outside explicit logout) are not
+/// reflected until the cache entry expires (up to SESSION_CACHE_TTL_SECS seconds).
+/// Explicit logouts bypass this by calling `invalidate_session_cache` immediately.
 pub async fn check_session_validity(state: &AppState, session_id: Uuid) -> Result<bool, AppError> {
     let key = format!("{SESSION_CACHE_PREFIX}{session_id}");
 
@@ -1779,6 +1824,7 @@ async fn send_new_device_notification(
         .find_map(|s| s.strip_prefix("new_city:"))
         .unwrap_or("");
 
+    // Best-effort: new-device audit entry must not block login completion.
     let _ = audit::append(
         &state.db,
         &NewAuditEntry {

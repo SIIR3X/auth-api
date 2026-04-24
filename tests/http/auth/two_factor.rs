@@ -213,7 +213,7 @@ async fn email_2fa_disable_requires_correct_password() {
 
     let method_id = setup_email_2fa(&app, &user.access_token, user.id).await;
 
-    // Wrong password → 401.
+    // Wrong password --> 401.
     let res = app
         .delete_auth_json(
             &format!("/users/me/two-factor/email/{}", method_id),
@@ -223,7 +223,7 @@ async fn email_2fa_disable_requires_correct_password() {
         .await;
     assert_eq!(res.status().as_u16(), 401);
 
-    // Correct password → 204.
+    // Correct password --> 204.
     let res = app
         .delete_auth_json(
             &format!("/users/me/two-factor/email/{}", method_id),
@@ -335,7 +335,7 @@ async fn email_2fa_expired_code_rejected() {
             }),
         )
         .await;
-    // Expired code → 401 (not found / invalid)
+    // Expired code --> 401 (not found / invalid)
     assert_eq!(res.status().as_u16(), 401);
 }
 

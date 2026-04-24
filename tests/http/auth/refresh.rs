@@ -121,9 +121,9 @@ async fn concurrent_refresh_only_allows_one_success() {
 #[tokio::test]
 async fn refresh_token_theft_invalidates_entire_session_family() {
     // Scenario:
-    //   1. Login → get refresh_token R0.
-    //   2. Refresh with R0 → get R1 (R0 is now revoked).
-    //   3. Replay R0 → server detects theft and revokes the whole family.
+    //   1. Login --> get refresh_token R0.
+    //   2. Refresh with R0 --> get R1 (R0 is now revoked).
+    //   3. Replay R0 --> server detects theft and revokes the whole family.
     //   4. R1 must also be rejected (family revoked).
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 6).await;
@@ -286,7 +286,7 @@ async fn refresh_rejects_mismatched_ip_with_strict_binding() {
         .await
         .expect("failed to update session IP");
 
-    // Refresh from 127.0.0.1 (the test client IP) - session IP is now 10.0.0.1 → mismatch.
+    // Refresh from 127.0.0.1 (the test client IP) - session IP is now 10.0.0.1 --> mismatch.
     let res = app
         .post(
             "/auth/refresh",

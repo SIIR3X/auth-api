@@ -34,7 +34,7 @@ async fn seed_known_location(app: &TestApp, user_id: uuid::Uuid, user_agent: &st
 
 #[tokio::test]
 async fn login_blocked_when_risk_score_exceeds_block_threshold() {
-    // block_threshold = 15, new_device = +20 → score 20 > 15 → Block → 403
+    // block_threshold = 15, new_device = +20 --> score 20 > 15 --> Block --> 403
     let app = TestApp::spawn_with_config(|c| {
         c.risk.alert_threshold = 5;
         c.risk.challenge_threshold = 10;
@@ -45,7 +45,7 @@ async fn login_blocked_when_risk_score_exceeds_block_threshold() {
     let user = fixtures::register_user(&app, 300).await;
     fixtures::activate_user(&app.db, user.id).await;
 
-    // First login: no history → new_device fires (+20) → blocked.
+    // First login: no history --> new_device fires (+20) --> blocked.
     let res = app
         .client
         .post(format!("{}/auth/login", app.base_url))
@@ -70,7 +70,7 @@ async fn login_blocked_when_risk_score_exceeds_block_threshold() {
 #[tokio::test]
 async fn login_allowed_for_known_device_below_threshold() {
     // Same thresholds as above, but seed the user-agent first.
-    // score = 0 (known device, normal hour) → Allow → 200.
+    // score = 0 (known device, normal hour) --> Allow --> 200.
     let app = TestApp::spawn_with_config(|c| {
         c.risk.alert_threshold = 5;
         c.risk.challenge_threshold = 10;
@@ -107,7 +107,7 @@ async fn login_allowed_for_known_device_below_threshold() {
 
 #[tokio::test]
 async fn login_challenged_when_risk_score_exceeds_challenge_threshold() {
-    // challenge_threshold = 15, new_device = +20 → Challenge → email 2FA required.
+    // challenge_threshold = 15, new_device = +20 --> Challenge --> email 2FA required.
     // block_threshold is set high so we don't hit it.
     let app = TestApp::spawn_with_config(|c| {
         c.risk.alert_threshold = 5;
@@ -149,8 +149,8 @@ async fn login_challenged_when_risk_score_exceeds_challenge_threshold() {
 
 #[tokio::test]
 async fn login_alert_creates_suspicious_login_audit_entry() {
-    // alert_threshold = 15, challenge_threshold = 100 → Alert only.
-    // new_device (+20) > 15 → Alert → audit entry + login still succeeds.
+    // alert_threshold = 15, challenge_threshold = 100 --> Alert only.
+    // new_device (+20) > 15 --> Alert --> audit entry + login still succeeds.
     let app = TestApp::spawn_with_config(|c| {
         c.risk.alert_threshold = 15;
         c.risk.challenge_threshold = 100;
@@ -200,7 +200,7 @@ async fn login_alert_creates_suspicious_login_audit_entry() {
 #[tokio::test]
 async fn login_succeeds_normally_with_default_thresholds_and_no_history() {
     // Default config: alert=30, challenge=60, block=80.
-    // new_device (+20) < alert (30) → Allow with no extra steps.
+    // new_device (+20) < alert (30) --> Allow with no extra steps.
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 304).await;
     assert!(!user.access_token.is_empty());
@@ -213,8 +213,8 @@ async fn login_succeeds_normally_with_default_thresholds_and_no_history() {
 // trusted and the geo lookup uses the spoofed IP.
 //
 // Known IPs in the test DB:
-//   81.2.69.142  → GB (United Kingdom), London
-//   175.16.199.1 → CN (China)
+//   81.2.69.142  --> GB (United Kingdom), London
+//   175.16.199.1 --> CN (China)
 
 const GEOIP_TEST_DB: &str = "tests/fixtures/GeoIP2-City-Test.mmdb";
 
@@ -243,8 +243,8 @@ async fn seed_location_country(
 #[tokio::test]
 async fn geoip_new_country_signal_triggers_block_with_real_db() {
     // new_country (+40) via real geo lookup.
-    // Seed history from CN, login with IP from GB → new_country fires.
-    // block_threshold = 35 → 40 > 35 → Block.
+    // Seed history from CN, login with IP from GB --> new_country fires.
+    // block_threshold = 35 --> 40 > 35 --> Block.
     let app = TestApp::spawn_with_config(|c| {
         c.risk.geoip_db_path = GEOIP_TEST_DB.into();
         c.risk.alert_threshold = 10;
@@ -278,7 +278,7 @@ async fn geoip_new_country_signal_triggers_block_with_real_db() {
         .await
         .unwrap();
 
-    // new_country (+40) > block_threshold (35) → 403 login_blocked.
+    // new_country (+40) > block_threshold (35) --> 403 login_blocked.
     assert_eq!(
         res.status().as_u16(),
         403,
@@ -290,8 +290,8 @@ async fn geoip_new_country_signal_triggers_block_with_real_db() {
 
 #[tokio::test]
 async fn geoip_known_country_does_not_add_score() {
-    // Seed history from GB, login again from GB (same country) → no new_country signal.
-    // new_device is also known → score = 0 → Allow even with tight thresholds.
+    // Seed history from GB, login again from GB (same country) --> no new_country signal.
+    // new_device is also known --> score = 0 --> Allow even with tight thresholds.
     let app = TestApp::spawn_with_config(|c| {
         c.risk.geoip_db_path = GEOIP_TEST_DB.into();
         c.risk.alert_threshold = 10;
@@ -321,7 +321,7 @@ async fn geoip_known_country_does_not_add_score() {
         .await
         .unwrap();
 
-    // score = 0 → Allow → 200 with tokens.
+    // score = 0 --> Allow --> 200 with tokens.
     assert_eq!(
         res.status().as_u16(),
         200,
