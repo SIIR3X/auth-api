@@ -209,6 +209,23 @@ pub struct RiskConfig {
     pub history_days: u32,
 }
 
+// Cleanup
+
+#[derive(Debug, Clone)]
+pub struct CleanupConfig {
+    /// Interval in seconds between application-side cleanup runs (fallback when pg_cron is unavailable). Default: 3600.
+    pub interval_secs: u64,
+    /// Grace period in days after session expiry/revocation before deletion. Default: 7.
+    pub sessions_grace_days: u32,
+    /// Grace period in days after token expiry before deletion
+    /// (email_2fa_codes, password_reset_tokens, email_verification_tokens). Default: 1.
+    pub tokens_grace_days: u32,
+    /// Retention period in days for login_attempts records. Default: 90.
+    pub login_attempts_retention_days: u32,
+    /// Grace period in days after recovery code expiry before deletion. Default: 7.
+    pub recovery_codes_grace_days: u32,
+}
+
 // Audit
 
 #[derive(Debug, Clone)]
@@ -259,6 +276,7 @@ pub struct Config {
     pub mail: MailConfig,
     pub cors: CorsConfig,
     pub captcha: CaptchaConfig,
+    pub cleanup: CleanupConfig,
     pub audit: AuditConfig,
     pub risk: RiskConfig,
     pub log: LogConfig,
@@ -357,6 +375,15 @@ impl Config {
                     .map(|s| s.trim().to_owned())
                     .collect(),
                 allow_credentials: env_parse("CORS_ALLOW_CREDENTIALS").unwrap_or(true),
+            },
+            cleanup: CleanupConfig {
+                interval_secs: env_parse("CLEANUP_INTERVAL_SECS").unwrap_or(3600),
+                sessions_grace_days: env_parse("CLEANUP_SESSIONS_GRACE_DAYS").unwrap_or(7),
+                tokens_grace_days: env_parse("CLEANUP_TOKENS_GRACE_DAYS").unwrap_or(1),
+                login_attempts_retention_days: env_parse("CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS")
+                    .unwrap_or(90),
+                recovery_codes_grace_days: env_parse("CLEANUP_RECOVERY_CODES_GRACE_DAYS")
+                    .unwrap_or(7),
             },
             audit: AuditConfig {
                 retention_months: env_parse("AUDIT_LOG_RETENTION_MONTHS").unwrap_or(12),
@@ -688,6 +715,13 @@ mod tests {
                 verify_url: "https://hcaptcha.com/siteverify".into(),
                 request_timeout_secs: 5,
                 fail_open_on_error: false,
+            },
+            cleanup: CleanupConfig {
+                interval_secs: 3600,
+                sessions_grace_days: 7,
+                tokens_grace_days: 1,
+                login_attempts_retention_days: 90,
+                recovery_codes_grace_days: 7,
             },
             audit: AuditConfig {
                 retention_months: 6,

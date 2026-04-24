@@ -28,6 +28,10 @@ pub mod session;
 pub mod two_factor;
 pub mod user;
 
+async fn health() -> &'static str {
+    "ok"
+}
+
 pub fn router(state: AppState) -> Router {
     let rl_general = RateLimitState {
         redis: state.redis.clone(),
@@ -67,6 +71,7 @@ pub fn router(state: AppState) -> Router {
         .merge(me_router());
 
     Router::new()
+        .route("/health", get(health))
         .nest(
             "/auth",
             auth_router().layer(middleware::from_fn_with_state(

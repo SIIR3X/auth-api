@@ -30,3 +30,20 @@ ALTER TABLE recovery_codes SET (
     autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_threshold = 500
 );
+
+CREATE OR REPLACE FUNCTION cleanup_expired_recovery_codes(
+    grace_interval INTERVAL DEFAULT '7 days'
+)
+RETURNS INTEGER AS $$
+DECLARE
+    deleted INTEGER;
+BEGIN
+    WITH deleted_rows AS (
+        DELETE FROM recovery_codes
+        WHERE expires_at IS NOT NULL AND expires_at < NOW() - grace_interval
+        RETURNING id
+    )
+    SELECT count(*) INTO deleted FROM deleted_rows;
+    RETURN deleted;
+END;
+$$ LANGUAGE plpgsql;
