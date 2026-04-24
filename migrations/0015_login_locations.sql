@@ -19,3 +19,5 @@ CREATE UNIQUE INDEX idx_login_locations_upsert
     ON login_locations (user_id, country, city, user_agent);
 CREATE INDEX idx_login_locations_last_seen
     ON login_locations (user_id, last_seen DESC);
+CREATE INDEX idx_login_locations_user_country
+    ON login_locations (user_id, country);

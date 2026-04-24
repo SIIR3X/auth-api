@@ -1,7 +1,7 @@
 use auth_api::{
     config::{Config, LogFormat},
     handlers,
-    services::key_rotation,
+    services::{cleanup, key_rotation},
     state::AppState,
 };
 
@@ -38,6 +38,8 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = rotate_audit_log(&state.db, state.config.audit.retention_months).await {
         tracing::warn!(error = ?e, "audit log partition rotation failed at startup");
     }
+
+    cleanup::spawn_cleanup_task(state.db.clone(), state.config.clone());
 
     let app = handlers::router(state);
 

@@ -9,8 +9,11 @@ fn role_permissions_enforce_unique_pairs() {
 
     let role_id = db
         .client()
-        .query_one("SELECT id FROM roles WHERE name = 'admin'", &[])
-        .expect("failed to load admin role")
+        .query_one(
+            "INSERT INTO roles (name, is_default) VALUES ('test_role_rp1', FALSE) RETURNING id",
+            &[],
+        )
+        .expect("failed to insert test role")
         .get::<_, uuid::Uuid>(0);
     let permission_id = insert_permission(db.client(), "audit", "read");
 
@@ -79,8 +82,11 @@ fn deleting_permission_cascades_to_role_permissions() {
 
     let role_id = db
         .client()
-        .query_one("SELECT id FROM roles WHERE name = 'admin'", &[])
-        .expect("failed to load admin role")
+        .query_one(
+            "INSERT INTO roles (name, is_default) VALUES ('test_role_rp2', FALSE) RETURNING id",
+            &[],
+        )
+        .expect("failed to insert test role")
         .get::<_, uuid::Uuid>(0);
     let permission_id = insert_permission(db.client(), "billing", "read");
 

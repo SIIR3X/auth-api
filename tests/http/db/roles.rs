@@ -12,6 +12,18 @@ use crate::common::{app::TestApp, fixtures};
 
 // Helpers
 
+/// Insert a non-default role and return its id.
+async fn insert_role(app: &TestApp, name: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO roles (name, description, is_default) VALUES ($1, $2, FALSE) RETURNING id",
+    )
+    .bind(name)
+    .bind(format!("Test role: {name}"))
+    .fetch_one(&app.db)
+    .await
+    .expect("failed to insert test role")
+}
+
 /// Insert a permission row and return its id.
 async fn insert_permission(app: &TestApp, resource: &str, action: &str) -> Uuid {
     sqlx::query_scalar("INSERT INTO permissions (resource, action) VALUES ($1, $2) RETURNING id")
@@ -44,10 +56,6 @@ async fn find_all_returns_seeded_roles() {
     assert!(
         names.contains(&"user"),
         "seeded 'user' role must be present"
-    );
-    assert!(
-        names.contains(&"admin"),
-        "seeded 'admin' role must be present"
     );
 }
 
@@ -130,12 +138,9 @@ async fn assign_to_user_and_find_by_user() {
     let app = TestApp::spawn().await;
 
     let user = fixtures::register_user(&app, 920).await;
-    let admin_role = role_repo::find_by_name(&app.db, "admin")
-        .await
-        .expect("find_by_name failed")
-        .expect("admin role must exist");
+    let extra_role_id = insert_role(&app, "moderator_920").await;
 
-    role_repo::assign_to_user(&app.db, user.id, admin_role.id, None)
+    role_repo::assign_to_user(&app.db, user.id, extra_role_id, None)
         .await
         .expect("assign_to_user failed");
 
@@ -144,10 +149,9 @@ async fn assign_to_user_and_find_by_user() {
         .expect("find_by_user failed");
 
     let names: Vec<&str> = roles.iter().map(|r| r.name.as_str()).collect();
-    // Registration assigns "user" role; we also assigned "admin".
     assert!(
-        names.contains(&"admin"),
-        "admin role must appear after assignment"
+        names.contains(&"moderator_920"),
+        "moderator_920 role must appear after assignment"
     );
 }
 
@@ -156,29 +160,26 @@ async fn assign_to_user_is_idempotent() {
     let app = TestApp::spawn().await;
 
     let user = fixtures::register_user(&app, 921).await;
-    let role = role_repo::find_by_name(&app.db, "admin")
-        .await
-        .expect("find_by_name failed")
-        .expect("admin role must exist");
+    let role_id = insert_role(&app, "moderator_921").await;
 
     // Assign twice - ON CONFLICT DO NOTHING means the second call must not error.
-    role_repo::assign_to_user(&app.db, user.id, role.id, None)
+    role_repo::assign_to_user(&app.db, user.id, role_id, None)
         .await
         .expect("first assign failed");
 
     // Second assign will hit the conflict path and return no rows - expect Err from fetch_one.
     // The ON CONFLICT DO NOTHING means zero rows → sqlx returns RowNotFound.
     // That's acceptable; the role is still assigned.
-    let _ = role_repo::assign_to_user(&app.db, user.id, role.id, None).await;
+    let _ = role_repo::assign_to_user(&app.db, user.id, role_id, None).await;
 
     let roles = role_repo::find_by_user(&app.db, user.id)
         .await
         .expect("find_by_user failed");
 
-    let admin_count = roles.iter().filter(|r| r.name == "admin").count();
+    let role_count = roles.iter().filter(|r| r.name == "moderator_921").count();
     assert_eq!(
-        admin_count, 1,
-        "admin role must appear exactly once after two assigns"
+        role_count, 1,
+        "moderator_921 role must appear exactly once after two assigns"
     );
 }
 
@@ -189,16 +190,13 @@ async fn revoke_from_user_removes_role() {
     let app = TestApp::spawn().await;
 
     let user = fixtures::register_user(&app, 922).await;
-    let admin = role_repo::find_by_name(&app.db, "admin")
-        .await
-        .expect("find_by_name failed")
-        .expect("admin role must exist");
+    let role_id = insert_role(&app, "moderator_922").await;
 
-    role_repo::assign_to_user(&app.db, user.id, admin.id, None)
+    role_repo::assign_to_user(&app.db, user.id, role_id, None)
         .await
         .expect("assign failed");
 
-    role_repo::revoke_from_user(&app.db, user.id, admin.id)
+    role_repo::revoke_from_user(&app.db, user.id, role_id)
         .await
         .expect("revoke failed");
 
@@ -207,8 +205,8 @@ async fn revoke_from_user_removes_role() {
         .expect("find_by_user failed");
 
     assert!(
-        roles.iter().all(|r| r.name != "admin"),
-        "admin role must be gone after revocation"
+        roles.iter().all(|r| r.name != "moderator_922"),
+        "moderator_922 role must be gone after revocation"
     );
 }
 
@@ -219,16 +217,13 @@ async fn find_granted_at_returns_timestamp_when_assigned() {
     let app = TestApp::spawn().await;
 
     let user = fixtures::register_user(&app, 923).await;
-    let admin = role_repo::find_by_name(&app.db, "admin")
-        .await
-        .expect("find_by_name failed")
-        .expect("admin role must exist");
+    let role_id = insert_role(&app, "moderator_923").await;
 
-    role_repo::assign_to_user(&app.db, user.id, admin.id, None)
+    role_repo::assign_to_user(&app.db, user.id, role_id, None)
         .await
         .expect("assign failed");
 
-    let granted_at = role_repo::find_granted_at(&app.db, user.id, admin.id)
+    let granted_at = role_repo::find_granted_at(&app.db, user.id, role_id)
         .await
         .expect("find_granted_at failed");
 
@@ -243,12 +238,9 @@ async fn find_granted_at_returns_none_when_not_assigned() {
     let app = TestApp::spawn().await;
 
     let user = fixtures::register_user(&app, 924).await;
-    let admin = role_repo::find_by_name(&app.db, "admin")
-        .await
-        .expect("find_by_name failed")
-        .expect("admin role must exist");
+    let role_id = insert_role(&app, "moderator_924").await;
 
-    let granted_at = role_repo::find_granted_at(&app.db, user.id, admin.id)
+    let granted_at = role_repo::find_granted_at(&app.db, user.id, role_id)
         .await
         .expect("find_granted_at failed");
 
@@ -265,14 +257,11 @@ async fn find_permissions_by_user_returns_granted_permissions() {
     let app = TestApp::spawn().await;
 
     let user = fixtures::register_user(&app, 925).await;
-    let admin = role_repo::find_by_name(&app.db, "admin")
-        .await
-        .unwrap()
-        .unwrap();
+    let role_id = insert_role(&app, "moderator_925").await;
 
     let perm_id = insert_permission(&app, "posts", "read").await;
-    grant_permission(&app, admin.id, perm_id).await;
-    role_repo::assign_to_user(&app.db, user.id, admin.id, None)
+    grant_permission(&app, role_id, perm_id).await;
+    role_repo::assign_to_user(&app.db, user.id, role_id, None)
         .await
         .expect("assign failed");
 
@@ -310,14 +299,11 @@ async fn user_has_permission_returns_true_when_granted() {
     let app = TestApp::spawn().await;
 
     let user = fixtures::register_user(&app, 927).await;
-    let admin = role_repo::find_by_name(&app.db, "admin")
-        .await
-        .unwrap()
-        .unwrap();
+    let role_id = insert_role(&app, "moderator_927").await;
 
     let perm_id = insert_permission(&app, "reports", "write").await;
-    grant_permission(&app, admin.id, perm_id).await;
-    role_repo::assign_to_user(&app.db, user.id, admin.id, None)
+    grant_permission(&app, role_id, perm_id).await;
+    role_repo::assign_to_user(&app.db, user.id, role_id, None)
         .await
         .unwrap();
 

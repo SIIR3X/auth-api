@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod captcha;
+pub mod cleanup;
 pub mod email;
 pub mod email_2fa;
 pub mod email_change;

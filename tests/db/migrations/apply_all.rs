@@ -12,7 +12,7 @@ fn all_migrations_apply_to_a_fresh_database() {
         .expect("failed to count seeded roles")
         .get(0);
 
-    assert_eq!(count, 2);
+    assert_eq!(count, 1);
 }
 
 #[test]
