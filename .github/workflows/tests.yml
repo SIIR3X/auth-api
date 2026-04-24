@@ -69,6 +69,13 @@ jobs:
       - name: Run tests
         run: cargo nextest run
 
+      - name: Set up swap for tarpaulin linking
+        run: |
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
       - name: Run coverage
         run: |
           cargo tarpaulin --tests \
