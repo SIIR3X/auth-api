@@ -35,7 +35,16 @@ git push --tags
 
 This triggers the `docker-publish` workflow. The image and the GitHub Release are created automatically.
 
-### 4. Verify
+### 4. Update the version badge
+
+The version badge in `README.md` is static and must be updated manually:
+
+```bash
+# In README.md, update the version number in the badge URL
+![version](https://img.shields.io/badge/version-1.2.3-blue)
+```
+
+### 5. Verify
 
 - Check the workflow run on GitHub Actions
 - Confirm the image is available on GHCR: `ghcr.io/siir3x/auth-api:v1.2.3`
