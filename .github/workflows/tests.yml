@@ -56,7 +56,7 @@ jobs:
       - name: Install and start Mailpit
         env:
           MAILPIT_VERSION: "1.21.7"
-          MAILPIT_SHA256: "d945afe9a7652695498bca2581c5b7b8dd1fbb4e16eb7887fd7acc33f6796671"
+          MAILPIT_SHA256: "db0aaee98c6720e4b7d8d43283767ccb326d60af3e0dc93d74a17fd479fdc908"
         run: |
           curl -sSL "https://github.com/axllent/mailpit/releases/download/v${MAILPIT_VERSION}/mailpit-linux-amd64.tar.gz" \
             -o mailpit.tar.gz
