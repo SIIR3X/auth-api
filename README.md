@@ -5,7 +5,7 @@ A production-ready authentication and authorization API built with Rust.
 ![code quality](https://github.com/SIIR3X/auth-api/actions/workflows/code-quality.yml/badge.svg)
 ![tests](https://github.com/SIIR3X/auth-api/actions/workflows/tests.yml/badge.svg)
 ![docker](https://github.com/SIIR3X/auth-api/actions/workflows/docker-checks.yml/badge.svg)
-![version](https://img.shields.io/github/v/release/SIIR3X/auth-api)
+![version](https://img.shields.io/badge/version-1.0.2-blue)
 ![rust](https://img.shields.io/badge/rust-2024_edition-orange)
 ![license](https://img.shields.io/badge/license-Proprietary-red)
 
