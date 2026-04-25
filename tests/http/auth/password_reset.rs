@@ -212,6 +212,9 @@ async fn forgot_password_rate_limited_after_5_requests() {
 
     let virtual_ip = "192.0.2.9"; // TEST-NET-1, unique to this test
 
+    // Clear any leftover counter from a previous run sharing the same Redis.
+    app.clear_forgot_password_rate_limit(virtual_ip).await;
+
     // Send 5 requests - all must succeed (limit rejects once count reaches 5).
     for _ in 0..5 {
         let res = app
