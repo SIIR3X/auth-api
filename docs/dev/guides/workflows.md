@@ -64,6 +64,6 @@ Tags applied to the image:
 | semver full | `v1.2.3` | When tag is `v1.2.3` |
 | semver minor | `v1.2` | When tag is `v1.2.3` |
 
-Builds for both `linux/amd64` and `linux/arm64`. Uses GitHub Actions cache to avoid recompiling unchanged dependencies.
+Builds for `linux/amd64`. Uses GitHub Actions cache to avoid recompiling unchanged dependencies.
 
 See [Creating a Release](release.md) for the full release process.
