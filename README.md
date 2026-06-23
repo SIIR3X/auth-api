@@ -1,61 +1,103 @@
 # auth-api
 
-A production-ready authentication and authorization API built with Rust.
+<p align="center">
+  <img src="docs/assets/auth-api-banner.svg" alt="auth-api" width="780">
+</p>
 
-![code quality](https://github.com/SIIR3X/auth-api/actions/workflows/code-quality.yml/badge.svg)
-![tests](https://github.com/SIIR3X/auth-api/actions/workflows/tests.yml/badge.svg)
-![docker](https://github.com/SIIR3X/auth-api/actions/workflows/docker-checks.yml/badge.svg)
-![version](https://img.shields.io/github/v/release/SIIR3X/auth-api)
-![rust](https://img.shields.io/badge/rust-2024_edition-orange)
-![license](https://img.shields.io/badge/license-Proprietary-red)
+<p align="center">
+  <a href="https://github.com/SIIR3X/auth-api/releases/latest"><img src="https://img.shields.io/github/v/release/SIIR3X/auth-api?color=blue&label=version" alt="Latest release"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/rust-2024%20edition-orange.svg" alt="Rust 2024 edition">
+  <img src="https://img.shields.io/badge/framework-Axum-1793d1.svg" alt="Framework: Axum">
+  <img src="https://img.shields.io/badge/datastores-PostgreSQL%20%7C%20Redis-1f3b4d.svg" alt="Datastores: PostgreSQL / Redis">
+  <img src="https://img.shields.io/badge/container-Docker-2496ed.svg" alt="Container: Docker">
+</p>
 
-## Features
+**Production-ready authentication and authorization API for Rust services - JWT
+access and refresh tokens, two-factor auth, RBAC, per-device sessions and
+risk-based login, built on Axum, PostgreSQL and Redis.**
 
-- Registration, login, logout, email verification
-- JWT access and refresh tokens with rotation and replay detection
-- Two-factor authentication — TOTP and email OTP
-- Recovery codes for 2FA backup access
-- RBAC with roles and permissions
-- Session management — per-device visibility, revocation, family compromise detection
-- Password reset flow
-- Email change flow with OTP verification at each step
-- Risk scoring on login — GeoIP, new device detection, behavioral history
-- Account lockout after repeated failures
-- Per-IP rate limiting with separate auth bucket
-- CAPTCHA support on sensitive endpoints
-- Append-only audit log partitioned by month
-- AES-256-GCM encryption for TOTP secrets at rest
+## Description
 
-## Tech Stack
+auth-api is a complete authentication and authorization backend for production
+services. It covers the full account lifecycle - registration, email
+verification, login, logout, password reset and email change - and issues
+short-lived JWT access tokens backed by rotating refresh tokens with replay and
+family-compromise detection.
 
-| Layer | Technology |
-|-------|------------|
-| Language | Rust |
-| Framework | Axum |
-| Database | PostgreSQL |
-| Cache / sessions | Redis |
-| Migrations | sqlx-cli |
-| Containerization | Docker |
-| CI/CD | GitHub Actions |
-| Registry | GitHub Container Registry (GHCR) |
+Security is built in rather than bolted on: two-factor authentication (TOTP and
+email OTP) with recovery codes, role-based access control, per-device session
+management, risk scoring on every login (GeoIP, new-device detection,
+behavioral history), account lockout, per-IP rate limiting and CAPTCHA on
+sensitive endpoints. Sensitive data is protected at rest - TOTP secrets are
+encrypted with AES-256-GCM - and every security-relevant action is written to an
+append-only audit log partitioned by month.
 
-## Getting Started
+### What it provides
 
-**Prerequisites:** Docker and Docker Compose. See [prerequisites](docs/dev/guides/prerequisites.md) for the full list.
+| Area | Capabilities |
+|------|--------------|
+| Account lifecycle | registration, login, logout, email verification, password reset, email change with OTP at each step |
+| Tokens | JWT access + refresh, rotation, replay detection |
+| Two-factor | TOTP and email OTP, recovery codes for backup access |
+| Authorization | RBAC with roles and permissions |
+| Sessions | per-device visibility, revocation, family compromise detection |
+| Threat protection | risk scoring (GeoIP, new device, behavioral history), account lockout, per-IP rate limiting with a separate auth bucket, CAPTCHA |
+| Audit & crypto | append-only audit log partitioned by month, AES-256-GCM encryption for TOTP secrets at rest |
+
+## Requirements
+
+**To run locally:**
+
+- **Docker** and **Docker Compose**
+- **GNU Make**
+
+See [prerequisites](docs/dev/guides/prerequisites.md) for the full list.
+
+**To deploy:** PostgreSQL, Redis and the shared infrastructure (NATS, API
+Gateway) - see the [Deployment Guide](docs/deploy/README.md).
+
+## Installation
+
+### From source (development)
 
 ```bash
+git clone https://github.com/SIIR3X/auth-api.git
+cd auth-api
 make dev
 ```
 
-The API is available at `http://localhost:3000`. A Mailpit instance for catching emails is available at `http://localhost:8025`.
+The API is available at `http://localhost:3000`. A Mailpit instance for catching
+emails is available at `http://localhost:8025`.
 
-For all available commands see [commands](docs/dev/guides/commands.md).
+### Container image
+
+Released images are published to the GitHub Container Registry, tagged `latest`,
+the full version and `major.minor`:
+
+```bash
+docker pull ghcr.io/siir3x/auth-api:latest
+```
+
+## Usage
+
+`make dev` brings up the full stack (API, PostgreSQL, Redis, Mailpit) with
+migrations applied. The API then serves at `http://localhost:3000`.
+
+For all available commands see [commands](docs/dev/guides/commands.md). API
+routes and the database schema are documented in the
+[Developer Guide](docs/dev/README.md).
 
 ## Documentation
 
-- [Developer Guide](docs/dev/README.md) — prerequisites, commands, workflows, configuration, API routes, database schema
-- [Deployment Guide](docs/deploy/README.md) — secrets, database setup, API deployment, release process
+| Document | Contents |
+|----------|----------|
+| [Developer Guide](docs/dev/README.md) | Prerequisites, commands, workflows, configuration, API routes, database schema |
+| [Deployment Guide](docs/deploy/README.md) | Secrets, database setup, API deployment, release process |
+| [`LICENSE`](LICENSE) | MIT license terms |
 
 ## License
 
-Copyright © 2026 Lucas Fagioli. All rights reserved. See [LICENSE](LICENSE).
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.
+
+Copyright (c) 2026 Lucas Fagioli.

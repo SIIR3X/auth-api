@@ -50,7 +50,7 @@ pass insert prod/auth-api/redis-url
 
 ### JWT Secret
 
-Signing key for access and refresh tokens. Must be at least 32 characters.
+Signing key for access tokens (HS256). Must be at least 32 characters.
 
 ```bash
 pass insert prod/auth-api/jwt-secret

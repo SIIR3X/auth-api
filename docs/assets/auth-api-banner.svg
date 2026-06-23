@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="200" viewBox="0 0 900 200" role="img" aria-label="auth-api">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="200" rx="16" fill="url(#bg)"/>
+  <!-- padlock emblem -->
+  <g transform="translate(78,46)">
+    <!-- shackle -->
+    <path d="M22 52 L22 34 A28 28 0 0 1 78 34 L78 52"
+          fill="none" stroke="#f97316" stroke-width="10" stroke-linecap="round"/>
+    <!-- body -->
+    <rect x="6" y="52" width="88" height="66" rx="12" fill="#334155" stroke="#f97316" stroke-width="3"/>
+    <!-- keyhole -->
+    <circle cx="50" cy="80" r="11" fill="#0f172a"/>
+    <rect x="45" y="84" width="10" height="22" rx="3" fill="#0f172a"/>
+  </g>
+  <!-- wordmark -->
+  <text x="240" y="95" font-family="Consolas, Menlo, monospace"
+        font-size="60" font-weight="700" fill="#f1f5f9" letter-spacing="1">auth-api</text>
+  <text x="242" y="135" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="24" fill="#94a3b8">Authentication &amp; authorization for Rust services</text>
+  <text x="242" y="166" font-family="Consolas, Menlo, monospace"
+        font-size="17" fill="#f97316">JWT · 2FA · RBAC · risk-based login</text>
+</svg>
