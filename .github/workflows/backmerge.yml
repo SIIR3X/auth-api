@@ -1,0 +1,35 @@
+---
+name: Back-merge main into staging
+
+# After a PR is merged into main, the merge commit lives on main but not on
+# staging, leaving staging "behind". Since the merged staging tip is the second
+# parent of that merge commit, staging is an ancestor of main and can always be
+# fast-forwarded. This job does exactly that, so the two branches never drift.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Fast-forward staging to main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward staging
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout staging
+          if git merge --ff-only origin/main; then
+            git push origin staging
+            echo "staging fast-forwarded to main."
+          else
+            echo "::warning::staging has diverging commits; sync it manually."
+          fi
