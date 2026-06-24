@@ -1,7 +1,7 @@
-# auth-api
+# Auth API
 
 <p align="center">
-  <img src="docs/assets/auth-api-banner.svg" alt="auth-api" width="780">
+  <img src="docs/assets/auth-api-banner.svg" alt="Auth API" width="780">
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@ risk-based login, built on Axum, PostgreSQL and Redis.**
 
 ## Description
 
-auth-api is a complete authentication and authorization backend for production
+Auth API is a complete authentication and authorization backend for production
 services. It covers the full account lifecycle - registration, email
 verification, login, logout, password reset and email change - and issues
 short-lived JWT access tokens backed by rotating refresh tokens with replay and
