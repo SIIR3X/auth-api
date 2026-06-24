@@ -3,7 +3,7 @@
 //! Loads all settings from environment variables at startup.
 //! Required variables cause an early, explicit error if missing.
 //! Optional variables fall back to safe, documented defaults.
-//! Use `.env.example` as a reference for all available variables.
+//! Use `.env.dev` and `config.prod.env` as a reference for all available variables.
 
 use std::{env, path::Path, str::FromStr};
 

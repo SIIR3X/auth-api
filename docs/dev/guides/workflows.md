@@ -61,8 +61,8 @@ Tags applied to the image:
 | Tag | Example | When |
 |-----|---------|------|
 | `latest` | `latest` | Always on tag push |
-| semver full | `v1.2.3` | When tag is `v1.2.3` |
-| semver minor | `v1.2` | When tag is `v1.2.3` |
+| semver full | `1.2.3` | When tag is `v1.2.3` |
+| semver minor | `1.2` | When tag is `v1.2.3` |
 
 Builds for `linux/amd64`. Uses GitHub Actions cache to avoid recompiling unchanged dependencies.
 

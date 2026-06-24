@@ -4,15 +4,39 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-  { id = "RUSTSEC-2023-0071", reason = "rsa via sqlx-mysql, no fix available upstream, project uses PostgreSQL exclusively" },
-]
+ignore = []
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
-skip = []
+# Reviewed, accepted duplicate versions. Most stem from the `postgres`
+# dev-dependency (older rand/getrandom ecosystem) and the Windows platform stub
+# crates (build-time only, never used on the Linux runtime target). Listed by
+# name so that any *new*, unexpected duplicate still surfaces as a warning.
+skip = [
+  { crate = "cpufeatures" },
+  { crate = "getrandom" },
+  { crate = "hashbrown" },
+  { crate = "ipnetwork" },
+  { crate = "r-efi" },
+  { crate = "rand" },
+  { crate = "rand_chacha" },
+  { crate = "rand_core" },
+  { crate = "redox_syscall" },
+  { crate = "thiserror" },
+  { crate = "thiserror-impl" },
+  { crate = "webpki-roots" },
+  { crate = "windows-sys" },
+  { crate = "windows-targets" },
+  { crate = "windows_aarch64_gnullvm" },
+  { crate = "windows_aarch64_msvc" },
+  { crate = "windows_i686_gnu" },
+  { crate = "windows_i686_msvc" },
+  { crate = "windows_x86_64_gnu" },
+  { crate = "windows_x86_64_gnullvm" },
+  { crate = "windows_x86_64_msvc" },
+]
 skip-tree = []
 
 [licenses]
@@ -26,7 +50,6 @@ allow = [
   "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",
-  "MPL-2.0",
   "Unicode-3.0",
   "Zlib",
   "BSL-1.0",

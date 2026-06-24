@@ -1,7 +1,7 @@
 //! Argon2id password hashing and verification.
 //!
 //! Parameters are loaded from CryptoConfig so they can be tuned per environment
-//! without recompiling. Use the defaults in .env.example as a starting point
+//! without recompiling. Use the defaults in .env.dev / config.prod.env as a starting point
 //! and benchmark on your target hardware before going to production.
 
 use argon2::{

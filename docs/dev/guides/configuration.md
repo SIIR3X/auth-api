@@ -17,7 +17,8 @@ These variables must be exported from `pass` on the VPS before running `docker c
 |----------|-------------|---------------|
 | `DATABASE_URL` | PostgreSQL connection string including credentials | — |
 | `REDIS_URL` | Redis connection string including password | — |
-| `JWT_SECRET` | HS256 signing key for access and refresh tokens | `openssl rand -hex 32` |
+| `JWT_SECRET` | HS256 signing key for access tokens | `openssl rand -hex 32` |
+| `JWT_PREVIOUS_SECRET` | Previous JWT signing key — set only during JWT key rotation | — |
 | `ENCRYPTION_KEY` | AES-256-GCM key for TOTP secret encryption (base64, 32 bytes) | `openssl rand -base64 32` |
 | `PREVIOUS_ENCRYPTION_KEY` | Previous encryption key — set only during key rotation | — |
 | `SMTP_USERNAME` | SMTP authentication username | — |
@@ -58,7 +59,9 @@ These variables are committed in `config.prod.env` and can be adjusted without a
 | Variable | Default (prod) | Description |
 |----------|----------------|-------------|
 | `JWT_ACCESS_EXPIRY_SECS` | `900` | Access token lifetime (15 minutes) |
-| `JWT_REFRESH_EXPIRY_SECS` | `2592000` | Refresh token lifetime (30 days) |
+| `JWT_REFRESH_EXPIRY_SECS` | `2592000` | Refresh token lifetime when "remember me" is on (30 days) |
+| `JWT_SHORT_SESSION_EXPIRY_SECS` | `86400` | Refresh token lifetime when "remember me" is off (24 hours) |
+| `JWT_MAX_SESSION_LIFETIME_SECS` | `7776000` | Absolute session lifetime cap regardless of refresh activity (90 days) |
 | `JWT_STRICT_SESSION_BINDING` | `false` | Bind refresh tokens to the login IP (breaks mobile roaming) |
 
 ### Argon2id
@@ -141,6 +144,18 @@ These variables are committed in `config.prod.env` and can be adjusted without a
 | Variable | Default (prod) | Description |
 |----------|----------------|-------------|
 | `AUDIT_LOG_RETENTION_MONTHS` | `12` | Retention period in months — `0` keeps forever |
+
+### Cleanup
+
+Expired-data cleanup runs nightly via pg_cron when available; otherwise the application background task enforces these settings.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLEANUP_INTERVAL_SECS` | `3600` | Interval between application-side cleanup runs (fallback when pg_cron is unavailable) |
+| `CLEANUP_SESSIONS_GRACE_DAYS` | `7` | Grace period after session expiry/revocation before deletion |
+| `CLEANUP_TOKENS_GRACE_DAYS` | `1` | Grace period after token expiry before deletion (email 2FA, password reset, email verification) |
+| `CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS` | `90` | Retention period for `login_attempts` records |
+| `CLEANUP_RECOVERY_CODES_GRACE_DAYS` | `7` | Grace period after recovery code expiry before deletion |
 
 ### Logging
 
