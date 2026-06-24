@@ -129,7 +129,7 @@ One-time tokens for email verification and email change flows.
 | `expires_at` | TIMESTAMPTZ | No | |
 | `used_at` | TIMESTAMPTZ | Yes | Set when token is consumed |
 | `request_ip` | INET | Yes | |
-| `request_user_agent` | VARCHAR(255) | Yes | |
+| `request_user_agent` | TEXT | Yes | |
 
 ## password_reset_tokens
 
@@ -144,7 +144,7 @@ One-time tokens for the forgot-password flow.
 | `expires_at` | TIMESTAMPTZ | No | |
 | `used_at` | TIMESTAMPTZ | Yes | Set when token is consumed |
 | `request_ip` | INET | Yes | |
-| `request_user_agent` | VARCHAR(255) | Yes | |
+| `request_user_agent` | TEXT | Yes | |
 
 ## recovery_codes
 
@@ -173,7 +173,7 @@ Operational ledger of authentication attempts for lockout and risk scoring.
 | `was_successful` | BOOLEAN | No | |
 | `failure_reason` | login_failure_reason | Yes | `invalid_password`, `two_factor_failed`, `rate_limited`, etc. |
 | `request_ip` | INET | Yes | |
-| `request_user_agent` | VARCHAR(255) | Yes | |
+| `request_user_agent` | TEXT | Yes | |
 
 ## audit_log
 
