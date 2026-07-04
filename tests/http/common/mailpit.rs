@@ -117,7 +117,7 @@ impl MailpitClient {
 
         // Newest first - ensures we pick the message that matches the latest DB code
         // when multiple OTP emails for the same recipient exist (e.g. setup + explicit send).
-        candidates.sort_by(|a, b| b.0.cmp(&a.0));
+        candidates.sort_by_key(|c| std::cmp::Reverse(c.0));
 
         if let Some((_, msg)) = candidates.first() {
             return self.get_detail(&msg.id).await;
