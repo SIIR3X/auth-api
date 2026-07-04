@@ -9,6 +9,7 @@ TEST_COMPOSE   := docker-compose.test.yml
 TEST_PROJECT   := auth-api-test
 TEST_DB_URL    := postgres://postgres:postgres@localhost:5433/postgres
 TEST_REDIS_URL := redis://127.0.0.1:6380
+TEST_NATS_URL  := nats://127.0.0.1:4224
 IMAGE_LOCAL    := auth-api:local
 IMAGE_DEV      := auth-api:dev
 
@@ -90,17 +91,17 @@ test-infra-down: ## Stop test infrastructure
 
 .PHONY: test
 test: test-infra-up ## Run all tests (starts/stops infrastructure automatically)
-	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) cargo nextest run; \
+	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) cargo nextest run; \
 	EXIT=$$?; $(MAKE) test-infra-down; exit $$EXIT
 
 .PHONY: test-verbose
 test-verbose: test-infra-up ## Run all tests with detailed output
-	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) cargo nextest run --no-capture; \
+	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) cargo nextest run --no-capture; \
 	EXIT=$$?; $(MAKE) test-infra-down; exit $$EXIT
 
 .PHONY: coverage
-coverage: test-infra-up ## Run tests with coverage report (tarpaulin) — outputs HTML to reports/coverage/
-	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) \
+coverage: test-infra-up ## Run tests with coverage report (tarpaulin) - outputs HTML to reports/coverage/
+	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) \
 	cargo tarpaulin --tests --skip-clean \
 		--exclude-files "src/main.rs" "src/bin/*" \
 		--out html --out json --output-dir reports/coverage; \

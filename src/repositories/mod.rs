@@ -5,10 +5,12 @@
 //! lives here; only SQL and type conversions.
 
 pub mod audit;
+pub mod client_quota;
 pub mod email_2fa;
 pub mod login_attempt;
 pub mod login_location;
 pub mod recovery_code;
+pub mod registered_client;
 pub mod role;
 pub mod session;
 pub mod token;

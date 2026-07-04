@@ -46,7 +46,7 @@ pub fn generate_token() -> String {
 }
 
 /// Generates `n` secure random recovery codes formatted as "XXXX-XXXX-XXXX-XXXX-XXXX".
-/// 5 groups × 4 hex chars = 10 bytes = 80 bits of entropy (meets NIST SP 800-63B guidance).
+/// 5 groups x 4 hex chars = 10 bytes = 80 bits of entropy (meets NIST SP 800-63B guidance).
 pub fn generate_recovery_codes(n: usize) -> Vec<String> {
     (0..n)
         .map(|_| {

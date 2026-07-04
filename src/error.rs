@@ -60,6 +60,17 @@ pub enum AppError {
     // 422 - CAPTCHA
     CaptchaFailed,
 
+    // 400 - Device authorization flow (RFC 8628)
+    DeviceAuthPending,
+    DeviceCodeExpired,
+    DeviceAccessDenied,
+    DeviceSlowDown,
+
+    // 403 - Device session/client restrictions
+    DeviceSessionLimitReached,
+    DeviceClientNotAllowed,
+    DeviceClientUnknown,
+
     // 429
     RateLimitExceeded,
 
@@ -68,6 +79,28 @@ pub enum AppError {
 
     // 500 - message is logged, never sent to the caller
     Internal(anyhow::Error),
+}
+
+impl AppError {
+    /// Map a Postgres unique-constraint violation (SQLSTATE 23505) to a domain
+    /// `Conflict`; any other database error becomes `Internal`.
+    ///
+    /// `mappings` pairs a constraint name with the stable conflict code to
+    /// return, e.g. `("users_email_key", "email_taken")`. Used by write paths
+    /// whose check-then-insert sequence can race with a concurrent request:
+    /// the UNIQUE constraint is the authoritative check, so its violation must
+    /// surface as the same 409 the pre-check would have produced.
+    pub fn from_unique_violation(err: sqlx::Error, mappings: &[(&str, &'static str)]) -> Self {
+        if let sqlx::Error::Database(ref db_err) = err
+            && db_err.code().as_deref() == Some("23505")
+            && let Some(constraint) = db_err.constraint()
+            && let Some((_, code)) = mappings.iter().find(|(name, _)| *name == constraint)
+        {
+            return Self::Conflict(code);
+        }
+
+        Self::Internal(err.into())
+    }
 }
 
 impl IntoResponse for AppError {
@@ -174,6 +207,57 @@ impl IntoResponse for AppError {
                 ErrorBody::new(
                     "captcha_failed",
                     "CAPTCHA verification failed. Please try again.",
+                ),
+            ),
+
+            // 400 - Device authorization flow (RFC 8628)
+            Self::DeviceAuthPending => (
+                StatusCode::BAD_REQUEST,
+                ErrorBody::new(
+                    "authorization_pending",
+                    "The user has not yet completed authorization.",
+                ),
+            ),
+            Self::DeviceCodeExpired => (
+                StatusCode::BAD_REQUEST,
+                ErrorBody::new("expired_token", "The device code has expired."),
+            ),
+            Self::DeviceAccessDenied => (
+                StatusCode::BAD_REQUEST,
+                ErrorBody::new(
+                    "access_denied",
+                    "The user denied the authorization request.",
+                ),
+            ),
+            Self::DeviceSlowDown => (
+                StatusCode::BAD_REQUEST,
+                ErrorBody::new(
+                    "slow_down",
+                    "Polling too frequently. Increase the interval.",
+                ),
+            ),
+
+            Self::DeviceSessionLimitReached => (
+                StatusCode::FORBIDDEN,
+                ErrorBody::new(
+                    "device_session_limit_reached",
+                    "Maximum number of device sessions reached for this client.",
+                ),
+            ),
+
+            Self::DeviceClientNotAllowed => (
+                StatusCode::FORBIDDEN,
+                ErrorBody::new(
+                    "device_client_not_allowed",
+                    "You do not have access to this client application.",
+                ),
+            ),
+
+            Self::DeviceClientUnknown => (
+                StatusCode::BAD_REQUEST,
+                ErrorBody::new(
+                    "device_client_unknown",
+                    "The specified client application is not registered.",
                 ),
             ),
 
@@ -347,6 +431,68 @@ mod tests {
     async fn captcha_failed_is_422() {
         assert_eq!(status(AppError::CaptchaFailed), 422);
         assert_eq!(body_code(AppError::CaptchaFailed).await, "captcha_failed");
+    }
+
+    // 400 - Device authorization flow
+
+    #[tokio::test]
+    async fn device_auth_pending_is_400() {
+        assert_eq!(status(AppError::DeviceAuthPending), 400);
+        assert_eq!(
+            body_code(AppError::DeviceAuthPending).await,
+            "authorization_pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn device_code_expired_is_400() {
+        assert_eq!(status(AppError::DeviceCodeExpired), 400);
+        assert_eq!(
+            body_code(AppError::DeviceCodeExpired).await,
+            "expired_token"
+        );
+    }
+
+    #[tokio::test]
+    async fn device_access_denied_is_400() {
+        assert_eq!(status(AppError::DeviceAccessDenied), 400);
+        assert_eq!(
+            body_code(AppError::DeviceAccessDenied).await,
+            "access_denied"
+        );
+    }
+
+    #[tokio::test]
+    async fn device_slow_down_is_400() {
+        assert_eq!(status(AppError::DeviceSlowDown), 400);
+        assert_eq!(body_code(AppError::DeviceSlowDown).await, "slow_down");
+    }
+
+    #[tokio::test]
+    async fn device_session_limit_reached_is_403() {
+        assert_eq!(status(AppError::DeviceSessionLimitReached), 403);
+        assert_eq!(
+            body_code(AppError::DeviceSessionLimitReached).await,
+            "device_session_limit_reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn device_client_not_allowed_is_403() {
+        assert_eq!(status(AppError::DeviceClientNotAllowed), 403);
+        assert_eq!(
+            body_code(AppError::DeviceClientNotAllowed).await,
+            "device_client_not_allowed"
+        );
+    }
+
+    #[tokio::test]
+    async fn device_client_unknown_is_400() {
+        assert_eq!(status(AppError::DeviceClientUnknown), 400);
+        assert_eq!(
+            body_code(AppError::DeviceClientUnknown).await,
+            "device_client_unknown"
+        );
     }
 
     // 429

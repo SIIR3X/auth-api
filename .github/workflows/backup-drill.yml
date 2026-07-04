@@ -1,0 +1,28 @@
+name: Backup Restore Drill
+
+# Monthly end-to-end test of the backup/restore mechanism (pg_dump|gzip|age
+# then restore-db.sh into a fresh Postgres). A backup that has never been
+# restored is not a backup. This validates the pipeline; the quarterly manual
+# drill with a real production backup validates the data
+# (docs/deploy/guides/operations.md section 3).
+on:
+  schedule:
+    # First day of every month at 05:00 UTC
+    - cron: "0 5 1 * *"
+  workflow_dispatch:
+
+jobs:
+  drill:
+    name: Backup & Restore Drill
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install age
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
+
+      - name: Run drill
+        run: bash scripts/backup-drill.sh

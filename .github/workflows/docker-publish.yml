@@ -16,6 +16,8 @@ jobs:
     permissions:
       contents: write
       packages: write
+      # Keyless cosign signing via GitHub OIDC
+      id-token: write
 
     steps:
       - name: Checkout
@@ -42,6 +44,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -51,6 +54,22 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Supply-chain attestations attached to the image in the registry
+          sbom: true
+          provenance: mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless, GitHub OIDC)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          echo "Verify with:" \
+            "cosign verify --certificate-identity-regexp 'github.com/${IMAGE_NAME}'" \
+            "--certificate-oidc-issuer https://token.actions.githubusercontent.com" \
+            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
       - name: Package migrations
         run: tar -czf migrations.tar.gz migrations/

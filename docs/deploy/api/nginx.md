@@ -7,7 +7,7 @@ Previous: [API Deployment](deployment.md) | [Index](../README.md)
 Nginx sits in front of the Docker container as a reverse proxy. It handles TLS termination, security headers, and rate limiting before requests reach the API.
 
 ```
-Client → Nginx (443) → Docker container (127.0.0.1:3000)
+Client -> Nginx (443) -> Docker container (127.0.0.1:3000)
 ```
 
 ## 1. Install Nginx and Certbot
@@ -54,7 +54,7 @@ sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 ```
 
-Port 3000 must **not** be open — the API is only reachable through Nginx on loopback.
+Port 3000 must **not** be open - the API is only reachable through Nginx on loopback.
 
 ## Configuration notes
 

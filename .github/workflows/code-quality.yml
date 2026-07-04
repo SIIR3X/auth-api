@@ -45,7 +45,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        # --all-targets also compiles tests and benches, so an API change that
+        # breaks them (but not the lib) fails the PR instead of rotting silently.
+        run: cargo clippy --all-targets -- -D warnings
 
   deny:
     name: Dependency Policy

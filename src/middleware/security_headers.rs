@@ -22,6 +22,7 @@ const CSP: &str = "default-src 'none'; base-uri 'none'; form-action 'none'; fram
 #[derive(Clone)]
 pub struct SecurityHeadersState {
     pub enable_hsts: bool,
+    pub is_production: bool,
 }
 
 pub async fn layer(
@@ -43,6 +44,15 @@ pub async fn layer(
             "strict-transport-security",
             HeaderValue::from_static("max-age=63072000; includeSubDomains"),
         );
+    } else if state.is_production {
+        // Defence-in-depth: force HSTS even if the public URL is not HTTPS.
+        tracing::warn!(
+            "APP_PUBLIC_URL is not HTTPS in production -- HSTS is forced as a safety net"
+        );
+        headers.insert(
+            "strict-transport-security",
+            HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+        );
     }
     headers.insert(
         "referrer-policy",
@@ -54,7 +64,11 @@ pub async fn layer(
     );
     headers.insert("content-security-policy", HeaderValue::from_static(CSP));
     // Prevent tokens and sensitive data from being cached by proxies or browsers.
-    headers.insert("cache-control", HeaderValue::from_static("no-store"));
+    // Handlers serving public, cacheable material (e.g. the JWKS endpoint) may
+    // set their own cache-control; only apply the blanket no-store as a default.
+    if !headers.contains_key("cache-control") {
+        headers.insert("cache-control", HeaderValue::from_static("no-store"));
+    }
 
     res
 }

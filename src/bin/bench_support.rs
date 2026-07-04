@@ -17,8 +17,9 @@ use tracing_subscriber::EnvFilter;
 use auth_api::{
     config::{
         AuditConfig, CaptchaConfig, CleanupConfig, Config, CorsConfig, CryptoConfig,
-        DatabaseConfig, Environment, JwtConfig, LogConfig, LogFormat, MailConfig, RateLimitConfig,
-        RedisConfig, RiskConfig, SecurityConfig, ServerConfig, SmtpConfig,
+        DatabaseConfig, DeviceAuthConfig, Environment, JwtConfig, LogConfig, LogFormat, MailConfig,
+        MetricsConfig, NatsConfig, RateLimitConfig, RedisConfig, RiskConfig, SecurityConfig,
+        ServerConfig, SmtpConfig,
     },
     handlers,
     state::AppState,
@@ -329,19 +330,29 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             pool_size: 16,
             wait_timeout_ms: 2000,
         },
+        nats: NatsConfig {
+            // Same override chain as the database/redis URLs so the benches
+            // can target the test infrastructure (NATS published on :4224).
+            url: std::env::var("BENCH_NATS_URL")
+                .or_else(|_| std::env::var("TEST_NATS_URL"))
+                .unwrap_or_else(|_| "nats://127.0.0.1:4222".into()),
+        },
         jwt: JwtConfig {
-            secret: "bench-secret-that-is-long-enough-for-hs256".into(),
-            previous_secret: None,
+            private_key: "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgL+1qOaZ7C+H1mGbV\njUP83/W450N4GfOnZSrQ7P//4Y2hRANCAAR4BApTJy8Anvp+O7YNVlTeCbBZ+1YJ\nk+r5ELHGFIXciAEGSrCTOkCm3yChSYroYWLE3ZN4reh6JDbIMX/QnBGx\n-----END PRIVATE KEY-----".into(),
+            public_key: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEeAQKUycvAJ76fju2DVZU3gmwWftW\nCZPq+RCxxhSF3IgBBkqwkzpApt8goUmK6GFixN2TeK3oeiQ2yDF/0JwRsQ==\n-----END PUBLIC KEY-----".into(),
+            previous_public_key: None,
             access_expiry_secs: 900,
             refresh_expiry_secs: 86400,
             short_session_expiry_secs: 3600,
             strict_session_binding: false,
             max_session_lifetime_secs: 60 * 60 * 24 * 90,
+            audience: Vec::new(),
         },
         crypto: CryptoConfig {
             argon2_memory_kib: 65_536,
             argon2_iterations: 3,
             argon2_parallelism: 1,
+            argon2_max_concurrency: 4,
             totp_issuer: "bench".into(),
             encryption_key: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
             previous_encryption_key: None,
@@ -402,6 +413,15 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
         log: LogConfig {
             level: "error".into(),
             format: LogFormat::Pretty,
+        },
+        device_auth: DeviceAuthConfig {
+            ttl_secs: 300,
+            poll_interval_secs: 5,
+            verification_uri: "http://localhost:5173/device".into(),
+        },
+        metrics: MetricsConfig {
+            enabled: false,
+            port: 9464,
         },
     }
 }

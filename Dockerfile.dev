@@ -1,5 +1,5 @@
 # =============================================================================
-# Stage 1: Chef — installe cargo-chef et sqlx-cli
+# Stage 1: Chef - install cargo-chef and sqlx-cli
 # =============================================================================
 FROM rust:1.88-slim-bookworm AS chef
 
@@ -15,7 +15,7 @@ RUN cargo install sqlx-cli --no-default-features --features rustls,postgres --lo
 WORKDIR /app
 
 # =============================================================================
-# Stage 2: Planner — génère la recette des dépendances
+# Stage 2: Planner - generate the dependency recipe
 # =============================================================================
 FROM chef AS planner
 
@@ -23,21 +23,21 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 # =============================================================================
-# Stage 3: Builder — compile les dépendances puis le binaire
+# Stage 3: Builder - compile dependencies then the binary
 # =============================================================================
 FROM chef AS builder
 
 COPY --from=planner /app/recipe.json recipe.json
 
-# Cache layer : compile uniquement les dépendances
+# Cache layer: compile dependencies only
 RUN cargo chef cook --release --recipe-path recipe.json
 
-# Compile le binaire
+# Compile the binary
 COPY . .
 RUN cargo build --release --bin auth-api
 
 # =============================================================================
-# Stage 4: Runtime dev — inclut migrations, sqlx-cli et postgresql-client
+# Stage 4: Runtime dev - includes migrations, sqlx-cli and postgresql-client
 # =============================================================================
 FROM debian:bookworm-slim AS runtime
 

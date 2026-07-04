@@ -45,10 +45,16 @@ async fn security_headers_enable_hsts_for_https_production() {
         config.server.public_url = "https://api.example.com".into();
         config.cors.allowed_origins = vec!["https://app.example.com".into()];
         config.cors.allow_credentials = true;
-        // Production validation requires non-empty SMTP credentials.
+        // Production validation requires non-empty SMTP credentials and CAPTCHA secret.
         config.mail.smtp.host = "smtp.example.com".into();
         config.mail.smtp.username = "user".into();
         config.mail.smtp.password = "pass".into();
+        config.captcha.secret = Some("0x0000000000000000000000000000000000000000".into());
+        // Production validation also enforces hardened security defaults.
+        config.rate_limit.fail_open_on_redis_error = false;
+        config.rate_limit.allow_requests_without_ip = false;
+        config.captcha.fail_open_on_error = false;
+        config.jwt.strict_session_binding = true;
     })
     .await;
 
