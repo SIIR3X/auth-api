@@ -79,7 +79,7 @@ pub async fn create_password_reset_token(pool: &PgPool, user_id: Uuid) -> Passwo
          VALUES ($1, $2, NOW() + INTERVAL '30 minutes')",
     )
     .bind(user_id)
-    .bind(&hash)
+    .bind(hash)
     .execute(pool)
     .await
     .expect("failed to create password reset token");
@@ -100,7 +100,7 @@ pub async fn create_expired_password_reset_token(
          VALUES ($1, $2, NOW() - INTERVAL '1 hour', NOW() - INTERVAL '2 hours')",
     )
     .bind(user_id)
-    .bind(&hash)
+    .bind(hash)
     .execute(pool)
     .await
     .expect("failed to create expired password reset token");
@@ -116,7 +116,7 @@ pub async fn create_used_password_reset_token(pool: &PgPool, user_id: Uuid) -> P
          VALUES ($1, $2, NOW() + INTERVAL '30 minutes', NOW())",
     )
     .bind(user_id)
-    .bind(&hash)
+    .bind(hash)
     .execute(pool)
     .await
     .expect("failed to create used password reset token");
@@ -145,7 +145,7 @@ pub async fn create_email_verification_token(
          VALUES ($1, $2, NOW() + INTERVAL '24 hours', $3)",
     )
     .bind(user_id)
-    .bind(&hash)
+    .bind(hash)
     .bind(email)
     .execute(pool)
     .await

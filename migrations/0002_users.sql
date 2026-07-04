@@ -29,7 +29,6 @@ CREATE TABLE users (
     username VARCHAR(50) NOT NULL,
     email CITEXT NOT NULL,
     password_hash TEXT NOT NULL,
-
     CONSTRAINT users_username_key UNIQUE (username),
     CONSTRAINT users_email_key UNIQUE (email),
     CONSTRAINT users_username_format CHECK (username ~ '^[a-zA-Z0-9_]{3,50}$'),

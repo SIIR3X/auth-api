@@ -1,5 +1,5 @@
 # =============================================================================
-# Stage 1: Chef — installe cargo-chef
+# Stage 1: Chef - install cargo-chef
 # =============================================================================
 FROM rust:1.88-slim-bookworm AS chef
 
@@ -14,7 +14,7 @@ RUN cargo install cargo-chef --locked
 WORKDIR /app
 
 # =============================================================================
-# Stage 2: Planner — génère la recette des dépendances
+# Stage 2: Planner - generate the dependency recipe
 # =============================================================================
 FROM chef AS planner
 
@@ -22,16 +22,16 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 # =============================================================================
-# Stage 3: Builder — compile les dépendances puis le binaire
+# Stage 3: Builder - compile dependencies then the binary
 # =============================================================================
 FROM chef AS builder
 
 COPY --from=planner /app/recipe.json recipe.json
 
-# Cache layer : compile uniquement les dépendances
+# Cache layer: compile dependencies only
 RUN cargo chef cook --release --recipe-path recipe.json
 
-# Compile le binaire
+# Compile the binary
 COPY . .
 RUN cargo build --release --bin auth-api
 
@@ -58,5 +58,11 @@ RUN chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 3000
+
+# Self-healthcheck via the binary itself: avoids shipping curl/wget in the
+# slim runtime image (smaller attack surface) and keeps the check in-process
+# (no PATH lookups, no shell parsing).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD ["./auth-api", "--healthcheck"]
 
 CMD ["./auth-api"]

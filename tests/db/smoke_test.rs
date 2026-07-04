@@ -28,6 +28,8 @@ fn migrations_are_sorted_and_contiguous() {
         "0015_login_locations.sql",
         "0016_seed.sql",
         "0017_cleanup_schedule.sql",
+        "0018_registered_clients.sql",
+        "0019_used_totp_codes.sql",
     ];
 
     assert_eq!(names, expected);

@@ -67,11 +67,11 @@ async fn register_sends_verification_email() {
     assert_eq!(msg.subject, "Verify your email address");
     assert!(
         msg.html.contains("verify-email"),
-        "verification email must contain the verify-email URL fragment"
+        "verification email must contain the verify-email path"
     );
     assert!(
-        msg.html.contains("token="),
-        "verification email must contain a token query parameter"
+        msg.html.contains("#token="),
+        "verification email must carry the token in a URL fragment (#token=...) to avoid Referer/log leakage"
     );
 }
 
@@ -107,11 +107,11 @@ async fn forgot_password_sends_reset_email() {
     assert_eq!(msg.subject, "Reset your password");
     assert!(
         msg.html.contains("reset-password"),
-        "reset email must contain the reset-password URL fragment"
+        "reset email must contain the reset-password path"
     );
     assert!(
-        msg.html.contains("token="),
-        "reset email must contain a token query parameter"
+        msg.html.contains("#token="),
+        "reset email must carry the token in a URL fragment (#token=...) to avoid Referer/log leakage"
     );
 }
 

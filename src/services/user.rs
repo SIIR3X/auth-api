@@ -3,6 +3,7 @@
 //! Email changes are handled by the email_change service (two-step OTP flow).
 //! Password changes revoke all active sessions to force re-login.
 
+use deadpool_redis::redis::AsyncCommands;
 use ipnetwork::IpNetwork;
 use serde_json::json;
 use uuid::Uuid;
@@ -18,9 +19,28 @@ use crate::{
     utils::password,
 };
 
-use super::{auth as auth_svc, reauth as reauth_svc};
+use super::{auth as auth_svc, events, reauth as reauth_svc};
+
+/// Redis key prefix for the per-user reauth-failure counter.
+/// Protects re-authentication / sensitive-action endpoints (`change_password`,
+/// `change_username`, sessions::revoke, email-change flow, ...) from
+/// brute-force when an access token has been stolen: even with a valid
+/// access token, an attacker cannot try unlimited passwords.
+const REAUTH_FAIL_PREFIX: &str = "reauth_failures:";
+/// TTL of the counter (1 hour). Resets after a period of inactivity so a
+/// legitimate user mistyping yesterday is not blocked today.
+const REAUTH_FAIL_TTL_SECS: u64 = 3600;
+
+fn reauth_fail_key(user_id: Uuid) -> String {
+    format!("{}{}", REAUTH_FAIL_PREFIX, user_id)
+}
 
 /// Verifies a user's current password. Returns Err(InvalidCredentials) on mismatch.
+///
+/// Wraps a per-user Redis counter to prevent brute-force across re-auth
+/// endpoints. Once the configured `LOCKOUT_THRESHOLD` is reached, the call
+/// returns `AppError::AccountLocked` until the TTL elapses, regardless of
+/// whether the next submitted password is correct.
 pub async fn verify_password(
     state: &AppState,
     user_id: Uuid,
@@ -31,12 +51,56 @@ pub async fn verify_password(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
-    let valid = password::verify_async(password, &user.password_hash)
+    let threshold = state.config.security.lockout_threshold as i64;
+    let fail_key = reauth_fail_key(user_id);
+
+    // Check the lockout counter BEFORE running argon2: an attacker who has
+    // already tripped the lockout must not be able to keep probing.
+    if threshold > 0
+        && let Ok(mut conn) = state.redis.get().await
+    {
+        let failures: i64 = conn.get(&fail_key).await.unwrap_or(0);
+        if failures >= threshold {
+            return Err(AppError::AccountLocked);
+        }
+    }
+
+    let valid = password::verify_async(password, &user.password_hash, &state.config.crypto)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
     if !valid {
+        // Increment the per-user failure counter; arm the TTL on every write
+        // so a slow brute-force does not silently outlive the window.
+        if threshold > 0
+            && let Ok(mut conn) = state.redis.get().await
+        {
+            let new_failures: i64 = conn.incr(&fail_key, 1i64).await.unwrap_or(0);
+            let _: Result<(), _> = conn.expire(&fail_key, REAUTH_FAIL_TTL_SECS as i64).await;
+
+            if new_failures >= threshold {
+                // Threshold just reached: surface a distinct error so the
+                // caller (and logs) can tell rate limiting apart from a
+                // simple wrong-password mistake.
+                // TODO: consider sending an account-alert email here once
+                // the email service is plumbed through to user_svc without
+                // creating a circular import.
+                tracing::warn!(
+                    user_id = %user_id,
+                    failures = new_failures,
+                    "reauth lockout triggered for user"
+                );
+                return Err(AppError::AccountLocked);
+            }
+        }
+
         return Err(AppError::InvalidCredentials);
+    }
+
+    // On success, reset the counter so a previously-mistyping user is not
+    // penalised on later legitimate use.
+    if let Ok(mut conn) = state.redis.get().await {
+        let _: Result<(), _> = conn.del(&fail_key).await;
     }
 
     Ok(())
@@ -226,6 +290,8 @@ pub async fn delete_account(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     auth_svc::invalidate_session_caches(state, &session_ids).await;
+
+    events::publish(state, "user.deleted", &events::UserDeleted { user_id }).await;
 
     Ok(())
 }

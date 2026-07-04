@@ -23,6 +23,21 @@ jobs:
         with:
           dockerfile: Dockerfile
 
+      - name: Enforce loopback-only published ports
+        # The API (3000) and metrics (9464) ports must never be published on
+        # 0.0.0.0: they are only reachable through the local reverse proxy /
+        # host Prometheus. This guards the compose file against an accidental
+        # `"3000:3000"` that would silently expose them to the network.
+        run: |
+          bad=$(grep -oE '^\s*-\s*"[^"]+:[0-9]+:[0-9]+"' docker-compose.api.yml | grep -v '127\.0\.0\.1:' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::docker-compose.api.yml publishes non-loopback ports:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "All published ports are loopback-only."
+
+
   build:
     name: Build Image
     runs-on: ubuntu-latest
@@ -87,7 +102,7 @@ jobs:
           tags: ${{ env.IMAGE_NAME }}
           cache-from: type=gha
 
-      - name: Scan (CVE système + applicatives)
+      - name: Scan (system + application CVEs)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.IMAGE_NAME }}

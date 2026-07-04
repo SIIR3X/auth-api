@@ -55,7 +55,12 @@ pub async fn send_verification_email(
     token: &str,
     public_url: &str,
 ) -> Result<(), AppError> {
-    let verification_url = format!("{}/verify-email?token={}", public_url, token);
+    // Use URL fragment (`#token=...`) instead of query string (`?token=...`).
+    // Fragments are not sent in the Referer header, not stored in CDN/proxy
+    // access logs, and are kept out of most browser-history sync mechanisms,
+    // which prevents leaking the single-use verification token.
+    // The frontend SPA reads it via `window.location.hash` (not URLSearchParams).
+    let verification_url = format!("{}/verify-email#token={}", public_url, token);
 
     let mut ctx = Context::new();
     ctx.insert("username", username);
@@ -91,7 +96,10 @@ pub async fn send_password_reset_email(
     token: &str,
     public_url: &str,
 ) -> Result<(), AppError> {
-    let reset_url = format!("{}/reset-password?token={}", public_url, token);
+    // Use URL fragment (`#token=...`) instead of query string (`?token=...`)
+    // for the same reasons as `send_verification_email`: fragments stay
+    // client-side and avoid Referer / log / history leakage of the reset token.
+    let reset_url = format!("{}/reset-password#token={}", public_url, token);
 
     let mut ctx = Context::new();
     ctx.insert("username", username);

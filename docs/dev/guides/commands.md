@@ -38,7 +38,7 @@ All commands are available via `make`. Run `make help` to list them.
 
 | Command | Description |
 |---------|-------------|
-| `make bench` | Run Criterion benchmarks (CPU only — no infrastructure required) |
+| `make bench` | Run Criterion benchmarks (CPU only - no infrastructure required) |
 | `make bench-http` | Run HTTP integration benchmarks (requires infrastructure) |
 | `make bench-sql` | Run SQL integration benchmarks (requires infrastructure) |
 

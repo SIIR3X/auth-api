@@ -7,6 +7,15 @@ use auth_api::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Healthcheck mode: hit the local /health endpoint and exit 0/1.
+    // Designed for `HEALTHCHECK CMD ["./auth-api", "--healthcheck"]` in the
+    // runtime image so we don't have to ship `curl`/`wget` in the slim base.
+    // Handled BEFORE Config::from_env so a misconfigured env doesn't make the
+    // healthcheck explode (it just talks HTTP to localhost).
+    if std::env::args().any(|a| a == "--healthcheck") {
+        std::process::exit(run_healthcheck().await);
+    }
+
     let config = Config::from_env().expect("failed to load config");
 
     init_tracing(&config.log);
@@ -41,7 +50,25 @@ async fn main() -> anyhow::Result<()> {
 
     cleanup::spawn_cleanup_task(state.db.clone(), state.config.clone());
 
-    let app = handlers::router(state);
+    // Serve Prometheus metrics on a separate internal listener so the
+    // exposition endpoint never sits behind the public reverse proxy.
+    // docker-compose publishes this port on loopback only.
+    let app = if state.config.metrics.enabled {
+        let metrics_addr = format!("{}:{}", state.config.server.host, state.config.metrics.port);
+        let (app, metrics_app) = handlers::router_with_metrics(state);
+
+        let metrics_listener = tokio::net::TcpListener::bind(&metrics_addr).await?;
+        tracing::info!("metrics listening on {}", metrics_addr);
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(metrics_listener, metrics_app).await {
+                tracing::error!(error = %e, "metrics server exited");
+            }
+        });
+
+        app
+    } else {
+        handlers::router(state)
+    };
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("listening on {}", addr);
@@ -86,6 +113,32 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => tracing::info!("received Ctrl+C, starting graceful shutdown"),
         () = terminate => tracing::info!("received SIGTERM, starting graceful shutdown"),
+    }
+}
+
+/// Hit the local `/health` endpoint and return a process exit code.
+/// Reads `SERVER_PORT` (defaults to 3000) so the healthcheck honours
+/// custom port overrides without requiring a full Config load.
+/// Returns 0 on a 2xx response, 1 otherwise (including timeouts and
+/// connection errors).
+async fn run_healthcheck() -> i32 {
+    let port = std::env::var("SERVER_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(3000);
+    let url = format!("http://127.0.0.1:{port}/health");
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return 1,
+    };
+
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => 0,
+        _ => 1,
     }
 }
 

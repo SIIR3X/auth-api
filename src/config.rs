@@ -76,11 +76,18 @@ pub struct RedisConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct NatsConfig {
+    pub url: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct JwtConfig {
-    pub secret: String,
-    /// Previous signing secret, accepted for token verification only (not used for signing).
-    /// Set to the old JWT_SECRET value before rotating; remove after all old tokens expire.
-    pub previous_secret: Option<String>,
+    /// PEM-encoded ECDSA P-256 private key used to sign access tokens.
+    pub private_key: String,
+    /// PEM-encoded ECDSA P-256 public key used to verify access tokens.
+    pub public_key: String,
+    /// Previous public key, accepted for verification during key rotation.
+    pub previous_public_key: Option<String>,
     /// Short-lived access token lifetime (default: 15 min).
     pub access_expiry_secs: u64,
     /// Long-lived refresh token lifetime used when remember_me is true (default: 30 days).
@@ -93,6 +100,12 @@ pub struct JwtConfig {
     pub strict_session_binding: bool,
     /// Hard upper bound on session lifetime regardless of refresh activity (default: 90 days).
     pub max_session_lifetime_secs: u64,
+    /// Audience values stamped into the `aud` claim of issued access tokens.
+    /// Each entry is the public URL of a downstream resource server (core-api,
+    /// billing-api, ...). Loaded from the `JWT_AUDIENCE` env var as a CSV.
+    /// Required in production: an empty audience would emit tokens that
+    /// downstream services pinning `aud` could not accept.
+    pub audience: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +114,12 @@ pub struct CryptoConfig {
     pub argon2_memory_kib: u32,
     pub argon2_iterations: u32,
     pub argon2_parallelism: u32,
+    /// Maximum number of Argon2id operations allowed to run concurrently.
+    /// Bounds worst-case memory usage (max_concurrency x argon2_memory_kib)
+    /// and keeps the blocking threadpool from being flooded during a login
+    /// storm; excess requests queue on a semaphore instead. Defaults to the
+    /// number of available CPU cores.
+    pub argon2_max_concurrency: u32,
     /// Issuer name shown in authenticator apps.
     pub totp_issuer: String,
     /// Base64-encoded 32-byte key used to encrypt TOTP secrets at rest with AES-256-GCM.
@@ -261,6 +280,30 @@ pub struct CorsConfig {
     pub allow_credentials: bool,
 }
 
+// Metrics
+
+#[derive(Debug, Clone)]
+pub struct MetricsConfig {
+    /// When true, Prometheus metrics are collected and served on `port`.
+    pub enabled: bool,
+    /// Port of the internal metrics listener (`/metrics`). Conventionally 9464
+    /// (Prometheus exporter range). Must never be exposed publicly: publish it
+    /// on loopback only in docker-compose, never through the reverse proxy.
+    pub port: u16,
+}
+
+// Device authorization (RFC 8628)
+
+#[derive(Debug, Clone)]
+pub struct DeviceAuthConfig {
+    /// How long a device authorization request remains valid (seconds).
+    pub ttl_secs: u64,
+    /// Recommended polling interval for clients (seconds).
+    pub poll_interval_secs: u64,
+    /// Base URL of the verification page shown to the user (auth frontend).
+    pub verification_uri: String,
+}
+
 // Root config
 
 #[derive(Debug, Clone)]
@@ -269,6 +312,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
+    pub nats: NatsConfig,
     pub jwt: JwtConfig,
     pub crypto: CryptoConfig,
     pub rate_limit: RateLimitConfig,
@@ -280,6 +324,8 @@ pub struct Config {
     pub audit: AuditConfig,
     pub risk: RiskConfig,
     pub log: LogConfig,
+    pub device_auth: DeviceAuthConfig,
+    pub metrics: MetricsConfig,
 }
 
 impl Config {
@@ -312,9 +358,14 @@ impl Config {
                 pool_size: env_parse("REDIS_POOL_SIZE").unwrap_or(10),
                 wait_timeout_ms: env_parse("REDIS_WAIT_TIMEOUT_MS").unwrap_or(2000),
             },
+            nats: NatsConfig {
+                url: env_string("NATS_URL").unwrap_or_else(|| "nats://nats:4222".into()),
+            },
             jwt: JwtConfig {
-                secret: env_require("JWT_SECRET")?,
-                previous_secret: env_string("JWT_PREVIOUS_SECRET"),
+                private_key: env_require("JWT_PRIVATE_KEY")?.replace("\\n", "\n"),
+                public_key: env_require("JWT_PUBLIC_KEY")?.replace("\\n", "\n"),
+                previous_public_key: env_string("JWT_PREVIOUS_PUBLIC_KEY")
+                    .map(|s| s.replace("\\n", "\n")),
                 access_expiry_secs: env_parse("JWT_ACCESS_EXPIRY_SECS").unwrap_or(900),
                 refresh_expiry_secs: env_parse("JWT_REFRESH_EXPIRY_SECS")
                     .unwrap_or(60 * 60 * 24 * 30),
@@ -323,11 +374,14 @@ impl Config {
                 strict_session_binding: env_parse("JWT_STRICT_SESSION_BINDING").unwrap_or(false),
                 max_session_lifetime_secs: env_parse("JWT_MAX_SESSION_LIFETIME_SECS")
                     .unwrap_or(60 * 60 * 24 * 90),
+                audience: env_csv("JWT_AUDIENCE").unwrap_or_default(),
             },
             crypto: CryptoConfig {
                 argon2_memory_kib: env_parse("ARGON2_MEMORY_KIB").unwrap_or(65_536), // 64 MB
                 argon2_iterations: env_parse("ARGON2_ITERATIONS").unwrap_or(3),
                 argon2_parallelism: env_parse("ARGON2_PARALLELISM").unwrap_or(4),
+                argon2_max_concurrency: env_parse("ARGON2_MAX_CONCURRENCY")
+                    .unwrap_or_else(default_argon2_max_concurrency),
                 totp_issuer: env_string("TOTP_ISSUER").unwrap_or_else(|| "auth-api".into()),
                 encryption_key: env_require("ENCRYPTION_KEY")?,
                 previous_encryption_key: env_string("PREVIOUS_ENCRYPTION_KEY"),
@@ -400,6 +454,15 @@ impl Config {
                 level: env_string("LOG_LEVEL").unwrap_or_else(|| "info".into()),
                 format: env_parse("LOG_FORMAT").unwrap_or(LogFormat::Pretty),
             },
+            device_auth: DeviceAuthConfig {
+                ttl_secs: env_parse("DEVICE_AUTH_TTL_SECS").unwrap_or(300),
+                poll_interval_secs: env_parse("DEVICE_AUTH_POLL_INTERVAL_SECS").unwrap_or(5),
+                verification_uri: env_require("DEVICE_AUTH_VERIFICATION_URI")?,
+            },
+            metrics: MetricsConfig {
+                enabled: env_parse("METRICS_ENABLED").unwrap_or(true),
+                port: env_parse("METRICS_PORT").unwrap_or(9464),
+            },
         };
 
         config.validate()?;
@@ -416,8 +479,7 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        validate_jwt_secret(&self.jwt.secret)?;
-        validate_optional_jwt_secret(self.jwt.previous_secret.as_deref())?;
+        validate_jwt_keys(&self.jwt)?;
         validate_encryption_key("ENCRYPTION_KEY", &self.crypto.encryption_key)?;
         validate_optional_encryption_key(
             "PREVIOUS_ENCRYPTION_KEY",
@@ -426,16 +488,35 @@ impl Config {
         validate_cors(&self.cors, self.is_production())?;
         validate_risk(&self.risk)?;
         validate_security(&self.security)?;
+        validate_crypto(&self.crypto)?;
+
+        validate_jwt_audience(&self.jwt.audience, self.is_production())?;
 
         if self.is_production() {
+            // The development key pair is committed in `.env.dev` and therefore
+            // public: anyone can mint valid tokens for a deployment that uses
+            // it. Refuse to boot rather than run with a known-compromised key.
+            if self
+                .jwt
+                .public_key
+                .replace(['\n', ' ', '\t'], "")
+                .contains(DEV_JWT_PUBLIC_KEY_MARKER)
+            {
+                return Err(ConfigError::Invalid {
+                    key: "JWT_PUBLIC_KEY".into(),
+                    reason: "this is the committed development key from .env.dev -- it is public and must never be used in production".into(),
+                });
+            }
+
             validate_https_url("APP_PUBLIC_URL", &self.server.public_url)?;
 
             if self.captcha.secret.is_some() {
                 validate_https_url("CAPTCHA_VERIFY_URL", &self.captcha.verify_url)?;
             } else {
-                tracing::warn!(
-                    "CAPTCHA_SECRET is not set - CAPTCHA protection is disabled in production"
-                );
+                return Err(ConfigError::Invalid {
+                    key: "CAPTCHA_SECRET".into(),
+                    reason: "must be set in production -- CAPTCHA protection cannot be disabled in production".into(),
+                });
             }
 
             if self.mail.smtp.username.is_empty() {
@@ -444,11 +525,46 @@ impl Config {
                     reason: "must not be empty in production (unauthenticated/unencrypted SMTP is not allowed)".into(),
                 });
             }
+
+            // Hardened-default switches: in production these MUST be set to the
+            // secure value, even if an env override re-enables the permissive
+            // behaviour. Refuse to boot rather than start in a degraded state.
+            if self.rate_limit.fail_open_on_redis_error {
+                return Err(ConfigError::Invalid {
+                    key: "RATE_LIMIT_FAIL_OPEN".into(),
+                    reason: "must be false in production -- a Redis outage would otherwise disable rate limiting entirely".into(),
+                });
+            }
+
+            if self.rate_limit.allow_requests_without_ip {
+                return Err(ConfigError::Invalid {
+                    key: "RATE_LIMIT_ALLOW_MISSING_IP".into(),
+                    reason: "must be false in production -- requests without a resolved client IP must be rejected, not let through".into(),
+                });
+            }
+
+            if self.captcha.fail_open_on_error {
+                return Err(ConfigError::Invalid {
+                    key: "CAPTCHA_FAIL_OPEN".into(),
+                    reason: "must be false in production -- CAPTCHA upstream errors must not let traffic through".into(),
+                });
+            }
+
+            if !self.jwt.strict_session_binding {
+                return Err(ConfigError::Invalid {
+                    key: "JWT_STRICT_SESSION_BINDING".into(),
+                    reason: "must be true in production -- refresh tokens must be bound to the originating IP".into(),
+                });
+            }
         }
 
         Ok(())
     }
 }
+
+/// Unique fragment of the development JWT public key committed in `.env.dev`.
+/// Used to refuse that key in production (the pair is public by definition).
+const DEV_JWT_PUBLIC_KEY_MARKER: &str = "MEjIGO1563lSVOpDzgW6Y9aI20lH";
 
 // Helpers
 
@@ -490,50 +606,35 @@ fn env_parse<T: FromStr>(key: &str) -> Option<T> {
     env::var(key).ok()?.parse().ok()
 }
 
-fn validate_jwt_secret(secret: &str) -> Result<(), ConfigError> {
-    if secret.len() < 32 {
+fn validate_jwt_keys(jwt: &JwtConfig) -> Result<(), ConfigError> {
+    use crate::utils::jwt as jwt_util;
+
+    let signing_key =
+        jwt_util::parse_signing_key(&jwt.private_key).map_err(|e| ConfigError::Invalid {
+            key: "JWT_PRIVATE_KEY".into(),
+            reason: e.to_string(),
+        })?;
+
+    let verifying_key =
+        jwt_util::parse_p256_verifying_key(&jwt.public_key).map_err(|e| ConfigError::Invalid {
+            key: "JWT_PUBLIC_KEY".into(),
+            reason: e.to_string(),
+        })?;
+
+    // Verify that the public key matches the private key.
+    let derived = p256::ecdsa::VerifyingKey::from(&signing_key);
+    if derived != verifying_key {
         return Err(ConfigError::Invalid {
-            key: "JWT_SECRET".into(),
-            reason: "must be at least 32 characters long".into(),
+            key: "JWT_PUBLIC_KEY".into(),
+            reason: "public key does not match the private key".into(),
         });
     }
 
-    let unique_chars = secret
-        .chars()
-        .collect::<std::collections::HashSet<_>>()
-        .len();
-    if unique_chars < 16 {
-        return Err(ConfigError::Invalid {
-            key: "JWT_SECRET".into(),
-            reason:
-                "secret has insufficient entropy (fewer than 16 unique characters): use a random value (e.g. openssl rand -hex 32)"
-                    .into(),
-        });
-    }
-
-    // Require at least 3 character classes (lowercase, uppercase, digit, other)
-    // to reject low-entropy secrets like all-lowercase or all-digit strings.
-    let has_lower = secret.chars().any(|c| c.is_ascii_lowercase());
-    let has_upper = secret.chars().any(|c| c.is_ascii_uppercase());
-    let has_digit = secret.chars().any(|c| c.is_ascii_digit());
-    let has_other = secret.chars().any(|c| !c.is_ascii_alphanumeric());
-    let classes = [has_lower, has_upper, has_digit, has_other]
-        .iter()
-        .filter(|&&v| v)
-        .count();
-    if classes < 3 {
-        return Err(ConfigError::Invalid {
-            key: "JWT_SECRET".into(),
-            reason: "secret must contain at least 3 character classes (lowercase, uppercase, digits, symbols): use a random value (e.g. openssl rand -base64 48)".into(),
-        });
-    }
-
-    Ok(())
-}
-
-fn validate_optional_jwt_secret(secret: Option<&str>) -> Result<(), ConfigError> {
-    if let Some(secret) = secret {
-        validate_jwt_secret(secret)?;
+    if let Some(ref prev_pub) = jwt.previous_public_key {
+        jwt_util::parse_p256_verifying_key(prev_pub).map_err(|e| ConfigError::Invalid {
+            key: "JWT_PREVIOUS_PUBLIC_KEY".into(),
+            reason: e.to_string(),
+        })?;
     }
 
     Ok(())
@@ -552,16 +653,28 @@ fn validate_encryption_key(key_name: &str, value: &str) -> Result<(), ConfigErro
         });
     }
 
-    // Reject low-entropy keys by checking byte variance.
-    // A truly random 32-byte key should have many distinct byte values.
-    let unique_bytes = decoded
+    // Reject low-entropy keys using Shannon entropy over byte distribution.
+    // A truly random 32-byte key typically has >= 3.5 bits of entropy per byte.
+    let mut counts = [0u32; 256];
+    for &b in &decoded {
+        counts[b as usize] += 1;
+    }
+    let len = decoded.len() as f64;
+    let shannon: f64 = counts
         .iter()
-        .collect::<std::collections::HashSet<_>>()
-        .len();
-    if unique_bytes < 12 {
+        .filter(|&&c| c > 0)
+        .map(|&c| {
+            let p = c as f64 / len;
+            -p * p.log2()
+        })
+        .sum();
+    if shannon < 3.0 {
         return Err(ConfigError::Invalid {
             key: key_name.into(),
-            reason: "key has insufficient entropy (fewer than 12 unique byte values): use a cryptographically random key (e.g. openssl rand -base64 32)".into(),
+            reason: format!(
+                "key has insufficient entropy ({shannon:.2} bits/byte, minimum 3.0): \
+                 use a cryptographically random key (e.g. openssl rand -base64 32)"
+            ),
         });
     }
 
@@ -584,6 +697,55 @@ fn validate_https_url(key: &str, value: &str) -> Result<(), ConfigError> {
         return Err(ConfigError::Invalid {
             key: key.into(),
             reason: "must use https in production".into(),
+        });
+    }
+
+    Ok(())
+}
+
+/// `JWT_AUDIENCE` validation. In production we refuse to start without at
+/// least one audience: emitting tokens with an empty `aud` would silently
+/// break every downstream service that pins the audience claim. In dev we
+/// only warn so local stacks (no resource server, scratch tests) keep
+/// working.
+fn validate_jwt_audience(audience: &[String], is_production: bool) -> Result<(), ConfigError> {
+    if audience.is_empty() {
+        if is_production {
+            return Err(ConfigError::Invalid {
+                key: "JWT_AUDIENCE".into(),
+                reason: "must not be empty in production -- downstream services that pin `aud` would reject all tokens".into(),
+            });
+        }
+
+        tracing::warn!(
+            "JWT_AUDIENCE is empty: issued access tokens will not carry an `aud` claim, downstream services pinning audience will reject them"
+        );
+        return Ok(());
+    }
+
+    for value in audience {
+        if value.trim().is_empty() {
+            return Err(ConfigError::Invalid {
+                key: "JWT_AUDIENCE".into(),
+                reason: "entries must not be empty or whitespace-only".into(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn default_argon2_max_concurrency() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(4)
+}
+
+fn validate_crypto(crypto: &CryptoConfig) -> Result<(), ConfigError> {
+    if crypto.argon2_max_concurrency == 0 {
+        return Err(ConfigError::Invalid {
+            key: "ARGON2_MAX_CONCURRENCY".into(),
+            reason: "must be greater than 0".into(),
         });
     }
 
@@ -678,6 +840,9 @@ fn validate_risk(risk: &RiskConfig) -> Result<(), ConfigError> {
 mod tests {
     use super::*;
 
+    const TEST_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgL+1qOaZ7C+H1mGbV\njUP83/W450N4GfOnZSrQ7P//4Y2hRANCAAR4BApTJy8Anvp+O7YNVlTeCbBZ+1YJ\nk+r5ELHGFIXciAEGSrCTOkCm3yChSYroYWLE3ZN4reh6JDbIMX/QnBGx\n-----END PRIVATE KEY-----";
+    const TEST_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEeAQKUycvAJ76fju2DVZU3gmwWftW\nCZPq+RCxxhSF3IgBBkqwkzpApt8goUmK6GFixN2TeK3oeiQ2yDF/0JwRsQ==\n-----END PUBLIC KEY-----";
+
     fn valid_config() -> Config {
         Config {
             env: Environment::Production,
@@ -698,19 +863,25 @@ mod tests {
                 pool_size: 5,
                 wait_timeout_ms: 2000,
             },
+            nats: NatsConfig {
+                url: "nats://127.0.0.1:4222".into(),
+            },
             jwt: JwtConfig {
-                secret: "tR4!xK9@mW2#pL7&vN5*bQ8^jF1%cH6z".into(),
-                previous_secret: None,
+                private_key: TEST_PRIVATE_KEY_PEM.into(),
+                public_key: TEST_PUBLIC_KEY_PEM.into(),
+                previous_public_key: None,
                 access_expiry_secs: 900,
                 refresh_expiry_secs: 3600,
                 short_session_expiry_secs: 3600,
-                strict_session_binding: false,
+                strict_session_binding: true,
                 max_session_lifetime_secs: 86400,
+                audience: vec!["https://core.example.com".into()],
             },
             crypto: CryptoConfig {
                 argon2_memory_kib: 8192,
                 argon2_iterations: 1,
                 argon2_parallelism: 1,
+                argon2_max_concurrency: 4,
                 totp_issuer: "test".into(),
                 encryption_key: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
                 previous_encryption_key: None,
@@ -772,6 +943,15 @@ mod tests {
                 level: "info".into(),
                 format: LogFormat::Pretty,
             },
+            device_auth: DeviceAuthConfig {
+                ttl_secs: 300,
+                poll_interval_secs: 5,
+                verification_uri: "https://auth.example.com/device".into(),
+            },
+            metrics: MetricsConfig {
+                enabled: true,
+                port: 9464,
+            },
         }
     }
 
@@ -803,12 +983,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_short_jwt_secret() {
+    fn validate_rejects_invalid_jwt_private_key() {
         let mut config = valid_config();
-        config.jwt.secret = "short-secret".into();
+        config.jwt.private_key = "not-a-valid-pem".into();
 
-        let err = config.validate().expect_err("short JWT secret should fail");
-        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_SECRET"));
+        let err = config
+            .validate()
+            .expect_err("invalid JWT private key should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_PRIVATE_KEY"));
     }
 
     #[test]
@@ -847,15 +1029,52 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_low_entropy_jwt_secret() {
+    fn validate_rejects_mismatched_jwt_keys() {
         let mut config = valid_config();
-        // 32+ chars but only 2 unique characters -- entropy too low.
-        config.jwt.secret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+        // Use a different public key that doesn't match the private key.
+        config.jwt.public_key = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMEjIGO1563lSVOpDzgW6Y9aI20lH\nSejuoGIZ4JxZldRlZnWft8qZWJ9CUqlfKW88z3sHs6WEbAWNxl0fqn+SYg==\n-----END PUBLIC KEY-----".into();
 
         let err = config
             .validate()
-            .expect_err("low-entropy JWT secret should fail");
-        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_SECRET"));
+            .expect_err("mismatched JWT keys should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_PUBLIC_KEY"));
+    }
+
+    #[test]
+    fn validate_rejects_committed_dev_key_in_production() {
+        // The exact key pair committed in .env.dev: valid, matching, but public.
+        let mut config = valid_config();
+        config.jwt.private_key = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg2R2G2WSdQAzqkVz/\n03JHEWNczskciWsiIKpONSbyHs2hRANCAAQwSMgY7XnreVJU6kPOBbpj1ojbSUdJ\n6O6gYhngnFmV1GVmdZ+3yplYn0JSqV8pbzzPewezpYRsBY3GXR+qf5Ji\n-----END PRIVATE KEY-----".into();
+        config.jwt.public_key = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMEjIGO1563lSVOpDzgW6Y9aI20lH\nSejuoGIZ4JxZldRlZnWft8qZWJ9CUqlfKW88z3sHs6WEbAWNxl0fqn+SYg==\n-----END PUBLIC KEY-----".into();
+
+        let err = config
+            .validate()
+            .expect_err("committed dev key in production must be rejected");
+        match err {
+            ConfigError::Invalid { key, reason } => {
+                assert_eq!(key, "JWT_PUBLIC_KEY");
+                assert!(reason.contains("development"), "reason: {reason}");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_committed_dev_key_outside_production() {
+        let mut config = valid_config();
+        config.env = Environment::Development;
+        config.mail.smtp.username = String::new();
+        config.server.public_url = "http://localhost:3000".into();
+        config.cors.allowed_origins = vec!["http://localhost:5173".into()];
+        config.cors.allow_credentials = false;
+        config.captcha.secret = None;
+        config.jwt.private_key = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg2R2G2WSdQAzqkVz/\n03JHEWNczskciWsiIKpONSbyHs2hRANCAAQwSMgY7XnreVJU6kPOBbpj1ojbSUdJ\n6O6gYhngnFmV1GVmdZ+3yplYn0JSqV8pbzzPewezpYRsBY3GXR+qf5Ji\n-----END PRIVATE KEY-----".into();
+        config.jwt.public_key = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMEjIGO1563lSVOpDzgW6Y9aI20lH\nSejuoGIZ4JxZldRlZnWft8qZWJ9CUqlfKW88z3sHs6WEbAWNxl0fqn+SYg==\n-----END PUBLIC KEY-----".into();
+
+        assert!(
+            config.validate().is_ok(),
+            "dev key must remain usable in development"
+        );
     }
 
     #[test]
@@ -980,25 +1199,28 @@ mod tests {
     }
 
     #[test]
-    fn validate_accepts_valid_previous_jwt_secret() {
+    fn validate_accepts_valid_previous_public_key() {
         let mut config = valid_config();
-        config.jwt.previous_secret = Some("previous-secret-with-enough-entropy-1234567".into());
+        // Use the mismatched public key from dev as a valid "previous" key.
+        config.jwt.previous_public_key = Some("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMEjIGO1563lSVOpDzgW6Y9aI20lH\nSejuoGIZ4JxZldRlZnWft8qZWJ9CUqlfKW88z3sHs6WEbAWNxl0fqn+SYg==\n-----END PUBLIC KEY-----".into());
 
         assert!(
             config.validate().is_ok(),
-            "valid previous JWT secret must be accepted"
+            "valid previous public key must be accepted"
         );
     }
 
     #[test]
-    fn validate_rejects_short_previous_jwt_secret() {
+    fn validate_rejects_invalid_previous_public_key() {
         let mut config = valid_config();
-        config.jwt.previous_secret = Some("tooshort".into());
+        config.jwt.previous_public_key = Some("not-a-valid-pem".into());
 
         let err = config
             .validate()
-            .expect_err("short previous JWT secret should fail");
-        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_SECRET"));
+            .expect_err("invalid previous public key should fail");
+        assert!(
+            matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_PREVIOUS_PUBLIC_KEY")
+        );
     }
 
     #[test]
@@ -1104,17 +1326,128 @@ mod tests {
         assert!(!config.is_test());
     }
 
-    // Production captcha: secret absent skips URL check
+    // JWT_AUDIENCE: required in production, optional (warn-only) in dev.
 
     #[test]
-    fn validate_accepts_production_config_without_captcha_secret() {
+    fn validate_rejects_production_config_with_empty_jwt_audience() {
         let mut config = valid_config();
+        config.jwt.audience = vec![];
+
+        let err = config
+            .validate()
+            .expect_err("empty JWT_AUDIENCE in production should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_AUDIENCE"));
+    }
+
+    #[test]
+    fn validate_accepts_development_config_with_empty_jwt_audience() {
+        let mut config = valid_config();
+        config.env = Environment::Development;
+        config.mail.smtp.username = String::new();
+        config.server.public_url = "http://localhost:3000".into();
+        config.cors.allowed_origins = vec!["http://localhost:5173".into()];
+        config.cors.allow_credentials = false;
         config.captcha.secret = None;
-        // Without a secret the captcha URL is never checked, so an http URL is fine.
-        config.captcha.verify_url = "http://hcaptcha.com/siteverify".into();
+        config.jwt.audience = vec![];
+
         assert!(
             config.validate().is_ok(),
-            "production config with no captcha secret must skip URL validation"
+            "development config with empty JWT_AUDIENCE must be accepted (warn-only)"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_jwt_audience_with_blank_entry() {
+        let mut config = valid_config();
+        config.jwt.audience = vec!["https://core.example.com".into(), "   ".into()];
+
+        let err = config
+            .validate()
+            .expect_err("blank JWT_AUDIENCE entry should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_AUDIENCE"));
+    }
+
+    // Production captcha: secret absent must be rejected
+
+    #[test]
+    fn validate_rejects_production_config_without_captcha_secret() {
+        let mut config = valid_config();
+        config.captcha.secret = None;
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("CAPTCHA_SECRET"),
+            "production config without CAPTCHA_SECRET must be rejected: {err}"
+        );
+    }
+
+    // Hardened-default switches: production must refuse permissive overrides.
+
+    #[test]
+    fn validate_rejects_production_config_with_rate_limit_fail_open() {
+        let mut config = valid_config();
+        config.rate_limit.fail_open_on_redis_error = true;
+
+        let err = config
+            .validate()
+            .expect_err("RATE_LIMIT_FAIL_OPEN=true in production should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "RATE_LIMIT_FAIL_OPEN"));
+    }
+
+    #[test]
+    fn validate_rejects_production_config_with_rate_limit_allow_missing_ip() {
+        let mut config = valid_config();
+        config.rate_limit.allow_requests_without_ip = true;
+
+        let err = config
+            .validate()
+            .expect_err("RATE_LIMIT_ALLOW_MISSING_IP=true in production should fail");
+        assert!(
+            matches!(err, ConfigError::Invalid { key, .. } if key == "RATE_LIMIT_ALLOW_MISSING_IP")
+        );
+    }
+
+    #[test]
+    fn validate_rejects_production_config_with_captcha_fail_open() {
+        let mut config = valid_config();
+        config.captcha.fail_open_on_error = true;
+
+        let err = config
+            .validate()
+            .expect_err("CAPTCHA_FAIL_OPEN=true in production should fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "CAPTCHA_FAIL_OPEN"));
+    }
+
+    #[test]
+    fn validate_rejects_production_config_without_strict_session_binding() {
+        let mut config = valid_config();
+        config.jwt.strict_session_binding = false;
+
+        let err = config
+            .validate()
+            .expect_err("JWT_STRICT_SESSION_BINDING=false in production should fail");
+        assert!(
+            matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_STRICT_SESSION_BINDING")
+        );
+    }
+
+    #[test]
+    fn validate_accepts_development_config_with_permissive_switches() {
+        let mut config = valid_config();
+        config.env = Environment::Development;
+        config.mail.smtp.username = String::new();
+        config.server.public_url = "http://localhost:3000".into();
+        config.cors.allowed_origins = vec!["http://localhost:5173".into()];
+        config.cors.allow_credentials = false;
+        config.captcha.secret = None;
+        // Permissive defaults must remain allowed in development.
+        config.rate_limit.fail_open_on_redis_error = true;
+        config.rate_limit.allow_requests_without_ip = true;
+        config.captcha.fail_open_on_error = true;
+        config.jwt.strict_session_binding = false;
+
+        assert!(
+            config.validate().is_ok(),
+            "development config with permissive switches must be accepted"
         );
     }
 }

@@ -921,3 +921,82 @@ async fn recovery_code_regen_cooldown_blocks_second_immediate_request() {
         second.status()
     );
 }
+
+/// The durable replay guard: even if the Redis fast-path entry is lost
+/// (outage, flush, eviction), replaying a consumed TOTP code must be rejected
+/// by the `used_totp_codes` table (fail-closed authority).
+#[tokio::test]
+async fn totp_replay_rejected_even_after_redis_key_loss() {
+    use deadpool_redis::redis::AsyncCommands;
+
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 219).await;
+
+    let setup_res = app
+        .post_auth(
+            "/users/me/two-factor/totp/setup",
+            &user.access_token,
+            &serde_json::json!({}),
+        )
+        .await;
+    let setup_body: Value = setup_res.json().await.unwrap();
+    let method_id = setup_body["method_id"].as_str().unwrap();
+    let base32_secret = setup_body["base32_secret"].as_str().unwrap().to_owned();
+
+    let setup_code = generate_totp_code(&base32_secret);
+    app.post_auth(
+        &format!("/users/me/two-factor/totp/{}/verify", method_id),
+        &user.access_token,
+        &serde_json::json!({ "code": setup_code }),
+    )
+    .await;
+
+    let login1: Value = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let pre_auth1 = login1["pre_auth_token"].as_str().unwrap().to_owned();
+
+    let totp_code = generate_totp_code(&base32_secret);
+    let first = app
+        .post(
+            "/auth/two-factor/complete",
+            &serde_json::json!({ "pre_auth_token": &pre_auth1, "code": &totp_code }),
+        )
+        .await;
+    assert_eq!(first.status().as_u16(), 200, "first use must succeed");
+
+    // Simulate the Redis fast-path entry disappearing (outage / flush).
+    if let Ok(mut conn) = app.redis.get().await {
+        let key = format!("totp_used:{}:{}", user.id, totp_code);
+        let _: Result<(), _> = conn.del(&key).await;
+    }
+
+    let login2: Value = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let pre_auth2 = login2["pre_auth_token"].as_str().unwrap().to_owned();
+
+    let second = app
+        .post(
+            "/auth/two-factor/complete",
+            &serde_json::json!({ "pre_auth_token": &pre_auth2, "code": &totp_code }),
+        )
+        .await;
+    assert_eq!(
+        second.status().as_u16(),
+        401,
+        "replay must be rejected by the durable used_totp_codes guard even without the Redis key"
+    );
+}

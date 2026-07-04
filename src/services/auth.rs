@@ -17,7 +17,7 @@ use crate::{
     domain::{
         audit::AuditAction,
         login_attempt::LoginFailureReason,
-        session::Session,
+        session::{Session, SessionType},
         user::{User, UserStatus},
     },
     error::AppError,
@@ -36,7 +36,7 @@ use crate::{
 
 use ::time::Duration as TimeDuration;
 
-use super::{email, email_2fa, reauth, risk_score};
+use super::{email, email_2fa, events, reauth, risk_score};
 use crate::utils::backoff;
 
 // Constants
@@ -70,6 +70,10 @@ const REFRESH_FAILURE_WINDOW_SECS: u64 = 900;
 const PRE_AUTH_TTL_SECS: u64 = 300;
 /// Redis key prefix for pre-auth state.
 const PRE_AUTH_PREFIX: &str = "pre_auth:";
+/// Redis key prefix for the per-user pre-auth token index (Set of active flow tokens).
+/// Used to purge pre-auth tokens belonging to a user on sensitive events
+/// (e.g. password reset) without resorting to SCAN.
+const USER_PRE_AUTH_PREFIX: &str = "user_pre_auth:";
 /// Max TOTP code failures per pre-auth token before the challenge is permanently rejected.
 const MAX_TOTP_FAILURES: i64 = 5;
 /// Redis key prefix for consumed TOTP codes (prevents code reuse within the 30-second window).
@@ -78,14 +82,17 @@ const TOTP_USED_PREFIX: &str = "totp_used:";
 const MAX_RECOVERY_FAILURES: i64 = 5;
 /// Max recovery code failures per user in a rolling window (cross-session protection).
 const MAX_RECOVERY_FAILURES_BY_USER: i64 = 10;
-/// Rolling window for the per-user recovery code failure counter (1 hour).
-const RECOVERY_FAILURE_USER_WINDOW_SECS: u64 = 3600;
+/// Rolling window for the per-user recovery code failure counter (24 hours).
+const RECOVERY_FAILURE_USER_WINDOW_SECS: u64 = 86400;
 /// Redis key prefix for the per-user recovery code failure counter.
 const RC_USER_FAIL_PREFIX: &str = "rc_user_fail:";
 /// Max verify-email or reset-password token submission attempts per IP within the window.
+/// High enough that users sharing an egress IP (CGNAT, corporate proxies) do not
+/// lock each other out; the per-token-hash cap below is what actually stops
+/// brute-force against a specific token.
 const MAX_TOKEN_SUBMIT_BY_IP: i64 = 10;
 /// Max submission attempts per token hash (limits distributed brute-force across many IPs).
-const MAX_TOKEN_SUBMIT_BY_HASH: i64 = 5;
+const MAX_TOKEN_SUBMIT_BY_HASH: i64 = 1;
 /// Sliding window for token submission rate limiting (1 hour).
 const TOKEN_SUBMIT_WINDOW_SECS: u64 = 3600;
 /// Email verification token lifetime.
@@ -233,7 +240,17 @@ pub async fn register(
         },
     )
     .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    // The pre-checks above can race with a concurrent registration; the UNIQUE
+    // constraints are the authoritative check and must map to the same 409.
+    .map_err(|e| {
+        AppError::from_unique_violation(
+            e,
+            &[
+                ("users_email_key", "email_taken"),
+                ("users_username_key", "username_taken"),
+            ],
+        )
+    })?;
 
     // Assign default role if one exists
     if let Some(role) = role::find_default(&state.db)
@@ -284,6 +301,8 @@ pub async fn register(
         .await
     });
 
+    metrics::counter!("auth_session_replays_total").increment(1);
+
     audit::append(
         &state.db,
         &NewAuditEntry {
@@ -296,6 +315,17 @@ pub async fn register(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+
+    events::publish(
+        state,
+        "user.created",
+        &events::UserCreated {
+            user_id: user.id,
+            email: user.email.clone(),
+            username: user.username.clone(),
+        },
+    )
+    .await;
 
     Ok(user)
 }
@@ -372,13 +402,15 @@ pub async fn login(
     // Always verify a password hash to prevent timing-based enumeration.
     let (user, password_ok) = match user_opt {
         Some(u) => {
-            let ok = password::verify_async(password_plaintext, &u.password_hash)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
+            let ok =
+                password::verify_async(password_plaintext, &u.password_hash, &state.config.crypto)
+                    .await
+                    .map_err(|e| AppError::Internal(e.into()))?;
             (Some(u), ok)
         }
         None => {
-            let _ = password::verify_async(password_plaintext, DUMMY_HASH).await;
+            let _ =
+                password::verify_async(password_plaintext, DUMMY_HASH, &state.config.crypto).await;
             (None, false)
         }
     };
@@ -397,6 +429,7 @@ pub async fn login(
                 ),
                 track_credential_stuffing(state, ip, identifier),
             );
+            metrics::counter!("auth_logins_total", "outcome" => "invalid_credentials").increment(1);
             apply_backoff(failures + 1).await;
             return Err(AppError::InvalidCredentials);
         }
@@ -422,6 +455,7 @@ pub async fn login(
             if consecutive >= threshold {
                 let locked_until = time::now()
                     + TimeDuration::seconds(state.config.security.lockout_duration_secs as i64);
+                metrics::counter!("auth_lockouts_total").increment(1);
                 // Best-effort: lockout and audit must not leak timing information on the login path.
                 let _ = user_repo::set_locked_until(&state.db, u.id, locked_until).await;
                 let _ = audit::append(
@@ -437,6 +471,7 @@ pub async fn login(
                 .await;
             }
 
+            metrics::counter!("auth_logins_total", "outcome" => "invalid_credentials").increment(1);
             apply_backoff(failures + 1).await;
             return Err(AppError::InvalidCredentials);
         }
@@ -445,6 +480,7 @@ pub async fn login(
 
     // Account lockout check (before status checks; locked accounts return early).
     if user.is_locked() {
+        metrics::counter!("auth_logins_total", "outcome" => "locked").increment(1);
         return Err(AppError::AccountLocked);
     }
 
@@ -468,6 +504,7 @@ pub async fn login(
             if let Ok(r) = &risk {
                 let _ = risk_score::audit_suspicious(state, &risk_ctx, r, request_id).await;
             }
+            metrics::counter!("auth_logins_total", "outcome" => "blocked").increment(1);
             return Err(AppError::LoginBlocked);
         }
         Ok(r)
@@ -537,18 +574,41 @@ pub async fn login(
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
 
+        // Maintain a per-user index so reset_password (and other revocation
+        // hooks) can purge active pre-auth tokens without SCAN. Best-effort:
+        // a stale entry is harmless because the token itself expires after
+        // PRE_AUTH_TTL_SECS, and DEL on a missing key is a no-op.
+        let user_index_key = user_pre_auth_index_key(user.id);
+        let _: Result<(), _> = conn
+            .sadd::<_, _, ()>(&user_index_key, &pre_auth_token)
+            .await;
+        let _: Result<(), _> = conn
+            .expire::<_, ()>(&user_index_key, PRE_AUTH_TTL_SECS as i64)
+            .await;
+
         // For Email 2FA, dispatch the code as soon as the challenge is issued.
         if method == "email" {
             email_2fa::send_code(state, user.id).await?;
         }
 
+        metrics::counter!("auth_logins_total", "outcome" => "two_factor_required").increment(1);
         return Ok(LoginResult::TwoFactorRequired {
             pre_auth_token,
             method,
         });
     }
 
-    let tokens = issue_tokens(state, user.id, ip, user_agent, device_name, remember_me).await?;
+    let tokens = issue_tokens(
+        state,
+        user.id,
+        ip,
+        user_agent,
+        device_name,
+        remember_me,
+        SessionType::Web,
+        None,
+    )
+    .await?;
     let cached_risk = CachedRiskEvaluation::capture(&risk_ctx, risk.as_ref().ok());
 
     tokio::try_join!(
@@ -600,6 +660,7 @@ pub async fn login(
         },
     )?;
 
+    metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
     Ok(LoginResult::Complete(tokens))
 }
 
@@ -666,21 +727,35 @@ pub async fn complete_two_factor_login(
     )
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    // Reject if this exact code was already consumed in the current TOTP window.
-    // Key: totp_used:{user_id}:{code}, TTL = 2 * 30s = one full window on either side.
+    // Replay guard: reject if this exact code was already consumed within its
+    // validity window. Redis is only a fast-path (skips the DB round trip on
+    // an obvious replay); the `used_totp_codes` table is the durable authority,
+    // checked via an atomic INSERT .. ON CONFLICT. A database error is
+    // propagated (fail-closed) -- a Redis outage no longer opens a replay
+    // window.
     if valid {
         let used_key = format!("{}{}:{}", TOTP_USED_PREFIX, user_id, code);
-        let already_used: bool = if let Ok(mut c) = state.redis.get().await {
-            let used: bool = c.exists(&used_key).await.unwrap_or(false);
-            if !used {
-                let _: Result<(), _> = c.set_ex(&used_key, 1u8, 60u64).await;
-            }
-            used
+        let cached_replay: bool = if let Ok(mut c) = state.redis.get().await {
+            c.exists(&used_key).await.unwrap_or(false)
         } else {
             false
         };
 
-        if already_used {
+        let consumed = if cached_replay {
+            false
+        } else {
+            tf_repo::try_consume_totp_code(&state.db, user_id, &crypto::sha256(code.as_bytes()))
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?
+        };
+
+        if consumed {
+            // Populate the fast-path cache so an immediate replay is rejected
+            // without a DB round trip. Best-effort: the DB row is the authority.
+            if let Ok(mut c) = state.redis.get().await {
+                let _: Result<(), _> = c.set_ex(&used_key, 1u8, 60u64).await;
+            }
+        } else {
             let new_failures = if let Ok(mut c) = state.redis.get().await {
                 let n: i64 = c.incr(&fail_key, 1i64).await.unwrap_or(failures + 1);
                 let _: Result<(), _> = c.expire(&fail_key, PRE_AUTH_TTL_SECS as i64).await;
@@ -688,6 +763,7 @@ pub async fn complete_two_factor_login(
             } else {
                 failures + 1
             };
+            metrics::counter!("auth_2fa_failures_total", "method" => "totp").increment(1);
             apply_backoff(new_failures).await;
             return Err(AppError::TwoFactorFailed);
         }
@@ -716,6 +792,7 @@ pub async fn complete_two_factor_login(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
+        metrics::counter!("auth_2fa_failures_total", "method" => "totp").increment(1);
         apply_backoff(new_failures).await;
         return Err(AppError::TwoFactorFailed);
     }
@@ -724,9 +801,22 @@ pub async fn complete_two_factor_login(
     if let Ok(mut c) = state.redis.get().await {
         let _: Result<(), _> = c.del(&redis_key).await;
         let _: Result<(), _> = c.del(&fail_key).await;
+        let _: Result<(), _> = c
+            .srem::<_, _, ()>(user_pre_auth_index_key(user_id), pre_auth_token)
+            .await;
     }
 
-    let tokens = issue_tokens(state, user.id, ip, user_agent, device_name, remember_me).await?;
+    let tokens = issue_tokens(
+        state,
+        user.id,
+        ip,
+        user_agent,
+        device_name,
+        remember_me,
+        SessionType::Web,
+        None,
+    )
+    .await?;
 
     tokio::try_join!(
         async {
@@ -762,6 +852,8 @@ pub async fn complete_two_factor_login(
         },
     )?;
 
+    metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
+    metrics::counter!("auth_2fa_success_total", "method" => "totp").increment(1);
     Ok(tokens)
 }
 
@@ -791,8 +883,18 @@ pub async fn refresh_token(
     let token_hash = crypto::sha256(raw_token.as_bytes());
 
     // Fast-path: check Redis blocklist before hitting the DB.
-    if is_refresh_token_blocked(state, &token_hash).await {
-        return Err(AppError::TokenInvalid);
+    // If Redis is unavailable we deliberately do NOT abort here: the DB
+    // revocation check below (`session.revoked_at`) is the durable source of
+    // truth. The Redis miss has already been logged at error! by the helper.
+    match is_refresh_token_blocked(state, &token_hash).await {
+        Ok(true) => return Err(AppError::TokenInvalid),
+        Ok(false) => {}
+        Err(AppError::ServiceUnavailable(_)) => {
+            tracing::warn!(
+                "refresh-token Redis blocklist unavailable; relying on DB session.revoked_at fallback"
+            );
+        }
+        Err(e) => return Err(e),
     }
 
     let session = match session_repo::find_by_token_hash(&state.db, &token_hash)
@@ -852,6 +954,7 @@ pub async fn refresh_token(
         let session_ip = session.ip_address.map(|n| n.ip());
         let request_ip = ip.map(|n| n.ip());
         if session_ip != request_ip {
+            metrics::counter!("auth_session_replays_total").increment(1);
             audit::append(
                 &state.db,
                 &NewAuditEntry {
@@ -904,6 +1007,8 @@ pub async fn refresh_token(
             remember_me: session.remember_me,
             token_hash: &new_hash,
             user_agent,
+            session_type: session.session_type,
+            client_id: session.client_id.as_deref(),
         },
     )
     .await
@@ -913,6 +1018,8 @@ pub async fn refresh_token(
             session_repo::revoke_family(&state.db, session.id)
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?;
+
+            metrics::counter!("auth_session_replays_total").increment(1);
 
             audit::append(
                 &state.db,
@@ -932,7 +1039,7 @@ pub async fn refresh_token(
         Err(e) => return Err(AppError::Internal(e.into())),
     };
 
-    let access_token = build_access_token(user.id, new_session.id, state)?;
+    let access_token = build_access_token(user.id, new_session.id, state).await?;
 
     Ok(AuthTokens {
         access_token,
@@ -1017,10 +1124,7 @@ pub async fn verify_email(
     {
         let tk_key = format!(
             "vf_tok:{}",
-            hash[..8]
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
+            hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
         );
         if let Ok(mut conn) = state.redis.get().await {
             let count: i64 = conn.get(&tk_key).await.unwrap_or(0);
@@ -1032,17 +1136,35 @@ pub async fn verify_email(
         }
     }
 
-    let record = token::find_verification_by_hash(&state.db, &hash)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or(AppError::TokenInvalid)?;
+    // Constant-time token validation: always perform a DB lookup and apply a
+    // minimum delay so that the response time does not reveal whether a token
+    // exists. This prevents timing-based enumeration of valid tokens.
+    let start = std::time::Instant::now();
+    let min_duration = std::time::Duration::from_millis(100);
 
-    if record.is_expired() {
-        return Err(AppError::TokenExpired);
+    let result = async {
+        let record = token::find_verification_by_hash(&state.db, &hash)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .ok_or(AppError::TokenInvalid)?;
+
+        if record.is_expired() {
+            return Err(AppError::TokenExpired);
+        }
+        if record.is_used() {
+            return Err(AppError::TokenInvalid);
+        }
+
+        Ok(record)
     }
-    if record.is_used() {
-        return Err(AppError::TokenInvalid);
+    .await;
+
+    let elapsed = start.elapsed();
+    if elapsed < min_duration {
+        tokio::time::sleep(min_duration - elapsed).await;
     }
+
+    let record = result?;
 
     let consumed = token::consume_verification(&state.db, record.id)
         .await
@@ -1067,6 +1189,16 @@ pub async fn verify_email(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+
+    events::publish(
+        state,
+        "user.email_verified",
+        &events::UserEmailVerified {
+            user_id: record.user_id,
+            email: record.target_email.clone(),
+        },
+    )
+    .await;
 
     Ok(())
 }
@@ -1193,10 +1325,7 @@ pub async fn reset_password(
     {
         let tk_key = format!(
             "rp_tok:{}",
-            hash[..8]
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
+            hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
         );
         if let Ok(mut conn) = state.redis.get().await {
             let count: i64 = conn.get(&tk_key).await.unwrap_or(0);
@@ -1208,17 +1337,33 @@ pub async fn reset_password(
         }
     }
 
-    let record = token::find_password_reset_by_hash(&state.db, &hash)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or(AppError::TokenInvalid)?;
+    // Constant-time token validation (see verify_email for rationale).
+    let start = std::time::Instant::now();
+    let min_duration = std::time::Duration::from_millis(100);
 
-    if record.is_expired() {
-        return Err(AppError::TokenExpired);
+    let result = async {
+        let record = token::find_password_reset_by_hash(&state.db, &hash)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .ok_or(AppError::TokenInvalid)?;
+
+        if record.is_expired() {
+            return Err(AppError::TokenExpired);
+        }
+        if record.is_used() {
+            return Err(AppError::TokenInvalid);
+        }
+
+        Ok(record)
     }
-    if record.is_used() {
-        return Err(AppError::TokenInvalid);
+    .await;
+
+    let elapsed = start.elapsed();
+    if elapsed < min_duration {
+        tokio::time::sleep(min_duration - elapsed).await;
     }
+
+    let record = result?;
 
     let new_hash = password::hash_async(new_password, &state.config.crypto)
         .await
@@ -1248,6 +1393,12 @@ pub async fn reset_password(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     invalidate_session_caches(state, &revoked_session_ids).await;
+
+    // Close the post-reset hijack window: any pre-auth (2FA challenge) token
+    // or email-change flow that was already in flight before the reset would
+    // otherwise survive and could be used by an attacker who knew them.
+    // Best-effort: Redis failures here must not fail the reset.
+    purge_user_pre_auth_and_email_change(state, record.user_id).await;
 
     // Also purge pending verification and reset tokens
     token::revoke_active_password_reset_by_user(&state.db, record.user_id)
@@ -1285,13 +1436,16 @@ pub async fn post_login_hooks(
     maybe_notify_new_device(state, user, ip, user_agent, request_id, cached_risk).await;
 }
 
-async fn issue_tokens(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn issue_tokens(
     state: &AppState,
     user_id: Uuid,
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
     device_name: Option<&str>,
     remember_me: bool,
+    session_type: SessionType,
+    client_id: Option<&str>,
 ) -> Result<AuthTokens, AppError> {
     let raw_token = crypto::generate_token();
     let token_hash = crypto::sha256(raw_token.as_bytes());
@@ -1313,6 +1467,8 @@ async fn issue_tokens(
             remember_me,
             token_hash: &token_hash,
             user_agent,
+            session_type,
+            client_id,
         },
     )
     .await
@@ -1320,7 +1476,7 @@ async fn issue_tokens(
 
     reauth::mark_recent_reauth(state, session.id).await;
 
-    let access_token = build_access_token(user_id, session.id, state)?;
+    let access_token = build_access_token(user_id, session.id, state).await?;
 
     Ok(AuthTokens {
         access_token,
@@ -1329,14 +1485,31 @@ async fn issue_tokens(
     })
 }
 
-fn build_access_token(
+async fn build_access_token(
     user_id: Uuid,
     session_id: uuid::Uuid,
     state: &AppState,
 ) -> Result<String, AppError> {
     let exp = time::in_secs(state.config.jwt.access_expiry_secs).unix_timestamp();
-    let claims = Claims::new(user_id, session_id, exp);
-    crate::utils::jwt::encode_token(&claims, &state.config.jwt.secret)
+
+    // Roles and permissions are independent lookups; run them concurrently to
+    // shave a DB round trip off every token issue/refresh.
+    let (user_roles, user_permissions) = tokio::try_join!(
+        role::find_by_user(&state.db, user_id),
+        role::find_permissions_by_user(&state.db, user_id),
+    )
+    .map_err(|e| AppError::Internal(e.into()))?;
+    let role_names: Vec<String> = user_roles.iter().map(|r| r.name.clone()).collect();
+    let permission_names: Vec<String> = user_permissions.iter().map(|p| p.name.clone()).collect();
+
+    let mut claims = Claims::new(user_id, session_id, exp).with_rbac(role_names, permission_names);
+    // Stamp iss/aud so resource servers (core-api, billing-api, ...) can pin
+    // the token to this issuer and to themselves. `aud` is emitted as a JSON
+    // array so a single token can be accepted by multiple downstream services.
+    claims.iss = Some(state.config.server.public_url.clone());
+    claims.aud = state.config.jwt.audience.clone();
+
+    crate::utils::jwt::encode_token(&claims, &state.jwt_signing_key, Some(&state.jwt_kid))
         .map_err(|e| AppError::Internal(e.into()))
 }
 
@@ -1419,9 +1592,22 @@ pub async fn complete_email_2fa_login(
     // Consume the pre-auth token on success.
     if let Ok(mut c) = state.redis.get().await {
         let _: Result<(), _> = c.del(&redis_key).await;
+        let _: Result<(), _> = c
+            .srem::<_, _, ()>(user_pre_auth_index_key(user_id), pre_auth_token)
+            .await;
     }
 
-    let tokens = issue_tokens(state, user.id, ip, user_agent, device_name, remember_me).await?;
+    let tokens = issue_tokens(
+        state,
+        user.id,
+        ip,
+        user_agent,
+        device_name,
+        remember_me,
+        SessionType::Web,
+        None,
+    )
+    .await?;
 
     tokio::try_join!(
         async {
@@ -1457,6 +1643,8 @@ pub async fn complete_email_2fa_login(
         },
     )?;
 
+    metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
+    metrics::counter!("auth_2fa_success_total", "method" => "email").increment(1);
     Ok(tokens)
 }
 
@@ -1529,6 +1717,7 @@ pub async fn complete_login_with_recovery(
             } else {
                 failures + 1
             };
+            metrics::counter!("auth_2fa_failures_total", "method" => "recovery_code").increment(1);
             apply_backoff(new_failures).await;
             return Err(AppError::TwoFactorFailed);
         }
@@ -1550,6 +1739,7 @@ pub async fn complete_login_with_recovery(
         } else {
             failures + 1
         };
+        metrics::counter!("auth_2fa_failures_total", "method" => "recovery_code").increment(1);
         apply_backoff(new_failures).await;
         return Err(AppError::TwoFactorFailed);
     }
@@ -1559,9 +1749,22 @@ pub async fn complete_login_with_recovery(
         let _: Result<(), _> = c.del(&redis_key).await;
         let _: Result<(), _> = c.del(&fail_key).await;
         let _: Result<(), _> = c.del(&user_fail_key).await;
+        let _: Result<(), _> = c
+            .srem::<_, _, ()>(user_pre_auth_index_key(user_id), pre_auth_token)
+            .await;
     }
 
-    let tokens = issue_tokens(state, user.id, ip, user_agent, None, remember_me).await?;
+    let tokens = issue_tokens(
+        state,
+        user.id,
+        ip,
+        user_agent,
+        None,
+        remember_me,
+        SessionType::Web,
+        None,
+    )
+    .await?;
 
     tokio::try_join!(
         async {
@@ -1603,6 +1806,8 @@ pub async fn complete_login_with_recovery(
         .await
     });
 
+    metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
+    metrics::counter!("auth_2fa_success_total", "method" => "recovery_code").increment(1);
     Ok(tokens)
 }
 
@@ -1630,13 +1835,31 @@ pub async fn blocklist_refresh_token(
 }
 
 /// Return true if the refresh token hash is in the Redis blocklist.
-/// Fail-open: returns false if Redis is unreachable (DB revoke_at is the safety net).
-pub async fn is_refresh_token_blocked(state: &AppState, token_hash: &[u8]) -> bool {
+///
+/// Fail-soft: returns `Err(AppError::ServiceUnavailable)` when Redis is unreachable
+/// or the EXISTS query fails. The caller (`refresh_token`) is expected to fall back
+/// to the database revocation check (`session.revoked_at`) which is the durable
+/// source of truth. Returning `false` silently here would let revoked refresh
+/// tokens be accepted during a Redis outage (AUTH-H1).
+pub async fn is_refresh_token_blocked(
+    state: &AppState,
+    token_hash: &[u8],
+) -> Result<bool, AppError> {
     let key = format!("{}{}", RT_BLOCKLIST_PREFIX, rt_hash_key(token_hash));
-    match state.redis.get().await {
-        Ok(mut conn) => conn.exists::<_, bool>(&key).await.unwrap_or(false),
-        Err(_) => false,
-    }
+    let mut conn = state.redis.get().await.map_err(|e| {
+        tracing::error!(
+            error = %e,
+            "refresh-token blocklist check failed: Redis pool unavailable; falling back to DB revocation check"
+        );
+        AppError::ServiceUnavailable("redis_unavailable")
+    })?;
+    conn.exists::<_, bool>(&key).await.map_err(|e| {
+        tracing::error!(
+            error = %e,
+            "refresh-token blocklist EXISTS query failed; falling back to DB revocation check"
+        );
+        AppError::ServiceUnavailable("redis_query_failed")
+    })
 }
 
 fn rt_hash_key(token_hash: &[u8]) -> String {
@@ -1662,12 +1885,30 @@ pub async fn blocklist_jti(state: &AppState, jti: Uuid, token_exp: i64) {
 }
 
 /// Return true if the given JTI has been blocklisted.
-pub async fn is_jti_blocked(state: &AppState, jti: Uuid) -> bool {
+///
+/// Fail-CLOSED: there is no DB-side fallback for per-JTI revocation (logout
+/// only writes to Redis), so any Redis failure is propagated as
+/// `AppError::ServiceUnavailable` (HTTP 503) rather than being silently
+/// treated as "not blocked". Otherwise, an attacker could bypass an explicit
+/// logout simply by triggering a Redis outage (AUTH-H1).
+pub async fn is_jti_blocked(state: &AppState, jti: Uuid) -> Result<bool, AppError> {
     let key = format!("{}{}", JTI_BLOCKLIST_PREFIX, jti);
-    match state.redis.get().await {
-        Ok(mut conn) => conn.exists::<_, bool>(&key).await.unwrap_or(false),
-        Err(_) => false,
-    }
+    let mut conn = state.redis.get().await.map_err(|e| {
+        tracing::error!(
+            jti = %jti,
+            error = %e,
+            "JTI blocklist check failed: Redis pool unavailable; failing closed (cannot prove token is not revoked)"
+        );
+        AppError::ServiceUnavailable("redis_unavailable")
+    })?;
+    conn.exists::<_, bool>(&key).await.map_err(|e| {
+        tracing::error!(
+            jti = %jti,
+            error = %e,
+            "JTI blocklist EXISTS query failed; failing closed"
+        );
+        AppError::ServiceUnavailable("redis_query_failed")
+    })
 }
 
 /// Check session validity with a short-lived Redis cache to reduce per-request DB queries.
@@ -1887,6 +2128,53 @@ fn build_risk_context(
 
 fn pre_auth_key(pre_auth_token: &str) -> String {
     format!("{}{}", PRE_AUTH_PREFIX, pre_auth_token)
+}
+
+fn user_pre_auth_index_key(user_id: Uuid) -> String {
+    format!("{}{}", USER_PRE_AUTH_PREFIX, user_id)
+}
+
+/// Purge every active pre-auth (2FA challenge) and email-change flow token
+/// belonging to `user_id`. Called from sensitive-event handlers such as
+/// password reset to close the post-reset hijack window.
+///
+/// Best-effort: any Redis failure is logged and swallowed -- callers must not
+/// abort their primary operation (e.g. the password reset itself) on a
+/// transient Redis error during cleanup.
+pub async fn purge_user_pre_auth_and_email_change(state: &AppState, user_id: Uuid) {
+    let mut conn = match state.redis.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, user_id = %user_id, "failed to acquire redis connection for pre-auth purge");
+            return;
+        }
+    };
+
+    // 1. Purge pre-auth (2FA challenge) tokens via the per-user index.
+    let index_key = user_pre_auth_index_key(user_id);
+    let tokens: Vec<String> = conn.smembers(&index_key).await.unwrap_or_default();
+    for token in &tokens {
+        let pre_key = pre_auth_key(token);
+        let _: Result<(), _> = conn.del(&pre_key).await;
+        let _: Result<(), _> = conn.del(format!("totp_fail:{}", token)).await;
+        let _: Result<(), _> = conn.del(format!("rc_fail:{}", token)).await;
+    }
+    let _: Result<(), _> = conn.del(&index_key).await;
+
+    // 2. Purge any in-progress email-change flow for this user. The flow keeps
+    // its current flow_token in `email_change_active:{user_id}`, so we don't
+    // need to scan.
+    let active_key = format!("email_change_active:{}", user_id);
+    let active_token: Option<String> = conn.get(&active_key).await.unwrap_or(None);
+    if let Some(flow_token) = active_token {
+        let _: Result<(), _> = conn
+            .del(vec![
+                format!("email_change_flow:{}", flow_token),
+                format!("email_change_fail:{}", flow_token),
+                active_key,
+            ])
+            .await;
+    }
 }
 
 async fn load_pre_auth_state_from_redis(

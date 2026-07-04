@@ -14,7 +14,9 @@ use auth_api::{config::Config, handlers, state::AppState};
 // Environment variable names for test infrastructure
 const TEST_DATABASE_URL: &str = "TEST_DATABASE_URL";
 const TEST_REDIS_URL: &str = "TEST_REDIS_URL";
-const TEST_JWT_SECRET: &str = "test-secret-that-is-long-enough-for-hs256";
+const TEST_NATS_URL: &str = "TEST_NATS_URL";
+const TEST_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgL+1qOaZ7C+H1mGbV\njUP83/W450N4GfOnZSrQ7P//4Y2hRANCAAR4BApTJy8Anvp+O7YNVlTeCbBZ+1YJ\nk+r5ELHGFIXciAEGSrCTOkCm3yChSYroYWLE3ZN4reh6JDbIMX/QnBGx\n-----END PRIVATE KEY-----";
+const TEST_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEeAQKUycvAJ76fju2DVZU3gmwWftW\nCZPq+RCxxhSF3IgBBkqwkzpApt8goUmK6GFixN2TeK3oeiQ2yDF/0JwRsQ==\n-----END PUBLIC KEY-----";
 
 static TEMPLATE_DB: OnceCell<String> = OnceCell::const_new();
 
@@ -53,6 +55,8 @@ impl TestApp {
         let admin_url = std::env::var(TEST_DATABASE_URL).expect("TEST_DATABASE_URL must be set");
         let redis_url =
             std::env::var(TEST_REDIS_URL).unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+        let nats_url =
+            std::env::var(TEST_NATS_URL).unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
 
         let db_name = format!("auth_api_http_test_{}", uuid::Uuid::new_v4().simple());
         let template_db = ensure_template_database(&admin_url).await;
@@ -81,7 +85,7 @@ impl TestApp {
             .expect("failed to connect to test database");
 
         // Build a minimal config pointing at the test database and Redis
-        let mut config = test_config(&db_url, &redis_url);
+        let mut config = test_config(&db_url, &redis_url, &nats_url);
         configure(&mut config);
         let state = AppState::from_config_with_pool(config, db.clone())
             .await
@@ -252,7 +256,9 @@ impl TestApp {
     }
 
     pub async fn clear_recent_reauth(&self, access_token: &str) {
-        let claims = auth_api::utils::jwt::decode_token(access_token, TEST_JWT_SECRET)
+        let vk = auth_api::utils::jwt::parse_verifying_key(TEST_PUBLIC_KEY_PEM)
+            .expect("failed to parse test public key");
+        let claims = auth_api::utils::jwt::decode_token(access_token, &vk)
             .expect("failed to decode test access token");
 
         if let Ok(mut conn) = self.redis.get().await {
@@ -298,6 +304,20 @@ impl TestApp {
         if let Ok(mut conn) = self.redis.get().await {
             let key = format!("vf_fail:{}", ip);
             let _: Result<(), _> = conn.del(&key).await;
+        }
+    }
+
+    /// Clear the per-token-hash rate limit for a verify-email token so that the
+    /// same token can be submitted again in tests (e.g. to verify "already used"
+    /// behavior without hitting the rate limiter first).
+    pub async fn clear_verify_email_token_hash_rate_limit(&self, raw_token: &str) {
+        let hash = auth_api::utils::crypto::sha256(raw_token.as_bytes());
+        let tk_key = format!(
+            "vf_tok:{}",
+            hash.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        );
+        if let Ok(mut conn) = self.redis.get().await {
+            let _: Result<(), _> = conn.del(&tk_key).await;
         }
     }
 
@@ -353,7 +373,7 @@ impl Drop for TestApp {
 }
 
 // Build a test config without needing a full .env file.
-fn test_config(db_url: &str, redis_url: &str) -> Config {
+fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
     #[allow(unused_imports)]
     use auth_api::config::*;
 
@@ -376,19 +396,25 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
             pool_size: 5,
             wait_timeout_ms: 2000,
         },
+        nats: NatsConfig {
+            url: nats_url.into(),
+        },
         jwt: JwtConfig {
-            secret: TEST_JWT_SECRET.into(),
-            previous_secret: None,
+            private_key: TEST_PRIVATE_KEY_PEM.into(),
+            public_key: TEST_PUBLIC_KEY_PEM.into(),
+            previous_public_key: None,
             access_expiry_secs: 900,
             refresh_expiry_secs: 86400,
             short_session_expiry_secs: 3600,
             strict_session_binding: false,
             max_session_lifetime_secs: 60 * 60 * 24 * 90,
+            audience: Vec::new(),
         },
         crypto: CryptoConfig {
             argon2_memory_kib: 8192, // low for tests
             argon2_iterations: 1,
             argon2_parallelism: 1,
+            argon2_max_concurrency: 4,
             totp_issuer: "test".into(),
             encryption_key: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
             previous_encryption_key: None,
@@ -449,6 +475,15 @@ fn test_config(db_url: &str, redis_url: &str) -> Config {
         log: LogConfig {
             level: "error".into(),
             format: LogFormat::Pretty,
+        },
+        device_auth: DeviceAuthConfig {
+            ttl_secs: 300,
+            poll_interval_secs: 5,
+            verification_uri: "http://localhost:5173/device".into(),
+        },
+        metrics: MetricsConfig {
+            enabled: false,
+            port: 9464,
         },
     }
 }
