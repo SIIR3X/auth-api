@@ -322,7 +322,7 @@ async fn main() -> Result<()> {
         notes: vec![
             "HTTP benchmarks run against a real Axum server with Postgres and Redis.".into(),
             "Rate limits, CAPTCHA, and lockout thresholds are relaxed in benchmark mode to keep steady-state scenarios repeatable.".into(),
-            "Email 2FA cooldown keys and TOTP anti-replay keys are cleared between iterations so challenge completion can be measured repeatedly.".into(),
+            "Email 2FA cooldown keys and TOTP anti-replay entries (Redis fast-path + used_totp_codes table) are cleared between iterations so challenge completion can be measured repeatedly.".into(),
             "logout: sessions are pre-created before the timed region so each iteration measures only the revocation path.".into(),
             "change_password: measures Argon2 rehash + session revocation; current_password is threaded through iterations.".into(),
             "revoke_session: extra sessions are pre-created before the timed region; DELETE latency is measured in isolation.".into(),
@@ -2312,10 +2312,19 @@ async fn clear_forgot_password_rate_limit(state: &AppState) {
 }
 
 async fn clear_totp_reuse_key(state: &AppState, user_id: Uuid, code: &str) {
+    // Clear the Redis fast-path key AND the durable authority (used_totp_codes)
+    // so the same code can be replayed across timed iterations. Both layers
+    // must be purged since the replay guard is now DB-authoritative.
     if let Ok(mut conn) = state.redis.get().await {
         let key = format!("totp_used:{user_id}:{code}");
         let _: Result<(), _> = conn.del(&key).await;
     }
+    let code_hash = auth_api::utils::crypto::sha256(code.as_bytes());
+    let _ = sqlx::query("DELETE FROM used_totp_codes WHERE user_id = $1 AND code_hash = $2")
+        .bind(user_id)
+        .bind(code_hash.as_slice())
+        .execute(&state.db)
+        .await;
 }
 
 fn current_totp_code(base32_secret: &str) -> Result<String> {

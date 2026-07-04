@@ -28,6 +28,10 @@ pub struct AuthUser {
     pub session_id: uuid::Uuid,
     pub jti: uuid::Uuid,
     pub token_exp: i64,
+    /// Role names from the JWT (e.g. ["user", "admin"]).
+    pub roles: Vec<String>,
+    /// Permission names from the JWT (e.g. ["billing:read"]).
+    pub permissions: Vec<String>,
     /// Request ID injected by the request_id middleware; propagate to audit log entries.
     pub request_id: Option<uuid::Uuid>,
 }
@@ -51,13 +55,29 @@ impl FromRequestParts<AppState> for AuthUser {
 
         let claims = jwt::decode_token_with_fallback(
             token,
-            &state.config.jwt.secret,
-            state.config.jwt.previous_secret.as_deref(),
+            &state.jwt_verifying_key,
+            state.jwt_previous_verifying_key.as_ref(),
         )
         .map_err(|_| AppError::TokenInvalid)?;
 
+        // Defense-in-depth: even though the signature already proves the token
+        // was minted by this auth-api instance, also pin `iss` (must match our
+        // public_url) and `aud` (must contain our public_url -- guaranteed by
+        // `ensure_self_in_audience` at startup). This rejects tokens that were
+        // re-signed by an attacker holding a stolen private key for a sibling
+        // deployment, and tokens that were addressed only to downstream
+        // resource servers and replayed against auth-api.
+        let expected = state.config.server.public_url.as_str();
+        if jwt::validate_iss_aud(&claims, expected, expected).is_err() {
+            return Err(AppError::TokenInvalid);
+        }
+
         // Check the JTI blocklist before touching the database.
-        if auth_svc::is_jti_blocked(state, claims.jti).await {
+        // Fail-closed: a Redis error here is propagated as 503
+        // (ServiceUnavailable) rather than silently treated as "not blocked",
+        // otherwise an attacker could bypass an explicit logout during a
+        // Redis outage (AUTH-H1).
+        if auth_svc::is_jti_blocked(state, claims.jti).await? {
             return Err(AppError::TokenInvalid);
         }
 
@@ -79,6 +99,8 @@ impl FromRequestParts<AppState> for AuthUser {
             session_id: claims.sid,
             jti: claims.jti,
             token_exp: claims.exp,
+            roles: claims.roles,
+            permissions: claims.permissions,
             request_id,
         })
     }

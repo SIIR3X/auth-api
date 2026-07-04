@@ -14,6 +14,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - test-auth-net
 
   redis:
     image: redis:7-alpine
@@ -26,6 +28,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - test-cache-net
 
   mailpit:
     image: axllent/mailpit:v1.21
@@ -37,3 +41,30 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - test-mail-net
+
+  nats:
+    image: nats:2-alpine
+    ports:
+      - "4224:4222"
+      - "8224:8222"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - test-nats-net
+
+networks:
+  test-auth-net:
+    driver: bridge
+  test-cache-net:
+    driver: bridge
+  test-mail-net:
+    driver: bridge
+  test-nats-net:
+    driver: bridge

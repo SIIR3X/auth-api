@@ -84,11 +84,16 @@ async fn jwt_signed_with_wrong_secret_returns_401() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 351).await;
 
-    // Decode claims from the real token, re-sign with a different secret.
-    let claims = jwt::decode_token(&user.access_token, &app.state.config.jwt.secret)
+    // Decode claims from the real token, re-sign with a different key.
+    let claims = jwt::decode_token(&user.access_token, &app.state.jwt_verifying_key)
         .expect("real token must decode");
-    let forged = jwt::encode_token(&claims, "wrong-secret-with-enough-entropy-for-test-12345")
-        .expect("encode must succeed");
+    let wrong_key = {
+        use p256::pkcs8::EncodePrivateKey;
+        let sk = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let pem = sk.to_pkcs8_pem(Default::default()).expect("pkcs8 pem");
+        jwt::parse_encoding_key(&pem).expect("encoding key")
+    };
+    let forged = jwt::encode_token(&claims, &wrong_key, None).expect("encode must succeed");
 
     let res = app
         .client
@@ -109,7 +114,7 @@ async fn expired_access_token_returns_401() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 352).await;
 
-    let real_claims = jwt::decode_token(&user.access_token, &app.state.config.jwt.secret)
+    let real_claims = jwt::decode_token(&user.access_token, &app.state.jwt_verifying_key)
         .expect("real token must decode");
 
     // Build a claims with exp in the past.
@@ -118,7 +123,7 @@ async fn expired_access_token_returns_401() {
         ..real_claims
     };
 
-    let expired_token = jwt::encode_token(&expired_claims, &app.state.config.jwt.secret)
+    let expired_token = jwt::encode_token(&expired_claims, &app.state.jwt_signing_key, None)
         .expect("encode must succeed");
 
     let res = app

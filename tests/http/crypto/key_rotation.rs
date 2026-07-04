@@ -71,6 +71,7 @@ async fn build_rotation_state(
     prev_key: Option<&str>,
     new_key: &str,
     redis_url: &str,
+    nats_url: &str,
 ) -> AppState {
     #[allow(unused_imports)]
     use auth_api::config::*;
@@ -94,19 +95,25 @@ async fn build_rotation_state(
             pool_size: 2,
             wait_timeout_ms: 2000,
         },
+        nats: NatsConfig {
+            url: nats_url.into(),
+        },
         jwt: JwtConfig {
-            secret: "test-secret-that-is-long-enough-for-hs256".into(),
-            previous_secret: None,
+            private_key: "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgL+1qOaZ7C+H1mGbV\njUP83/W450N4GfOnZSrQ7P//4Y2hRANCAAR4BApTJy8Anvp+O7YNVlTeCbBZ+1YJ\nk+r5ELHGFIXciAEGSrCTOkCm3yChSYroYWLE3ZN4reh6JDbIMX/QnBGx\n-----END PRIVATE KEY-----".into(),
+            public_key: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEeAQKUycvAJ76fju2DVZU3gmwWftW\nCZPq+RCxxhSF3IgBBkqwkzpApt8goUmK6GFixN2TeK3oeiQ2yDF/0JwRsQ==\n-----END PUBLIC KEY-----".into(),
+            previous_public_key: None,
             access_expiry_secs: 900,
             refresh_expiry_secs: 86400,
             short_session_expiry_secs: 3600,
             strict_session_binding: false,
             max_session_lifetime_secs: 60 * 60 * 24 * 90,
+            audience: Vec::new(),
         },
         crypto: CryptoConfig {
             argon2_memory_kib: 8192,
             argon2_iterations: 1,
             argon2_parallelism: 1,
+            argon2_max_concurrency: 4,
             totp_issuer: "test".into(),
             encryption_key: new_key.into(),
             previous_encryption_key: prev_key.map(|s| s.into()),
@@ -168,6 +175,15 @@ async fn build_rotation_state(
             level: "error".into(),
             format: LogFormat::Pretty,
         },
+        device_auth: DeviceAuthConfig {
+            ttl_secs: 300,
+            poll_interval_secs: 5,
+            verification_uri: "http://localhost:5173/device".into(),
+        },
+        metrics: MetricsConfig {
+            enabled: false,
+            port: 9464,
+        },
     };
 
     // Disable config.validate()'s key-equality check by pointing database.url
@@ -181,6 +197,10 @@ async fn build_rotation_state(
 
 fn redis_url() -> String {
     std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into())
+}
+
+fn nats_url() -> String {
+    std::env::var("TEST_NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into())
 }
 
 // Tests
@@ -205,8 +225,14 @@ async fn rotate_totp_key_re_encrypts_secret_successfully() {
         .expect("encrypted_before must decrypt with KEY_A");
 
     // Build rotation state: previous = KEY_A, current = KEY_B.
-    let state =
-        build_rotation_state(app.db.clone(), Some(KEY_A_B64), KEY_B_B64, &redis_url()).await;
+    let state = build_rotation_state(
+        app.db.clone(),
+        Some(KEY_A_B64),
+        KEY_B_B64,
+        &redis_url(),
+        &nats_url(),
+    )
+    .await;
 
     let result = rotate_totp_encryption_key(&state)
         .await
@@ -255,8 +281,14 @@ async fn rotate_totp_key_with_multiple_users_rotates_all() {
     setup_totp(&app, &u1.access_token).await;
     setup_totp(&app, &u2.access_token).await;
 
-    let state =
-        build_rotation_state(app.db.clone(), Some(KEY_A_B64), KEY_B_B64, &redis_url()).await;
+    let state = build_rotation_state(
+        app.db.clone(),
+        Some(KEY_A_B64),
+        KEY_B_B64,
+        &redis_url(),
+        &nats_url(),
+    )
+    .await;
 
     let result = rotate_totp_encryption_key(&state)
         .await
@@ -275,6 +307,7 @@ async fn rotate_totp_key_fails_when_previous_key_not_configured() {
         None, // no previous key
         KEY_A_B64,
         &redis_url(),
+        &nats_url(),
     )
     .await;
 
@@ -290,8 +323,14 @@ async fn rotate_totp_key_fails_when_keys_are_identical() {
     let app = TestApp::spawn().await;
 
     // previous = current = KEY_A --> should be caught and rejected.
-    let state =
-        build_rotation_state(app.db.clone(), Some(KEY_A_B64), KEY_A_B64, &redis_url()).await;
+    let state = build_rotation_state(
+        app.db.clone(),
+        Some(KEY_A_B64),
+        KEY_A_B64,
+        &redis_url(),
+        &nats_url(),
+    )
+    .await;
 
     let err = rotate_totp_encryption_key(&state).await;
     assert!(
@@ -307,8 +346,14 @@ async fn rotate_totp_key_no_op_when_no_totp_methods_exist() {
     // Just register but don't set up TOTP.
     let _user = fixtures::authenticated_user(&app, 403).await;
 
-    let state =
-        build_rotation_state(app.db.clone(), Some(KEY_A_B64), KEY_B_B64, &redis_url()).await;
+    let state = build_rotation_state(
+        app.db.clone(),
+        Some(KEY_A_B64),
+        KEY_B_B64,
+        &redis_url(),
+        &nats_url(),
+    )
+    .await;
 
     let result = rotate_totp_encryption_key(&state)
         .await

@@ -10,7 +10,7 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::domain::session::Session;
+use crate::domain::session::{Session, SessionType};
 
 pub const FIND_BY_TOKEN_HASH_SQL: &str = "SELECT * FROM sessions WHERE token_hash = $1";
 pub const FIND_VALIDATION_BY_ID_SQL: &str =
@@ -19,7 +19,7 @@ pub const FIND_ACTIVE_BY_USER_SQL: &str = "SELECT * FROM sessions
          WHERE user_id = $1 AND revoked_at IS NULL
          ORDER BY last_used_at DESC";
 pub const FIND_ACTIVE_SUMMARY_BY_USER_SQL: &str = "SELECT id, last_used_at, expires_at, created_at,
-            ip_address, device_name, user_agent
+            ip_address, device_name, user_agent, session_type, client_id
          FROM sessions
          WHERE user_id = $1 AND revoked_at IS NULL
          ORDER BY last_used_at DESC";
@@ -35,6 +35,8 @@ pub struct NewSession<'a> {
     pub remember_me: bool,
     pub token_hash: &'a [u8],
     pub user_agent: Option<&'a str>,
+    pub session_type: SessionType,
+    pub client_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -52,6 +54,8 @@ pub struct ActiveSessionSummary {
     pub ip_address: Option<IpNetwork>,
     pub device_name: Option<String>,
     pub user_agent: Option<String>,
+    pub session_type: SessionType,
+    pub client_id: Option<String>,
 }
 
 impl SessionValidation {
@@ -65,8 +69,8 @@ impl SessionValidation {
 pub async fn create(pool: &PgPool, input: &NewSession<'_>) -> Result<Session, sqlx::Error> {
     sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -77,6 +81,8 @@ pub async fn create(pool: &PgPool, input: &NewSession<'_>) -> Result<Session, sq
     .bind(input.remember_me)
     .bind(input.token_hash)
     .bind(input.user_agent)
+    .bind(input.session_type)
+    .bind(input.client_id)
     .fetch_one(pool)
     .await
 }
@@ -103,8 +109,8 @@ pub async fn rotate(
 
     let new_session = sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -115,6 +121,8 @@ pub async fn rotate(
     .bind(input.remember_me)
     .bind(input.token_hash)
     .bind(input.user_agent)
+    .bind(input.session_type)
+    .bind(input.client_id)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -200,6 +208,39 @@ pub async fn find_active_by_user(
         .bind(user_id)
         .fetch_all(pool)
         .await
+}
+
+pub async fn count_active_by_type(
+    pool: &PgPool,
+    user_id: Uuid,
+    session_type: SessionType,
+) -> Result<i64, sqlx::Error> {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sessions
+         WHERE user_id = $1 AND session_type = $2 AND revoked_at IS NULL AND expires_at > NOW()",
+    )
+    .bind(user_id)
+    .bind(session_type)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}
+
+pub async fn count_active_by_client(
+    pool: &PgPool,
+    user_id: Uuid,
+    client_id: &str,
+) -> Result<i64, sqlx::Error> {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sessions
+         WHERE user_id = $1 AND client_id = $2 AND session_type = 'device'
+           AND revoked_at IS NULL AND expires_at > NOW()",
+    )
+    .bind(user_id)
+    .bind(client_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
 }
 
 pub async fn find_active_summary_by_user(

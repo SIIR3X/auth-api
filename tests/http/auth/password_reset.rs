@@ -323,7 +323,14 @@ async fn verify_email_with_already_used_token_rejected() {
         .await;
     assert_eq!(first.status().as_u16(), 200);
 
-    // Use it again - must fail.
+    // Clear rate limits so the second attempt reaches the "already consumed"
+    // check instead of being blocked by rate limiting.
+    app.clear_verify_email_token_hash_rate_limit(&token.raw)
+        .await;
+    app.clear_verify_email_rate_limit("127.0.0.1").await;
+    app.clear_auth_rate_limit_key("127.0.0.1").await;
+
+    // Use it again - must fail because it was already consumed.
     let second = app
         .post(
             "/auth/verify-email",

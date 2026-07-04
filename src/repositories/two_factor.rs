@@ -165,3 +165,45 @@ pub async fn find_all_by_type(
     .fetch_all(pool)
     .await
 }
+
+// TOTP replay guard (used_totp_codes)
+
+/// Atomically consume a TOTP code for a user: purges the user's expired
+/// entries, then records the code hash. Returns `false` when the exact code
+/// was already consumed within the validity window (replay).
+///
+/// This is the durable, authoritative check behind the Redis fast-path in
+/// `services::auth::complete_two_factor_login`: a database error must be
+/// propagated (fail-closed), never treated as "not used".
+pub async fn try_consume_totp_code(
+    pool: &PgPool,
+    user_id: Uuid,
+    code_hash: &[u8],
+) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Self-cleaning: TOTP codes repeat naturally over time, so stale rows must
+    // never block a future legitimate login even if pg_cron/background cleanup
+    // lags. 90 s = one 30-second step on each side of the current one
+    // (TOTP_SKEW=1), matching cleanup_used_totp_codes().
+    sqlx::query(
+        "DELETE FROM used_totp_codes WHERE user_id = $1 AND used_at < NOW() - INTERVAL '90 seconds'",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let inserted = sqlx::query(
+        "INSERT INTO used_totp_codes (user_id, code_hash) VALUES ($1, $2)
+         ON CONFLICT (user_id, code_hash) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(code_hash)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    tx.commit().await?;
+
+    Ok(inserted == 1)
+}

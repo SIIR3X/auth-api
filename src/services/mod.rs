@@ -7,9 +7,11 @@
 pub mod auth;
 pub mod captcha;
 pub mod cleanup;
+pub mod device;
 pub mod email;
 pub mod email_2fa;
 pub mod email_change;
+pub mod events;
 pub mod key_rotation;
 pub mod reauth;
 pub mod risk_score;

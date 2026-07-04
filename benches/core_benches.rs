@@ -16,32 +16,53 @@ use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 
 fn jwt_benches(c: &mut Criterion) {
+    use p256::PublicKey;
+    use p256::ecdsa::{SigningKey, VerifyingKey};
+    use p256::pkcs8::EncodePrivateKey;
+    use rand_core::OsRng;
+
+    fn generate_key_pair() -> (jsonwebtoken::EncodingKey, jsonwebtoken::DecodingKey) {
+        let sk = SigningKey::random(&mut OsRng);
+        let vk = VerifyingKey::from(&sk);
+        let private_pem = sk.to_pkcs8_pem(Default::default()).expect("pkcs8 pem");
+        let public_pem = PublicKey::from(vk).to_string();
+        (
+            jwt::parse_encoding_key(&private_pem).expect("encoding key"),
+            jwt::parse_verifying_key(&public_pem).expect("decoding key"),
+        )
+    }
+
     let mut group = c.benchmark_group("jwt");
     let claims = jwt::Claims::new(
         Uuid::new_v4(),
         Uuid::new_v4(),
         OffsetDateTime::now_utc().unix_timestamp() + 3600,
     );
-    let secret = "bench-secret-current-current-current";
-    let previous_secret = "bench-secret-previous-previous-prev";
-    let token = jwt::encode_token(&claims, secret).expect("failed to encode token");
+    let (signing_key, verifying_key) = generate_key_pair();
+    let (old_signing_key, old_verifying_key) = generate_key_pair();
+    let token = jwt::encode_token(&claims, &signing_key, None).expect("failed to encode token");
     let rotated_token =
-        jwt::encode_token(&claims, previous_secret).expect("failed to encode token");
+        jwt::encode_token(&claims, &old_signing_key, None).expect("failed to encode token");
 
-    group.bench_function("encode_hs256", |b| {
-        b.iter(|| jwt::encode_token(black_box(&claims), black_box(secret)).expect("encode failed"))
+    group.bench_function("encode_es256", |b| {
+        b.iter(|| {
+            jwt::encode_token(black_box(&claims), black_box(&signing_key), black_box(None))
+                .expect("encode failed")
+        })
     });
 
-    group.bench_function("decode_hs256", |b| {
-        b.iter(|| jwt::decode_token(black_box(&token), black_box(secret)).expect("decode failed"))
+    group.bench_function("decode_es256", |b| {
+        b.iter(|| {
+            jwt::decode_token(black_box(&token), black_box(&verifying_key)).expect("decode failed")
+        })
     });
 
-    group.bench_function("decode_with_previous_secret", |b| {
+    group.bench_function("decode_with_previous_key", |b| {
         b.iter(|| {
             jwt::decode_token_with_fallback(
                 black_box(&rotated_token),
-                black_box(secret),
-                Some(black_box(previous_secret)),
+                black_box(&verifying_key),
+                Some(black_box(&old_verifying_key)),
             )
             .expect("decode with fallback failed")
         })
@@ -52,6 +73,7 @@ fn pre_auth_benches(c: &mut Criterion) {
     let mut group = c.benchmark_group("pre_auth");
     let state = PreAuthState {
         user_id: Uuid::new_v4(),
+        remember_me: false,
         risk: Some(CachedRiskEvaluation {
             context: CachedRiskContext {
                 ip: "203.0.113.42/32".to_string(),
@@ -150,6 +172,7 @@ fn password_benches(c: &mut Criterion) {
         argon2_memory_kib: 65_536,
         argon2_iterations: 3,
         argon2_parallelism: 1,
+        argon2_max_concurrency: 4,
         totp_issuer: "bench".into(),
         encryption_key: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
         previous_encryption_key: None,

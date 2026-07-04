@@ -79,6 +79,16 @@ async fn run_all(db: &PgPool, config: &Config) {
         &format!("{} days", c.login_attempts_retention_days),
     )
     .await;
+
+    // TOTP replay-guard rows live ~90 s (one step of skew on each side);
+    // the repository already self-cleans per user, this sweeps leftovers.
+    run(
+        db,
+        "cleanup_used_totp_codes",
+        "SELECT cleanup_used_totp_codes($1::interval)",
+        "90 seconds",
+    )
+    .await;
 }
 
 async fn run(db: &PgPool, name: &str, sql: &str, interval: &str) {

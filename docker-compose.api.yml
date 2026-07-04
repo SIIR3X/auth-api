@@ -6,18 +6,62 @@ services:
       # Secrets - exported from pass before running
       - DATABASE_URL
       - REDIS_URL
-      - JWT_SECRET
+      - JWT_PRIVATE_KEY
+      - JWT_PUBLIC_KEY
+      - JWT_PREVIOUS_PUBLIC_KEY
       - ENCRYPTION_KEY
       - PREVIOUS_ENCRYPTION_KEY
       - SMTP_USERNAME
       - SMTP_PASSWORD
       - CAPTCHA_SECRET
+      # Optional override; defaults to nats://nats:4222, which resolves to the
+      # nats service below on the compose network.
+      - NATS_URL
     ports:
-      - "3000:3000"
+      # Bind to loopback only: the API must be reached through the reverse
+      # proxy (which sets X-Forwarded-For from a trusted CIDR), never directly.
+      - "127.0.0.1:3000:3000"
+      # Prometheus metrics: loopback only, scraped by the host's Prometheus.
+      # Never route this through nginx.
+      - "127.0.0.1:9464:9464"
     restart: unless-stopped
+    # Container hardening: the app writes nothing to disk (logs go to stdout,
+    # templates are read-only), needs no Linux capabilities, and must not
+    # gain privileges via setuid binaries.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3000/health || exit 1"]
+      # Use the binary's built-in --healthcheck flag (added to avoid bundling
+      # curl/wget in the slim runtime image). It hits 127.0.0.1:$SERVER_PORT/health
+      # and exits 0 on 2xx, 1 otherwise.
+      test: ["CMD", "./auth-api", "--healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  # Domain-event broker. The API connects to it at startup (fail-fast), so it
+  # ships in the same compose file. No host ports: only the api container
+  # needs to reach it, over the internal compose network.
+  nats:
+    image: nats:2-alpine
+    restart: unless-stopped
+    tmpfs:
+      - /data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10

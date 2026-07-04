@@ -14,7 +14,7 @@ Always run migrations before restarting the container. If there are no new migra
 
 Check the release notes on GitHub to confirm whether the release includes new migrations.
 
-**On the API VPS** — fetch and run migrations from the release asset:
+**On the API VPS** - fetch and run migrations from the release asset:
 
 ```bash
 curl -sL https://github.com/SIIR3X/auth-api/releases/latest/download/migrations.tar.gz \
@@ -26,7 +26,7 @@ DATABASE_URL=$(pass prod/auth-api/database-url) \
 rm -rf /dev/shm/migrations
 ```
 
-The archive is extracted directly into `/dev/shm` (RAM) — nothing is written to disk.
+The archive is extracted directly into `/dev/shm` (RAM) - nothing is written to disk.
 
 ## 2. Deploy the New Image
 
@@ -37,7 +37,8 @@ cd /srv/auth-api
 
 export DATABASE_URL=$(pass prod/auth-api/database-url)
 export REDIS_URL=$(pass prod/auth-api/redis-url)
-export JWT_SECRET=$(pass prod/auth-api/jwt-secret)
+export JWT_PRIVATE_KEY=$(pass prod/auth-api/jwt-private-key)
+export JWT_PUBLIC_KEY=$(pass prod/auth-api/jwt-public-key)
 export ENCRYPTION_KEY=$(pass prod/auth-api/encryption-key)
 export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
 export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)

@@ -8,7 +8,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{error::AppError, services::session as session_svc, state::AppState};
+use crate::{
+    domain::session::SessionType, error::AppError, services::session as session_svc,
+    state::AppState,
+};
 
 use super::extractors::{AuthUser, ClientIp};
 
@@ -17,6 +20,9 @@ use super::extractors::{AuthUser, ClientIp};
 #[derive(Serialize)]
 pub struct SessionResponse {
     pub id: Uuid,
+    pub session_type: SessionType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,6 +57,8 @@ pub async fn list(
             let is_current = s.id == auth.session_id;
             SessionResponse {
                 id: s.id,
+                session_type: s.session_type,
+                client_id: s.client_id,
                 device_name: s.device_name,
                 user_agent: s.user_agent,
                 ip_address: s.ip_address.map(|ip| ip.ip().to_string()),
