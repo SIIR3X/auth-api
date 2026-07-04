@@ -31,7 +31,7 @@ use crate::{
     utils::crypto,
 };
 
-use super::{auth as auth_svc, email as email_svc};
+use super::{auth as auth_svc, email as email_svc, events};
 
 const FLOW_TTL_SECS: u64 = 60 * 15; // 15-minute window for the entire flow
 const MAX_OTP_FAILURES: i64 = 5;
@@ -287,6 +287,12 @@ pub async fn confirm_new(
     let fail_key = format!("email_change_fail:{}", flow_token);
     verify_otp(state, submitted_code, flow.otp_hash.as_deref(), &fail_key).await?;
 
+    let old_email = user_repo::find_by_id(&state.db, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .map(|u| u.email)
+        .unwrap_or_default();
+
     let other_session_ids = session_repo::find_active_by_user(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
@@ -370,6 +376,17 @@ pub async fn confirm_new(
     }
 
     auth_svc::invalidate_session_caches(state, &other_session_ids).await;
+
+    events::publish(
+        state,
+        "user.email_changed",
+        &events::UserEmailChanged {
+            user_id,
+            old_email: old_email.clone(),
+            new_email: new_email.to_string(),
+        },
+    )
+    .await;
 
     // Clean up all Redis keys for this flow and arm the cooldown.
     if let Ok(mut conn) = state.redis.get().await {

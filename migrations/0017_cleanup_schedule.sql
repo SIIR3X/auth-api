@@ -1,7 +1,7 @@
 -- 0017_cleanup_schedule.sql
 -- Schedules nightly cleanup jobs for expired operational data via pg_cron.
 -- If pg_cron is unavailable, the application background task handles cleanup instead.
--- Cleanup functions are defined in their respective table migrations (0007, 0009–0013).
+-- Cleanup functions are defined in their respective table migrations (0007, 0009-0013).
 DO $$
 BEGIN
     BEGIN

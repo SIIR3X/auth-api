@@ -10,6 +10,7 @@ env:
   RUST_BACKTRACE: 1
   TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
   TEST_REDIS_URL: redis://127.0.0.1:6379
+  TEST_NATS_URL: nats://127.0.0.1:4222
 
 jobs:
   test:
@@ -39,6 +40,19 @@ jobs:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # auth-api connects to NATS at startup (fail-fast), so the integration
+      # tests need a broker. nats:2-alpine enables monitoring on 8222 by
+      # default, which the healthcheck probes.
+      nats:
+        image: nats:2-alpine
+        ports:
+          - 4222:4222
+        options: >-
+          --health-cmd "wget --spider -q http://localhost:8222/healthz"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5

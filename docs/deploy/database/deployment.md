@@ -4,15 +4,15 @@ Previous: [Secrets](../api/secrets.md) | [Index](../README.md) | Next: [API Depl
 
 ## Overview
 
-PostgreSQL and Redis each run on a dedicated VPS. The API server connects to them exclusively through a WireGuard VPN — database ports are never exposed on the public network.
+PostgreSQL and Redis each run on a dedicated VPS. The API server connects to them exclusively through a WireGuard VPN - database ports are never exposed on the public network.
 
 ```
-API VPS (10.0.0.1) ── WireGuard VPN ── DB VPS (10.0.0.2)
+API VPS (10.0.0.1) -- WireGuard VPN -- DB VPS (10.0.0.2)
 ```
 
 ## 1. WireGuard VPN
 
-**On both VPS** — install WireGuard:
+**On both VPS** - install WireGuard:
 
 ```bash
 sudo apt update
@@ -49,7 +49,7 @@ sudo chmod 600 /etc/wireguard/keys/wg10_private.key
 
 ### 1.2 Configure WireGuard on the DB VPS
 
-**On the DB VPS** — create `/etc/wireguard/wg10.conf`:
+**On the DB VPS** - create `/etc/wireguard/wg10.conf`:
 
 ```ini
 [Interface]
@@ -66,7 +66,7 @@ AllowedIPs = 10.0.0.1/32
 
 ### 1.3 Configure WireGuard on the API VPS
 
-**On the API VPS** — create `/etc/wireguard/wg10.conf`:
+**On the API VPS** - create `/etc/wireguard/wg10.conf`:
 
 ```ini
 [Interface]
@@ -94,7 +94,7 @@ sudo systemctl enable --now wg-quick@wg10
 
 ### 1.5 Open the firewall
 
-**On the DB VPS** — allow the WireGuard UDP port from the API VPS public IP only:
+**On the DB VPS** - allow the WireGuard UDP port from the API VPS public IP only:
 
 ```bash
 sudo ufw allow from <API_VPS_PUBLIC_IP> to any port 51820 proto udp
@@ -112,7 +112,7 @@ ping 10.0.0.2
 
 ## 2. PostgreSQL
 
-**On the DB VPS** — install PostgreSQL:
+**On the DB VPS** - install PostgreSQL:
 
 ```bash
 sudo apt update
@@ -140,13 +140,13 @@ GRANT ALL PRIVILEGES ON DATABASE auth_api TO auth_api;
 
 ### 2.2 Allow connections on the VPN interface
 
-**On the DB VPS** — edit `/etc/postgresql/<version>/main/postgresql.conf`:
+**On the DB VPS** - edit `/etc/postgresql/<version>/main/postgresql.conf`:
 
 ```conf
 listen_addresses = '10.0.0.2'
 ```
 
-Edit `/etc/postgresql/<version>/main/pg_hba.conf` — allow the API VPS via its VPN IP only:
+Edit `/etc/postgresql/<version>/main/pg_hba.conf` - allow the API VPS via its VPN IP only:
 
 ```conf
 host    auth_api    auth_api    10.0.0.1/32    scram-sha-256
@@ -182,9 +182,9 @@ psql "$(pass prod/auth-api/database-url)"
 
 ### 2.5 Run migrations
 
-Each release publishes a `migrations.tar.gz` asset on GitHub. The archive is fetched directly into `/dev/shm` (RAM) — nothing is written to disk.
+Each release publishes a `migrations.tar.gz` asset on GitHub. The archive is fetched directly into `/dev/shm` (RAM) - nothing is written to disk.
 
-**On the API VPS** — install `sqlx-cli`:
+**On the API VPS** - install `sqlx-cli`:
 
 ```bash
 cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
@@ -204,7 +204,7 @@ rm -rf /dev/shm/migrations
 
 ## 3. Appsmith
 
-**On the DB VPS** — install Docker:
+**On the DB VPS** - install Docker:
 
 ```bash
 curl -fsSL https://get.docker.com | sh
@@ -238,7 +238,7 @@ curl -O https://raw.githubusercontent.com/SIIR3X/auth-api/main/docker-compose.db
 docker compose -f docker-compose.db.yml up -d
 ```
 
-Appsmith is bound to `127.0.0.1:8080` — never exposed publicly.
+Appsmith is bound to `127.0.0.1:8080` - never exposed publicly.
 
 ---
 
@@ -256,7 +256,7 @@ Then open `http://localhost:8080`.
 
 ### 3.4 Connect to the database
 
-In Appsmith: **Settings → Datasources → New datasource → PostgreSQL**
+In Appsmith: **Settings -> Datasources -> New datasource -> PostgreSQL**
 
 - Host: `localhost`
 - Port: `5432`
@@ -266,7 +266,7 @@ In Appsmith: **Settings → Datasources → New datasource → PostgreSQL**
 
 ## 4. Redis
 
-**On the DB VPS** — install Redis:
+**On the DB VPS** - install Redis:
 
 ```bash
 sudo apt update
@@ -277,7 +277,7 @@ sudo apt install -y redis-server
 
 ### 4.1 Configure authentication and binding
 
-**On the DB VPS** — inject the password from `pass` and bind to the VPN interface:
+**On the DB VPS** - inject the password from `pass` and bind to the VPN interface:
 
 ```bash
 REDIS_PASSWORD=$(pass prod/auth-api/redis-password)
@@ -314,13 +314,13 @@ redis-cli -h 10.0.0.2 ping
 ## 5. Backups
 
 Backups are encrypted with [age](https://github.com/FiloSottile/age) before touching disk.
-The private key never lives on the DB VPS — only the public key is needed to encrypt.
+The private key never lives on the DB VPS - only the public key is needed to encrypt.
 
 ---
 
 ### 5.1 Generate a key pair
 
-Run this **on a secure machine** (your laptop, a password manager export, etc.) — not the DB VPS.
+Run this **on a secure machine** (your laptop, a password manager export, etc.) - not the DB VPS.
 
 **Linux / macOS:**
 
@@ -335,7 +335,7 @@ sudo apt install age
 age-keygen -o backup.key
 ```
 
-**Windows (native) — via winget:**
+**Windows (native) - via winget:**
 
 ```powershell
 winget install FiloSottile.age
@@ -365,7 +365,7 @@ sudo apt install -y age
 
 ### 5.3 Deploy the backup script
 
-**On the DB VPS** — fetch the script from the repository, then set the public key:
+**On the DB VPS** - fetch the script from the repository, then set the public key:
 
 ```bash
 sudo mkdir -p /opt/auth-api

@@ -7,7 +7,7 @@
 | `.env.dev` | Yes | Development (`make dev`) |
 | `config.prod.env` | Yes | Production (non-sensitive values only) |
 
-Sensitive production values are never stored in files — they are exported from `pass` before deployment.
+Sensitive production values are never stored in files - they are exported from `pass` before deployment.
 
 ## Secrets (production only)
 
@@ -15,15 +15,17 @@ These variables must be exported from `pass` on the VPS before running `docker c
 
 | Variable | Description | Generate with |
 |----------|-------------|---------------|
-| `DATABASE_URL` | PostgreSQL connection string including credentials | — |
-| `REDIS_URL` | Redis connection string including password | — |
-| `JWT_SECRET` | HS256 signing key for access tokens | `openssl rand -hex 32` |
-| `JWT_PREVIOUS_SECRET` | Previous JWT signing key — set only during JWT key rotation | — |
+| `DATABASE_URL` | PostgreSQL connection string including credentials | - |
+| `REDIS_URL` | Redis connection string including password | - |
+| `JWT_PRIVATE_KEY` | EC P-256 private key in PEM format (signs tokens) | `openssl ecparam -genkey -name prime256v1 -noout \| openssl pkcs8 -topk8 -nocrypt` |
+| `JWT_PUBLIC_KEY` | EC P-256 public key in PEM format (verifies tokens) | `openssl ec -pubout < private.pem` |
+| `JWT_PREVIOUS_PUBLIC_KEY` | Previous public key - set only during key rotation | - |
 | `ENCRYPTION_KEY` | AES-256-GCM key for TOTP secret encryption (base64, 32 bytes) | `openssl rand -base64 32` |
-| `PREVIOUS_ENCRYPTION_KEY` | Previous encryption key — set only during key rotation | — |
-| `SMTP_USERNAME` | SMTP authentication username | — |
-| `SMTP_PASSWORD` | SMTP authentication password | — |
-| `CAPTCHA_SECRET` | hCaptcha secret key | — |
+| `PREVIOUS_ENCRYPTION_KEY` | Previous encryption key - set only during key rotation | - |
+| `SMTP_USERNAME` | SMTP authentication username | - |
+| `SMTP_PASSWORD` | SMTP authentication password | - |
+| `CAPTCHA_SECRET` | hCaptcha secret key | - |
+| `NATS_URL` | NATS server connection URL | - |
 
 ## Non-sensitive variables
 
@@ -36,8 +38,8 @@ These variables are committed in `config.prod.env` and can be adjusted without a
 | `APP_ENV` | `production` | Environment name |
 | `SERVER_HOST` | `0.0.0.0` | Bind address |
 | `SERVER_PORT` | `3000` | Bind port |
-| `APP_PUBLIC_URL` | — | Public-facing URL of the API |
-| `TRUSTED_PROXY_CIDRS` | — | Comma-separated CIDRs of trusted reverse proxies |
+| `APP_PUBLIC_URL` | - | Public-facing URL of the API |
+| `TRUSTED_PROXY_CIDRS` | - | Comma-separated CIDRs of trusted reverse proxies |
 
 ### Database
 
@@ -54,7 +56,9 @@ These variables are committed in `config.prod.env` and can be adjusted without a
 | `REDIS_POOL_SIZE` | `10` | Redis connection pool size |
 | `REDIS_WAIT_TIMEOUT_MS` | `2000` | Max wait time to acquire a Redis connection |
 
-### JWT
+### JWT (ES256)
+
+Tokens are signed with ECDSA P-256 (ES256). The private key signs tokens; only the public key is needed to verify them. Other services can fetch the public key from `GET /.well-known/jwks.json`.
 
 | Variable | Default (prod) | Description |
 |----------|----------------|-------------|
@@ -68,7 +72,7 @@ These variables are committed in `config.prod.env` and can be adjusted without a
 
 | Variable | Default (prod) | Description |
 |----------|----------------|-------------|
-| `ARGON2_MEMORY_KIB` | `65536` | Memory cost in KiB — tune for your hardware |
+| `ARGON2_MEMORY_KIB` | `65536` | Memory cost in KiB - tune for your hardware |
 | `ARGON2_ITERATIONS` | `3` | Iteration count |
 | `ARGON2_PARALLELISM` | `4` | Parallelism factor |
 
@@ -77,7 +81,7 @@ These variables are committed in `config.prod.env` and can be adjusted without a
 | Variable | Default (prod) | Description |
 |----------|----------------|-------------|
 | `TOTP_ISSUER` | `MyApp` | Issuer name shown in authenticator apps |
-| `TOTP_SKEW` | `1` | Accepted time-step skew (±1 window) |
+| `TOTP_SKEW` | `1` | Accepted time-step skew (+/-1 window) |
 | `RECOVERY_CODE_EXPIRY_DAYS` | `365` | Recovery code validity in days |
 
 ### Rate limiting
@@ -86,8 +90,8 @@ These variables are committed in `config.prod.env` and can be adjusted without a
 |----------|----------------|-------------|
 | `RATE_LIMIT_RPM` | `300` | Max requests per minute per IP |
 | `RATE_LIMIT_AUTH_RPM` | `20` | Max auth requests per minute per IP |
-| `RATE_LIMIT_FAIL_OPEN` | `false` | Allow requests if Redis is unavailable — must be `false` in production |
-| `RATE_LIMIT_ALLOW_MISSING_IP` | `false` | Allow requests without a resolved IP — must be `false` in production |
+| `RATE_LIMIT_FAIL_OPEN` | `false` | Allow requests if Redis is unavailable - must be `false` in production |
+| `RATE_LIMIT_ALLOW_MISSING_IP` | `false` | Allow requests without a resolved IP - must be `false` in production |
 
 ### Account lockout
 
@@ -101,7 +105,7 @@ These variables are committed in `config.prod.env` and can be adjusted without a
 
 | Variable | Default (prod) | Description |
 |----------|----------------|-------------|
-| `GEOIP_DB_PATH` | — | Path to the MaxMind GeoLite2-City `.mmdb` file |
+| `GEOIP_DB_PATH` | - | Path to the MaxMind GeoLite2-City `.mmdb` file |
 | `GEOIP_REQUIRED` | `false` | Fail on startup if the GeoIP database is missing |
 | `RISK_ALERT_THRESHOLD` | `30` | Risk score above which an alert is triggered |
 | `RISK_CHALLENGE_THRESHOLD` | `60` | Risk score above which a challenge is required |
@@ -112,10 +116,10 @@ These variables are committed in `config.prod.env` and can be adjusted without a
 
 | Variable | Default (prod) | Description |
 |----------|----------------|-------------|
-| `SMTP_HOST` | — | SMTP server hostname |
+| `SMTP_HOST` | - | SMTP server hostname |
 | `SMTP_PORT` | `587` | SMTP server port |
 | `SMTP_FROM_NAME` | `MyApp` | Sender display name |
-| `SMTP_FROM_ADDRESS` | — | Sender email address |
+| `SMTP_FROM_ADDRESS` | - | Sender email address |
 
 ### Mail
 
@@ -130,20 +134,20 @@ These variables are committed in `config.prod.env` and can be adjusted without a
 |----------|----------------|-------------|
 | `CAPTCHA_VERIFY_URL` | hCaptcha URL | Verification endpoint |
 | `CAPTCHA_TIMEOUT_SECS` | `5` | Request timeout for CAPTCHA verification |
-| `CAPTCHA_FAIL_OPEN` | `false` | Allow requests if CAPTCHA provider is unavailable — must be `false` in production |
+| `CAPTCHA_FAIL_OPEN` | `false` | Allow requests if CAPTCHA provider is unavailable - must be `false` in production |
 
 ### CORS
 
 | Variable | Default (prod) | Description |
 |----------|----------------|-------------|
-| `CORS_ALLOWED_ORIGINS` | — | Comma-separated list of allowed origins |
+| `CORS_ALLOWED_ORIGINS` | - | Comma-separated list of allowed origins |
 | `CORS_ALLOW_CREDENTIALS` | `true` | Allow credentials in cross-origin requests |
 
 ### Audit log
 
 | Variable | Default (prod) | Description |
 |----------|----------------|-------------|
-| `AUDIT_LOG_RETENTION_MONTHS` | `12` | Retention period in months — `0` keeps forever |
+| `AUDIT_LOG_RETENTION_MONTHS` | `12` | Retention period in months - `0` keeps forever |
 
 ### Cleanup
 
@@ -162,4 +166,12 @@ Expired-data cleanup runs nightly via pg_cron when available; otherwise the appl
 | Variable | Default (prod) | Description |
 |----------|----------------|-------------|
 | `LOG_LEVEL` | `info` | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
-| `LOG_FORMAT` | `json` | Log format — `json` for production, `pretty` for development |
+| `LOG_FORMAT` | `json` | Log format - `json` for production, `pretty` for development |
+
+### NATS
+
+The API publishes domain events (user created, email verified, etc.) to a NATS JetStream broker. The broker ships with the stack: `docker-compose.dev.yml` in development, `docker-compose.api.yml` in production.
+
+| Variable | Default (prod) | Description |
+|----------|----------------|-------------|
+| `NATS_URL` | `nats://nats:4222` | NATS server URL |

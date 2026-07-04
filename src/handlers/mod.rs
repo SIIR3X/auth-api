@@ -12,7 +12,10 @@ use axum::{
     middleware,
     routing::{delete, get, patch, post},
 };
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    timeout::TimeoutLayer,
+};
 
 use crate::{
     middleware::{
@@ -23,6 +26,7 @@ use crate::{
 };
 
 pub mod auth;
+pub mod device;
 pub mod extractors;
 pub mod session;
 pub mod two_factor;
@@ -32,7 +36,51 @@ async fn health() -> &'static str {
     "ok"
 }
 
+async fn jwks(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> impl axum::response::IntoResponse {
+    // Public key material is safe to cache: a short max-age lets downstream
+    // verifiers avoid refetching on every validation while still picking up
+    // rotated keys quickly. The security-headers middleware only applies its
+    // blanket `no-store` when the handler did not set cache-control itself.
+    (
+        [(header::CACHE_CONTROL, "public, max-age=300")],
+        axum::Json(state.jwt_jwks.as_ref().clone()),
+    )
+}
+
+/// Build the main application router plus a separate `/metrics` router.
+///
+/// The metrics router MUST be served on an internal listener only (see
+/// `MetricsConfig`): the Prometheus exposition reveals route-level traffic
+/// patterns and must never sit behind the public reverse proxy.
+///
+/// Calling this installs the global Prometheus recorder, which can only
+/// happen once per process: use it from `main` only. Tests use `router()`,
+/// which records no metrics.
+pub fn router_with_metrics(state: AppState) -> (Router, Router) {
+    let (prometheus_layer, metric_handle) = axum_prometheus::PrometheusMetricLayer::pair();
+
+    let app = build_router(state, Some(prometheus_layer));
+    let metrics = Router::new().route(
+        "/metrics",
+        get(move || {
+            let handle = metric_handle.clone();
+            async move { handle.render() }
+        }),
+    );
+
+    (app, metrics)
+}
+
 pub fn router(state: AppState) -> Router {
+    build_router(state, None)
+}
+
+fn build_router(
+    state: AppState,
+    prometheus_layer: Option<axum_prometheus::PrometheusMetricLayer<'static>>,
+) -> Router {
     let rl_general = RateLimitState {
         redis: state.redis.clone(),
         limit: state.config.rate_limit.requests_per_minute,
@@ -56,6 +104,7 @@ pub fn router(state: AppState) -> Router {
     let security_headers_state = security_headers::SecurityHeadersState {
         enable_hsts: state.config.is_production()
             && state.config.server.public_url.starts_with("https://"),
+        is_production: state.config.is_production(),
     };
 
     let cors = build_cors(&state.config.cors);
@@ -70,8 +119,9 @@ pub fn router(state: AppState) -> Router {
         ))
         .merge(me_router());
 
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health))
+        .route("/.well-known/jwks.json", get(jwks))
         .nest(
             "/auth",
             auth_router().layer(middleware::from_fn_with_state(
@@ -97,7 +147,24 @@ pub fn router(state: AppState) -> Router {
         // 64 KB is more than sufficient for any JSON payload this API accepts.
         // Overrides Axum's default 2 MB limit to reduce DoS exposure.
         .layer(DefaultBodyLimit::max(65_536))
-        .with_state(state)
+        // Defence-in-depth: cap total handler time so a stalled dependency
+        // (DB pool exhaustion, unresponsive SMTP relay) cannot pile up
+        // connections indefinitely, even if the reverse proxy has no timeout.
+        // 30 s comfortably covers the slowest legitimate path (Argon2 queueing
+        // behind the concurrency semaphore under load). 503 (not 408) matches
+        // the API's existing overload semantics (rate limiter unavailable).
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            std::time::Duration::from_secs(30),
+        ));
+
+    // Outermost layer so HTTP metrics include time spent in every middleware.
+    let router = match prometheus_layer {
+        Some(layer) => router.layer(layer),
+        None => router,
+    };
+
+    router.with_state(state)
 }
 
 fn build_cors(cfg: &crate::config::CorsConfig) -> CorsLayer {
@@ -153,6 +220,10 @@ fn auth_router() -> Router<AppState> {
             "/two-factor/email/resend",
             post(auth::resend_email_two_factor),
         )
+        // Device authorization flow (RFC 8628)
+        .route("/device", post(device::authorize))
+        .route("/device/token", post(device::token))
+        .route("/device/verify", post(device::verify))
 }
 
 // Sensitive authenticated routes placed under the strict auth rate-limit bucket.
@@ -212,4 +283,26 @@ fn me_router() -> Router<AppState> {
             "/two-factor/email/{id}",
             delete(two_factor::disable_email_otp),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn metrics_recorder_renders_business_counters() {
+        // pair() installs the process-global Prometheus recorder (and spawns
+        // its upkeep task, hence the Tokio runtime); this must stay the only
+        // test doing so (router() never installs it, so the integration suite
+        // is unaffected).
+        let (_layer, handle) = axum_prometheus::PrometheusMetricLayer::pair();
+
+        metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
+        metrics::gauge!("argon2_queue_available_permits").set(4.0);
+
+        let body = handle.render();
+        assert!(
+            body.contains("auth_logins_total"),
+            "missing counter: {body}"
+        );
+        assert!(body.contains("argon2_queue_available_permits"));
+    }
 }

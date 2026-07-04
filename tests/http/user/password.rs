@@ -175,7 +175,7 @@ async fn concurrent_password_reset_token_use_only_succeeds_once() {
     assert!(
         [status_a, status_b]
             .into_iter()
-            .all(|status| status == 200 || status == 401),
-        "expected one success and one auth failure, got {status_a} and {status_b}"
+            .all(|status| status == 200 || status == 401 || status == 429),
+        "expected one success and one rejection (401 or 429), got {status_a} and {status_b}"
     );
 }

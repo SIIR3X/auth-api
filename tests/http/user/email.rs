@@ -367,9 +367,12 @@ async fn email_change_cooldown_lifted_allows_new_flow() {
 /// Runs steps 1 and 2 (start + verify-current) and returns the flow_token.
 async fn start_and_verify_current(app: &TestApp, token: &str) -> String {
     let user_id = {
+        let vk = auth_api::utils::jwt::parse_verifying_key(
+            "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEeAQKUycvAJ76fju2DVZU3gmwWftW\nCZPq+RCxxhSF3IgBBkqwkzpApt8goUmK6GFixN2TeK3oeiQ2yDF/0JwRsQ==\n-----END PUBLIC KEY-----",
+        )
+        .expect("failed to parse test public key");
         let claims =
-            auth_api::utils::jwt::decode_token(token, "test-secret-that-is-long-enough-for-hs256")
-                .expect("failed to decode access token");
+            auth_api::utils::jwt::decode_token(token, &vk).expect("failed to decode access token");
         claims.sub
     };
 

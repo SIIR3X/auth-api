@@ -2,6 +2,8 @@
 -- Creates persistent user sessions used for login state, refresh-token rotation,
 -- per-device visibility, revocation, and compromise detection.
 -- token_hash stores the SHA-256 of the actual token; plaintext tokens are never persisted.
+CREATE TYPE session_type AS ENUM ('web', 'device');
+
 CREATE TYPE session_compromise_reason AS ENUM (
     'refresh_token_reuse',
     'manual_security_action',
@@ -24,6 +26,8 @@ CREATE TABLE sessions (
     remember_me BOOLEAN NOT NULL DEFAULT false,
     token_hash BYTEA NOT NULL,
     user_agent TEXT,
+    session_type session_type NOT NULL DEFAULT 'web',
+    client_id VARCHAR(100),
     compromise_reason session_compromise_reason,
 
     CONSTRAINT sessions_token_hash_key UNIQUE (token_hash),

@@ -1,0 +1,31 @@
+name: Security Audit
+
+# The PR-gated `deny` job in code-quality.yml only runs when code changes.
+# New RUSTSEC advisories are published against dependencies we already ship,
+# so also check on a schedule to catch them between PRs.
+on:
+  schedule:
+    # Every Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  advisories:
+    name: Dependency Advisories
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Check advisories
+        run: cargo deny check advisories

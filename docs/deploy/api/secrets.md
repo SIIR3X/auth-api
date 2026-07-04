@@ -48,14 +48,23 @@ pass insert prod/auth-api/redis-url
 
 ---
 
-### JWT Secret
+### JWT Keys (ES256)
 
-Signing key for access tokens (HS256). Must be at least 32 characters.
+EC P-256 key pair in PEM format: the private key signs access tokens, the
+public key verifies them (and feeds the JWKS endpoint). Generate both on a
+secure machine:
 
 ```bash
-pass insert prod/auth-api/jwt-secret
-# Generate with: openssl rand -hex 32
+openssl ecparam -genkey -name prime256v1 -noout \
+  | openssl pkcs8 -topk8 -nocrypt -out jwt-private.pem
+openssl ec -in jwt-private.pem -pubout -out jwt-public.pem
+
+pass insert -m prod/auth-api/jwt-private-key < jwt-private.pem
+pass insert -m prod/auth-api/jwt-public-key  < jwt-public.pem
 ```
+
+During a key rotation, also set `prod/auth-api/jwt-previous-public-key`
+(see the [Operations Runbook](../guides/operations.md)).
 
 ---
 

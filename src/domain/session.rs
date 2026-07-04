@@ -8,6 +8,14 @@ use ipnetwork::IpNetwork;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, sqlx::Type)]
+#[sqlx(type_name = "session_type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum SessionType {
+    Web,
+    Device,
+}
+
 #[derive(Debug, Clone, PartialEq, sqlx::Type)]
 #[sqlx(type_name = "session_compromise_reason", rename_all = "snake_case")]
 pub enum SessionCompromiseReason {
@@ -34,6 +42,8 @@ pub struct Session {
     // 32-byte SHA-256 digest
     pub token_hash: Vec<u8>,
     pub user_agent: Option<String>,
+    pub session_type: SessionType,
+    pub client_id: Option<String>,
     pub compromise_reason: Option<SessionCompromiseReason>,
 }
 
@@ -69,6 +79,8 @@ mod tests {
             remember_me: false,
             token_hash: vec![0u8; 32],
             user_agent: None,
+            session_type: SessionType::Web,
+            client_id: None,
             compromise_reason: None,
         }
     }
