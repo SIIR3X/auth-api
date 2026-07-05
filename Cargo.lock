@@ -175,7 +175,7 @@ dependencies = [
  "deadpool-redis",
  "dotenvy",
  "email_address",
- "ipnetwork 0.20.0",
+ "ipnetwork 0.21.1",
  "jsonwebtoken",
  "lettre",
  "maxminddb",

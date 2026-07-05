@@ -16,7 +16,7 @@ base64 = "0.22.1"
 deadpool-redis = { version = "0.23.0", features = ["rt_tokio_1", "script"] }
 dotenvy = "0.15.7"
 p256 = { version = "0.13", features = ["ecdsa", "pem", "jwk"] }
-ipnetwork = "0.20"
+ipnetwork = "0.21"
 # aws_lc_rs backend (already in the tree via rustls): the rust_crypto backend
 # pulls in the `rsa` crate, which carries the unfixed RUSTSEC-2023-0071
 # (Marvin) advisory - RSA is never used here, we only sign/verify ES256.
