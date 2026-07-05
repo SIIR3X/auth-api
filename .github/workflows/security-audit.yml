@@ -2,11 +2,15 @@ name: Security Audit
 
 # The PR-gated `deny` job in code-quality.yml only runs when code changes.
 # New RUSTSEC advisories are published against dependencies we already ship,
-# so also check on a schedule to catch them between PRs.
+# so also check on a schedule to catch them between PRs. Secret scanning runs
+# on PRs too: leaked credentials must be caught before they merge.
 on:
   schedule:
     # Every Monday at 06:00 UTC
     - cron: "0 6 * * 1"
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 env:
@@ -15,6 +19,9 @@ env:
 jobs:
   advisories:
     name: Dependency Advisories
+    # Scheduled/manual only: the PR path already runs `cargo deny check` in
+    # code-quality.yml.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -29,3 +36,21 @@ jobs:
 
       - name: Check advisories
         run: cargo deny check advisories
+
+  secrets:
+    name: Secret Scan (repository)
+    # Complements the Trivy secret scan in docker-checks.yml, which only sees
+    # the built image: this scans the working tree and, on PRs, the new commits.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (full history for commit scanning)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

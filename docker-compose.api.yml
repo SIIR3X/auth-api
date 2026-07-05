@@ -14,8 +14,8 @@ services:
       - SMTP_USERNAME
       - SMTP_PASSWORD
       - CAPTCHA_SECRET
-      # Optional override; defaults to nats://nats:4222, which resolves to the
-      # nats service below on the compose network.
+      # NATS URL embedding the auth token (nats://<token>@nats:4222); the
+      # broker below requires the same token.
       - NATS_URL
     ports:
       # Bind to loopback only: the API must be reached through the reverse
@@ -35,6 +35,14 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # Resource ceilings so a leak or a flood cannot take the whole VPS down
+    # with it. Memory is sized for Argon2's worst case: ARGON2_MAX_CONCURRENCY
+    # x ARGON2_MEMORY_KIB (4 x 64 MiB = 256 MiB) plus the app's baseline.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 768M
     healthcheck:
       # Use the binary's built-in --healthcheck flag (added to avoid bundling
       # curl/wget in the slim runtime image). It hits 127.0.0.1:$SERVER_PORT/health
@@ -50,16 +58,26 @@ services:
 
   # Domain-event broker. The API connects to it at startup (fail-fast), so it
   # ships in the same compose file. No host ports: only the api container
-  # needs to reach it, over the internal compose network.
+  # needs to reach it, over the internal compose network. Token auth is
+  # defence in depth on top of the network isolation; the API embeds the same
+  # token in NATS_URL.
   nats:
     image: nats:2-alpine
     restart: unless-stopped
+    # Overriding the command bypasses the image's config file, so monitoring
+    # (which the healthcheck probes) must be re-enabled explicitly.
+    command: ["--http_port", "8222", "--auth", "${NATS_AUTH_TOKEN:?set from pass}"]
     tmpfs:
       - /data
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
       interval: 5s

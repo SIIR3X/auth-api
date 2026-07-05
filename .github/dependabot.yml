@@ -1,0 +1,28 @@
+# Automated dependency updates. This is what makes tag-pinned base images and
+# version-pinned actions sustainable: bumps arrive as PRs and go through the
+# full CI gauntlet (tests, Trivy, hadolint) like any other change.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    # Security updates always open a PR; routine bumps are grouped to keep
+    # the noise down.
+    groups:
+      cargo-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+
+  - package-ecosystem: docker
+    directories:
+      - "/"
+    schedule:
+      interval: weekly
+      day: monday

@@ -103,7 +103,9 @@ jobs:
           cache-from: type=gha
 
       - name: Scan (system + application CVEs)
-        uses: aquasecurity/trivy-action@master
+        # Pinned: every other action here is version-pinned, and a scanner is
+        # exactly the kind of action a supply-chain attack would target.
+        uses: aquasecurity/trivy-action@0.29.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}
           format: sarif
@@ -115,7 +117,7 @@ jobs:
 
       - name: Scan (secrets)
         if: always()
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.29.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}
           format: table
