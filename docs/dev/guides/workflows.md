@@ -1,12 +1,12 @@
 # GitHub Actions Workflows
 
 All workflows are located in `.github/workflows/`. They run automatically on
-pull requests targeting `main` and on pushes to `staging`, except the publish
-workflow (git tags) and the scheduled jobs.
+pull requests targeting `main`, except the publish workflow (git tags) and
+the scheduled jobs.
 
 ## code-quality.yml - Code Quality
 
-**Trigger:** pull request -> `main`, push -> `staging`
+**Trigger:** pull request -> `main`
 
 Three jobs running in parallel:
 
@@ -22,7 +22,7 @@ Fails the PR if any job does not pass.
 
 ## tests.yml - Tests & Coverage
 
-**Trigger:** pull request -> `main`, push -> `staging`
+**Trigger:** pull request -> `main`
 
 A single job with PostgreSQL 17, Redis 7, NATS and Mailpit as services.
 

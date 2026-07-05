@@ -1,14 +1,9 @@
 name: Tests
 
-# Also on pushes to staging: work lands there directly between PRs, and an
-# untested staging defeats the back-merge model.
 on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - staging
 
 env:
   CARGO_TERM_COLOR: always

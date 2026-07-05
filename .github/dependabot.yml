@@ -3,8 +3,13 @@
 # full CI gauntlet (tests, Trivy, hadolint) like any other change.
 version: 2
 updates:
+  # Version updates target staging so they follow the normal staging -> main
+  # release flow. Caveat: Dependabot *security* updates ignore target-branch
+  # and still open their PRs against the default branch (main) - deliberate,
+  # a CVE fix should not wait for a release cycle.
   - package-ecosystem: cargo
     directory: "/"
+    target-branch: staging
     schedule:
       interval: weekly
       day: monday
@@ -16,6 +21,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: "/"
+    target-branch: staging
     schedule:
       interval: weekly
       day: monday
@@ -23,6 +29,7 @@ updates:
   - package-ecosystem: docker
     directories:
       - "/"
+    target-branch: staging
     schedule:
       interval: weekly
       day: monday
