@@ -1,35 +1,64 @@
-# Automated dependency updates. This is what makes tag-pinned base images and
-# version-pinned actions sustainable: bumps arrive as PRs and go through the
-# full CI gauntlet (tests, Trivy, hadolint) like any other change.
+# Automated dependency updates, tuned for low noise with no blind spots:
+# - one grouped PR per ecosystem per run for minor/patch bumps
+#   (semver-compatible by contract; Dependabot honours the Rust convention
+#   where 0.x -> 0.(x+1) counts as major);
+# - one separate grouped PR for semver-major bumps: majors break APIs by
+#   definition and deserve a deliberate migration, but keeping them as a
+#   visible PR (close it, it comes back when content changes) beats an
+#   `ignore` rule that silently accumulates debt.
+# PRs target staging so bumps follow the normal staging -> main release flow
+# (security updates ignore target-branch and go to main by GitHub design)
+# and run the tests/code-quality workflows via their pull_request triggers.
 version: 2
 updates:
-  # Version updates target staging so they follow the normal staging -> main
-  # release flow. Caveat: Dependabot *security* updates ignore target-branch
-  # and still open their PRs against the default branch (main) - deliberate,
-  # a CVE fix should not wait for a release cycle.
   - package-ecosystem: cargo
     directory: "/"
     target-branch: staging
+    open-pull-requests-limit: 2
     schedule:
       interval: weekly
       day: monday
-    # Security updates always open a PR; routine bumps are grouped to keep
-    # the noise down.
+      time: "06:00"
+      timezone: Europe/Paris
     groups:
-      cargo-minor-and-patch:
+      cargo-safe:
+        patterns: ["*"]
         update-types: ["minor", "patch"]
+      cargo-majors:
+        patterns: ["*"]
+        update-types: ["major"]
 
   - package-ecosystem: github-actions
     directory: "/"
     target-branch: staging
+    open-pull-requests-limit: 2
     schedule:
       interval: weekly
       day: monday
+      time: "06:00"
+      timezone: Europe/Paris
+    groups:
+      actions-safe:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      actions-majors:
+        patterns: ["*"]
+        update-types: ["major"]
 
   - package-ecosystem: docker
     directories:
       - "/"
     target-branch: staging
+    open-pull-requests-limit: 2
     schedule:
       interval: weekly
       day: monday
+      time: "06:00"
+      timezone: Europe/Paris
+    groups:
+      docker-safe:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      docker-majors:
+        patterns: ["*"]
+        update-types: ["major"]

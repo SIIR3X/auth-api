@@ -1,12 +1,12 @@
 # GitHub Actions Workflows
 
 All workflows are located in `.github/workflows/`. They run automatically on
-pull requests targeting `main`, except the publish workflow (git tags) and
+pull requests targeting `main` or `staging` (Dependabot's grouped bumps), except the publish workflow (git tags) and
 the scheduled jobs.
 
 ## code-quality.yml - Code Quality
 
-**Trigger:** pull request -> `main`
+**Trigger:** pull request -> `main` or `staging`
 
 Three jobs running in parallel:
 
@@ -22,7 +22,7 @@ Fails the PR if any job does not pass.
 
 ## tests.yml - Tests & Coverage
 
-**Trigger:** pull request -> `main`
+**Trigger:** pull request -> `main` or `staging`
 
 A single job with PostgreSQL 17, Redis 7, NATS and Mailpit as services.
 
@@ -50,7 +50,7 @@ lint -> build -> scan
 
 ## security-audit.yml - Security Audit
 
-**Trigger:** weekly schedule, pull request -> `main`, manual
+**Trigger:** weekly schedule, pull request -> `main` or `staging`, manual
 
 - **advisories** (scheduled only): `cargo deny check advisories` catches new
   RUSTSEC advisories between PRs.

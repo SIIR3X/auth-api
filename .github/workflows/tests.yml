@@ -1,9 +1,12 @@
 name: Tests
 
 on:
+  # pull_request (not push): PRs targeting staging - Dependabot's grouped
+  # bumps land there - get the same checks as PRs to main.
   pull_request:
     branches:
       - main
+      - staging
 
 env:
   CARGO_TERM_COLOR: always
@@ -59,7 +62,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
