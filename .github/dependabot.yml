@@ -1,0 +1,64 @@
+# Automated dependency updates, tuned for low noise with no blind spots:
+# - one grouped PR per ecosystem per run for minor/patch bumps
+#   (semver-compatible by contract; Dependabot honours the Rust convention
+#   where 0.x -> 0.(x+1) counts as major);
+# - one separate grouped PR for semver-major bumps: majors break APIs by
+#   definition and deserve a deliberate migration, but keeping them as a
+#   visible PR (close it, it comes back when content changes) beats an
+#   `ignore` rule that silently accumulates debt.
+# PRs target staging so bumps follow the normal staging -> main release flow
+# (security updates ignore target-branch and go to main by GitHub design)
+# and run the tests/code-quality workflows via their pull_request triggers.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    target-branch: staging
+    open-pull-requests-limit: 2
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Paris
+    groups:
+      cargo-safe:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      cargo-majors:
+        patterns: ["*"]
+        update-types: ["major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    target-branch: staging
+    open-pull-requests-limit: 2
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Paris
+    groups:
+      actions-safe:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      actions-majors:
+        patterns: ["*"]
+        update-types: ["major"]
+
+  - package-ecosystem: docker
+    directories:
+      - "/"
+    target-branch: staging
+    open-pull-requests-limit: 2
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Paris
+    groups:
+      docker-safe:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      docker-majors:
+        patterns: ["*"]
+        update-types: ["major"]

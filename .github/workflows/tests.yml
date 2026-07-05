@@ -1,9 +1,12 @@
 name: Tests
 
 on:
+  # pull_request (not push): PRs targeting staging - Dependabot's grouped
+  # bumps land there - get the same checks as PRs to main.
   pull_request:
     branches:
       - main
+      - staging
 
 env:
   CARGO_TERM_COLOR: always
@@ -59,10 +62,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
@@ -81,10 +86,22 @@ jobs:
           mailpit --smtp 127.0.0.1:1026 --listen 127.0.0.1:8026 &
           sleep 1
 
-      - name: Install cargo-nextest
+      - name: Install cargo-nextest and cargo-llvm-cov
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest,cargo-llvm-cov
 
-      - name: Run tests
-        run: cargo nextest run
+      # Line coverage sits ~87% (excluding the binary entrypoints and the
+      # bench harness, which only run by hand); the 80% gate catches erosion.
+      - name: Run tests with coverage
+        run: >-
+          cargo llvm-cov nextest
+          --ignore-filename-regex 'src/(bin/|main\.rs)'
+          --lcov --output-path lcov.info
+          --fail-under-lines 80
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info

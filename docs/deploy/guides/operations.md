@@ -87,6 +87,11 @@ Nightly encrypted backups run on the DB VPS via cron
 `/var/backups/auth-api/`, 7-day retention. The age **private** key lives
 offline, never on the VPS.
 
+**Offsite copy:** set `OFFSITE_REMOTE` (an rclone remote, e.g.
+`b2:auth-backups`) in the cron entry and install rclone; each backup is then
+uploaded after being written (30-day remote retention). Backups that only live
+on the DB VPS die with it - configure this for production.
+
 **Restore** (DB VPS, or any machine with `psql` access):
 
 ```bash
@@ -169,6 +174,11 @@ nginx). Key series:
 - `axum_http_requests_duration_seconds` - per-route latency histograms
 
 Scrape config (host Prometheus): `static_configs: [{targets: ['127.0.0.1:9464']}]`.
+
+**Alert rules:** [`prometheus-alerts.yml`](prometheus-alerts.yml) ships ready
+to install (API down, 5xx ratio, Argon2 saturation, p95 latency, missing
+backups). Copy it into `/etc/prometheus/rules/` on the API VPS - installation
+notes are in the file header.
 
 ## 7. Release Verification (cosign)
 
