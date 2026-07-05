@@ -16,10 +16,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Hadolint
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: Dockerfile
 
@@ -48,10 +48,10 @@ jobs:
       image-size: ${{ steps.size.outputs.size }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build
         uses: docker/build-push-action@v6
@@ -88,10 +88,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Rebuild for scan
         uses: docker/build-push-action@v6
@@ -103,7 +103,9 @@ jobs:
           cache-from: type=gha
 
       - name: Scan (system + application CVEs)
-        uses: aquasecurity/trivy-action@master
+        # Pinned: every other action here is version-pinned, and a scanner is
+        # exactly the kind of action a supply-chain attack would target.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}
           format: sarif
@@ -115,7 +117,7 @@ jobs:
 
       - name: Scan (secrets)
         if: always()
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}
           format: table

@@ -285,7 +285,9 @@ fn build_templates(cfg: &MailConfig) -> Result<Tera, tera::Error> {
     // Pattern must start from templates_dir so Tera names templates relative to it.
     // e.g. with templates_dir="templates": "templates/**/*" -> "emails/en/verification.html"
     let pattern = format!("{}/**/*", cfg.templates_dir);
-    Tera::new(&pattern)
+    let mut tera = Tera::new();
+    tera.load_from_glob(&pattern)?;
+    Ok(tera)
 }
 
 #[cfg(test)]

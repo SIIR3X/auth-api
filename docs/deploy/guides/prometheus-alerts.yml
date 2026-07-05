@@ -1,0 +1,82 @@
+# Prometheus alerting rules for the auth API.
+#
+# Install on the API VPS host Prometheus:
+#   sudo cp prometheus-alerts.yml /etc/prometheus/rules/auth-api.yml
+#   # then in prometheus.yml:  rule_files: ["/etc/prometheus/rules/*.yml"]
+#   sudo systemctl reload prometheus
+#
+# Thresholds are starting points for a single-instance deployment; tune them
+# against real traffic.
+
+groups:
+  - name: auth-api
+    rules:
+      - alert: AuthApiDown
+        expr: up{job="auth-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "auth-api metrics endpoint is unreachable"
+          description: >-
+            Prometheus cannot scrape 127.0.0.1:9464 for 2 minutes. Check
+            `docker compose -f docker-compose.api.yml ps` and container logs.
+            Every downstream service depends on this API for JWT verification.
+
+      - alert: AuthApiHigh5xxRate
+        expr: >-
+          sum(rate(axum_http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(axum_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "auth-api 5xx ratio above 5%"
+          description: >-
+            More than 5% of requests failed server-side over 5 minutes. Redis
+            outage (rate limiter fails closed) and DB connectivity are the
+            usual suspects - see the operations runbook.
+
+      - alert: AuthApiArgon2Saturated
+        # Sustained zero available permits means logins/registrations are
+        # queueing behind the Argon2 concurrency bound (see "Measured
+        # Capacity" in the runbook): scale cores or raise the bound.
+        expr: argon2_queue_available_permits == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Argon2 concurrency bound saturated for 5 minutes"
+          description: >-
+            Credential operations are queueing. Sustained saturation degrades
+            login latency far beyond the deliberate Argon2 cost.
+
+      - alert: AuthApiSlowTokenPaths
+        # Non-credential paths (refresh, profile) are single-digit ms; a slow
+        # p95 across the board means something other than Argon2 is wrong.
+        expr: >-
+          histogram_quantile(0.95,
+            sum(rate(axum_http_requests_duration_seconds_bucket[5m])) by (le)) > 3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "auth-api p95 latency above 3s"
+          description: >-
+            Sustained slow responses; check DB pool saturation, Redis and the
+            WireGuard link to the DB VPS.
+
+      - alert: AuthBackupMissing
+        # Requires node_exporter with the textfile collector on the DB VPS;
+        # backup-db.sh's cron wrapper should write the completion timestamp:
+        #   echo "auth_backup_last_success_timestamp $(date +%s)" \
+        #     > /var/lib/node_exporter/textfile/auth_backup.prom
+        expr: time() - auth_backup_last_success_timestamp > 86400 * 2
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "no successful auth DB backup for 48h"
+          description: >-
+            The nightly encrypted backup has not completed for two days.
+            Check cron and /var/log/auth-api-backup.log on the DB VPS.

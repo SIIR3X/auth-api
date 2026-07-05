@@ -109,6 +109,22 @@ pass insert prod/auth-api/captcha-secret
 
 ---
 
+### NATS Auth Token
+
+Authenticates the API to the NATS broker shipped in `docker-compose.api.yml`
+(defence in depth on top of the compose-network isolation). Store both the
+token and the full URL embedding it:
+
+```bash
+pass insert prod/auth-api/nats-auth-token
+# Generate with: openssl rand -hex 32
+
+pass insert prod/auth-api/nats-url
+# nats://<token>@nats:4222
+```
+
+---
+
 ### GitHub Token
 
 Personal Access Token with `read:packages` scope. Used to authenticate against GHCR to pull the Docker image.
