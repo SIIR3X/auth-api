@@ -8,10 +8,10 @@ use std::fmt::Write;
 
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
-    aead::{Aead, AeadCore, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
 };
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
-use rand_core::RngCore;
+use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, thiserror::Error)]
@@ -79,8 +79,12 @@ pub fn decode_encryption_key(b64: &str) -> Result<[u8; 32], CryptoError> {
 
 /// Encrypts plaintext using AES-256-GCM. Returns base64(nonce || ciphertext).
 pub fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<String, CryptoError> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
+    // aead 0.6 dropped `AeadCore::generate_nonce`; fill the 96-bit nonce
+    // directly from the OS CSPRNG instead.
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
 
     let ciphertext = cipher
         .encrypt(&nonce, plaintext.as_bytes())
@@ -115,11 +119,11 @@ pub fn decrypt(encoded: &str, key: &[u8; 32]) -> Result<String, CryptoError> {
     }
 
     let (nonce_bytes, ciphertext) = combined.split_at(12);
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
+    let nonce = Nonce::try_from(nonce_bytes).map_err(|_| CryptoError::InvalidInput)?;
 
     let plaintext = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|_| CryptoError::Decryption)?;
 
     String::from_utf8(plaintext).map_err(|_| CryptoError::InvalidInput)
