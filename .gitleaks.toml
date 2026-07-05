@@ -6,12 +6,16 @@ useDefault = true
 [allowlist]
 description = "Known non-secrets committed on purpose"
 paths = [
-  # Test-only ES256 key pairs used by the unit/integration harnesses and the
-  # bench binaries. Never used outside tests; production keys come from pass.
+  # Test-only keys and fixture secrets used by the unit/integration harnesses
+  # and the bench binaries. Never used outside tests; production keys come
+  # from pass. The `src/bin/.*` pattern also covers the file's historical
+  # location (gitleaks scans every commit, so moved files need both paths).
   '''src/config\.rs''',
-  '''src/bin/bench_support\.rs''',
+  '''src/bin/.*bench_support\.rs''',
   '''tests/http/common/app\.rs''',
   '''tests/http/crypto/key_rotation\.rs''',
+  '''tests/http/user/email\.rs''',
+  '''benches/core_benches\.rs''',
   # Dev-stack credentials (postgres/redis on localhost) and a dev-only JWT
   # key pair; accepted as non-secret for local development.
   '''\.env\.dev''',

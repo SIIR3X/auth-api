@@ -23,9 +23,9 @@ rand = "0.10.0"
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "derive", "json", "ipnetwork", "migrate"] }
-tera = "1.20.1"
+tera = { version = "2.0", features = ["glob_fs"] }
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["serde"] }
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
@@ -34,13 +34,13 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 async-trait = "0.1.89"
-tower-http = { version = "0.6.8", features = ["cors", "timeout"] }
+tower-http = { version = "0.7.0", features = ["cors", "timeout"] }
 email_address = "0.2.9"
 maxminddb = "0.27.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "form"] }
 
 [dev-dependencies]
-criterion = { version = "0.7.0", features = ["html_reports"] }
+criterion = { version = "0.8.2", features = ["html_reports"] }
 p256 = { version = "0.13", features = ["ecdsa"] }
 postgres = { version = "0.19.12", features = ["with-uuid-1", "with-time-0_3"] }
 proptest = "1.9.0"
