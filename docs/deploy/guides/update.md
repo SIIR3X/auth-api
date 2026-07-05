@@ -43,6 +43,8 @@ export ENCRYPTION_KEY=$(pass prod/auth-api/encryption-key)
 export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
 export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
 export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
+export NATS_URL=$(pass prod/auth-api/nats-url)
+export NATS_AUTH_TOKEN=$(pass prod/auth-api/nats-auth-token)
 
 docker compose -f docker-compose.api.yml pull
 docker compose -f docker-compose.api.yml up -d

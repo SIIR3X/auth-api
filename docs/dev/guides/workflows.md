@@ -1,12 +1,14 @@
 # GitHub Actions Workflows
 
-All workflows are located in `.github/workflows/`. They run automatically on pull requests targeting `main`, except the publish workflow which runs on git tags.
+All workflows are located in `.github/workflows/`. They run automatically on
+pull requests targeting `main` and on pushes to `staging`, except the publish
+workflow (git tags) and the scheduled jobs.
 
 ## code-quality.yml - Code Quality
 
-**Trigger:** pull request -> `main`
+**Trigger:** pull request -> `main`, push -> `staging`
 
-Three jobs running in parallel, followed by a report:
+Three jobs running in parallel:
 
 | Job | Tool | What it checks |
 |-----|------|----------------|
@@ -18,37 +20,42 @@ Three jobs running in parallel, followed by a report:
 
 Fails the PR if any job does not pass.
 
-## tests.yml - Tests
+## tests.yml - Tests & Coverage
 
-**Trigger:** pull request -> `main`
+**Trigger:** pull request -> `main`, push -> `staging`
 
-A single job with PostgreSQL 17, Redis 7 and Mailpit as services.
+A single job with PostgreSQL 17, Redis 7, NATS and Mailpit as services.
 
-- **cargo-nextest** runs the full test suite - faster than `cargo test`, better output
-
-Installed via `taiki-e/install-action` (pre-compiled binary, ~2s).
+The suite runs under `cargo llvm-cov nextest` with an **80% line-coverage
+gate** (binary entrypoints and the bench harness are excluded); the lcov
+report is uploaded as an artifact.
 
 Each test gets an isolated PostgreSQL database cloned from a shared template - created once, dropped after the test. No test state leaks between runs.
 
-Fails the PR if tests fail.
+Fails the PR if tests fail or coverage drops below the gate.
 
 ## docker-checks.yml - Docker Checks
 
 **Trigger:** pull request -> `main`
 
-Four jobs running in order:
-
 ```
-lint -> build -> scan -> report
+lint -> build -> scan
 ```
 
 | Job | Tool | What it checks |
 |-----|------|----------------|
-| lint | Hadolint | Dockerfile best practices |
-| build | Docker Buildx | Image builds successfully, reports image size |
-| scan | Trivy | CVEs in OS packages and Cargo dependencies (CRITICAL/HIGH, fixed only), leaked secrets |
-| report | GitHub Script | Posts a summary comment on the PR |
+| lint | Hadolint + port guard | Dockerfile best practices; compose ports stay loopback-only |
+| build | Docker Buildx | Image builds; **fails above the 200 MB size threshold** |
+| scan | Trivy (pinned) | CVEs in OS packages and Cargo dependencies (CRITICAL/HIGH, fixed only), leaked secrets |
 
+## security-audit.yml - Security Audit
+
+**Trigger:** weekly schedule, pull request -> `main`, manual
+
+- **advisories** (scheduled only): `cargo deny check advisories` catches new
+  RUSTSEC advisories between PRs.
+- **secrets**: Gitleaks scans the repository history (allowlist in
+  `.gitleaks.toml` for the committed test keys and `.env.dev`).
 
 ## docker-publish.yml - Publish Docker Image
 
@@ -64,6 +71,18 @@ Tags applied to the image:
 | semver full | `1.2.3` | When tag is `v1.2.3` |
 | semver minor | `1.2` | When tag is `v1.2.3` |
 
-Builds for `linux/amd64`. Uses GitHub Actions cache to avoid recompiling unchanged dependencies.
+Builds for `linux/amd64`. Uses GitHub Actions cache to avoid recompiling
+unchanged dependencies. The image is cosign-signed (keyless) with SBOM +
+provenance attestations.
 
 See [Creating a Release](release.md) for the full release process.
+
+## Scheduled maintenance
+
+- **backup-drill.yml** (monthly): seeds a database, backs it up through the
+  real `pg_dump | gzip | age` pipeline, restores it with `restore-db.sh` and
+  verifies witness rows.
+- **backmerge.yml**: after a PR merges into `main`, fast-forwards `staging`
+  back onto `main` so the branches never drift.
+- **Dependabot** (weekly): grouped cargo updates, GitHub Actions and Docker
+  base-image bumps, each going through the full PR gauntlet.

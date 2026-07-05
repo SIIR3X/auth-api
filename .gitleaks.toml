@@ -1,0 +1,18 @@
+# Gitleaks configuration: default rules plus a narrow allowlist.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known non-secrets committed on purpose"
+paths = [
+  # Test-only ES256 key pairs used by the unit/integration harnesses and the
+  # bench binaries. Never used outside tests; production keys come from pass.
+  '''src/config\.rs''',
+  '''src/bin/bench_support\.rs''',
+  '''tests/http/common/app\.rs''',
+  '''tests/http/crypto/key_rotation\.rs''',
+  # Dev-stack credentials (postgres/redis on localhost) and a dev-only JWT
+  # key pair; accepted as non-secret for local development.
+  '''\.env\.dev''',
+]
