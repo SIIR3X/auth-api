@@ -27,6 +27,15 @@ updates:
       cargo-majors:
         patterns: ["*"]
         update-types: ["major"]
+    ignore:
+      # sqlx 0.8's `ipnetwork` feature is pinned to the 0.20 line: bumping the
+      # direct dependency puts two crate versions in the tree and breaks every
+      # sqlx::Type/Encode/Decode bound on our IpNetwork columns. Nothing to fix
+      # on our side - drop this once sqlx supports ipnetwork 0.21+.
+      - dependency-name: "ipnetwork"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   - package-ecosystem: github-actions
     directory: "/"
