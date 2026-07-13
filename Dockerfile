@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Chef - install cargo-chef
 # =============================================================================
-FROM rust:1.96-slim-bookworm AS chef
+FROM rust:1.97-slim-bookworm AS chef
 
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
