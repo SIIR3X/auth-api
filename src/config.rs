@@ -334,7 +334,10 @@ impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
 
-        let env = env_parse("APP_ENV").unwrap_or(Environment::Development);
+        // Required: a typo such as `APP_ENV=prd` must not silently start a
+        // deployment with every development relaxation enabled.
+        let env: Environment =
+            env_parse("APP_ENV")?.ok_or_else(|| ConfigError::Missing("APP_ENV".into()))?;
 
         let is_production = matches!(env, Environment::Production);
 
@@ -342,21 +345,21 @@ impl Config {
             env: env.clone(),
             server: ServerConfig {
                 host: env_string("SERVER_HOST").unwrap_or_else(|| "0.0.0.0".into()),
-                port: env_parse("SERVER_PORT").unwrap_or(3000u16),
+                port: env_parse("SERVER_PORT")?.unwrap_or(3000u16),
                 public_url: env_string("APP_PUBLIC_URL")
                     .unwrap_or_else(|| "http://localhost:3000".into()),
                 trusted_proxy_cidrs: env_ip_network_list("TRUSTED_PROXY_CIDRS")?,
             },
             database: DatabaseConfig {
                 url: env_require("DATABASE_URL")?,
-                max_connections: env_parse("DB_MAX_CONNECTIONS").unwrap_or(20),
-                min_connections: env_parse("DB_MIN_CONNECTIONS").unwrap_or(2),
-                acquire_timeout_secs: env_parse("DB_ACQUIRE_TIMEOUT_SECS").unwrap_or(30),
+                max_connections: env_parse("DB_MAX_CONNECTIONS")?.unwrap_or(20),
+                min_connections: env_parse("DB_MIN_CONNECTIONS")?.unwrap_or(2),
+                acquire_timeout_secs: env_parse("DB_ACQUIRE_TIMEOUT_SECS")?.unwrap_or(30),
             },
             redis: RedisConfig {
                 url: env_require("REDIS_URL")?,
-                pool_size: env_parse("REDIS_POOL_SIZE").unwrap_or(10),
-                wait_timeout_ms: env_parse("REDIS_WAIT_TIMEOUT_MS").unwrap_or(2000),
+                pool_size: env_parse("REDIS_POOL_SIZE")?.unwrap_or(10),
+                wait_timeout_ms: env_parse("REDIS_WAIT_TIMEOUT_MS")?.unwrap_or(2000),
             },
             nats: NatsConfig {
                 url: env_string("NATS_URL").unwrap_or_else(|| "nats://nats:4222".into()),
@@ -366,46 +369,46 @@ impl Config {
                 public_key: env_require("JWT_PUBLIC_KEY")?.replace("\\n", "\n"),
                 previous_public_key: env_string("JWT_PREVIOUS_PUBLIC_KEY")
                     .map(|s| s.replace("\\n", "\n")),
-                access_expiry_secs: env_parse("JWT_ACCESS_EXPIRY_SECS").unwrap_or(900),
-                refresh_expiry_secs: env_parse("JWT_REFRESH_EXPIRY_SECS")
+                access_expiry_secs: env_parse("JWT_ACCESS_EXPIRY_SECS")?.unwrap_or(900),
+                refresh_expiry_secs: env_parse("JWT_REFRESH_EXPIRY_SECS")?
                     .unwrap_or(60 * 60 * 24 * 30),
-                short_session_expiry_secs: env_parse("JWT_SHORT_SESSION_EXPIRY_SECS")
+                short_session_expiry_secs: env_parse("JWT_SHORT_SESSION_EXPIRY_SECS")?
                     .unwrap_or(60 * 60 * 24),
-                strict_session_binding: env_parse("JWT_STRICT_SESSION_BINDING").unwrap_or(false),
-                max_session_lifetime_secs: env_parse("JWT_MAX_SESSION_LIFETIME_SECS")
+                strict_session_binding: env_parse("JWT_STRICT_SESSION_BINDING")?.unwrap_or(false),
+                max_session_lifetime_secs: env_parse("JWT_MAX_SESSION_LIFETIME_SECS")?
                     .unwrap_or(60 * 60 * 24 * 90),
                 audience: env_csv("JWT_AUDIENCE").unwrap_or_default(),
             },
             crypto: CryptoConfig {
-                argon2_memory_kib: env_parse("ARGON2_MEMORY_KIB").unwrap_or(65_536), // 64 MB
-                argon2_iterations: env_parse("ARGON2_ITERATIONS").unwrap_or(3),
-                argon2_parallelism: env_parse("ARGON2_PARALLELISM").unwrap_or(4),
-                argon2_max_concurrency: env_parse("ARGON2_MAX_CONCURRENCY")
+                argon2_memory_kib: env_parse("ARGON2_MEMORY_KIB")?.unwrap_or(65_536), // 64 MB
+                argon2_iterations: env_parse("ARGON2_ITERATIONS")?.unwrap_or(3),
+                argon2_parallelism: env_parse("ARGON2_PARALLELISM")?.unwrap_or(4),
+                argon2_max_concurrency: env_parse("ARGON2_MAX_CONCURRENCY")?
                     .unwrap_or_else(default_argon2_max_concurrency),
                 totp_issuer: env_string("TOTP_ISSUER").unwrap_or_else(|| "auth-api".into()),
                 encryption_key: env_require("ENCRYPTION_KEY")?,
                 previous_encryption_key: env_string("PREVIOUS_ENCRYPTION_KEY"),
-                totp_skew: env_parse("TOTP_SKEW").unwrap_or(1),
-                recovery_code_expiry_days: env_parse("RECOVERY_CODE_EXPIRY_DAYS").unwrap_or(365), // 0 = never
+                totp_skew: env_parse("TOTP_SKEW")?.unwrap_or(1),
+                recovery_code_expiry_days: env_parse("RECOVERY_CODE_EXPIRY_DAYS")?.unwrap_or(365), // 0 = never
             },
             rate_limit: RateLimitConfig {
-                requests_per_minute: env_parse("RATE_LIMIT_RPM").unwrap_or(300),
-                auth_requests_per_minute: env_parse("RATE_LIMIT_AUTH_RPM").unwrap_or(20),
-                fail_open_on_redis_error: env_parse("RATE_LIMIT_FAIL_OPEN")
+                requests_per_minute: env_parse("RATE_LIMIT_RPM")?.unwrap_or(300),
+                auth_requests_per_minute: env_parse("RATE_LIMIT_AUTH_RPM")?.unwrap_or(20),
+                fail_open_on_redis_error: env_parse("RATE_LIMIT_FAIL_OPEN")?
                     .unwrap_or(!is_production),
-                allow_requests_without_ip: env_parse("RATE_LIMIT_ALLOW_MISSING_IP")
+                allow_requests_without_ip: env_parse("RATE_LIMIT_ALLOW_MISSING_IP")?
                     .unwrap_or(!is_production),
             },
             security: SecurityConfig {
-                lockout_threshold: env_parse("LOCKOUT_THRESHOLD").unwrap_or(10),
-                lockout_duration_secs: env_parse("LOCKOUT_DURATION_SECS").unwrap_or(1800),
-                sensitive_action_reauth_secs: env_parse("SENSITIVE_ACTION_REAUTH_SECS")
+                lockout_threshold: env_parse("LOCKOUT_THRESHOLD")?.unwrap_or(10),
+                lockout_duration_secs: env_parse("LOCKOUT_DURATION_SECS")?.unwrap_or(1800),
+                sensitive_action_reauth_secs: env_parse("SENSITIVE_ACTION_REAUTH_SECS")?
                     .unwrap_or(600),
             },
             mail: MailConfig {
                 smtp: SmtpConfig {
                     host: env_require("SMTP_HOST")?,
-                    port: env_parse("SMTP_PORT").unwrap_or(587),
+                    port: env_parse("SMTP_PORT")?.unwrap_or(587),
                     username: env_require("SMTP_USERNAME")?,
                     password: env_require("SMTP_PASSWORD")?,
                     from_name: env_string("SMTP_FROM_NAME").unwrap_or_else(|| "auth-api".into()),
@@ -419,8 +422,8 @@ impl Config {
                 secret: env_string("CAPTCHA_SECRET"),
                 verify_url: env_string("CAPTCHA_VERIFY_URL")
                     .unwrap_or_else(|| "https://hcaptcha.com/siteverify".into()),
-                request_timeout_secs: env_parse("CAPTCHA_TIMEOUT_SECS").unwrap_or(5),
-                fail_open_on_error: env_parse("CAPTCHA_FAIL_OPEN").unwrap_or(!is_production),
+                request_timeout_secs: env_parse("CAPTCHA_TIMEOUT_SECS")?.unwrap_or(5),
+                fail_open_on_error: env_parse("CAPTCHA_FAIL_OPEN")?.unwrap_or(!is_production),
             },
             cors: CorsConfig {
                 allowed_origins: env_string("CORS_ALLOWED_ORIGINS")
@@ -428,45 +431,45 @@ impl Config {
                     .split(',')
                     .map(|s| s.trim().to_owned())
                     .collect(),
-                allow_credentials: env_parse("CORS_ALLOW_CREDENTIALS").unwrap_or(true),
+                allow_credentials: env_parse("CORS_ALLOW_CREDENTIALS")?.unwrap_or(true),
             },
             cleanup: CleanupConfig {
-                interval_secs: env_parse("CLEANUP_INTERVAL_SECS").unwrap_or(3600),
-                sessions_grace_days: env_parse("CLEANUP_SESSIONS_GRACE_DAYS").unwrap_or(7),
-                tokens_grace_days: env_parse("CLEANUP_TOKENS_GRACE_DAYS").unwrap_or(1),
-                login_attempts_retention_days: env_parse("CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS")
+                interval_secs: env_parse("CLEANUP_INTERVAL_SECS")?.unwrap_or(3600),
+                sessions_grace_days: env_parse("CLEANUP_SESSIONS_GRACE_DAYS")?.unwrap_or(7),
+                tokens_grace_days: env_parse("CLEANUP_TOKENS_GRACE_DAYS")?.unwrap_or(1),
+                login_attempts_retention_days: env_parse("CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS")?
                     .unwrap_or(90),
-                recovery_codes_grace_days: env_parse("CLEANUP_RECOVERY_CODES_GRACE_DAYS")
+                recovery_codes_grace_days: env_parse("CLEANUP_RECOVERY_CODES_GRACE_DAYS")?
                     .unwrap_or(7),
             },
             audit: AuditConfig {
-                retention_months: env_parse("AUDIT_LOG_RETENTION_MONTHS").unwrap_or(12),
+                retention_months: env_parse("AUDIT_LOG_RETENTION_MONTHS")?.unwrap_or(12),
             },
             risk: RiskConfig {
                 geoip_db_path: env_string("GEOIP_DB_PATH").unwrap_or_default(),
-                geoip_required: env_parse("GEOIP_REQUIRED").unwrap_or(false),
-                alert_threshold: env_parse("RISK_ALERT_THRESHOLD").unwrap_or(30),
-                challenge_threshold: env_parse("RISK_CHALLENGE_THRESHOLD").unwrap_or(60),
-                block_threshold: env_parse("RISK_BLOCK_THRESHOLD").unwrap_or(80),
-                history_days: env_parse("RISK_HISTORY_DAYS").unwrap_or(90),
+                geoip_required: env_parse("GEOIP_REQUIRED")?.unwrap_or(false),
+                alert_threshold: env_parse("RISK_ALERT_THRESHOLD")?.unwrap_or(30),
+                challenge_threshold: env_parse("RISK_CHALLENGE_THRESHOLD")?.unwrap_or(60),
+                block_threshold: env_parse("RISK_BLOCK_THRESHOLD")?.unwrap_or(80),
+                history_days: env_parse("RISK_HISTORY_DAYS")?.unwrap_or(90),
             },
             log: LogConfig {
                 level: env_string("LOG_LEVEL").unwrap_or_else(|| "info".into()),
-                format: env_parse("LOG_FORMAT").unwrap_or(LogFormat::Pretty),
+                format: env_parse("LOG_FORMAT")?.unwrap_or(LogFormat::Pretty),
             },
             device_auth: DeviceAuthConfig {
-                ttl_secs: env_parse("DEVICE_AUTH_TTL_SECS").unwrap_or(300),
-                poll_interval_secs: env_parse("DEVICE_AUTH_POLL_INTERVAL_SECS").unwrap_or(5),
+                ttl_secs: env_parse("DEVICE_AUTH_TTL_SECS")?.unwrap_or(300),
+                poll_interval_secs: env_parse("DEVICE_AUTH_POLL_INTERVAL_SECS")?.unwrap_or(5),
                 verification_uri: env_require("DEVICE_AUTH_VERIFICATION_URI")?,
             },
             metrics: MetricsConfig {
-                enabled: env_parse("METRICS_ENABLED").unwrap_or(true),
-                port: env_parse("METRICS_PORT").unwrap_or(9464),
+                enabled: env_parse("METRICS_ENABLED")?.unwrap_or(true),
+                port: env_parse("METRICS_PORT")?.unwrap_or(9464),
             },
         };
 
-        config.validate()?;
-
+        // Validation runs once, in `AppState::from_config`, after derived values
+        // such as the self audience are in place.
         Ok(config)
     }
 
@@ -476,6 +479,19 @@ impl Config {
 
     pub fn is_test(&self) -> bool {
         self.env == Environment::Test
+    }
+
+    /// Make sure auth-api's own `public_url` is part of the JWT audience list.
+    ///
+    /// Tokens are addressed to downstream resource servers, but auth-api also
+    /// consumes its own tokens for `/users/me/*` and pins `aud == public_url`
+    /// in the `AuthUser` extractor. Idempotent.
+    pub fn ensure_self_in_audience(&mut self) {
+        let self_url = self.server.public_url.clone();
+        if self_url.is_empty() || self.jwt.audience.iter().any(|a| a == &self_url) {
+            return;
+        }
+        self.jwt.audience.push(self_url);
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -509,6 +525,21 @@ impl Config {
             }
 
             validate_https_url("APP_PUBLIC_URL", &self.server.public_url)?;
+
+            // TLS terminates at a reverse proxy in production. With no trusted
+            // CIDR every request resolves to the proxy's address: one rate-limit
+            // bucket for the whole internet and one IP in every audit row.
+            if self.server.trusted_proxy_cidrs.is_empty() {
+                return Err(ConfigError::Invalid {
+                    key: "TRUSTED_PROXY_CIDRS".into(),
+                    reason: "must not be empty in production -- without it every client is rate-limited and audited as the reverse proxy".into(),
+                });
+            }
+
+            validate_production_encryption_key("ENCRYPTION_KEY", &self.crypto.encryption_key)?;
+            if let Some(previous) = self.crypto.previous_encryption_key.as_deref() {
+                validate_production_encryption_key("PREVIOUS_ENCRYPTION_KEY", previous)?;
+            }
 
             if self.captcha.secret.is_some() {
                 validate_https_url("CAPTCHA_VERIFY_URL", &self.captcha.verify_url)?;
@@ -566,14 +597,24 @@ impl Config {
 /// Used to refuse that key in production (the pair is public by definition).
 const DEV_JWT_PUBLIC_KEY_MARKER: &str = "MEjIGO1563lSVOpDzgW6Y9aI20lH";
 
+/// Symmetric keys committed in `.env.dev` or used as examples: public by
+/// definition, refused in production.
+const DEV_ENCRYPTION_KEYS: [&str; 2] = [
+    "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+];
+
 // Helpers
 
 fn env_require(key: &str) -> Result<String, ConfigError> {
     env::var(key).map_err(|_| ConfigError::Missing(key.into()))
 }
 
+/// Optional string variable. A blank value counts as unset: a secret that
+/// survives as `Some("")` satisfies every "must be set" check while the code
+/// using it treats blank as "not configured" and skips the protection.
 fn env_string(key: &str) -> Option<String> {
-    env::var(key).ok()
+    env::var(key).ok().filter(|value| !value.trim().is_empty())
 }
 
 fn env_csv(key: &str) -> Option<Vec<String>> {
@@ -601,9 +642,22 @@ fn env_ip_network_list(key: &str) -> Result<Vec<IpNetwork>, ConfigError> {
         .collect()
 }
 
-// Parse an env var into any type that implements FromStr; returns None on missing or parse failure.
-fn env_parse<T: FromStr>(key: &str) -> Option<T> {
-    env::var(key).ok()?.parse().ok()
+/// Parse an optional variable. Absent or blank yields `None`; a value that is
+/// present but does not parse is an error, never a silent fallback to the
+/// default (`LOCKOUT_THRESHOLD=1O` must not quietly become 10).
+fn env_parse<T>(key: &str) -> Result<Option<T>, ConfigError>
+where
+    T: FromStr,
+    T::Err: std::fmt::Display,
+{
+    env_string(key)
+        .map(|raw| {
+            raw.trim().parse::<T>().map_err(|e| ConfigError::Invalid {
+                key: key.into(),
+                reason: format!("cannot parse '{raw}': {e}"),
+            })
+        })
+        .transpose()
 }
 
 fn validate_jwt_keys(jwt: &JwtConfig) -> Result<(), ConfigError> {
@@ -675,6 +729,42 @@ fn validate_encryption_key(key_name: &str, value: &str) -> Result<(), ConfigErro
                 "key has insufficient entropy ({shannon:.2} bits/byte, minimum 3.0): \
                  use a cryptographically random key (e.g. openssl rand -base64 32)"
             ),
+        });
+    }
+
+    Ok(())
+}
+
+/// Production-only checks on a symmetric key, on top of the entropy floor.
+///
+/// Shannon entropy counts byte frequencies, so any 32 distinct bytes score a
+/// perfect 5 bits/byte -- including the counted sequence `00 01 .. 1f` from
+/// `.env.dev`. A constant stride between bytes gives such keys away.
+fn validate_production_encryption_key(key_name: &str, value: &str) -> Result<(), ConfigError> {
+    if DEV_ENCRYPTION_KEYS.contains(&value) {
+        return Err(ConfigError::Invalid {
+            key: key_name.into(),
+            reason: "this is a committed development key -- it is public and must never be used in production".into(),
+        });
+    }
+
+    let decoded = STANDARD.decode(value).map_err(|e| ConfigError::Invalid {
+        key: key_name.into(),
+        reason: format!("must be valid base64: {e}"),
+    })?;
+
+    let stride = decoded
+        .windows(2)
+        .next()
+        .map(|w| w[1].wrapping_sub(w[0]))
+        .unwrap_or_default();
+    if decoded
+        .windows(2)
+        .all(|w| w[1].wrapping_sub(w[0]) == stride)
+    {
+        return Err(ConfigError::Invalid {
+            key: key_name.into(),
+            reason: "key bytes form an arithmetic sequence: use a cryptographically random key (e.g. openssl rand -base64 32)".into(),
         });
     }
 
@@ -850,7 +940,7 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 3000,
                 public_url: "https://api.example.com".into(),
-                trusted_proxy_cidrs: vec![],
+                trusted_proxy_cidrs: vec!["10.0.0.0/8".parse().unwrap()],
             },
             database: DatabaseConfig {
                 url: "postgres://user:pass@localhost/db".into(),
@@ -883,7 +973,7 @@ mod tests {
                 argon2_parallelism: 1,
                 argon2_max_concurrency: 4,
                 totp_issuer: "test".into(),
-                encryption_key: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".into(),
+                encryption_key: "VVKGNsojoT/vVMlGypXnqcCcJIbrPKbn/8DGfEs496k=".into(),
                 previous_encryption_key: None,
                 totp_skew: 1,
                 recovery_code_expiry_days: 365,
@@ -1227,7 +1317,7 @@ mod tests {
     fn validate_accepts_valid_previous_encryption_key() {
         let mut config = valid_config();
         config.crypto.previous_encryption_key =
-            Some("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=".into());
+            Some("6QoHPPjm9EnjsuRmj7OXQrYh98XIvrWYbI5KQyglMNc=".into());
 
         assert!(
             config.validate().is_ok(),
@@ -1449,5 +1539,85 @@ mod tests {
             config.validate().is_ok(),
             "development config with permissive switches must be accepted"
         );
+    }
+
+    // Production hardening added with strict configuration loading.
+
+    #[test]
+    fn validate_rejects_empty_trusted_proxies_in_production() {
+        let mut config = valid_config();
+        config.server.trusted_proxy_cidrs = vec![];
+
+        let err = config.validate().expect_err("empty proxies must fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "TRUSTED_PROXY_CIDRS"));
+    }
+
+    #[test]
+    fn validate_rejects_committed_dev_encryption_key_in_production() {
+        let mut config = valid_config();
+        config.crypto.encryption_key = DEV_ENCRYPTION_KEYS[0].into();
+
+        let err = config.validate().expect_err("dev AES key must fail");
+        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "ENCRYPTION_KEY"));
+    }
+
+    #[test]
+    fn validate_rejects_arithmetic_encryption_key_in_production() {
+        let mut config = valid_config();
+        let counted: Vec<u8> = (0u8..32).map(|i| i.wrapping_mul(3)).collect();
+        config.crypto.previous_encryption_key = Some(STANDARD.encode(counted));
+
+        let err = config.validate().expect_err("counted key must fail");
+        assert!(
+            matches!(err, ConfigError::Invalid { key, .. } if key == "PREVIOUS_ENCRYPTION_KEY")
+        );
+    }
+
+    #[test]
+    fn validate_accepts_dev_encryption_key_outside_production() {
+        let mut config = valid_config();
+        config.env = Environment::Development;
+        config.crypto.encryption_key = DEV_ENCRYPTION_KEYS[0].into();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn env_string_treats_blank_as_unset() {
+        // SAFETY: key names are unique to this test; no other thread reads them.
+        unsafe { std::env::set_var("AUTH_API_TEST_BLANK_STRING", "   ") };
+        assert_eq!(env_string("AUTH_API_TEST_BLANK_STRING"), None);
+    }
+
+    #[test]
+    fn env_parse_rejects_unparsable_values() {
+        // SAFETY: key names are unique to this test; no other thread reads them.
+        unsafe { std::env::set_var("AUTH_API_TEST_BAD_NUMBER", "1O") };
+        let parsed: Result<Option<u32>, _> = env_parse("AUTH_API_TEST_BAD_NUMBER");
+
+        assert!(
+            matches!(parsed, Err(ConfigError::Invalid { key, .. }) if key == "AUTH_API_TEST_BAD_NUMBER")
+        );
+    }
+
+    #[test]
+    fn env_parse_accepts_absent_and_valid_values() {
+        // SAFETY: key names are unique to this test; no other thread reads them.
+        unsafe { std::env::set_var("AUTH_API_TEST_GOOD_NUMBER", " 42 ") };
+        let absent: Option<u32> = env_parse("AUTH_API_TEST_ABSENT_NUMBER").unwrap();
+        let present: Option<u32> = env_parse("AUTH_API_TEST_GOOD_NUMBER").unwrap();
+
+        assert_eq!(absent, None);
+        assert_eq!(present, Some(42));
+    }
+
+    #[test]
+    fn ensure_self_in_audience_is_idempotent() {
+        let mut config = valid_config();
+        config.ensure_self_in_audience();
+        config.ensure_self_in_audience();
+
+        let own = config.server.public_url.clone();
+        assert_eq!(config.jwt.audience.iter().filter(|a| **a == own).count(), 1);
     }
 }

@@ -55,6 +55,8 @@ async fn security_headers_enable_hsts_for_https_production() {
         config.rate_limit.allow_requests_without_ip = false;
         config.captcha.fail_open_on_error = false;
         config.jwt.strict_session_binding = true;
+        // The committed development AES key is refused in production.
+        config.crypto.encryption_key = "6M+xtK7VzYMoz/3mc3vJf2e6h9b9yLyx3Eabo/236YE=".into();
     })
     .await;
 
@@ -79,8 +81,8 @@ async fn security_headers_enable_hsts_for_https_production() {
 #[tokio::test]
 async fn auth_rate_limit_blocks_requests_exceeding_limit() {
     // Spawn an app with a very tight auth rate limit (3 req/min).
-    // Uses an isolated Redis DB (4) to avoid interference from parallel tests
-    // that all share the same 127.0.0.1 rate-limit key on DB 1.
+    // Each TestApp has its own client IP, so the counter is isolated from
+    // parallel tests.
     let app = TestApp::spawn_with_config(|config| {
         config.rate_limit.auth_requests_per_minute = 3;
         config.rate_limit.fail_open_on_redis_error = false;
@@ -90,7 +92,7 @@ async fn auth_rate_limit_blocks_requests_exceeding_limit() {
     .await;
 
     // Clear any residual entries from prior runs of this test.
-    app.clear_auth_rate_limit_key("127.0.0.1").await;
+    app.clear_auth_rate_limit_key(&app.client_ip).await;
 
     let payload = serde_json::json!({
         "identifier": "rate-limit-test@example.com",
@@ -123,7 +125,7 @@ async fn auth_rate_limit_response_includes_retry_after_header() {
     })
     .await;
 
-    app.clear_auth_rate_limit_key("127.0.0.1").await;
+    app.clear_auth_rate_limit_key(&app.client_ip).await;
 
     let payload = serde_json::json!({
         "identifier": "retry-after-test@example.com",
@@ -155,7 +157,7 @@ async fn general_rate_limit_blocks_non_auth_routes() {
     })
     .await;
 
-    app.clear_rate_limit_key("127.0.0.1").await;
+    app.clear_rate_limit_key(&app.client_ip).await;
 
     // First 2 unauthenticated requests: within the limit (returns 401, not 429).
     for _ in 0..2 {

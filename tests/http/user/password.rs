@@ -130,9 +130,10 @@ async fn concurrent_password_reset_token_use_only_succeeds_once() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 5).await;
     fixtures::activate_user(&app.db, user.id).await;
-    app.clear_reset_password_rate_limit("127.0.0.1").await;
+    app.clear_reset_password_rate_limit(&app.client_ip).await;
 
-    let raw_token = "reset-race-token";
+    let raw_token = format!("reset-race-{}", uuid::Uuid::new_v4());
+    let raw_token = raw_token.as_str();
     let token_hash = auth_api::utils::crypto::sha256(raw_token.as_bytes());
 
     sqlx::query(

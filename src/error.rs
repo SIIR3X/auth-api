@@ -10,6 +10,8 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use std::borrow::Cow;
+
 use serde::Serialize;
 use tracing::error;
 
@@ -18,66 +20,96 @@ use tracing::error;
 #[derive(Serialize)]
 struct ErrorBody {
     code: &'static str,
-    message: &'static str,
+    message: Cow<'static, str>,
 }
 
 impl ErrorBody {
-    fn new(code: &'static str, message: &'static str) -> Self {
-        Self { code, message }
+    fn new(code: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 }
 
 // AppError
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AppError {
     // 401
+    #[error("authentication required")]
     Unauthorized,
+    #[error("invalid credentials")]
     InvalidCredentials,
+    #[error("invalid two-factor code")]
     TwoFactorFailed,
+    #[error("token expired")]
     TokenExpired,
+    #[error("token invalid")]
     TokenInvalid,
 
     // 403
+    #[error("forbidden")]
     Forbidden,
+    #[error("email not verified")]
     EmailNotVerified,
+    #[error("account suspended")]
     AccountSuspended,
+    #[error("account inactive")]
     AccountInactive,
+    #[error("account locked")]
     AccountLocked,
+    #[error("two-factor authentication required")]
     TwoFactorRequired,
+    #[error("login blocked")]
     LoginBlocked,
+    #[error("recent re-authentication required")]
     ReauthenticationRequired,
 
     // 404
+    #[error("resource not found")]
     NotFound,
 
     // 409
+    #[error("conflict: {0}")]
     Conflict(&'static str),
 
     // 422
+    #[error("validation failed: {0}")]
     Validation(String),
 
     // 422 - CAPTCHA
+    #[error("captcha verification failed")]
     CaptchaFailed,
 
     // 400 - Device authorization flow (RFC 8628)
+    #[error("device authorization pending")]
     DeviceAuthPending,
+    #[error("device code expired")]
     DeviceCodeExpired,
+    #[error("device access denied")]
     DeviceAccessDenied,
+    #[error("device polling too fast")]
     DeviceSlowDown,
 
     // 403 - Device session/client restrictions
+    #[error("device session limit reached")]
     DeviceSessionLimitReached,
+    #[error("device client not allowed")]
     DeviceClientNotAllowed,
+    #[error("device client unknown")]
     DeviceClientUnknown,
 
     // 429
+    #[error("rate limit exceeded")]
     RateLimitExceeded,
 
     // 503
+    #[error("dependency unavailable: {0}")]
     ServiceUnavailable(&'static str),
 
     // 500 - message is logged, never sent to the caller
+    #[error("internal error: {0}")]
     Internal(anyhow::Error),
 }
 
@@ -187,20 +219,23 @@ impl IntoResponse for AppError {
             ),
 
             // 409
-            Self::Conflict(field) => {
-                // field is a static str like "email" or "username", safe to log
-                let body = ErrorBody::new("conflict", "A resource with this value already exists.");
-                tracing::warn!(field, "conflict on unique field");
-                (StatusCode::CONFLICT, body)
+            Self::Conflict(code) => {
+                // `code` is a static, stable identifier such as "email_taken":
+                // clients branch on it, and it is safe to log.
+                tracing::warn!(code, "conflict on unique field");
+                (
+                    StatusCode::CONFLICT,
+                    ErrorBody::new(code, "A resource with this value already exists."),
+                )
             }
 
             // 422
-            Self::Validation(_) => (
+            // Validation messages are written by the handlers for the caller
+            // ("password must be at least 10 characters") and never carry
+            // internal state, so they are returned as-is.
+            Self::Validation(message) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
-                ErrorBody::new(
-                    "validation_error",
-                    "The request body contains invalid data.",
-                ),
+                ErrorBody::new("validation_error", message),
             ),
             Self::CaptchaFailed => (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -411,9 +446,28 @@ mod tests {
     // 409
 
     #[tokio::test]
-    async fn conflict_is_409_with_correct_code() {
-        assert_eq!(status(AppError::Conflict("email")), 409);
-        assert_eq!(body_code(AppError::Conflict("username")).await, "conflict");
+    async fn conflict_is_409_with_its_specific_code() {
+        assert_eq!(status(AppError::Conflict("email_taken")), 409);
+        assert_eq!(
+            body_code(AppError::Conflict("username_taken")).await,
+            "username_taken"
+        );
+    }
+
+    #[tokio::test]
+    async fn validation_message_is_returned_to_the_caller() {
+        let resp = AppError::Validation("password too short".into()).into_response();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["message"], "password too short");
+    }
+
+    #[test]
+    fn app_error_implements_display() {
+        assert_eq!(
+            AppError::ServiceUnavailable("redis").to_string(),
+            "dependency unavailable: redis"
+        );
     }
 
     // 422

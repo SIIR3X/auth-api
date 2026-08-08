@@ -24,9 +24,7 @@ async fn main() -> anyhow::Result<()> {
     // Set PREVIOUS_ENCRYPTION_KEY=<old> ENCRYPTION_KEY=<new>, run, then remove PREVIOUS_ENCRYPTION_KEY.
     if std::env::args().any(|a| a == "--rotate-totp-keys") {
         let state = AppState::from_config(config).await?;
-        let result = key_rotation::rotate_totp_encryption_key(&state)
-            .await
-            .map_err(|e| anyhow::anyhow!("{:?}", e))?;
+        let result = key_rotation::rotate_totp_encryption_key(&state).await?;
         tracing::info!(
             rotated = result.rotated,
             failed = result.failed,

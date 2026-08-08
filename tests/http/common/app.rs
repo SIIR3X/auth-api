@@ -22,6 +22,10 @@ static TEMPLATE_DB: OnceCell<String> = OnceCell::const_new();
 
 pub struct TestApp {
     pub base_url: String,
+    /// Client address this app's requests are attributed to (forwarded through
+    /// the loopback proxy). Unique per app so per-IP counters never leak
+    /// between tests running in parallel or between runs sharing one Redis.
+    pub client_ip: String,
     pub db: PgPool,
     pub db_url: String,
     pub redis: RedisPool,
@@ -109,13 +113,24 @@ impl TestApp {
             .unwrap();
         });
 
+        let id = uuid::Uuid::new_v4();
+        let b = id.as_bytes();
+        let client_ip = format!("10.{}.{}.{}", 100 + b[0] % 100, b[1], 1 + b[2] % 254);
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        default_headers.insert(
+            "x-forwarded-for",
+            client_ip.parse().expect("valid client ip header"),
+        );
+
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
+            .default_headers(default_headers)
             .build()
             .unwrap();
 
         Self {
             base_url: format!("http://127.0.0.1:{port}"),
+            client_ip,
             db,
             db_url,
             redis,
@@ -383,7 +398,9 @@ fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             host: "127.0.0.1".into(),
             port: 0,
             public_url: "http://localhost".into(),
-            trusted_proxy_cidrs: Vec::new(),
+            // The test client talks to the server over loopback and forwards a
+            // per-app address in X-Forwarded-For (see `TestApp::client_ip`).
+            trusted_proxy_cidrs: vec!["127.0.0.1/32".parse().unwrap()],
         },
         database: DatabaseConfig {
             url: db_url.into(),

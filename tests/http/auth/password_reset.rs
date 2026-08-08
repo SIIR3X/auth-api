@@ -7,7 +7,7 @@ async fn forgot_password_returns_200_for_known_email() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 1).await;
     fixtures::activate_user(&app.db, user.id).await;
-    app.clear_forgot_password_rate_limit("127.0.0.1").await;
+    app.clear_forgot_password_rate_limit(&app.client_ip).await;
 
     let res = app
         .post(
@@ -23,7 +23,7 @@ async fn forgot_password_returns_200_for_known_email() {
 async fn forgot_password_returns_200_for_unknown_email() {
     // Anti-enumeration: the endpoint must not reveal whether the email exists.
     let app = TestApp::spawn().await;
-    app.clear_forgot_password_rate_limit("127.0.0.1").await;
+    app.clear_forgot_password_rate_limit(&app.client_ip).await;
 
     let res = app
         .post(
@@ -42,7 +42,7 @@ async fn reset_password_success_allows_login_with_new_password() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 2).await;
     fixtures::activate_user(&app.db, user.id).await;
-    app.clear_reset_password_rate_limit("127.0.0.1").await;
+    app.clear_reset_password_rate_limit(&app.client_ip).await;
 
     let token = fixtures::create_password_reset_token(&app.db, user.id).await;
     let new_password = "NewPassword1!ok";
@@ -86,13 +86,13 @@ async fn reset_password_success_allows_login_with_new_password() {
 #[tokio::test]
 async fn reset_password_with_invalid_token_rejected() {
     let app = TestApp::spawn().await;
-    app.clear_reset_password_rate_limit("127.0.0.1").await;
+    app.clear_reset_password_rate_limit(&app.client_ip).await;
 
     let res = app
         .post(
             "/auth/reset-password",
             &serde_json::json!({
-                "token": "this-token-does-not-exist",
+                "token": uuid::Uuid::new_v4().to_string(),
                 "new_password": "NewPassword1!ok",
             }),
         )
@@ -106,7 +106,7 @@ async fn reset_password_with_expired_token_rejected() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 3).await;
     fixtures::activate_user(&app.db, user.id).await;
-    app.clear_reset_password_rate_limit("127.0.0.1").await;
+    app.clear_reset_password_rate_limit(&app.client_ip).await;
 
     let token = fixtures::create_expired_password_reset_token(&app.db, user.id).await;
 
@@ -128,7 +128,7 @@ async fn reset_password_with_already_used_token_rejected() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 4).await;
     fixtures::activate_user(&app.db, user.id).await;
-    app.clear_reset_password_rate_limit("127.0.0.1").await;
+    app.clear_reset_password_rate_limit(&app.client_ip).await;
 
     let token = fixtures::create_used_password_reset_token(&app.db, user.id).await;
 
@@ -171,7 +171,7 @@ async fn reset_password_with_weak_password_rejected() {
 async fn reset_password_revokes_all_active_sessions() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 6).await;
-    app.clear_reset_password_rate_limit("127.0.0.1").await;
+    app.clear_reset_password_rate_limit(&app.client_ip).await;
 
     // Sanity: the token works before reset.
     let before = app.get_auth("/users/me", &user.access_token).await;
@@ -254,7 +254,7 @@ async fn forgot_password_rate_limited_after_5_requests() {
 async fn verify_email_activates_unverified_account() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 7).await;
-    app.clear_verify_email_rate_limit("127.0.0.1").await;
+    app.clear_verify_email_rate_limit(&app.client_ip).await;
 
     // Account must be unverified initially (cannot login).
     let before = app
@@ -294,12 +294,12 @@ async fn verify_email_activates_unverified_account() {
 #[tokio::test]
 async fn verify_email_with_invalid_token_rejected() {
     let app = TestApp::spawn().await;
-    app.clear_verify_email_rate_limit("127.0.0.1").await;
+    app.clear_verify_email_rate_limit(&app.client_ip).await;
 
     let res = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": "not-a-valid-token" }),
+            &serde_json::json!({ "token": uuid::Uuid::new_v4().to_string() }),
         )
         .await;
 
@@ -310,7 +310,7 @@ async fn verify_email_with_invalid_token_rejected() {
 async fn verify_email_with_already_used_token_rejected() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 8).await;
-    app.clear_verify_email_rate_limit("127.0.0.1").await;
+    app.clear_verify_email_rate_limit(&app.client_ip).await;
 
     let token = fixtures::create_email_verification_token(&app.db, user.id, &user.email).await;
 
@@ -327,8 +327,8 @@ async fn verify_email_with_already_used_token_rejected() {
     // check instead of being blocked by rate limiting.
     app.clear_verify_email_token_hash_rate_limit(&token.raw)
         .await;
-    app.clear_verify_email_rate_limit("127.0.0.1").await;
-    app.clear_auth_rate_limit_key("127.0.0.1").await;
+    app.clear_verify_email_rate_limit(&app.client_ip).await;
+    app.clear_auth_rate_limit_key(&app.client_ip).await;
 
     // Use it again - must fail because it was already consumed.
     let second = app

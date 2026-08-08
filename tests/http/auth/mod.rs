@@ -4,6 +4,7 @@ mod jwt;
 mod lockout;
 mod login;
 mod password_reset;
+mod redis_counter;
 mod redis_resilience;
 mod refresh;
 mod register;

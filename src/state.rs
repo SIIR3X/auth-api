@@ -80,45 +80,9 @@ impl AppState {
     /// Build the application state by initializing all connection pools and services.
     /// Fails fast if any dependency is unreachable or misconfigured.
     pub async fn from_config(mut config: Config) -> Result<Self, AppStateError> {
-        // Auto-include auth-api's own public URL in the audience list so the
-        // tokens it mints carry it. The `AuthenticatedUser` extractor then
-        // pins `aud == public_url` defense-in-depth, rejecting tokens that
-        // were addressed only to downstream resource servers.
-        ensure_self_in_audience(&mut config);
-        config.validate()?;
-
+        prepare_config(&mut config)?;
         let db = build_pg_pool(&config.database).await?;
-        let redis = build_redis_pool(&config.redis)?;
-        let nats = async_nats::connect(&config.nats.url).await?;
-        let mailer = build_mailer(&config.mail.smtp)?;
-        let http_client = build_http_client(&config.captcha)?;
-        let templates = Arc::new(build_templates(&config.mail)?);
-        let geoip = GeoIp::open(&config.risk.geoip_db_path);
-
-        if config.risk.geoip_required && !geoip.is_available() {
-            return Err(AppStateError::Config(ConfigError::Invalid {
-                key: "GEOIP_DB_PATH".into(),
-                reason: "GeoIP database is required but could not be loaded".into(),
-            }));
-        }
-
-        let jwt_keys = parse_jwt_keys(&config)?;
-
-        Ok(Self {
-            db,
-            redis,
-            nats,
-            mailer,
-            http_client,
-            templates,
-            geoip,
-            jwt_signing_key: jwt_keys.signing_key,
-            jwt_verifying_key: jwt_keys.verifying_key,
-            jwt_previous_verifying_key: jwt_keys.previous_verifying_key,
-            jwt_kid: jwt_keys.kid,
-            jwt_jwks: jwt_keys.jwks,
-            config: Arc::new(config),
-        })
+        Self::assemble(config, db).await
     }
 
     /// Build the application state with an existing database pool.
@@ -127,9 +91,12 @@ impl AppState {
         mut config: Config,
         db: PgPool,
     ) -> Result<Self, AppStateError> {
-        ensure_self_in_audience(&mut config);
-        config.validate()?;
+        prepare_config(&mut config)?;
+        Self::assemble(config, db).await
+    }
 
+    /// Connect every remaining dependency around a prepared, validated config.
+    async fn assemble(config: Config, db: PgPool) -> Result<Self, AppStateError> {
         let redis = build_redis_pool(&config.redis)?;
         let nats = async_nats::connect(&config.nats.url).await?;
         let mailer = build_mailer(&config.mail.smtp)?;
@@ -164,24 +131,13 @@ impl AppState {
     }
 }
 
-/// Make sure auth-api's own `public_url` is part of the JWT audience list.
+/// Derive computed values, then validate the configuration exactly once.
 ///
-/// auth-api emits `aud=[downstream_url, ...]` so tokens can be accepted by
-/// downstream resource servers (core-api, billing-api, ...). But auth-api
-/// also consumes its own tokens for `/users/me/*` routes, and we now pin
-/// `aud == public_url` defense-in-depth in the `AuthenticatedUser` extractor.
-/// Without this auto-injection the token wouldn't satisfy that check.
-///
-/// Idempotent: if `public_url` is already configured in `JWT_AUDIENCE`,
-/// nothing changes.
-fn ensure_self_in_audience(config: &mut Config) {
-    let self_url = config.server.public_url.clone();
-    if self_url.is_empty() {
-        return;
-    }
-    if !config.jwt.audience.iter().any(|a| a == &self_url) {
-        config.jwt.audience.push(self_url);
-    }
+/// auth-api's own public URL is added to the JWT audience before validation so
+/// a production deployment without downstream audiences still boots.
+fn prepare_config(config: &mut Config) -> Result<(), ConfigError> {
+    config.ensure_self_in_audience();
+    config.validate()
 }
 
 // JWT key parsing
