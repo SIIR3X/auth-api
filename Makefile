@@ -67,8 +67,8 @@ fmt-check: ## Check formatting without modifying files
 	cargo fmt --check
 
 .PHONY: clippy
-clippy: ## Run Clippy linter
-	cargo clippy -- -D warnings
+clippy: ## Run Clippy linter on every target (lib, bins, tests, benches)
+	cargo clippy --all-targets -- -D warnings
 
 .PHONY: deny
 deny: ## Enforce dependency policy and security audit (cargo-deny)
@@ -93,6 +93,13 @@ test-infra-down: ## Stop test infrastructure
 test: test-infra-up ## Run all tests (starts/stops infrastructure automatically)
 	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) cargo nextest run; \
 	EXIT=$$?; $(MAKE) test-infra-down; exit $$EXIT
+
+.PHONY: test-local
+test-local: ## Run all tests against already-running infrastructure (no Docker)
+	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) cargo nextest run
+
+.PHONY: ci
+ci: quality test-local ## Full local CI gate: formatting, lints, dependency policy, all tests
 
 .PHONY: test-verbose
 test-verbose: test-infra-up ## Run all tests with detailed output

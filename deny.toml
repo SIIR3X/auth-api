@@ -1,5 +1,8 @@
 [graph]
-all-features = true
+# Only the features actually built: `all-features` would pull sqlx-mysql and
+# its `rsa` dependency (RUSTSEC-2023-0071) into the graph, although neither is
+# ever compiled for this service.
+all-features = false
 
 [advisories]
 version = 2
@@ -10,9 +13,9 @@ ignore = []
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
-# Reviewed, accepted duplicate versions. Most stem from the `postgres`
-# dev-dependency (older rand/getrandom ecosystem) and the Windows platform stub
-# crates (build-time only, never used on the Linux runtime target). Listed by
+# Reviewed, accepted duplicate versions. They stem from sqlx, proptest and
+# p256 pinning older rand/getrandom generations, and from the Windows platform
+# stub crates (build-time only, never used on the Linux runtime target). Listed by
 # name so that any *new*, unexpected duplicate still surfaces as a warning.
 skip = [
   { crate = "cpufeatures" },

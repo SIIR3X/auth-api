@@ -111,8 +111,17 @@ pub fn migration_sql(file_name: &str) -> String {
         .unwrap_or_else(|err| panic!("failed to read migration `{}`: {err}", path.display()))
 }
 
+/// Database URL for the DB test suites.
+///
+/// A missing `TEST_DATABASE_URL` is a failure, not a silent pass: otherwise
+/// every database test returns early and the suite reports green without
+/// having checked anything. Set `SKIP_DB_TESTS=1` to skip them on purpose.
 pub fn test_database_url() -> Option<String> {
-    std::env::var("TEST_DATABASE_URL").ok()
+    match std::env::var("TEST_DATABASE_URL") {
+        Ok(url) => Some(url),
+        Err(_) if std::env::var("SKIP_DB_TESTS").as_deref() == Ok("1") => None,
+        Err(_) => panic!("TEST_DATABASE_URL must be set (or SKIP_DB_TESTS=1 to skip DB tests)"),
+    }
 }
 
 pub fn assert_constraint(err: &Error, expected: &str) {

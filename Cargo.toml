@@ -2,6 +2,7 @@
 name = "auth-api"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 publish = false
 
 [dependencies]
@@ -36,7 +37,6 @@ totp-rs = { version = "5.7.1", features = ["gen_secret"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
-async-trait = "0.1.89"
 tower-http = { version = "0.7.0", features = ["cors", "timeout"] }
 email_address = "0.2.9"
 maxminddb = "0.29.0"
@@ -44,15 +44,14 @@ reqwest = { version = "0.13.2", default-features = false, features = ["json", "r
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
-p256 = { version = "0.13", features = ["ecdsa"] }
 postgres = { version = "0.19.12", features = ["with-uuid-1", "with-time-0_3"] }
 proptest = "1.9.0"
-rand_core = { version = "0.6", features = ["getrandom"] }
-serde_json = "1.0"
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "derive", "json", "ipnetwork", "migrate"] }
 tokio = { version = "1.50.0", features = ["full"] }
-uuid = { version = "1.22.0", features = ["v4"] }
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
 
 [[test]]
 name = "migrations"

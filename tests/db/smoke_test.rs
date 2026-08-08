@@ -1,6 +1,6 @@
 mod common;
 
-use common::db::{migration_files, migration_sql, test_database_url};
+use common::db::{migration_files, migration_sql};
 
 #[test]
 fn migrations_are_sorted_and_contiguous() {
@@ -51,9 +51,4 @@ fn critical_migrations_contain_expected_objects() {
     assert!(audit_sql.contains("idx_audit_log_request"));
     assert!(login_attempts_sql.contains("CREATE TABLE login_attempts"));
     assert!(recovery_sql.contains("CREATE TABLE recovery_codes"));
-}
-
-#[test]
-fn test_database_url_is_optional_for_now() {
-    let _ = test_database_url();
 }
