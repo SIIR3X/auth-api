@@ -388,11 +388,18 @@ async fn create_email_2fa_credentials(
     let mut users = Vec::with_capacity(count);
     for index in 0..count {
         let credential = create_active_user(state, prefix, index).await?;
-        let method_id = email_2fa::setup(state, credential.user_id)
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("failed to setup Email 2FA for benchmark user: {error:?}")
-            })?;
+        let method_id = email_2fa::setup(
+            state,
+            credential.user_id,
+            Uuid::nil(),
+            Some(&credential.password),
+            None,
+            None,
+        )
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("failed to setup Email 2FA for benchmark user: {error:?}")
+        })?;
         let known_code = format!("{:06}", 100_000 + index as u32);
         let hash = crypto::sha256(known_code.as_bytes());
 
@@ -424,9 +431,16 @@ async fn create_totp_credentials(
     let mut users = Vec::with_capacity(count);
     for index in 0..count {
         let credential = create_active_user(state, prefix, index).await?;
-        let setup = two_factor::setup_totp(state, credential.user_id)
-            .await
-            .map_err(|error| anyhow::anyhow!("failed to setup TOTP benchmark method: {error:?}"))?;
+        let setup = two_factor::setup_totp(
+            state,
+            credential.user_id,
+            Uuid::nil(),
+            Some(&credential.password),
+            None,
+            None,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to setup TOTP benchmark method: {error:?}"))?;
         let code = current_totp_code(&setup.base32_secret)?;
         let _ = two_factor::verify_setup(state, credential.user_id, setup.method_id, &code, None)
             .await

@@ -90,9 +90,13 @@ async fn revoke_session() {
         .unwrap()
         .to_owned();
 
-    // Revoke session 2 from session 1
+    // Revoke session 2 from session 1 (signing in alone does not re-authenticate)
     let del = app
-        .delete_auth(&format!("/users/me/sessions/{other_session_id}"), token1)
+        .delete_auth_json(
+            &format!("/users/me/sessions/{other_session_id}"),
+            token1,
+            &serde_json::json!({ "current_password": user.password }),
+        )
         .await;
     assert_eq!(del.status().as_u16(), 204);
 

@@ -37,7 +37,10 @@ use crate::{
 use ::time::Duration as TimeDuration;
 
 use super::{email, email_2fa, events, reauth, risk_score};
-use crate::utils::backoff;
+use crate::utils::{
+    backoff,
+    redis_counter::{self, Budget},
+};
 
 // Constants
 
@@ -76,6 +79,14 @@ const PRE_AUTH_PREFIX: &str = "pre_auth:";
 const USER_PRE_AUTH_PREFIX: &str = "user_pre_auth:";
 /// Max TOTP code failures per pre-auth token before the challenge is permanently rejected.
 const MAX_TOTP_FAILURES: i64 = 5;
+/// Max TOTP code failures per account per window, across every pre-auth token.
+/// A new token only costs the password, so the per-token budget alone does not
+/// bound a search of the code space.
+const MAX_TOTP_FAILURES_BY_USER: i64 = 20;
+/// Redis key prefix for the per-account TOTP failure budget.
+const TOTP_USER_FAIL_PREFIX: &str = "totp_user_fail:";
+/// Rolling window of the per-account second-factor budgets (1 hour).
+const SECOND_FACTOR_USER_WINDOW_SECS: u64 = 3600;
 /// Redis key prefix for consumed TOTP codes (prevents code reuse within the 30-second window).
 const TOTP_USED_PREFIX: &str = "totp_used:";
 /// Max recovery code failures per pre-auth token (same limit as TOTP).
@@ -131,6 +142,40 @@ pub struct PreAuthState {
     /// Propagated from the login request so the correct token TTL is used after 2FA completes.
     #[serde(default)]
     pub remember_me: bool,
+    /// Second factor this challenge was issued for. Each completion endpoint
+    /// accepts only its own method, so a TOTP challenge cannot be answered with
+    /// an email code. `None` only for tokens minted before the field existed,
+    /// which are refused (they expire within `PRE_AUTH_TTL_SECS` anyway).
+    #[serde(default)]
+    pub method: Option<ChallengeMethod>,
+}
+
+/// Second factor demanded by a login challenge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChallengeMethod {
+    Totp,
+    Email,
+}
+
+impl ChallengeMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Totp => "totp",
+            Self::Email => "email",
+        }
+    }
+}
+
+impl PreAuthState {
+    /// Refuse a completion endpoint that does not match the challenge.
+    pub fn expect_method(&self, expected: ChallengeMethod) -> Result<(), AppError> {
+        if self.method == Some(expected) {
+            Ok(())
+        } else {
+            Err(AppError::TokenInvalid)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -549,11 +594,10 @@ pub async fn login(
 
     if has_2fa || force_challenge {
         let method = match primary_method.as_ref().map(|m| &m.method_type) {
-            Some(crate::domain::two_factor::TwoFactorType::Email) => "email",
-            None if force_challenge => "email",
-            _ => "totp",
-        }
-        .to_string();
+            Some(crate::domain::two_factor::TwoFactorType::Email) => ChallengeMethod::Email,
+            None if force_challenge => ChallengeMethod::Email,
+            _ => ChallengeMethod::Totp,
+        };
 
         let pre_auth_token = crypto::generate_token();
         let redis_key = pre_auth_key(&pre_auth_token);
@@ -561,6 +605,7 @@ pub async fn login(
             user_id: user.id,
             risk: Some(CachedRiskEvaluation::capture(&risk_ctx, risk.as_ref().ok())),
             remember_me,
+            method: Some(method),
         };
         let serialized =
             serde_json::to_string(&pre_auth_state).map_err(|e| AppError::Internal(e.into()))?;
@@ -587,14 +632,14 @@ pub async fn login(
             .await;
 
         // For Email 2FA, dispatch the code as soon as the challenge is issued.
-        if method == "email" {
+        if method == ChallengeMethod::Email {
             email_2fa::send_code(state, user.id).await?;
         }
 
         metrics::counter!("auth_logins_total", "outcome" => "two_factor_required").increment(1);
         return Ok(LoginResult::TwoFactorRequired {
             pre_auth_token,
-            method,
+            method: method.as_str().to_string(),
         });
     }
 
@@ -683,19 +728,38 @@ pub async fn complete_two_factor_login(
         .get()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Reject if this pre-auth token already exceeded the failure limit.
-    let failures: i64 = conn.get(&fail_key).await.unwrap_or(0);
-    if failures >= MAX_TOTP_FAILURES {
-        return Err(AppError::RateLimitExceeded);
-    }
-
     let pre_auth_state = load_pre_auth_state_from_redis(&mut conn, &redis_key).await?;
+    drop(conn);
+    pre_auth_state.expect_method(ChallengeMethod::Totp)?;
 
-    // Do NOT consume yet; only consume on success so failures can be retried
-    // within the attempt budget (token stays valid until TTL or budget exhausted).
+    // Do NOT consume the token yet; only on success, so failures can be retried
+    // within the attempt budget.
     let user_id = pre_auth_state.user_id;
     let remember_me = pre_auth_state.remember_me;
+    let user_fail_key = format!("{TOTP_USER_FAIL_PREFIX}{user_id}");
+
+    // Reserve the attempt before checking the code, atomically, against both
+    // the token and the account: concurrent guesses cannot all read the same
+    // counter and slip under the limit together.
+    let attempt = redis_counter::consume(
+        &state.redis,
+        &[
+            Budget {
+                key: &fail_key,
+                limit: MAX_TOTP_FAILURES,
+                window_secs: PRE_AUTH_TTL_SECS,
+            },
+            Budget {
+                key: &user_fail_key,
+                limit: MAX_TOTP_FAILURES_BY_USER,
+                window_secs: SECOND_FACTOR_USER_WINDOW_SECS,
+            },
+        ],
+    )
+    .await?;
+    if attempt.exceeded {
+        return Err(AppError::RateLimitExceeded);
+    }
 
     let user = user_repo::find_by_id(&state.db, user_id)
         .await
@@ -705,11 +769,16 @@ pub async fn complete_two_factor_login(
     if !user.is_active() {
         return Err(AppError::AccountSuspended);
     }
+    if user.is_locked() {
+        return Err(AppError::AccountLocked);
+    }
 
+    // The primary method may have changed since the challenge was issued.
     let method = tf_repo::find_primary_by_user(&state.db, user.id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or(AppError::Unauthorized)?;
+        .filter(|m| m.method_type == crate::domain::two_factor::TwoFactorType::Totp)
+        .ok_or(AppError::TokenInvalid)?;
 
     let enc_key = crypto::decode_encryption_key(&state.config.crypto.encryption_key)
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -727,13 +796,11 @@ pub async fn complete_two_factor_login(
     )
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    // Replay guard: reject if this exact code was already consumed within its
-    // validity window. Redis is only a fast-path (skips the DB round trip on
-    // an obvious replay); the `used_totp_codes` table is the durable authority,
-    // checked via an atomic INSERT .. ON CONFLICT. A database error is
-    // propagated (fail-closed) -- a Redis outage no longer opens a replay
-    // window.
-    if valid {
+    // Replay guard: a code already consumed within its validity window is
+    // refused. Redis is only a fast path; `used_totp_codes` is the durable
+    // authority, checked with an atomic INSERT .. ON CONFLICT, and a database
+    // error is propagated (fail-closed).
+    let consumed = if valid {
         let used_key = format!("{}{}:{}", TOTP_USED_PREFIX, user_id, code);
         let cached_replay: bool = if let Ok(mut c) = state.redis.get().await {
             c.exists(&used_key).await.unwrap_or(false)
@@ -741,61 +808,27 @@ pub async fn complete_two_factor_login(
             false
         };
 
-        let consumed = if cached_replay {
-            false
-        } else {
-            tf_repo::try_consume_totp_code(&state.db, user_id, &crypto::sha256(code.as_bytes()))
+        let consumed = !cached_replay
+            && tf_repo::try_consume_totp_code(&state.db, user_id, &crypto::sha256(code.as_bytes()))
                 .await
-                .map_err(|e| AppError::Internal(e.into()))?
-        };
+                .map_err(|e| AppError::Internal(e.into()))?;
 
-        if consumed {
-            // Populate the fast-path cache so an immediate replay is rejected
-            // without a DB round trip. Best-effort: the DB row is the authority.
-            if let Ok(mut c) = state.redis.get().await {
-                let _: Result<(), _> = c.set_ex(&used_key, 1u8, 60u64).await;
-            }
-        } else {
-            let new_failures = if let Ok(mut c) = state.redis.get().await {
-                let n: i64 = c.incr(&fail_key, 1i64).await.unwrap_or(failures + 1);
-                let _: Result<(), _> = c.expire(&fail_key, PRE_AUTH_TTL_SECS as i64).await;
-                n
-            } else {
-                failures + 1
-            };
-            metrics::counter!("auth_2fa_failures_total", "method" => "totp").increment(1);
-            apply_backoff(new_failures).await;
-            return Err(AppError::TwoFactorFailed);
+        if consumed && let Ok(mut c) = state.redis.get().await {
+            let _: Result<(), _> = c.set_ex(&used_key, 1u8, 60u64).await;
         }
-    }
+        consumed
+    } else {
+        false
+    };
 
-    if !valid {
-        // Increment failure counter; lock the token out after MAX_TOTP_FAILURES attempts.
-        let new_failures = if let Ok(mut c) = state.redis.get().await {
-            let n: i64 = c.incr(&fail_key, 1i64).await.unwrap_or(failures + 1);
-            let _: Result<(), _> = c.expire(&fail_key, PRE_AUTH_TTL_SECS as i64).await;
-            n
-        } else {
-            failures + 1
-        };
-
-        audit::append(
-            &state.db,
-            &NewAuditEntry {
-                user_id: Some(user.id),
-                request_id,
-                action: AuditAction::TwoFactorFailed,
-                ip_address: ip,
-                metadata: json!({}),
-            },
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
+    if !consumed {
+        record_second_factor_failure(state, &user, ip, user_agent, request_id).await;
         metrics::counter!("auth_2fa_failures_total", "method" => "totp").increment(1);
-        apply_backoff(new_failures).await;
+        apply_backoff(attempt.counts[0]).await;
         return Err(AppError::TwoFactorFailed);
     }
+
+    redis_counter::reset(&state.redis, &[&user_fail_key]).await;
 
     // Consume the pre-auth token now that verification succeeded.
     if let Ok(mut c) = state.redis.get().await {
@@ -1474,8 +1507,10 @@ pub(crate) async fn issue_tokens(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    reauth::mark_recent_reauth(state, session.id).await;
-
+    // No re-authentication marker here: a session that was just created (by a
+    // password login, an approved device, a 2FA challenge) has not re-proven
+    // knowledge of the password for sensitive actions. Only an explicit
+    // `POST /users/me/reauth` or a `current_password` in the request does.
     let access_token = build_access_token(user_id, session.id, state).await?;
 
     Ok(AuthTokens {
@@ -1554,6 +1589,42 @@ async fn record_failure(
     .await;
 }
 
+/// Record a failed second factor: it lands in `login_attempts` next to password
+/// failures and in the audit log.
+///
+/// It deliberately does not feed the account lockout: whoever fails a second
+/// factor already holds the password, and locking would hand them a way to shut
+/// the real owner out. The per-token and per-account budgets bound the search.
+async fn record_second_factor_failure(
+    state: &AppState,
+    user: &User,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+    request_id: Option<Uuid>,
+) {
+    record_failure(
+        &state.db,
+        Some(user.id),
+        &user.email,
+        LoginFailureReason::TwoFactorFailed,
+        ip,
+        user_agent,
+    )
+    .await;
+
+    let _ = audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(user.id),
+            request_id,
+            action: AuditAction::TwoFactorFailed,
+            ip_address: ip,
+            metadata: json!({}),
+        },
+    )
+    .await;
+}
+
 // Complete 2FA login with an Email OTP code
 
 pub async fn complete_email_2fa_login(
@@ -1574,6 +1645,7 @@ pub async fn complete_email_2fa_login(
         .map_err(|e| AppError::Internal(e.into()))?;
     let pre_auth_state = load_pre_auth_state_from_redis(&mut conn, &redis_key).await?;
     drop(conn);
+    pre_auth_state.expect_method(ChallengeMethod::Email)?;
 
     let user_id = pre_auth_state.user_id;
     let remember_me = pre_auth_state.remember_me;
@@ -1586,8 +1658,16 @@ pub async fn complete_email_2fa_login(
     if !user.is_active() {
         return Err(AppError::AccountSuspended);
     }
+    if user.is_locked() {
+        return Err(AppError::AccountLocked);
+    }
 
-    email_2fa::verify_login_code(state, user_id, pre_auth_token, code).await?;
+    if let Err(e) = email_2fa::verify_login_code(state, user_id, pre_auth_token, code).await {
+        if matches!(e, AppError::TwoFactorFailed) {
+            record_second_factor_failure(state, &user, ip, user_agent, request_id).await;
+        }
+        return Err(e);
+    }
 
     // Consume the pre-auth token on success.
     if let Ok(mut c) = state.redis.get().await {
@@ -1665,27 +1745,34 @@ pub async fn complete_login_with_recovery(
         .get()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Reject if this pre-auth token already exceeded the recovery code failure limit.
-    let failures: i64 = conn.get(&fail_key).await.unwrap_or(0);
-    if failures >= MAX_RECOVERY_FAILURES {
-        return Err(AppError::RateLimitExceeded);
-    }
-
     let pre_auth_state = load_pre_auth_state_from_redis(&mut conn, &redis_key).await?;
+    drop(conn);
 
-    // Keep the pre-auth token alive until success; consume on success below.
+    // Recovery codes stand in for any method, so no method check here. The
+    // token stays alive until success.
     let user_id = pre_auth_state.user_id;
     let remember_me = pre_auth_state.remember_me;
-
-    // Cross-session guard: reject if the user already burned too many recovery attempts
-    // within the rolling window, regardless of how many pre-auth tokens they cycled through.
     let user_fail_key = format!("{}{}", RC_USER_FAIL_PREFIX, user_id);
-    let user_failures: i64 = conn.get(&user_fail_key).await.unwrap_or(0);
-    if user_failures >= MAX_RECOVERY_FAILURES_BY_USER {
+
+    let attempt = redis_counter::consume(
+        &state.redis,
+        &[
+            Budget {
+                key: &fail_key,
+                limit: MAX_RECOVERY_FAILURES,
+                window_secs: PRE_AUTH_TTL_SECS,
+            },
+            Budget {
+                key: &user_fail_key,
+                limit: MAX_RECOVERY_FAILURES_BY_USER,
+                window_secs: RECOVERY_FAILURE_USER_WINDOW_SECS,
+            },
+        ],
+    )
+    .await?;
+    if attempt.exceeded {
         return Err(AppError::RateLimitExceeded);
     }
-    drop(conn);
 
     let user = user_repo::find_by_id(&state.db, user_id)
         .await
@@ -1695,52 +1782,29 @@ pub async fn complete_login_with_recovery(
     if !user.is_active() {
         return Err(AppError::AccountSuspended);
     }
+    if user.is_locked() {
+        return Err(AppError::AccountLocked);
+    }
 
+    // The lookup refuses used and expired codes, and the UPDATE re-checks both:
+    // a code sitting on its deadline can cross it between the two statements.
     let code_hash = crypto::sha256(recovery_code_plaintext.as_bytes());
     let record = recovery_code::find_by_hash(&state.db, &code_hash)
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        .map_err(|e| AppError::Internal(e.into()))?
+        .filter(|r| r.user_id == user_id);
 
-    // On invalid code: increment both the per-token and per-user failure counters,
-    // apply backoff, and return error.
-    let record = match record {
-        Some(r) if r.user_id == user_id => r,
-        _ => {
-            let new_failures = if let Ok(mut c) = state.redis.get().await {
-                let n: i64 = c.incr(&fail_key, 1i64).await.unwrap_or(failures + 1);
-                let _: Result<(), _> = c.expire(&fail_key, PRE_AUTH_TTL_SECS as i64).await;
-                let _: i64 = c.incr(&user_fail_key, 1i64).await.unwrap_or(0);
-                let _: Result<(), _> = c
-                    .expire(&user_fail_key, RECOVERY_FAILURE_USER_WINDOW_SECS as i64)
-                    .await;
-                n
-            } else {
-                failures + 1
-            };
-            metrics::counter!("auth_2fa_failures_total", "method" => "recovery_code").increment(1);
-            apply_backoff(new_failures).await;
-            return Err(AppError::TwoFactorFailed);
-        }
+    let consumed = match record {
+        Some(record) => recovery_code::consume(&state.db, record.id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?,
+        None => false,
     };
 
-    let consumed = recovery_code::consume(&state.db, record.id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
     if !consumed {
-        let new_failures = if let Ok(mut c) = state.redis.get().await {
-            let n: i64 = c.incr(&fail_key, 1i64).await.unwrap_or(failures + 1);
-            let _: Result<(), _> = c.expire(&fail_key, PRE_AUTH_TTL_SECS as i64).await;
-            let _: i64 = c.incr(&user_fail_key, 1i64).await.unwrap_or(0);
-            let _: Result<(), _> = c
-                .expire(&user_fail_key, RECOVERY_FAILURE_USER_WINDOW_SECS as i64)
-                .await;
-            n
-        } else {
-            failures + 1
-        };
+        record_second_factor_failure(state, &user, ip, user_agent, request_id).await;
         metrics::counter!("auth_2fa_failures_total", "method" => "recovery_code").increment(1);
-        apply_backoff(new_failures).await;
+        apply_backoff(attempt.counts[0]).await;
         return Err(AppError::TwoFactorFailed);
     }
 
@@ -2196,6 +2260,7 @@ fn parse_pre_auth_state(raw: &str) -> Result<PreAuthState, AppError> {
             user_id,
             risk: None,
             remember_me: false,
+            method: None,
         });
     }
 

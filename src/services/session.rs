@@ -31,6 +31,7 @@ pub async fn revoke(
     user_id: Uuid,
     current_session_id: Uuid,
     session_id: Uuid,
+    current_password: Option<&str>,
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
@@ -38,7 +39,7 @@ pub async fn revoke(
         state,
         user_id,
         current_session_id,
-        None,
+        current_password,
         ip,
         request_id,
         "revoke_session",

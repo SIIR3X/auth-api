@@ -9,6 +9,8 @@ mod redis_resilience;
 mod refresh;
 mod register;
 mod risk;
+mod second_factor;
 mod security;
 mod totp;
 mod two_factor;
+mod two_factor_management;

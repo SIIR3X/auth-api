@@ -32,6 +32,7 @@ const TNAME_EMAIL_OTP: &str = "email_otp";
 const TNAME_NEW_DEVICE_LOGIN: &str = "new_device_login";
 const TNAME_PASSWORD_CHANGED: &str = "password_changed";
 const TNAME_TWO_FACTOR_DISABLED: &str = "two_factor_disabled";
+const TNAME_TWO_FACTOR_ENABLED: &str = "two_factor_enabled";
 const TNAME_RECOVERY_CODE_USED: &str = "recovery_code_used";
 
 pub fn dispatch_best_effort<F>(label: &'static str, future: F)
@@ -306,6 +307,38 @@ pub async fn send_password_changed(
         to_email,
         username,
         "Your password has been changed",
+        body,
+    )
+    .await
+}
+
+pub async fn send_two_factor_enabled(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    method: &str,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("method", method);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_TWO_FACTOR_ENABLED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(
+        mailer,
+        &mail_cfg.smtp,
+        to_email,
+        username,
+        "Two-factor authentication enabled",
         body,
     )
     .await

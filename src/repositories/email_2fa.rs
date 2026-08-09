@@ -34,24 +34,41 @@ pub async fn find_active_by_user(
     .await
 }
 
-/// Finds a code by its hash regardless of state (used to verify and consume it).
-pub async fn find_by_hash(
+/// Finds the user's live (unused, unexpired) code matching `code_hash`.
+///
+/// Scoped to the user on purpose: a 6-digit code is not unique across accounts,
+/// and an unscoped lookup could return another user's row, fail a valid code,
+/// and scan the whole table. `idx_email_2fa_codes_user` serves this query.
+pub async fn find_active_by_user_and_hash(
     pool: &PgPool,
+    user_id: Uuid,
     code_hash: &[u8],
 ) -> Result<Option<Email2faCode>, sqlx::Error> {
-    sqlx::query_as::<_, Email2faCode>("SELECT * FROM email_2fa_codes WHERE code_hash = $1 LIMIT 1")
-        .bind(code_hash)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as::<_, Email2faCode>(
+        "SELECT * FROM email_2fa_codes
+         WHERE user_id = $1
+           AND code_hash = $2
+           AND used_at IS NULL
+           AND expires_at > now()
+         ORDER BY created_at DESC
+         LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(code_hash)
+    .fetch_optional(pool)
+    .await
 }
 
-/// Marks a code as used. Returns true if the row was updated.
+/// Marks a code as used. Returns true if the row was updated, false if it was
+/// already used or expired in the meantime.
 pub async fn consume(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result =
-        sqlx::query("UPDATE email_2fa_codes SET used_at = now() WHERE id = $1 AND used_at IS NULL")
-            .bind(id)
-            .execute(pool)
-            .await?;
+    let result = sqlx::query(
+        "UPDATE email_2fa_codes SET used_at = now()
+         WHERE id = $1 AND used_at IS NULL AND expires_at > now()",
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
 
     Ok(result.rows_affected() == 1)
 }

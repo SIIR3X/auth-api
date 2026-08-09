@@ -18,6 +18,13 @@ use super::extractors::{AuthUser, ClientIp};
 
 // Request types
 
+/// Body of the setup endpoints. Optional: a recent re-authentication
+/// (`POST /users/me/reauth`) makes the password unnecessary.
+#[derive(Deserialize, Default)]
+pub struct SetupTwoFactorRequest {
+    pub current_password: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub struct VerifyTotpSetupRequest {
     pub code: String,
@@ -73,9 +80,20 @@ pub struct EmailOtpSetupResponse {
 
 pub async fn setup_totp(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     auth: AuthUser,
+    body: Option<Json<SetupTwoFactorRequest>>,
 ) -> Result<Json<TotpSetupResponse>, AppError> {
-    let result = tf_svc::setup_totp(&state, auth.user_id).await?;
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let result = tf_svc::setup_totp(
+        &state,
+        auth.user_id,
+        auth.session_id,
+        body.current_password.as_deref(),
+        ip,
+        auth.request_id,
+    )
+    .await?;
 
     Ok(Json(TotpSetupResponse {
         method_id: result.method_id,
@@ -102,14 +120,15 @@ pub async fn disable_totp(
     ClientIp(ip): ClientIp,
     auth: AuthUser,
     Path(method_id): Path<Uuid>,
-    Json(body): Json<DisableTotpRequest>,
+    body: Option<Json<DisableTotpRequest>>,
 ) -> Result<StatusCode, AppError> {
+    let current_password = body.and_then(|Json(b)| b.current_password);
     tf_svc::disable_totp(
         &state,
         auth.user_id,
         auth.session_id,
         method_id,
-        body.current_password.as_deref(),
+        current_password.as_deref(),
         ip,
         auth.request_id,
     )
@@ -150,9 +169,20 @@ pub async fn use_recovery_code(
 
 pub async fn setup_email_otp(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     auth: AuthUser,
+    body: Option<Json<SetupTwoFactorRequest>>,
 ) -> Result<Json<EmailOtpSetupResponse>, AppError> {
-    let method_id = email_2fa_svc::setup(&state, auth.user_id).await?;
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let method_id = email_2fa_svc::setup(
+        &state,
+        auth.user_id,
+        auth.session_id,
+        body.current_password.as_deref(),
+        ip,
+        auth.request_id,
+    )
+    .await?;
     // Send the first code immediately so the user can verify right away.
     email_2fa_svc::send_code(&state, auth.user_id).await?;
     Ok(Json(EmailOtpSetupResponse { method_id }))
@@ -185,14 +215,15 @@ pub async fn disable_email_otp(
     ClientIp(ip): ClientIp,
     auth: AuthUser,
     Path(method_id): Path<Uuid>,
-    Json(body): Json<DisableEmailOtpRequest>,
+    body: Option<Json<DisableEmailOtpRequest>>,
 ) -> Result<StatusCode, AppError> {
+    let current_password = body.and_then(|Json(b)| b.current_password);
     email_2fa_svc::disable(
         &state,
         auth.user_id,
         auth.session_id,
         method_id,
-        body.current_password.as_deref(),
+        current_password.as_deref(),
         ip,
         auth.request_id,
     )

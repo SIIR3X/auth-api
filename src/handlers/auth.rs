@@ -346,9 +346,11 @@ pub async fn resend_email_two_factor(
     Json(body): Json<ResendEmailTwoFactorRequest>,
 ) -> Result<StatusCode, AppError> {
     // Resolve user_id from pre_auth_token without revealing whether it exists.
-    let user_id = auth_svc::resolve_pre_auth(&state, &body.pre_auth_token)
-        .await?
-        .user_id;
+    let pre_auth = auth_svc::resolve_pre_auth(&state, &body.pre_auth_token).await?;
+    // Only an email challenge may request an email code: resending one for a
+    // TOTP challenge would let a mailbox stand in for the authenticator app.
+    pre_auth.expect_method(auth_svc::ChallengeMethod::Email)?;
+    let user_id = pre_auth.user_id;
 
     // Fire-and-forget: errors are non-fatal to avoid enumeration via timing.
     let _ = email_2fa_svc::send_code(&state, user_id).await;

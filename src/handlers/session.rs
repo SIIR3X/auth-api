@@ -78,12 +78,15 @@ pub async fn revoke(
     ClientIp(ip): ClientIp,
     auth: AuthUser,
     Path(session_id): Path<Uuid>,
+    body: Option<Json<RevokeAllRequest>>,
 ) -> Result<StatusCode, AppError> {
+    let current_password = body.and_then(|Json(b)| b.current_password);
     session_svc::revoke(
         &state,
         auth.user_id,
         auth.session_id,
         session_id,
+        current_password.as_deref(),
         ip,
         auth.request_id,
     )
@@ -95,13 +98,14 @@ pub async fn revoke_all(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     auth: AuthUser,
-    Json(body): Json<RevokeAllRequest>,
+    body: Option<Json<RevokeAllRequest>>,
 ) -> Result<StatusCode, AppError> {
+    let current_password = body.and_then(|Json(b)| b.current_password);
     session_svc::revoke_all(
         &state,
         auth.user_id,
         auth.session_id,
-        body.current_password.as_deref(),
+        current_password.as_deref(),
         ip,
         auth.request_id,
     )

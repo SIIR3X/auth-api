@@ -74,6 +74,7 @@ fn pre_auth_benches(c: &mut Criterion) {
     let state = PreAuthState {
         user_id: Uuid::new_v4(),
         remember_me: false,
+        method: None,
         risk: Some(CachedRiskEvaluation {
             context: CachedRiskContext {
                 ip: "203.0.113.42/32".to_string(),

@@ -27,10 +27,15 @@ pub const COUNT_RECENT_FAILURES_BY_IP_SQL: &str = "SELECT COUNT(*) FROM (
          LIMIT $3
      ) sub";
 
+/// Consecutive wrong passwords since the last successful sign-in. Only
+/// `invalid_password` counts: a failed second factor comes from someone who
+/// already holds the password, and letting it lock the account would hand them
+/// a way to shut the owner out.
 pub const COUNT_CONSECUTIVE_FAILURES_BY_USER_SQL: &str = "SELECT COUNT(*) FROM (
          SELECT 1 FROM login_attempts
          WHERE user_id = $1
            AND was_successful = FALSE
+           AND failure_reason = 'invalid_password'
            AND attempted_at > COALESCE(
                (SELECT MAX(attempted_at) FROM login_attempts
                 WHERE user_id = $1 AND was_successful = TRUE),

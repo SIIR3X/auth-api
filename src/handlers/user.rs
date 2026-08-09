@@ -20,6 +20,13 @@ pub struct ChangeUsernameRequest {
     pub current_password: Option<String>,
 }
 
+/// Optional body for sensitive actions that accept the current password in
+/// place of a recent re-authentication.
+#[derive(Deserialize, Default)]
+pub struct CurrentPasswordRequest {
+    pub current_password: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct FlowTokenResponse {
     pub flow_token: String,
@@ -140,8 +147,18 @@ pub async fn start_email_change(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     auth: AuthUser,
+    body: Option<Json<CurrentPasswordRequest>>,
 ) -> Result<Json<FlowTokenResponse>, AppError> {
-    let flow_token = email_change_svc::start(&state, auth.user_id, ip, auth.request_id).await?;
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let flow_token = email_change_svc::start(
+        &state,
+        auth.user_id,
+        auth.session_id,
+        body.current_password.as_deref(),
+        ip,
+        auth.request_id,
+    )
+    .await?;
     Ok(Json(FlowTokenResponse { flow_token }))
 }
 
@@ -284,13 +301,14 @@ pub async fn delete_account(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     auth: AuthUser,
-    Json(body): Json<DeleteAccountRequest>,
+    body: Option<Json<DeleteAccountRequest>>,
 ) -> Result<StatusCode, AppError> {
+    let current_password = body.and_then(|Json(b)| b.current_password);
     user_svc::delete_account(
         &state,
         auth.user_id,
         auth.session_id,
-        body.current_password.as_deref(),
+        current_password.as_deref(),
         ip,
         auth.request_id,
     )

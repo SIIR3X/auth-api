@@ -28,7 +28,10 @@ use crate::{
         session as session_repo, user as user_repo,
     },
     state::AppState,
-    utils::crypto,
+    utils::{
+        crypto,
+        redis_counter::{self, Budget},
+    },
 };
 
 use super::{auth as auth_svc, email as email_svc, events};
@@ -72,9 +75,22 @@ struct FlowState {
 pub async fn start(
     state: &AppState,
     user_id: Uuid,
+    current_session_id: Uuid,
+    current_password: Option<&str>,
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<String, AppError> {
+    super::reauth::require_recent_reauth_or_password(
+        state,
+        user_id,
+        current_session_id,
+        current_password,
+        ip,
+        request_id,
+        "email_change_start",
+    )
+    .await?;
+
     // Block if a change was completed recently.
     let cooldown_key = format!("email_change_cd:{}", user_id);
     {
@@ -460,28 +476,27 @@ async fn verify_otp(
     expected_hash: Option<&str>,
     fail_key: &str,
 ) -> Result<(), AppError> {
-    let failures: i64 = if let Ok(mut conn) = state.redis.get().await {
-        conn.get(fail_key).await.unwrap_or(0)
-    } else {
-        0
-    };
-    if failures >= MAX_OTP_FAILURES {
+    let expected = expected_hash.ok_or(AppError::Unauthorized)?;
+
+    let attempt = redis_counter::consume(
+        &state.redis,
+        &[Budget {
+            key: fail_key,
+            limit: MAX_OTP_FAILURES,
+            window_secs: FLOW_TTL_SECS,
+        }],
+    )
+    .await?;
+    if attempt.exceeded {
         return Err(AppError::RateLimitExceeded);
     }
 
-    let expected = expected_hash.ok_or(AppError::Unauthorized)?;
-    let actual = hash_otp(submitted_code);
-
-    if actual != expected {
-        let n = increment_fail(state, fail_key, FLOW_TTL_SECS).await;
-        apply_backoff(n).await;
+    if hash_otp(submitted_code) != expected {
+        apply_backoff(attempt.counts[0]).await;
         return Err(AppError::TwoFactorFailed);
     }
 
-    if let Ok(mut conn) = state.redis.get().await {
-        let _: Result<(), _> = conn.del(fail_key).await;
-    }
-
+    redis_counter::reset(&state.redis, &[fail_key]).await;
     Ok(())
 }
 
@@ -489,16 +504,6 @@ async fn verify_otp(
 fn hash_otp(code: &str) -> String {
     let hash = crypto::sha256(code.as_bytes());
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash)
-}
-
-async fn increment_fail(state: &AppState, key: &str, window_secs: u64) -> i64 {
-    if let Ok(mut conn) = state.redis.get().await {
-        let n: i64 = conn.incr(key, 1i64).await.unwrap_or(1);
-        let _: Result<(), _> = conn.expire(key, window_secs as i64).await;
-        n
-    } else {
-        1
-    }
 }
 
 async fn apply_backoff(failures: i64) {

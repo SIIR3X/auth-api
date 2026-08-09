@@ -183,6 +183,21 @@ pub async fn authenticated_user(app: &TestApp, index: usize) -> AuthenticatedUse
     let access_token = body["access_token"].as_str().unwrap().to_owned();
     let refresh_token = body["refresh_token"].as_str().unwrap().to_owned();
 
+    // Signing in no longer grants re-authentication; the typical client flow
+    // for sensitive actions confirms the password explicitly first.
+    let reauth = app
+        .post_auth(
+            "/users/me/reauth",
+            &access_token,
+            &serde_json::json!({ "current_password": user.password }),
+        )
+        .await;
+    assert_eq!(
+        reauth.status().as_u16(),
+        204,
+        "reauth failed for user {index}"
+    );
+
     AuthenticatedUser {
         id: user.id,
         username: user.username,

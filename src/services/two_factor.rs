@@ -23,7 +23,11 @@ use crate::{
         user as user_repo,
     },
     state::AppState,
-    utils::{crypto, time, totp},
+    utils::{
+        crypto,
+        redis_counter::{self, Budget},
+        time, totp,
+    },
 };
 
 /// Max failed recovery code attempts per authenticated user within the window.
@@ -37,17 +41,104 @@ const TOTP_SETUP_USED_PREFIX: &str = "totp_setup_used:";
 
 use super::reauth as reauth_svc;
 
+/// Notify the account owner that a second factor was enabled or disabled.
+/// Best-effort: the change itself has already been committed.
+pub(crate) fn notify_two_factor_change(
+    state: &AppState,
+    user: &crate::domain::user::User,
+    method: &'static str,
+    enabled: bool,
+) {
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = user.email.clone();
+    let username = user.username.clone();
+    let locale = user.preferred_locale.clone();
+    let label = if enabled {
+        "two_factor_enabled_email"
+    } else {
+        "two_factor_disabled_email"
+    };
+    super::email::dispatch_best_effort(label, async move {
+        if enabled {
+            super::email::send_two_factor_enabled(
+                &mailer,
+                templates.as_ref(),
+                &mail_cfg,
+                &email_to,
+                &username,
+                &locale,
+                method,
+            )
+            .await
+        } else {
+            super::email::send_two_factor_disabled(
+                &mailer,
+                templates.as_ref(),
+                &mail_cfg,
+                &email_to,
+                &username,
+                &locale,
+                method,
+            )
+            .await
+        }
+    });
+}
+
+/// Create a method, or restart the user's abandoned enrolment of that type.
+/// A second enrolment of an already verified method answers 409.
+pub(crate) async fn create_or_restart_method(
+    state: &AppState,
+    input: &NewTwoFactorMethod<'_>,
+) -> Result<crate::domain::two_factor::TwoFactorMethod, AppError> {
+    if let Some(resumed) = tf_repo::replace_pending(&state.db, input)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
+        return Ok(resumed);
+    }
+    tf_repo::create(&state.db, input).await.map_err(|e| {
+        AppError::from_unique_violation(
+            e,
+            &[
+                ("idx_2fa_user_totp", "two_factor_already_enabled"),
+                ("idx_2fa_user_email", "two_factor_already_enabled"),
+            ],
+        )
+    })
+}
+
 pub struct TotpSetupResult {
     pub method_id: Uuid,
     pub base32_secret: String,
     pub qr_uri: String,
 }
 
-/// Creates an unverified TOTP method for the user and returns setup data.
-/// The user must call `verify_setup` with a valid code to activate it.
-pub async fn setup_totp(state: &AppState, user_id: Uuid) -> Result<TotpSetupResult, AppError> {
-    // Fetch the user to populate the account label in the QR URI so that
-    // authenticator apps display the correct email and issuer combination.
+/// Creates (or restarts) an unverified TOTP method and returns setup data.
+/// Requires a recent re-authentication or the current password: with a stolen
+/// access token alone, an attacker could otherwise enrol their own
+/// authenticator and lock the owner out.
+pub async fn setup_totp(
+    state: &AppState,
+    user_id: Uuid,
+    current_session_id: Uuid,
+    current_password: Option<&str>,
+    ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
+) -> Result<TotpSetupResult, AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        user_id,
+        current_session_id,
+        current_password,
+        ip,
+        request_id,
+        "setup_totp",
+    )
+    .await?;
+
     let user = user_repo::find_by_id(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
@@ -65,16 +156,15 @@ pub async fn setup_totp(state: &AppState, user_id: Uuid) -> Result<TotpSetupResu
     let encrypted =
         crypto::encrypt(&base32_secret, &enc_key).map_err(|e| AppError::Internal(e.into()))?;
 
-    let method = tf_repo::create(
-        &state.db,
+    let method = create_or_restart_method(
+        state,
         &NewTwoFactorMethod {
             user_id,
             method_type: TwoFactorType::Totp,
             totp_secret: Some(&encrypted),
         },
     )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    .await?;
 
     Ok(TotpSetupResult {
         method_id: method.id,
@@ -159,6 +249,10 @@ pub async fn verify_setup(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+
+    if let Ok(Some(user)) = user_repo::find_by_id(&state.db, user_id).await {
+        notify_two_factor_change(state, &user, "totp", true);
+    }
 
     Ok(plaintext_codes)
 }
@@ -253,54 +347,37 @@ pub async fn use_recovery_code(
 ) -> Result<(), AppError> {
     let fail_key = format!("rc_fail_user:{}", user_id);
 
-    // Check failure budget before doing any DB work.
-    if let Ok(mut conn) = state.redis.get().await {
-        let failures: i64 = conn.get(&fail_key).await.unwrap_or(0);
-        if failures >= MAX_RC_FAILURES_BY_USER {
-            return Err(AppError::RateLimitExceeded);
-        }
+    let attempt = redis_counter::consume(
+        &state.redis,
+        &[Budget {
+            key: &fail_key,
+            limit: MAX_RC_FAILURES_BY_USER,
+            window_secs: RC_FAILURE_WINDOW_SECS,
+        }],
+    )
+    .await?;
+    if attempt.exceeded {
+        return Err(AppError::RateLimitExceeded);
     }
 
+    // `find_by_hash` refuses used and expired codes; `consume` re-checks both.
     let hash = crypto::sha256(code.as_bytes());
-
     let record = recovery_code::find_by_hash(&state.db, &hash)
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        .map_err(|e| AppError::Internal(e.into()))?
+        .filter(|r| r.user_id == user_id);
 
-    let record = match record {
-        Some(r) if r.user_id == user_id => r,
-        _ => {
-            if let Ok(mut conn) = state.redis.get().await {
-                let _: Result<(), _> = conn.incr(&fail_key, 1i64).await;
-                let _: Result<(), _> = conn.expire(&fail_key, RC_FAILURE_WINDOW_SECS as i64).await;
-            }
-            return Err(AppError::TwoFactorFailed);
-        }
+    let consumed = match record {
+        Some(record) => recovery_code::consume(&state.db, record.id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?,
+        None => false,
     };
-
-    // Reject expired codes
-    if let Some(exp) = record.expires_at
-        && exp < time::now()
-    {
-        return Err(AppError::TokenExpired);
-    }
-
-    let consumed = recovery_code::consume(&state.db, record.id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
     if !consumed {
-        if let Ok(mut conn) = state.redis.get().await {
-            let _: Result<(), _> = conn.incr(&fail_key, 1i64).await;
-            let _: Result<(), _> = conn.expire(&fail_key, RC_FAILURE_WINDOW_SECS as i64).await;
-        }
         return Err(AppError::TwoFactorFailed);
     }
 
-    // Reset failure counter on success.
-    if let Ok(mut conn) = state.redis.get().await {
-        let _: Result<(), _> = conn.del(&fail_key).await;
-    }
+    redis_counter::reset(&state.redis, &[&fail_key]).await;
 
     audit::append(
         &state.db,
@@ -318,7 +395,9 @@ pub async fn use_recovery_code(
     Ok(())
 }
 
-/// Disables TOTP and removes recovery codes. Requires the user's current password.
+/// Disables the TOTP method. Requires a recent re-authentication or the current
+/// password. The remaining verified method, if any, becomes primary; recovery
+/// codes are removed only with the last method.
 pub async fn disable_totp(
     state: &AppState,
     user_id: Uuid,
@@ -328,6 +407,36 @@ pub async fn disable_totp(
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
+    disable_method(
+        state,
+        user_id,
+        current_session_id,
+        method_id,
+        TwoFactorType::Totp,
+        current_password,
+        ip,
+        request_id,
+    )
+    .await
+}
+
+/// Shared removal path for every second-factor type.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn disable_method(
+    state: &AppState,
+    user_id: Uuid,
+    current_session_id: Uuid,
+    method_id: Uuid,
+    method_type: TwoFactorType,
+    current_password: Option<&str>,
+    ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    let label = match method_type {
+        TwoFactorType::Totp => "totp",
+        TwoFactorType::Email => "email",
+    };
+
     reauth_svc::require_recent_reauth_or_password(
         state,
         user_id,
@@ -335,7 +444,11 @@ pub async fn disable_totp(
         current_password,
         ip,
         request_id,
-        "disable_totp",
+        if method_type == TwoFactorType::Totp {
+            "disable_totp"
+        } else {
+            "disable_email_2fa"
+        },
     )
     .await?;
 
@@ -344,14 +457,10 @@ pub async fn disable_totp(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
-    tf_repo::delete(&state.db, method_id, user_id)
+    let removed = tf_repo::remove_method(&state.db, method_id, user_id, method_type)
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Remove recovery codes since they are tied to TOTP
-    recovery_code::delete_all_by_user(&state.db, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        .map_err(|e| AppError::Internal(e.into()))?
+        .ok_or(AppError::NotFound)?;
 
     audit::append(
         &state.db,
@@ -360,30 +469,16 @@ pub async fn disable_totp(
             request_id,
             action: AuditAction::TwoFactorDisabled,
             ip_address: ip,
-            metadata: json!({"method": "totp"}),
+            metadata: json!({
+                "method": label,
+                "was_primary": removed.was_primary,
+                "remaining_verified": removed.remaining_verified,
+            }),
         },
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    let mailer = state.mailer.clone();
-    let templates = state.templates.clone();
-    let mail_cfg = state.config.mail.clone();
-    let email_to = user.email.clone();
-    let username = user.username.clone();
-    let locale = user.preferred_locale.clone();
-    super::email::dispatch_best_effort("totp_disabled_email", async move {
-        super::email::send_two_factor_disabled(
-            &mailer,
-            templates.as_ref(),
-            &mail_cfg,
-            &email_to,
-            &username,
-            &locale,
-            "totp",
-        )
-        .await
-    });
-
+    notify_two_factor_change(state, &user, label, false);
     Ok(())
 }

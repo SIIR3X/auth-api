@@ -68,7 +68,7 @@ async fn totp_setup_response_contains_qr_and_secret() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     assert_eq!(res.status().as_u16(), 200);
@@ -92,7 +92,7 @@ async fn totp_verify_setup_wrong_code_rejected() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let body: Value = res.json().await.unwrap();
@@ -133,7 +133,7 @@ async fn totp_login_full_flow() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     assert_eq!(setup_res.status().as_u16(), 200);
@@ -198,7 +198,7 @@ async fn totp_login_wrong_code_rejected() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
@@ -248,7 +248,7 @@ async fn totp_disable_wrong_password_rejected() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
@@ -283,7 +283,7 @@ async fn totp_disable_correct_password_succeeds_and_login_bypasses_2fa() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
@@ -336,7 +336,7 @@ async fn recovery_login_succeeds_with_valid_code() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
@@ -398,7 +398,7 @@ async fn recovery_login_replay_rejected() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
@@ -476,7 +476,7 @@ async fn recovery_login_wrong_code_rejected() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
@@ -527,7 +527,7 @@ async fn regenerate_recovery_codes_with_password_returns_new_codes() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
@@ -605,7 +605,7 @@ async fn use_recovery_code_authenticated_consumes_code() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
@@ -719,7 +719,7 @@ async fn totp_replay_within_window_rejected() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
@@ -791,7 +791,7 @@ async fn totp_2fa_fails_when_account_suspended_after_challenge() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
@@ -936,7 +936,7 @@ async fn totp_replay_rejected_even_after_redis_key_loss() {
         .post_auth(
             "/users/me/two-factor/totp/setup",
             &user.access_token,
-            &serde_json::json!({}),
+            &serde_json::json!({ "current_password": user.password }),
         )
         .await;
     let setup_body: Value = setup_res.json().await.unwrap();
