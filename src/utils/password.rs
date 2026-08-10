@@ -81,7 +81,7 @@ pub fn verify(password: &str, hash: &str) -> Result<bool, PasswordError> {
 /// the global Argon2 semaphore (see `argon2_semaphore`).
 pub async fn hash_async(password: &str, cfg: &CryptoConfig) -> Result<String, PasswordError> {
     let semaphore = argon2_semaphore(cfg);
-    let _permit = semaphore
+    let permit = semaphore
         .acquire()
         .await
         .map_err(|_| PasswordError::Queue)?;
@@ -90,8 +90,15 @@ pub async fn hash_async(password: &str, cfg: &CryptoConfig) -> Result<String, Pa
     let password = password.to_owned();
     let cfg = cfg.clone();
 
-    let result = tokio::task::spawn_blocking(move || hash(&password, &cfg)).await;
-    drop(_permit);
+    // The permit travels with the work: if the request is cancelled (client
+    // gone, HTTP timeout) the hash keeps running on the blocking pool, and so
+    // must its slot, or the bound on concurrent Argon2 memory stops holding.
+    let result = tokio::task::spawn_blocking(move || {
+        let outcome = hash(&password, &cfg);
+        drop(permit);
+        outcome
+    })
+    .await;
     record_argon2_permits(semaphore);
     result?
 }
@@ -104,7 +111,7 @@ pub async fn verify_async(
     cfg: &CryptoConfig,
 ) -> Result<bool, PasswordError> {
     let semaphore = argon2_semaphore(cfg);
-    let _permit = semaphore
+    let permit = semaphore
         .acquire()
         .await
         .map_err(|_| PasswordError::Queue)?;
@@ -113,8 +120,14 @@ pub async fn verify_async(
     let password = password.to_owned();
     let hash_value = hash_value.to_owned();
 
-    let result = tokio::task::spawn_blocking(move || verify(&password, &hash_value)).await;
-    drop(_permit);
+    // See `hash_async`: the permit is released when the work ends, not when the
+    // awaiting future is dropped.
+    let result = tokio::task::spawn_blocking(move || {
+        let outcome = verify(&password, &hash_value);
+        drop(permit);
+        outcome
+    })
+    .await;
     record_argon2_permits(semaphore);
     result?
 }

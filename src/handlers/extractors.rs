@@ -166,7 +166,11 @@ impl<S: Send + Sync> FromRequestParts<S> for RequestId {
     }
 }
 
-// User-Agent header as a plain string.
+/// Longest user agent kept: sessions, login attempts and audit metadata store it,
+/// and nothing downstream needs more.
+pub const MAX_USER_AGENT_CHARS: usize = 512;
+
+// User-Agent header as a plain string, truncated to `MAX_USER_AGENT_CHARS`.
 
 pub struct UserAgent(pub Option<String>);
 
@@ -178,7 +182,7 @@ impl<S: Send + Sync> FromRequestParts<S> for UserAgent {
             .headers
             .get(header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_owned());
+            .map(|s| s.chars().take(MAX_USER_AGENT_CHARS).collect());
 
         Ok(UserAgent(ua))
     }

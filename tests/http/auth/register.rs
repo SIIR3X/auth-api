@@ -17,9 +17,7 @@ async fn register_success() {
 
     let status = res.status().as_u16();
     let body: serde_json::Value = res.json().await.unwrap();
-    assert_eq!(status, 201, "body: {body}");
-    assert_eq!(body["username"], "alice");
-    assert_eq!(body["email"], "alice@example.com");
+    assert_eq!(status, 202, "body: {body}");
     assert_eq!(body["status"], "pending_verification");
 }
 
@@ -34,7 +32,7 @@ async fn register_duplicate_email() {
     });
 
     let res1 = app.post("/auth/register", &payload).await;
-    assert_eq!(res1.status().as_u16(), 201);
+    assert_eq!(res1.status().as_u16(), 202);
 
     // Same email, different username
     let res2 = app
@@ -48,7 +46,8 @@ async fn register_duplicate_email() {
         )
         .await;
 
-    assert_eq!(res2.status().as_u16(), 409);
+    // A taken address must look like a new signup (no account enumeration).
+    assert_eq!(res2.status().as_u16(), 202);
 }
 
 #[tokio::test]
@@ -65,7 +64,7 @@ async fn register_duplicate_username() {
             }),
         )
         .await;
-    assert_eq!(res1.status().as_u16(), 201);
+    assert_eq!(res1.status().as_u16(), 202);
 
     let res2 = app
         .post(

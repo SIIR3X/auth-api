@@ -3,7 +3,6 @@
 
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{
     error::AppError,
@@ -13,7 +12,7 @@ use crate::{
 
 use super::{
     extractors::{AuthUser, ClientIp, RequestId, UserAgent},
-    user::{user_status_str, validate_locale, validate_password},
+    user::{validate_locale, validate_password},
 };
 
 // Request types
@@ -86,13 +85,12 @@ pub struct ResendEmailTwoFactorRequest {
 
 // Response types
 
+/// Registration answer. Identical whether the address was free or already had
+/// an account, so it cannot be used to enumerate accounts.
 #[derive(Serialize)]
-pub struct UserResponse {
-    pub id: Uuid,
-    pub username: String,
-    pub email: String,
-    pub status: String,
-    pub preferred_locale: String,
+pub struct RegistrationAccepted {
+    pub status: &'static str,
+    pub message: &'static str,
 }
 
 #[derive(Serialize)]
@@ -124,7 +122,7 @@ pub async fn register(
     UserAgent(ua): UserAgent,
     RequestId(rid): RequestId,
     Json(body): Json<RegisterRequest>,
-) -> Result<(StatusCode, Json<UserResponse>), AppError> {
+) -> Result<(StatusCode, Json<RegistrationAccepted>), AppError> {
     validate_email(&body.email)?;
     validate_password(&body.password)?;
     validate_username(&body.username)?;
@@ -136,7 +134,7 @@ pub async fn register(
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
     captcha_svc::verify(&state, captcha_token).await?;
 
-    let user = auth_svc::register(
+    auth_svc::register(
         &state,
         &body.username,
         &body.email,
@@ -149,13 +147,10 @@ pub async fn register(
     .await?;
 
     Ok((
-        StatusCode::CREATED,
-        Json(UserResponse {
-            id: user.id,
-            username: user.username,
-            email: user.email,
-            status: user_status_str(&user.status),
-            preferred_locale: user.preferred_locale,
+        StatusCode::ACCEPTED,
+        Json(RegistrationAccepted {
+            status: "pending_verification",
+            message: "Check your inbox to verify your email address.",
         }),
     ))
 }
@@ -167,6 +162,16 @@ pub async fn login(
     RequestId(rid): RequestId,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
+    // Bound client input before the database and Argon2 see it.
+    if body.identifier.is_empty()
+        || body.identifier.len() > MAX_IDENTIFIER_LEN
+        || body.password.len() > MAX_LOGIN_PASSWORD_LEN
+    {
+        return Err(AppError::Validation(
+            "identifier or password has an invalid length".into(),
+        ));
+    }
+
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
     captcha_svc::verify(&state, captcha_token).await?;
 
@@ -359,22 +364,35 @@ pub async fn resend_email_two_factor(
 
 // Validation helpers
 
-fn validate_email(email: &str) -> Result<(), AppError> {
-    if !email_address::EmailAddress::is_valid(email) {
+/// Longest identifier (email or username) accepted at login.
+const MAX_IDENTIFIER_LEN: usize = 254;
+/// Longest password accepted at login. Above the registration limit (128) so
+/// no existing account is refused, but bounded before Argon2 runs.
+const MAX_LOGIN_PASSWORD_LEN: usize = 256;
+
+/// Emails accepted for storage: syntactically valid and in the shape the
+/// `users_email_format` constraint accepts, so a bad address is a 422 rather
+/// than a constraint violation surfacing as a 500.
+pub(crate) fn validate_email(email: &str) -> Result<(), AppError> {
+    if !email_address::EmailAddress::is_valid(email)
+        || !crate::domain::user::is_storable_email(email)
+    {
         return Err(AppError::Validation("invalid email address".into()));
     }
     Ok(())
 }
 
-fn validate_username(username: &str) -> Result<(), AppError> {
-    if username.len() < 3 || username.len() > 30 {
+/// Usernames as the `users_username_format` constraint accepts them: 3 to 30
+/// ASCII letters, digits or underscores.
+pub(crate) fn validate_username(username: &str) -> Result<(), AppError> {
+    if !(3..=30).contains(&username.len()) {
         return Err(AppError::Validation(
             "username must be 3 to 30 characters".into(),
         ));
     }
-    if !username.chars().all(|c| c.is_alphanumeric() || c == '_') {
+    if !crate::domain::user::is_valid_username(username) {
         return Err(AppError::Validation(
-            "username may only contain letters, digits and underscores".into(),
+            "username may only contain ASCII letters, digits and underscores".into(),
         ));
     }
     Ok(())

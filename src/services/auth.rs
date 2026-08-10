@@ -102,19 +102,47 @@ const RC_USER_FAIL_PREFIX: &str = "rc_user_fail:";
 /// lock each other out; the per-token-hash cap below is what actually stops
 /// brute-force against a specific token.
 const MAX_TOKEN_SUBMIT_BY_IP: i64 = 10;
-/// Max submission attempts per token hash (limits distributed brute-force across many IPs).
-const MAX_TOKEN_SUBMIT_BY_HASH: i64 = 1;
+/// Max submission attempts per token hash, across every IP. Three rather than
+/// one: a double-click or a retried request must not burn a valid link.
+const MAX_TOKEN_SUBMIT_BY_HASH: i64 = 3;
 /// Sliding window for token submission rate limiting (1 hour).
 const TOKEN_SUBMIT_WINDOW_SECS: u64 = 3600;
 /// Email verification token lifetime.
 const EMAIL_TOKEN_EXPIRY_SECS: u64 = 60 * 60 * 24; // 24h
 /// Password reset token lifetime.
 const RESET_TOKEN_EXPIRY_SECS: u64 = 60 * 30; // 30 min
+/// Forgot-password requests per IP per window.
+const MAX_FORGOT_PASSWORD_BY_IP: i64 = 5;
+/// Window of the per-IP forgot-password budget (15 minutes).
+const FORGOT_PASSWORD_IP_WINDOW_SECS: u64 = 900;
+/// Reset emails per account per window, across every IP.
+const MAX_FORGOT_PASSWORD_BY_ACCOUNT: i64 = 3;
+/// Window of the per-account forgot-password budget (1 hour).
+const FORGOT_PASSWORD_ACCOUNT_WINDOW_SECS: u64 = 3600;
+/// Every forgot-password response takes at least this long, known address or not.
+const FORGOT_PASSWORD_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(250);
 
-// A valid argon2id PHC string that will always fail verification.
-// Running it ensures the response time is the same whether the user exists or not.
+// Fallback for the decoy hash below, used only if the configured Argon2
+// parameters are unusable -- in which case real hashing is broken too.
 const DUMMY_HASH: &str =
     "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHRzb21lc2FsdA$RdescudvJCsgt3ub+b+dWRWJTmaaJObG";
+
+/// A hash no password can match, verified when the identifier is unknown so a
+/// login costs the same either way.
+///
+/// Built from the configured parameters rather than written down: Argon2 reads
+/// its cost from the PHC string, so a hard-coded decoy costs what *it* says,
+/// not what real hashes cost, and turns into an enumeration oracle as soon as
+/// `ARGON2_*` differs from it. The plaintext is random, drawn once per process.
+fn dummy_hash(cfg: &crate::config::CryptoConfig) -> &'static str {
+    static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DUMMY.get_or_init(|| {
+        password::hash(&crypto::generate_token(), cfg).unwrap_or_else(|e| {
+            tracing::error!(error = ?e, "could not build a decoy hash from the Argon2 parameters");
+            DUMMY_HASH.to_owned()
+        })
+    })
+}
 
 // Output types
 
@@ -259,11 +287,11 @@ pub async fn register(
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
     request_id: Option<Uuid>,
-) -> Result<User, AppError> {
-    // Uniqueness checks
-    if user_repo::find_by_email(&state.db, email).await?.is_some() {
-        return Err(AppError::Conflict("email_taken"));
-    }
+) -> Result<Option<User>, AppError> {
+    // A taken username is reported: it is a public identifier the user picks
+    // and must know to change. A taken email is not: answering differently
+    // would let anyone test which addresses have an account. Its owner is told
+    // by email instead, and the caller gets the same response as a new signup.
     if user_repo::find_by_username(&state.db, username)
         .await?
         .is_some()
@@ -271,11 +299,17 @@ pub async fn register(
         return Err(AppError::Conflict("username_taken"));
     }
 
+    // Hash on every path so a registered address costs the same as a new one.
     let hash = password::hash_async(password_plaintext, &state.config.crypto)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    let user = user_repo::create(
+    if let Some(existing) = user_repo::find_by_email(&state.db, email).await? {
+        notify_existing_account(state, &existing);
+        return Ok(None);
+    }
+
+    let created = user_repo::create(
         &state.db,
         &NewUser {
             username,
@@ -284,18 +318,24 @@ pub async fn register(
             preferred_locale: locale,
         },
     )
-    .await
-    // The pre-checks above can race with a concurrent registration; the UNIQUE
-    // constraints are the authoritative check and must map to the same 409.
-    .map_err(|e| {
-        AppError::from_unique_violation(
-            e,
-            &[
-                ("users_email_key", "email_taken"),
-                ("users_username_key", "username_taken"),
-            ],
-        )
-    })?;
+    .await;
+    let user = match created {
+        Ok(user) => user,
+        // The pre-checks can race with a concurrent registration; the UNIQUE
+        // constraints are authoritative and resolve to the same outcomes.
+        Err(e) => {
+            return match AppError::from_unique_violation(
+                e,
+                &[
+                    ("users_email_key", "email_taken"),
+                    ("users_username_key", "username_taken"),
+                ],
+            ) {
+                AppError::Conflict("email_taken") => Ok(None),
+                other => Err(other),
+            };
+        }
+    };
 
     // Assign default role if one exists
     if let Some(role) = role::find_default(&state.db)
@@ -346,8 +386,6 @@ pub async fn register(
         .await
     });
 
-    metrics::counter!("auth_session_replays_total").increment(1);
-
     audit::append(
         &state.db,
         &NewAuditEntry {
@@ -372,10 +410,32 @@ pub async fn register(
     )
     .await;
 
-    Ok(user)
+    Ok(Some(user))
 }
 
 // Login
+
+/// Tell the owner of an existing account that someone tried to register with
+/// their address. Best-effort, like every notification.
+fn notify_existing_account(state: &AppState, user: &User) {
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = user.email.clone();
+    let username = user.username.clone();
+    let locale = user.preferred_locale.clone();
+    email::dispatch_best_effort("account_exists_email", async move {
+        email::send_account_exists(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+        )
+        .await
+    });
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn login(
@@ -451,11 +511,23 @@ pub async fn login(
                 password::verify_async(password_plaintext, &u.password_hash, &state.config.crypto)
                     .await
                     .map_err(|e| AppError::Internal(e.into()))?;
+
+            // A locked account answers the same whatever the password, after the
+            // same Argon2 work. Checking the lock only after a correct password
+            // turned the lockout into an oracle confirming the guess.
+            if u.is_locked() {
+                metrics::counter!("auth_logins_total", "outcome" => "locked").increment(1);
+                return Err(AppError::AccountLocked);
+            }
             (Some(u), ok)
         }
         None => {
-            let _ =
-                password::verify_async(password_plaintext, DUMMY_HASH, &state.config.crypto).await;
+            let _ = password::verify_async(
+                password_plaintext,
+                dummy_hash(&state.config.crypto),
+                &state.config.crypto,
+            )
+            .await;
             (None, false)
         }
     };
@@ -522,12 +594,6 @@ pub async fn login(
         }
         (Some(u), true) => u,
     };
-
-    // Account lockout check (before status checks; locked accounts return early).
-    if user.is_locked() {
-        metrics::counter!("auth_logins_total", "outcome" => "locked").increment(1);
-        return Err(AppError::AccountLocked);
-    }
 
     // Account status checks
     match user.status {
@@ -1138,36 +1204,8 @@ pub async fn verify_email(
 ) -> Result<(), AppError> {
     use crate::domain::token::OneTimeToken;
 
-    // Rate limit token submission attempts per IP to prevent brute-force on 24h tokens.
-    if let Some(ip_val) = ip {
-        let key = format!("vf_fail:{}", ip_val.ip());
-        if let Ok(mut conn) = state.redis.get().await {
-            let count: i64 = conn.get(&key).await.unwrap_or(0);
-            if count >= MAX_TOKEN_SUBMIT_BY_IP {
-                return Err(AppError::RateLimitExceeded);
-            }
-            let _: Result<(), _> = conn.incr(&key, 1i64).await;
-            let _: Result<(), _> = conn.expire(&key, TOKEN_SUBMIT_WINDOW_SECS as i64).await;
-        }
-    }
-
     let hash = crypto::sha256(raw_token.as_bytes());
-
-    // Per-token-hash rate limit: cap attempts against the same token from any IP.
-    {
-        let tk_key = format!(
-            "vf_tok:{}",
-            hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
-        );
-        if let Ok(mut conn) = state.redis.get().await {
-            let count: i64 = conn.get(&tk_key).await.unwrap_or(0);
-            if count >= MAX_TOKEN_SUBMIT_BY_HASH {
-                return Err(AppError::RateLimitExceeded);
-            }
-            let _: Result<(), _> = conn.incr(&tk_key, 1i64).await;
-            let _: Result<(), _> = conn.expire(&tk_key, TOKEN_SUBMIT_WINDOW_SECS as i64).await;
-        }
-    }
+    guard_token_submission(state, "vf", ip, &hash).await?;
 
     // Constant-time token validation: always perform a DB lookup and apply a
     // minimum delay so that the response time does not reveal whether a token
@@ -1238,7 +1276,12 @@ pub async fn verify_email(
 
 // Forgot password
 
-/// Always returns Ok to prevent email enumeration.
+/// Always returns Ok (or 429 for an abusive IP) so the response never reveals
+/// whether an account exists.
+///
+/// Both outcomes take the same time: the work for a known address runs, and the
+/// response is padded to `FORGOT_PASSWORD_MIN_DURATION` either way. Padding only
+/// the unknown path, as before, made the unknown address the slow one.
 pub async fn forgot_password(
     state: &AppState,
     email: &str,
@@ -1246,28 +1289,53 @@ pub async fn forgot_password(
     user_agent: Option<&str>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
-    // Rate limit forgot-password requests per IP (prevents email spam campaigns).
     if let Some(ip_val) = ip {
         let key = format!("fp_req:{}", ip_val.ip());
-        if let Ok(mut conn) = state.redis.get().await {
-            let count: i64 = conn.get(&key).await.unwrap_or(0);
-            if count >= 5 {
-                return Err(AppError::RateLimitExceeded);
-            }
-            let _: Result<(), _> = conn.incr(&key, 1i64).await;
-            let _: Result<(), _> = conn.expire(&key, 900i64).await; // 15-min window
+        if budget_exhausted(
+            state,
+            &key,
+            MAX_FORGOT_PASSWORD_BY_IP,
+            FORGOT_PASSWORD_IP_WINDOW_SECS,
+        )
+        .await
+        {
+            return Err(AppError::RateLimitExceeded);
         }
     }
 
-    let user = match user_repo::find_by_email(&state.db, email).await? {
-        Some(u) => u,
-        None => {
-            // Normalize timing so callers cannot distinguish "email not found"
-            // from "email found" via response latency (2 DB writes normally happen).
-            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-            return Ok(());
-        }
+    let started = std::time::Instant::now();
+    let result = issue_password_reset(state, email, ip, user_agent, request_id).await;
+    let elapsed = started.elapsed();
+    if elapsed < FORGOT_PASSWORD_MIN_DURATION {
+        tokio::time::sleep(FORGOT_PASSWORD_MIN_DURATION - elapsed).await;
+    }
+    result
+}
+
+async fn issue_password_reset(
+    state: &AppState,
+    email: &str,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+    request_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    let Some(user) = user_repo::find_by_email(&state.db, email).await? else {
+        return Ok(());
     };
+
+    // Cap resets per account across every IP, so nobody can flood a mailbox or
+    // keep invalidating its pending link from many addresses.
+    let account_key = format!("fp_account:{}", user.id);
+    if budget_exhausted(
+        state,
+        &account_key,
+        MAX_FORGOT_PASSWORD_BY_ACCOUNT,
+        FORGOT_PASSWORD_ACCOUNT_WINDOW_SECS,
+    )
+    .await
+    {
+        return Ok(());
+    }
 
     // Revoke any previous pending reset before issuing a new one
     token::revoke_active_password_reset_by_user(&state.db, user.id)
@@ -1339,36 +1407,8 @@ pub async fn reset_password(
 ) -> Result<(), AppError> {
     use crate::domain::token::OneTimeToken;
 
-    // Rate limit reset attempts per IP.
-    if let Some(ip_val) = ip {
-        let key = format!("rp_fail:{}", ip_val.ip());
-        if let Ok(mut conn) = state.redis.get().await {
-            let count: i64 = conn.get(&key).await.unwrap_or(0);
-            if count >= MAX_TOKEN_SUBMIT_BY_IP {
-                return Err(AppError::RateLimitExceeded);
-            }
-            let _: Result<(), _> = conn.incr(&key, 1i64).await;
-            let _: Result<(), _> = conn.expire(&key, TOKEN_SUBMIT_WINDOW_SECS as i64).await;
-        }
-    }
-
     let hash = crypto::sha256(raw_token.as_bytes());
-
-    // Per-token-hash rate limit: cap attempts against the same token from any IP.
-    {
-        let tk_key = format!(
-            "rp_tok:{}",
-            hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
-        );
-        if let Ok(mut conn) = state.redis.get().await {
-            let count: i64 = conn.get(&tk_key).await.unwrap_or(0);
-            if count >= MAX_TOKEN_SUBMIT_BY_HASH {
-                return Err(AppError::RateLimitExceeded);
-            }
-            let _: Result<(), _> = conn.incr(&tk_key, 1i64).await;
-            let _: Result<(), _> = conn.expire(&tk_key, TOKEN_SUBMIT_WINDOW_SECS as i64).await;
-        }
-    }
+    guard_token_submission(state, "rp", ip, &hash).await?;
 
     // Constant-time token validation (see verify_email for rationale).
     let start = std::time::Instant::now();
@@ -1456,6 +1496,66 @@ pub async fn reset_password(
 
 // Internal helpers
 
+/// Consume one attempt of an abuse-control budget.
+///
+/// Fails open: these budgets bound volume (mail floods, token scanning) rather
+/// than guard a secret, so a Redis outage must not take account recovery down
+/// with it. Second-factor budgets, which do guard secrets, fail closed instead.
+async fn budget_exhausted(state: &AppState, key: &str, limit: i64, window_secs: u64) -> bool {
+    match redis_counter::consume(
+        &state.redis,
+        &[Budget {
+            key,
+            limit,
+            window_secs,
+        }],
+    )
+    .await
+    {
+        Ok(attempt) => attempt.exceeded,
+        Err(error) => {
+            tracing::warn!(key, error = %error, "abuse budget unavailable, failing open");
+            false
+        }
+    }
+}
+
+/// Throttle submissions of one-time tokens (email verification, password
+/// reset): per IP, and per token hash across every IP. Tokens carry 256 bits,
+/// so this is volume control, not the security boundary; it fails open.
+async fn guard_token_submission(
+    state: &AppState,
+    kind: &str,
+    ip: Option<IpNetwork>,
+    token_hash: &[u8; 32],
+) -> Result<(), AppError> {
+    let hex: String = token_hash.iter().map(|b| format!("{b:02x}")).collect();
+    let hash_key = format!("{kind}_tok:{hex}");
+    let ip_key = ip.map(|ip| format!("{kind}_fail:{}", ip.ip()));
+
+    let mut budgets = vec![Budget {
+        key: &hash_key,
+        limit: MAX_TOKEN_SUBMIT_BY_HASH,
+        window_secs: TOKEN_SUBMIT_WINDOW_SECS,
+    }];
+    if let Some(key) = ip_key.as_deref() {
+        budgets.push(Budget {
+            key,
+            limit: MAX_TOKEN_SUBMIT_BY_IP,
+            window_secs: TOKEN_SUBMIT_WINDOW_SECS,
+        });
+    }
+
+    match redis_counter::consume(&state.redis, &budgets).await {
+        Ok(attempt) if attempt.exceeded => Err(AppError::RateLimitExceeded),
+        Ok(_) => Ok(()),
+        Err(error) => {
+            tracing::warn!(error = %error, "token submission budget unavailable, failing open");
+            Ok(())
+        }
+    }
+}
+
 /// Record login location and send new-device notification if applicable.
 /// Record login location and send new-device notification if applicable.
 pub async fn post_login_hooks(
@@ -1489,6 +1589,8 @@ pub(crate) async fn issue_tokens(
         state.config.jwt.short_session_expiry_secs
     };
 
+    let device_name = device_name.and_then(crate::domain::session::device_label);
+
     let session = session_repo::create(
         &state.db,
         &NewSession {
@@ -1496,7 +1598,7 @@ pub(crate) async fn issue_tokens(
             session_family_id: Uuid::new_v4(),
             expires_at: time::in_secs(expiry_secs),
             ip_address: ip,
-            device_name,
+            device_name: device_name.as_deref(),
             remember_me,
             token_hash: &token_hash,
             user_agent,

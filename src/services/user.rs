@@ -35,7 +35,8 @@ fn reauth_fail_key(user_id: Uuid) -> String {
     format!("{}{}", REAUTH_FAIL_PREFIX, user_id)
 }
 
-/// Verifies a user's current password. Returns Err(InvalidCredentials) on mismatch.
+/// Verifies a user's current password. Returns Err(ReauthenticationFailed) on mismatch:
+/// the caller is already signed in, so "invalid email or password" would mislead.
 ///
 /// Wraps a per-user Redis counter to prevent brute-force across re-auth
 /// endpoints. Once the configured `LOCKOUT_THRESHOLD` is reached, the call
@@ -94,7 +95,7 @@ pub async fn verify_password(
             }
         }
 
-        return Err(AppError::InvalidCredentials);
+        return Err(AppError::ReauthenticationFailed);
     }
 
     // On success, reset the counter so a previously-mistyping user is not
@@ -129,7 +130,10 @@ pub async fn change_username(
 
     user_repo::update_username(&state.db, user_id, new_username)
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        // The pre-check can race with another rename; the constraint decides.
+        .map_err(|e| {
+            AppError::from_unique_violation(e, &[("users_username_key", "username_taken")])
+        })?;
 
     audit::append(
         &state.db,

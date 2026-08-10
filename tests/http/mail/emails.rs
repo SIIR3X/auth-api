@@ -57,7 +57,7 @@ async fn register_sends_verification_email() {
             }),
         )
         .await;
-    assert_eq!(res.status().as_u16(), 201);
+    assert_eq!(res.status().as_u16(), 202);
 
     let msg = mp
         .wait_for_message(email, "Verify your email address")

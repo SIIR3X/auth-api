@@ -60,7 +60,7 @@ async fn captcha_disabled_register_succeeds_without_token() {
     let app = TestApp::spawn().await;
     let status = try_register(&app, 1, None).await;
     assert_eq!(
-        status, 201,
+        status, 202,
         "register must succeed when captcha is disabled"
     );
 }
@@ -130,7 +130,7 @@ async fn captcha_valid_token_accepted_by_mock_server() {
 
     let status = try_register(&app, 5, Some("valid-token-xyz")).await;
     assert_eq!(
-        status, 201,
+        status, 202,
         "register must succeed when mock returns success:true"
     );
 }
@@ -169,7 +169,7 @@ async fn captcha_fail_open_passes_when_upstream_unreachable() {
 
     let status = try_register(&app, 7, Some("any-token")).await;
     assert_eq!(
-        status, 201,
+        status, 202,
         "fail_open=true must let the request through when upstream is down"
     );
 }
@@ -257,7 +257,7 @@ async fn captcha_fail_open_passes_when_upstream_returns_500() {
 
     let status = try_register(&app, 9, Some("any-token")).await;
     assert_eq!(
-        status, 201,
+        status, 202,
         "fail_open=true must pass through when upstream returns 500"
     );
 }
@@ -297,7 +297,7 @@ async fn captcha_fail_open_passes_when_upstream_returns_invalid_json() {
 
     let status = try_register(&app, 11, Some("any-token")).await;
     assert_eq!(
-        status, 201,
+        status, 202,
         "fail_open=true must pass through when upstream returns invalid JSON"
     );
 }

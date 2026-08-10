@@ -34,7 +34,7 @@ async fn register_succeeds_when_redis_is_down() {
             }),
         )
         .await;
-    assert_eq!(res.status().as_u16(), 201);
+    assert_eq!(res.status().as_u16(), 202);
 }
 
 // Login

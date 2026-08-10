@@ -8,6 +8,19 @@ use ipnetwork::IpNetwork;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// Longest device label the sessions table stores (`VARCHAR(100)`).
+pub const DEVICE_NAME_MAX_CHARS: usize = 100;
+
+/// Normalize a client-supplied device name: control characters removed,
+/// whitespace trimmed, at most `DEVICE_NAME_MAX_CHARS` characters. `None` when
+/// nothing is left, so an unusable label never reaches the database.
+pub fn device_label(raw: &str) -> Option<String> {
+    let cleaned: String = raw.chars().filter(|c| !c.is_control()).collect();
+    let label: String = cleaned.trim().chars().take(DEVICE_NAME_MAX_CHARS).collect();
+    let label = label.trim_end();
+    (!label.is_empty()).then(|| label.to_owned())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, sqlx::Type)]
 #[sqlx(type_name = "session_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]

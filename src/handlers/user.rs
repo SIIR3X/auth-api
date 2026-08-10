@@ -113,20 +113,7 @@ pub async fn change_username(
     auth: AuthUser,
     Json(body): Json<ChangeUsernameRequest>,
 ) -> Result<StatusCode, AppError> {
-    if body.username.len() < 3 || body.username.len() > 30 {
-        return Err(AppError::Validation(
-            "username must be 3 to 30 characters".into(),
-        ));
-    }
-    if !body
-        .username
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_')
-    {
-        return Err(AppError::Validation(
-            "username may only contain letters, digits and underscores".into(),
-        ));
-    }
+    super::auth::validate_username(&body.username)?;
 
     reauth_svc::require_recent_reauth_or_password(
         &state,
@@ -177,9 +164,7 @@ pub async fn submit_new_email(
     auth: AuthUser,
     Json(body): Json<SubmitNewEmailRequest>,
 ) -> Result<StatusCode, AppError> {
-    if !email_address::EmailAddress::is_valid(&body.new_email) {
-        return Err(AppError::Validation("invalid email address".into()));
-    }
+    super::auth::validate_email(&body.new_email)?;
     email_change_svc::submit_new(
         &state,
         auth.user_id,

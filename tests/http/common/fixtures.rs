@@ -53,13 +53,18 @@ pub async fn register_user(app: &TestApp, index: usize) -> RegisteredUser {
         .await;
 
     let status = res.status().as_u16();
-    if status != 201 {
+    if status != 202 {
         let body = res.text().await.unwrap_or_default();
         panic!("register failed for user {index}: status={status} body={body}");
     }
 
-    let body: Value = res.json().await.unwrap();
-    let id = Uuid::parse_str(body["id"].as_str().unwrap()).unwrap();
+    // The registration response is deliberately identical for new and taken
+    // addresses and carries no id: read it back from the database.
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(&email)
+        .fetch_one(&app.db)
+        .await
+        .expect("registered user not found");
 
     RegisteredUser {
         id,

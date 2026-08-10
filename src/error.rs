@@ -47,6 +47,8 @@ pub enum AppError {
     TokenExpired,
     #[error("token invalid")]
     TokenInvalid,
+    #[error("re-authentication failed")]
+    ReauthenticationFailed,
 
     // 403
     #[error("forbidden")]
@@ -158,6 +160,13 @@ impl IntoResponse for AppError {
             Self::TokenInvalid => (
                 StatusCode::UNAUTHORIZED,
                 ErrorBody::new("token_invalid", "This token is invalid."),
+            ),
+            Self::ReauthenticationFailed => (
+                StatusCode::UNAUTHORIZED,
+                ErrorBody::new(
+                    "reauthentication_failed",
+                    "The current password is incorrect.",
+                ),
             ),
 
             // 403
@@ -392,6 +401,15 @@ mod tests {
     #[test]
     fn token_invalid_is_401() {
         assert_eq!(status(AppError::TokenInvalid), 401);
+    }
+
+    #[tokio::test]
+    async fn reauthentication_failed_is_401_with_its_own_code() {
+        assert_eq!(status(AppError::ReauthenticationFailed), 401);
+        assert_eq!(
+            body_code(AppError::ReauthenticationFailed).await,
+            "reauthentication_failed"
+        );
     }
 
     // 403

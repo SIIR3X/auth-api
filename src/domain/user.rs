@@ -47,6 +47,41 @@ impl User {
     }
 }
 
+/// Usernames as the `users_username_format` constraint accepts them: ASCII
+/// letters, digits and underscores only. Length is checked by the caller.
+pub fn is_valid_username(username: &str) -> bool {
+    !username.is_empty()
+        && username
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// Addresses the `users` table can store: ASCII, at most 254 bytes, in the
+/// shape of the `users_email_format` constraint (`local@host.tld`). Stricter
+/// than RFC 5322 on purpose: whatever passes here must also pass the database
+/// CHECK, or the request fails with a 500 instead of a 422.
+pub fn is_storable_email(email: &str) -> bool {
+    if email.len() > 254 || !email.is_ascii() {
+        return false;
+    }
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    let Some((host, tld)) = domain.rsplit_once('.') else {
+        return false;
+    };
+    !local.is_empty()
+        && local
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._%+-".contains(&b))
+        && !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
+        && tld.len() >= 2
+        && tld.bytes().all(|b| b.is_ascii_alphabetic())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +136,26 @@ mod tests {
     #[test]
     fn is_email_verified_false_when_timestamp_missing() {
         assert!(!make_user(UserStatus::Active, None, false).is_email_verified());
+    }
+
+    #[test]
+    fn usernames_must_match_the_database_constraint() {
+        assert!(is_valid_username("alice_42"));
+        assert!(!is_valid_username("José_1"));
+        assert!(!is_valid_username("bad-name"));
+        assert!(!is_valid_username(""));
+    }
+
+    #[test]
+    fn storable_emails_match_the_database_constraint() {
+        assert!(is_storable_email("first.last+tag@mail.example.org"));
+        assert!(!is_storable_email("user@localhost"));
+        assert!(!is_storable_email("usér@example.com"));
+        assert!(!is_storable_email("a@b@example.com"));
+        assert!(!is_storable_email("user@example.c0m"));
+        assert!(!is_storable_email(&format!(
+            "{}@example.com",
+            "a".repeat(250)
+        )));
     }
 }

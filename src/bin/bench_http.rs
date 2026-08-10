@@ -522,7 +522,7 @@ async fn bench_register(
                             &format!("{base_url}/auth/register"),
                             Some(&body),
                             None,
-                            201,
+                            202,
                         )
                         .await
                     })
