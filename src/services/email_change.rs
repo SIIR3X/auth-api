@@ -248,7 +248,7 @@ pub async fn submit_new(
             request_id,
             action: AuditAction::EmailVerificationSent,
             ip_address: ip,
-            metadata: json!({"reason": "email_change_new", "target_email": new_email}),
+            metadata: json!({"reason": "email_change_new"}),
         },
     )
     .await
@@ -303,11 +303,11 @@ pub async fn confirm_new(
     let fail_key = format!("email_change_fail:{}", flow_token);
     verify_otp(state, submitted_code, flow.otp_hash.as_deref(), &fail_key).await?;
 
-    let old_email = user_repo::find_by_id(&state.db, user_id)
+    let previous = user_repo::find_by_id(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
-        .map(|u| u.email)
-        .unwrap_or_default();
+        .ok_or(AppError::NotFound)?;
+    let old_email = previous.email.clone();
 
     let other_session_ids = session_repo::find_active_by_user(&state.db, user_id)
         .await
@@ -347,13 +347,13 @@ pub async fn confirm_new(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-        // Ownership of the new address is proven via OTP, so the account stays
-        // active and email_verified_at is set immediately.
+        // Ownership of the new address is proven via OTP, so email_verified_at
+        // is set immediately. The status is left alone: confirming an address
+        // must never reactivate a suspended or inactive account.
         sqlx::query(
             "UPDATE users
              SET email = $2,
-                 email_verified_at = NOW(),
-                 status = 'active'::user_status
+                 email_verified_at = NOW()
              WHERE id = $1",
         )
         .bind(user_id)
@@ -381,7 +381,7 @@ pub async fn confirm_new(
         .bind(request_id)
         .bind(AuditAction::EmailChanged)
         .bind(ip)
-        .bind(json!({"new_email": new_email}))
+        .bind(json!({}))
         .execute(&mut *tx)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -392,6 +392,10 @@ pub async fn confirm_new(
     }
 
     auth_svc::invalidate_session_caches(state, &other_session_ids).await;
+
+    // Challenges and flows opened before the change belong to the old identity.
+    auth_svc::purge_user_pre_auth_and_email_change(state, user_id).await;
+    notify_previous_address(state, &previous, new_email);
 
     events::publish(
         state,
@@ -426,6 +430,34 @@ pub async fn confirm_new(
 }
 
 // Internal helpers
+
+/// Warn the previous address that the account moved away from it: if the change
+/// was not wanted, this message is the owner's only chance to notice.
+fn notify_previous_address(
+    state: &AppState,
+    previous: &crate::domain::user::User,
+    new_email: &str,
+) {
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = previous.email.clone();
+    let username = previous.username.clone();
+    let locale = previous.preferred_locale.clone();
+    let masked = email_svc::mask_email(new_email);
+    email_svc::dispatch_best_effort("email_changed_notice", async move {
+        email_svc::send_email_changed(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+            &masked,
+        )
+        .await
+    });
+}
 
 async fn save_flow(state: &AppState, flow_token: &str, flow: &FlowState) -> Result<(), AppError> {
     let key = format!("email_change_flow:{}", flow_token);

@@ -45,6 +45,9 @@ pub struct Session {
     pub last_used_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub created_at: OffsetDateTime,
+    /// When the family's first session was created: the start of the sign-in
+    /// that every rotation inherits. The absolute lifetime is measured from it.
+    pub family_created_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
     pub rotated_at: Option<OffsetDateTime>,
     pub compromised_at: Option<OffsetDateTime>,
@@ -68,6 +71,16 @@ impl Session {
     pub fn is_compromised(&self) -> bool {
         self.compromised_at.is_some()
     }
+
+    /// True when this session was rotated within `grace` and not for a
+    /// compromise: presenting its token again is then a concurrent refresh
+    /// from the same client (two tabs, a retried request), not a replay.
+    pub fn rotated_within(&self, grace: time::Duration) -> bool {
+        self.compromised_at.is_none()
+            && self
+                .rotated_at
+                .is_some_and(|rotated| OffsetDateTime::now_utc() - rotated <= grace)
+    }
 }
 
 #[cfg(test)]
@@ -83,6 +96,7 @@ mod tests {
             last_used_at: now,
             expires_at: now + time::Duration::seconds(expires_in_secs),
             created_at: now,
+            family_created_at: now,
             revoked_at: if revoked { Some(now) } else { None },
             rotated_at: None,
             compromised_at: if compromised { Some(now) } else { None },

@@ -12,6 +12,7 @@ mod register;
 mod risk;
 mod second_factor;
 mod security;
+mod session_hardening;
 mod totp;
 mod two_factor;
 mod two_factor_management;

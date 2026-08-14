@@ -9,7 +9,10 @@
 //! window are pruned on every check. If the count exceeds the limit the
 //! request is rejected with 429.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    net::IpAddr,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use axum::{
     body::Body,
@@ -78,6 +81,24 @@ async fn check_rate_limit(
     Ok(allowed == 1)
 }
 
+/// Key a client address for rate limiting and abuse budgets.
+///
+/// IPv4 addresses are used as-is. An IPv6 client is bucketed by its /64, the
+/// prefix a single subscriber is typically delegated: otherwise rotating through
+/// interface identifiers would reset every per-IP limit at will.
+pub fn ip_bucket(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+    }
+}
+
 // Extractor-free version for use as a plain function from a closure middleware.
 // Returns (pool, limit) as state so the router can configure different limits
 // per route group.
@@ -102,7 +123,7 @@ pub async fn layer_with_state(
     next: Next,
 ) -> Response {
     let ip = match client_ip.0 {
-        Some(ip) => ip.ip().to_string(),
+        Some(ip) => ip_bucket(ip.ip()),
         None if state.allow_requests_without_ip => return next.run(req).await,
         None => return (StatusCode::SERVICE_UNAVAILABLE, "client IP unavailable").into_response(),
     };
@@ -124,5 +145,32 @@ pub async fn layer_with_state(
                 (StatusCode::SERVICE_UNAVAILABLE, "rate limiter unavailable").into_response()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ip_bucket;
+
+    #[test]
+    fn ipv4_addresses_are_kept_whole() {
+        assert_eq!(ip_bucket("203.0.113.7".parse().unwrap()), "203.0.113.7");
+    }
+
+    #[test]
+    fn ipv6_addresses_share_their_64() {
+        let a = ip_bucket("2001:db8:1:2:aaaa::1".parse().unwrap());
+        let b = ip_bucket("2001:db8:1:2:ffff:ffff:ffff:ffff".parse().unwrap());
+        assert_eq!(a, b);
+        assert_eq!(a, "2001:db8:1:2::/64");
+        assert_ne!(a, ip_bucket("2001:db8:1:3::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_addresses_use_the_ipv4_bucket() {
+        assert_eq!(
+            ip_bucket("::ffff:198.51.100.4".parse().unwrap()),
+            "198.51.100.4"
+        );
     }
 }

@@ -260,7 +260,7 @@ pub async fn delete_account(
     )
     .await?;
 
-    let user = user_repo::find_by_id(&state.db, user_id)
+    user_repo::find_by_id(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
@@ -283,7 +283,9 @@ pub async fn delete_account(
             request_id,
             action: AuditAction::AccountDeleted,
             ip_address: ip,
-            metadata: serde_json::json!({"username": user.username, "email": user.email}),
+            // No identity in the metadata: the audit log outlives the account,
+            // and an erased user must not remain readable in it.
+            metadata: serde_json::json!({}),
         },
     )
     .await

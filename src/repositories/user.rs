@@ -94,12 +94,16 @@ pub async fn update_last_login(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Erro
     Ok(())
 }
 
-/// Sets email_verified_at and transitions status to active.
+/// Sets email_verified_at and activates an account that was pending
+/// verification. Any other status (suspended, inactive) is left untouched.
 pub async fn mark_email_verified(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE users
          SET email_verified_at = NOW(),
-             status = 'active'::user_status
+             status = CASE
+                 WHEN status = 'pending_verification' THEN 'active'::user_status
+                 ELSE status
+             END
          WHERE id = $1",
     )
     .bind(id)

@@ -30,6 +30,7 @@ fn migrations_are_sorted_and_contiguous() {
         "0017_cleanup_schedule.sql",
         "0018_registered_clients.sql",
         "0019_used_totp_codes.sql",
+        "0020_session_family_created_at.sql",
     ];
 
     assert_eq!(names, expected);

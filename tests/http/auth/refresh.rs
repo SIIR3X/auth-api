@@ -149,7 +149,22 @@ async fn refresh_token_theft_invalidates_entire_session_family() {
         "R1 access token should be valid before theft"
     );
 
-    // Step 3: replay the original token - triggers family revocation.
+    // Step 3: replay the original token later than the concurrent-refresh grace
+    // window (simulated by backdating the rotation) - triggers family revocation.
+    let r0_hash = auth_api::utils::crypto::sha256(user.refresh_token.as_bytes());
+    sqlx::query(
+        "UPDATE sessions
+         SET rotated_at = rotated_at - INTERVAL '10 seconds',
+             revoked_at = revoked_at - INTERVAL '10 seconds',
+             created_at = created_at - INTERVAL '10 seconds',
+             family_created_at = family_created_at - INTERVAL '10 seconds'
+         WHERE token_hash = $1",
+    )
+    .bind(r0_hash.as_slice())
+    .execute(&app.db)
+    .await
+    .unwrap();
+
     let replay = app
         .post(
             "/auth/refresh",

@@ -37,6 +37,7 @@ use crate::{
 use ::time::Duration as TimeDuration;
 
 use super::{email, email_2fa, events, reauth, risk_score};
+use crate::middleware::rate_limit::ip_bucket;
 use crate::utils::{
     backoff,
     redis_counter::{self, Budget},
@@ -69,6 +70,11 @@ const CS_MAX_DISTINCT_IDENTIFIERS: i64 = 50;
 const MAX_REFRESH_FAILURES_BY_IP: i64 = 20;
 /// TTL for the refresh failure counter in Redis (seconds).
 const REFRESH_FAILURE_WINDOW_SECS: u64 = 900;
+/// A rotated refresh token presented again within this window is treated as a
+/// concurrent refresh from the same client (two tabs, a retried request): it is
+/// refused without revoking the family. Later, it is a replay and the whole
+/// family is revoked. Kept short: inside the window a replay goes undetected.
+const REFRESH_REUSE_GRACE: TimeDuration = TimeDuration::seconds(2);
 /// Pre-auth (2FA challenge) token TTL in Redis.
 const PRE_AUTH_TTL_SECS: u64 = 300;
 /// Redis key prefix for pre-auth state.
@@ -467,7 +473,7 @@ pub async fn login(
         match ip {
             Some(ip_val) => {
                 if let Ok(mut conn) = state.redis.get().await {
-                    let hll_key = format!("{}{}", CS_HLL_PREFIX, ip_val.ip());
+                    let hll_key = format!("{}{}", CS_HLL_PREFIX, ip_bucket(ip_val.ip()));
                     Ok(conn.pfcount(&hll_key).await.unwrap_or(0))
                 } else {
                     Ok(0)
@@ -967,7 +973,7 @@ pub async fn refresh_token(
 ) -> Result<AuthTokens, AppError> {
     // Brute-force guard on refresh attempts per IP.
     if let Some(ip_val) = ip {
-        let key = format!("refresh_fail:{}", ip_val.ip());
+        let key = format!("refresh_fail:{}", ip_bucket(ip_val.ip()));
         let mut conn = state
             .redis
             .get()
@@ -1004,7 +1010,7 @@ pub async fn refresh_token(
         None => {
             // Increment failure counter on unknown token.
             if let Some(ip_val) = ip {
-                let key = format!("refresh_fail:{}", ip_val.ip());
+                let key = format!("refresh_fail:{}", ip_bucket(ip_val.ip()));
                 if let Ok(mut conn) = state.redis.get().await {
                     let _: Result<(), _> = conn.incr(&key, 1i64).await;
                     let _: Result<(), _> =
@@ -1015,8 +1021,12 @@ pub async fn refresh_token(
         }
     };
 
-    // Revoked session that is presented again = replay attack
+    // Revoked session presented again: a concurrent refresh when it was rotated
+    // moments ago, a replay attack otherwise.
     if session.revoked_at.is_some() {
+        if session.rotated_within(REFRESH_REUSE_GRACE) {
+            return Err(AppError::TokenInvalid);
+        }
         session_repo::revoke_family(&state.db, session.id)
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
@@ -1043,7 +1053,9 @@ pub async fn refresh_token(
 
     // Absolute session lifetime guard
     let max_lifetime = state.config.jwt.max_session_lifetime_secs as i64;
-    let session_age = (time::now() - session.created_at).whole_seconds();
+    // Measured from the family's first sign-in: every rotation creates a new
+    // row, so the current row's created_at would restart the clock each time.
+    let session_age = (time::now() - session.family_created_at).whole_seconds();
     if session_age >= max_lifetime {
         return Err(AppError::TokenExpired);
     }
@@ -1108,12 +1120,20 @@ pub async fn refresh_token(
             user_agent,
             session_type: session.session_type,
             client_id: session.client_id.as_deref(),
+            family_created_at: Some(session.family_created_at),
         },
     )
     .await
     {
         Ok(session) => session,
         Err(sqlx::Error::RowNotFound) => {
+            // Another request rotated this session between our read and the
+            // lock. Moments ago: the same client refreshing twice.
+            if let Ok(Some(current)) = session_repo::find_by_id(&state.db, session.id).await
+                && current.rotated_within(REFRESH_REUSE_GRACE)
+            {
+                return Err(AppError::TokenInvalid);
+            }
             session_repo::revoke_family(&state.db, session.id)
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?;
@@ -1290,7 +1310,7 @@ pub async fn forgot_password(
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     if let Some(ip_val) = ip {
-        let key = format!("fp_req:{}", ip_val.ip());
+        let key = format!("fp_req:{}", ip_bucket(ip_val.ip()));
         if budget_exhausted(
             state,
             &key,
@@ -1531,7 +1551,7 @@ async fn guard_token_submission(
 ) -> Result<(), AppError> {
     let hex: String = token_hash.iter().map(|b| format!("{b:02x}")).collect();
     let hash_key = format!("{kind}_tok:{hex}");
-    let ip_key = ip.map(|ip| format!("{kind}_fail:{}", ip.ip()));
+    let ip_key = ip.map(|ip| format!("{kind}_fail:{}", ip_bucket(ip.ip())));
 
     let mut budgets = vec![Budget {
         key: &hash_key,
@@ -1604,6 +1624,7 @@ pub(crate) async fn issue_tokens(
             user_agent,
             session_type,
             client_id,
+            family_created_at: None,
         },
     )
     .await
@@ -1659,7 +1680,7 @@ async fn track_credential_stuffing(state: &AppState, ip: Option<IpNetwork>, iden
     };
     match state.redis.get().await {
         Ok(mut conn) => {
-            let key = format!("{}{}", CS_HLL_PREFIX, ip_val.ip());
+            let key = format!("{}{}", CS_HLL_PREFIX, ip_bucket(ip_val.ip()));
             let _: Result<(), _> = conn.pfadd(&key, identifier).await;
             let _: Result<(), _> = conn.expire(&key, CS_WINDOW_SECS as i64).await;
         }

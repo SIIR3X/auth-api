@@ -37,6 +37,9 @@ pub struct NewSession<'a> {
     pub user_agent: Option<&'a str>,
     pub session_type: SessionType,
     pub client_id: Option<&'a str>,
+    /// Start of the family: `None` for a new sign-in (now), the previous
+    /// session's value for a rotation.
+    pub family_created_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -69,8 +72,8 @@ impl SessionValidation {
 pub async fn create(pool: &PgPool, input: &NewSession<'_>) -> Result<Session, sqlx::Error> {
     sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()))
          RETURNING *",
     )
     .bind(input.user_id)
@@ -83,6 +86,7 @@ pub async fn create(pool: &PgPool, input: &NewSession<'_>) -> Result<Session, sq
     .bind(input.user_agent)
     .bind(input.session_type)
     .bind(input.client_id)
+    .bind(input.family_created_at)
     .fetch_one(pool)
     .await
 }
@@ -109,8 +113,8 @@ pub async fn rotate(
 
     let new_session = sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -123,6 +127,7 @@ pub async fn rotate(
     .bind(input.user_agent)
     .bind(input.session_type)
     .bind(input.client_id)
+    .bind(input.family_created_at.unwrap_or(old_session.family_created_at))
     .fetch_one(&mut *tx)
     .await?;
 

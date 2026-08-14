@@ -34,6 +34,7 @@ const TNAME_PASSWORD_CHANGED: &str = "password_changed";
 const TNAME_TWO_FACTOR_DISABLED: &str = "two_factor_disabled";
 const TNAME_TWO_FACTOR_ENABLED: &str = "two_factor_enabled";
 const TNAME_ACCOUNT_EXISTS: &str = "account_exists";
+const TNAME_EMAIL_CHANGED: &str = "email_changed";
 const TNAME_RECOVERY_CODE_USED: &str = "recovery_code_used";
 
 pub fn dispatch_best_effort<F>(label: &'static str, future: F)
@@ -313,6 +314,49 @@ pub async fn send_password_changed(
     .await
 }
 
+/// Mask an address for display in a notification: `j***@example.com`.
+pub fn mask_email(email: &str) -> String {
+    match email.split_once('@') {
+        Some((local, domain)) => {
+            let first: String = local.chars().take(1).collect();
+            format!("{first}***@{domain}")
+        }
+        None => "***".to_owned(),
+    }
+}
+
+pub async fn send_email_changed(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    new_email_masked: &str,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("new_email_masked", new_email_masked);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_EMAIL_CHANGED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(
+        mailer,
+        &mail_cfg.smtp,
+        to_email,
+        username,
+        "Your account email address was changed",
+        body,
+    )
+    .await
+}
+
 pub async fn send_account_exists(
     mailer: &Mailer,
     templates: &Tera,
@@ -489,4 +533,15 @@ async fn send(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("smtp send failed: {}", e)))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mask_email;
+
+    #[test]
+    fn mask_email_keeps_only_the_first_character_and_domain() {
+        assert_eq!(mask_email("jane.doe@example.com"), "j***@example.com");
+        assert_eq!(mask_email("not-an-address"), "***");
+    }
 }
