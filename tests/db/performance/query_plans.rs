@@ -1,6 +1,4 @@
-use auth_api::repositories::{
-    login_attempt, login_location, session as session_repo, user as user_repo,
-};
+use auth_api::repositories::{login_attempt, session as session_repo, user as user_repo};
 use postgres::Client;
 use time::OffsetDateTime;
 
@@ -81,29 +79,6 @@ fn session_lookup_plans_use_primary_and_token_hash_indexes() {
 }
 
 #[test]
-fn risk_history_plan_uses_recent_login_location_index() {
-    let Some(mut db) = TestDatabase::new() else {
-        return;
-    };
-
-    let client = db.client();
-    let user_id = insert_active_user(client, 900);
-    let other_user_id = insert_active_user(client, 901);
-
-    insert_login_locations(client, user_id, 120, "user-agent/perf");
-    insert_login_locations(client, other_user_id, 40, "user-agent/other");
-
-    let history_days = 30i32;
-    let plan = explain_plan(
-        client,
-        login_location::FIND_RECENT_FOR_RISK_SQL,
-        &[&user_id, &history_days],
-    );
-
-    assert_plan_contains(&plan, "idx_login_locations_last_seen");
-}
-
-#[test]
 fn brute_force_counter_plans_use_partial_failure_indexes() {
     let Some(mut db) = TestDatabase::new() else {
         return;
@@ -119,8 +94,7 @@ fn brute_force_counter_plans_use_partial_failure_indexes() {
         .batch_execute(
             "ANALYZE login_attempts;
              ANALYZE users;
-             ANALYZE sessions;
-             ANALYZE login_locations;",
+             ANALYZE sessions;",
         )
         .expect("failed to analyze benchmark fixtures");
 
@@ -141,40 +115,6 @@ fn brute_force_counter_plans_use_partial_failure_indexes() {
     let ip_limit = 30i64;
     let ip_plan = explain_plan(client, &explain_ip_sql, &[&hot_ip, &cutoff, &ip_limit]);
     assert_plan_contains(&ip_plan, "idx_login_attempts_failed_ip_time");
-}
-
-fn insert_login_locations(
-    client: &mut Client,
-    user_id: uuid::Uuid,
-    count: usize,
-    user_agent: &str,
-) {
-    let user_agent = user_agent.to_string();
-
-    for offset in 0..count {
-        let country = format!("FR{}", offset % 3);
-        let city = format!("Paris-{offset}");
-        let ip = format!("198.51.100.{}/32", (offset % 200) + 1);
-        let hours_ago = (offset % 48) as i32;
-
-        client
-            .execute(
-                "INSERT INTO login_locations
-                    (user_id, country, city, user_agent, ip_address, latitude, longitude, last_seen, first_seen)
-                 VALUES ($1, $2, $3, $4, $5::text::cidr, $6, $7, NOW() - ($8::int * INTERVAL '1 hour'), NOW() - ($8::int * INTERVAL '1 hour'))",
-                &[
-                    &user_id,
-                    &country,
-                    &city,
-                    &user_agent,
-                    &ip,
-                    &48.8566_f64,
-                    &2.3522_f64,
-                    &hours_ago,
-                ],
-            )
-            .expect("failed to insert login location fixture");
-    }
 }
 
 fn insert_login_attempts(client: &mut Client, user_id: uuid::Uuid, identifier: &str, ip: &str) {

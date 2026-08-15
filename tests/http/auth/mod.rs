@@ -1,5 +1,6 @@
 mod account_hardening;
 mod captcha;
+mod events;
 mod headers;
 mod jwt;
 mod lockout;
@@ -9,7 +10,6 @@ mod redis_counter;
 mod redis_resilience;
 mod refresh;
 mod register;
-mod risk;
 mod second_factor;
 mod security;
 mod session_hardening;

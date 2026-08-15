@@ -65,10 +65,12 @@ services:
     image: nats:2-alpine
     restart: unless-stopped
     # Overriding the command bypasses the image's config file, so monitoring
-    # (which the healthcheck probes) must be re-enabled explicitly.
-    command: ["--http_port", "8222", "--auth", "${NATS_AUTH_TOKEN:?set from pass}"]
-    tmpfs:
-      - /data
+    # (which the healthcheck probes) must be re-enabled explicitly. JetStream
+    # stores the durable user events (`user.deleted`) on a named volume: a
+    # tmpfs would lose unconsumed erasure events on every restart.
+    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222", "--auth", "${NATS_AUTH_TOKEN:?set from pass}"]
+    volumes:
+      - nats_data:/data
     cap_drop:
       - ALL
     security_opt:
@@ -83,3 +85,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+volumes:
+  nats_data:

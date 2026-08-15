@@ -39,11 +39,11 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "jso
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 tower-http = { version = "0.7.0", features = ["cors", "timeout"] }
 email_address = "0.2.9"
-maxminddb = "0.29.0"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "form"] }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
+futures = "0.3"
 postgres = { version = "0.19.12", features = ["with-uuid-1", "with-time-0_3"] }
 proptest = "1.9.0"
 tokio = { version = "1.50.0", features = ["full"] }

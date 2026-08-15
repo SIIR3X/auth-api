@@ -5,7 +5,7 @@
 //! Optional variables fall back to safe, documented defaults.
 //! Use `.env.dev` and `config.prod.env` as a reference for all available variables.
 
-use std::{env, path::Path, str::FromStr};
+use std::{env, str::FromStr};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ipnetwork::IpNetwork;
@@ -101,8 +101,8 @@ pub struct JwtConfig {
     /// Hard upper bound on session lifetime regardless of refresh activity (default: 90 days).
     pub max_session_lifetime_secs: u64,
     /// Audience values stamped into the `aud` claim of issued access tokens.
-    /// Each entry is the public URL of a downstream resource server (core-api,
-    /// billing-api, ...). Loaded from the `JWT_AUDIENCE` env var as a CSV.
+    /// Each entry is the public URL of a downstream resource server that accepts
+    /// these tokens. Loaded from the `JWT_AUDIENCE` env var as a CSV.
     /// Required in production: an empty audience would emit tokens that
     /// downstream services pinning `aud` could not accept.
     pub audience: Vec<String>,
@@ -209,25 +209,6 @@ pub struct MailConfig {
     pub default_locale: String,
 }
 
-// Risk scoring
-
-#[derive(Debug, Clone)]
-pub struct RiskConfig {
-    /// Path to the MaxMind GeoLite2-City.mmdb file.
-    /// If empty or the file is absent, geolocation signals are skipped (fail open).
-    pub geoip_db_path: String,
-    /// When true, the API refuses to start unless the GeoIP database is available.
-    pub geoip_required: bool,
-    /// Score threshold above which an alert email is sent to the user (default: 30).
-    pub alert_threshold: u32,
-    /// Score threshold above which 2FA is enforced even without TOTP configured (default: 60).
-    pub challenge_threshold: u32,
-    /// Score threshold above which the login is blocked entirely (default: 80).
-    pub block_threshold: u32,
-    /// Number of days of location history to consider when computing "new country/city" (default: 90).
-    pub history_days: u32,
-}
-
 // Cleanup
 
 #[derive(Debug, Clone)]
@@ -322,7 +303,6 @@ pub struct Config {
     pub captcha: CaptchaConfig,
     pub cleanup: CleanupConfig,
     pub audit: AuditConfig,
-    pub risk: RiskConfig,
     pub log: LogConfig,
     pub device_auth: DeviceAuthConfig,
     pub metrics: MetricsConfig,
@@ -445,14 +425,6 @@ impl Config {
             audit: AuditConfig {
                 retention_months: env_parse("AUDIT_LOG_RETENTION_MONTHS")?.unwrap_or(12),
             },
-            risk: RiskConfig {
-                geoip_db_path: env_string("GEOIP_DB_PATH").unwrap_or_default(),
-                geoip_required: env_parse("GEOIP_REQUIRED")?.unwrap_or(false),
-                alert_threshold: env_parse("RISK_ALERT_THRESHOLD")?.unwrap_or(30),
-                challenge_threshold: env_parse("RISK_CHALLENGE_THRESHOLD")?.unwrap_or(60),
-                block_threshold: env_parse("RISK_BLOCK_THRESHOLD")?.unwrap_or(80),
-                history_days: env_parse("RISK_HISTORY_DAYS")?.unwrap_or(90),
-            },
             log: LogConfig {
                 level: env_string("LOG_LEVEL").unwrap_or_else(|| "info".into()),
                 format: env_parse("LOG_FORMAT")?.unwrap_or(LogFormat::Pretty),
@@ -502,7 +474,6 @@ impl Config {
             self.crypto.previous_encryption_key.as_deref(),
         )?;
         validate_cors(&self.cors, self.is_production())?;
-        validate_risk(&self.risk)?;
         validate_security(&self.security)?;
         validate_crypto(&self.crypto)?;
 
@@ -897,35 +868,6 @@ fn validate_cors(cors: &CorsConfig, is_production: bool) -> Result<(), ConfigErr
     Ok(())
 }
 
-fn validate_risk(risk: &RiskConfig) -> Result<(), ConfigError> {
-    if !(risk.alert_threshold <= risk.challenge_threshold
-        && risk.challenge_threshold <= risk.block_threshold)
-    {
-        return Err(ConfigError::Invalid {
-            key: "RISK_*_THRESHOLD".into(),
-            reason: "must satisfy alert <= challenge <= block".into(),
-        });
-    }
-
-    if risk.geoip_required {
-        if risk.geoip_db_path.is_empty() {
-            return Err(ConfigError::Invalid {
-                key: "GEOIP_DB_PATH".into(),
-                reason: "is required when GEOIP_REQUIRED=true".into(),
-            });
-        }
-
-        if !Path::new(&risk.geoip_db_path).exists() {
-            return Err(ConfigError::Invalid {
-                key: "GEOIP_DB_PATH".into(),
-                reason: "file does not exist".into(),
-            });
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1021,14 +963,6 @@ mod tests {
             audit: AuditConfig {
                 retention_months: 6,
             },
-            risk: RiskConfig {
-                geoip_db_path: String::new(),
-                geoip_required: false,
-                alert_threshold: 30,
-                challenge_threshold: 60,
-                block_threshold: 80,
-                history_days: 90,
-            },
             log: LogConfig {
                 level: "info".into(),
                 format: LogFormat::Pretty,
@@ -1092,17 +1026,6 @@ mod tests {
             .validate()
             .expect_err("invalid encryption key should fail");
         assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "ENCRYPTION_KEY"));
-    }
-
-    #[test]
-    fn validate_rejects_missing_geoip_database_when_required() {
-        let mut config = valid_config();
-        config.risk.geoip_required = true;
-
-        let err = config
-            .validate()
-            .expect_err("missing GeoIP database should fail");
-        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "GEOIP_DB_PATH"));
     }
 
     #[test]
@@ -1225,32 +1148,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_inverted_risk_thresholds_alert_above_challenge() {
-        let mut config = valid_config();
-        config.risk.alert_threshold = 50;
-        config.risk.challenge_threshold = 30; // alert > challenge -- invalid
-        config.risk.block_threshold = 80;
-
-        let err = config
-            .validate()
-            .expect_err("alert > challenge threshold should fail");
-        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "RISK_*_THRESHOLD"));
-    }
-
-    #[test]
-    fn validate_rejects_inverted_risk_thresholds_challenge_above_block() {
-        let mut config = valid_config();
-        config.risk.alert_threshold = 10;
-        config.risk.challenge_threshold = 90;
-        config.risk.block_threshold = 50; // challenge > block -- invalid
-
-        let err = config
-            .validate()
-            .expect_err("challenge > block threshold should fail");
-        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "RISK_*_THRESHOLD"));
-    }
-
-    #[test]
     fn validate_rejects_empty_smtp_username_in_production() {
         let mut config = valid_config();
         config.mail.smtp.username = String::new();
@@ -1337,20 +1234,6 @@ mod tests {
             matches!(err, ConfigError::Invalid { key, .. } if key == "PREVIOUS_ENCRYPTION_KEY")
         );
     }
-
-    #[test]
-    fn validate_rejects_geoip_required_when_file_missing() {
-        let mut config = valid_config();
-        config.risk.geoip_required = true;
-        config.risk.geoip_db_path = "/nonexistent/path/to/GeoIP.mmdb".into();
-
-        let err = config
-            .validate()
-            .expect_err("non-existent GeoIP file should fail when required");
-        assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "GEOIP_DB_PATH"));
-    }
-
-    // Environment / LogFormat FromStr
 
     #[test]
     fn environment_from_str_accepts_known_variants() {

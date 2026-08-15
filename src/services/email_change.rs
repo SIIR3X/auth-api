@@ -392,6 +392,12 @@ pub async fn confirm_new(
     }
 
     auth_svc::invalidate_session_caches(state, &other_session_ids).await;
+    events::publish(
+        state,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked { user_id },
+    )
+    .await;
 
     // Challenges and flows opened before the change belong to the old identity.
     auth_svc::purge_user_pre_auth_and_email_change(state, user_id).await;

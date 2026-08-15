@@ -20,7 +20,7 @@ use crate::{
     config::{
         CaptchaConfig, Config, ConfigError, DatabaseConfig, MailConfig, RedisConfig, SmtpConfig,
     },
-    utils::{geoip::GeoIp, jwt},
+    utils::jwt,
 };
 
 // Convenience alias used across services
@@ -40,6 +40,8 @@ pub enum AppStateError {
     Smtp(#[from] lettre::transport::smtp::Error),
     #[error("nats connection error: {0}")]
     Nats(#[from] async_nats::ConnectError),
+    #[error("nats stream setup error: {0}")]
+    NatsStream(String),
     #[error("http client error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("template engine error: {0}")]
@@ -57,7 +59,6 @@ pub struct AppState {
     pub http_client: Client,
     pub templates: Arc<Tera>,
     pub config: Arc<Config>,
-    pub geoip: GeoIp,
     pub jwt_signing_key: EncodingKey,
     pub jwt_verifying_key: DecodingKey,
     pub jwt_previous_verifying_key: Option<DecodingKey>,
@@ -99,18 +100,13 @@ impl AppState {
     async fn assemble(config: Config, db: PgPool) -> Result<Self, AppStateError> {
         let redis = build_redis_pool(&config.redis)?;
         let nats = async_nats::connect(&config.nats.url).await?;
+        // The stream must exist before any durable publish (account deletion).
+        crate::services::events::ensure_user_stream(&nats)
+            .await
+            .map_err(AppStateError::NatsStream)?;
         let mailer = build_mailer(&config.mail.smtp)?;
         let http_client = build_http_client(&config.captcha)?;
         let templates = Arc::new(build_templates(&config.mail)?);
-        let geoip = GeoIp::open(&config.risk.geoip_db_path);
-
-        if config.risk.geoip_required && !geoip.is_available() {
-            return Err(AppStateError::Config(ConfigError::Invalid {
-                key: "GEOIP_DB_PATH".into(),
-                reason: "GeoIP database is required but could not be loaded".into(),
-            }));
-        }
-
         let jwt_keys = parse_jwt_keys(&config)?;
 
         Ok(Self {
@@ -120,7 +116,6 @@ impl AppState {
             mailer,
             http_client,
             templates,
-            geoip,
             jwt_signing_key: jwt_keys.signing_key,
             jwt_verifying_key: jwt_keys.verifying_key,
             jwt_previous_verifying_key: jwt_keys.previous_verifying_key,

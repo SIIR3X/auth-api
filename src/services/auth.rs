@@ -31,12 +31,12 @@ use crate::{
         user::{self as user_repo, NewUser},
     },
     state::AppState,
-    utils::{crypto, geoip::GeoLocation, jwt::Claims, password, time, totp},
+    utils::{crypto, jwt::Claims, password, time, totp},
 };
 
 use ::time::Duration as TimeDuration;
 
-use super::{email, email_2fa, events, reauth, risk_score};
+use super::{email, email_2fa, events, reauth};
 use crate::middleware::rate_limit::ip_bucket;
 use crate::utils::{
     backoff,
@@ -172,7 +172,6 @@ pub enum LoginResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreAuthState {
     pub user_id: Uuid,
-    pub risk: Option<CachedRiskEvaluation>,
     /// Propagated from the login request so the correct token TTL is used after 2FA completes.
     #[serde(default)]
     pub remember_me: bool,
@@ -209,75 +208,6 @@ impl PreAuthState {
         } else {
             Err(AppError::TokenInvalid)
         }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedRiskEvaluation {
-    pub context: CachedRiskContext,
-    pub result: Option<risk_score::RiskResult>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedRiskContext {
-    pub ip: String,
-    pub user_agent: String,
-    pub country: String,
-    pub city: String,
-    pub latitude: Option<f64>,
-    pub longitude: Option<f64>,
-}
-
-impl CachedRiskEvaluation {
-    fn capture(
-        context: &risk_score::LoginContext,
-        result: Option<&risk_score::RiskResult>,
-    ) -> Self {
-        Self {
-            context: CachedRiskContext::from_login_context(context),
-            result: result.cloned(),
-        }
-    }
-}
-
-impl CachedRiskContext {
-    fn from_login_context(context: &risk_score::LoginContext) -> Self {
-        let geo = context.geo.as_ref();
-
-        Self {
-            ip: context.ip.to_string(),
-            user_agent: context.user_agent.clone(),
-            country: geo.map(|g| g.country.clone()).unwrap_or_default(),
-            city: geo.map(|g| g.city.clone()).unwrap_or_default(),
-            latitude: geo.and_then(|g| g.latitude),
-            longitude: geo.and_then(|g| g.longitude),
-        }
-    }
-
-    fn to_login_context(&self, user_id: Uuid) -> Option<risk_score::LoginContext> {
-        let ip = self.ip.parse().ok()?;
-        let geo = if self.country.is_empty()
-            && self.city.is_empty()
-            && self.latitude.is_none()
-            && self.longitude.is_none()
-        {
-            None
-        } else {
-            Some(GeoLocation {
-                country: self.country.clone(),
-                city: self.city.clone(),
-                latitude: self.latitude,
-                longitude: self.longitude,
-            })
-        };
-
-        Some(risk_score::LoginContext {
-            user_id,
-            ip,
-            user_agent: self.user_agent.clone(),
-            geo,
-            login_time: time::now(),
-        })
     }
 }
 
@@ -609,73 +539,21 @@ pub async fn login(
         UserStatus::Active => {}
     }
 
-    // Risk scoring and 2FA lookup are independent, so run them together on the success path.
-    let risk_ctx = build_risk_context(state, user.id, ip, user_agent);
-    let (risk, primary_method) = tokio::join!(
-        risk_score::evaluate(state, &risk_ctx),
-        tf_repo::find_primary_by_user(&state.db, user.id),
-    );
-    let primary_method = primary_method.map_err(|e| AppError::Internal(e.into()))?;
-    match &risk {
-        Ok(r) if r.decision == risk_score::RiskDecision::Block => {
-            if let Ok(r) = &risk {
-                let _ = risk_score::audit_suspicious(state, &risk_ctx, r, request_id).await;
-            }
-            metrics::counter!("auth_logins_total", "outcome" => "blocked").increment(1);
-            return Err(AppError::LoginBlocked);
-        }
-        Ok(r)
-            if r.decision == risk_score::RiskDecision::Alert
-                || r.decision == risk_score::RiskDecision::Challenge =>
-        {
-            if let Ok(r) = &risk {
-                let _ = risk_score::audit_suspicious(state, &risk_ctx, r, request_id).await;
-                let mailer = state.mailer.clone();
-                let templates = state.templates.clone();
-                let mail_cfg = state.config.mail.clone();
-                let email_to = user.email.clone();
-                let username = user.username.clone();
-                let locale = user.preferred_locale.clone();
-                let risk = r.clone();
-                email::dispatch_best_effort("suspicious_login_alert", async move {
-                    email::send_suspicious_login_alert(
-                        &mailer,
-                        templates.as_ref(),
-                        &mail_cfg,
-                        &email_to,
-                        &username,
-                        &locale,
-                        ip,
-                        &risk,
-                    )
-                    .await
-                });
-            }
-        }
-        _ => {}
-    }
+    let primary_method = tf_repo::find_primary_by_user(&state.db, user.id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     // 2FA: issue a short-lived pre-auth token and pause login.
-    let has_2fa = primary_method.is_some();
-
-    // Also force 2FA challenge when risk decision is Challenge and user has no TOTP configured.
-    let force_challenge = risk
-        .as_ref()
-        .map(|r| r.decision == risk_score::RiskDecision::Challenge)
-        .unwrap_or(false);
-
-    if has_2fa || force_challenge {
-        let method = match primary_method.as_ref().map(|m| &m.method_type) {
-            Some(crate::domain::two_factor::TwoFactorType::Email) => ChallengeMethod::Email,
-            None if force_challenge => ChallengeMethod::Email,
-            _ => ChallengeMethod::Totp,
+    if let Some(primary) = primary_method.as_ref() {
+        let method = match primary.method_type {
+            crate::domain::two_factor::TwoFactorType::Email => ChallengeMethod::Email,
+            crate::domain::two_factor::TwoFactorType::Totp => ChallengeMethod::Totp,
         };
 
         let pre_auth_token = crypto::generate_token();
         let redis_key = pre_auth_key(&pre_auth_token);
         let pre_auth_state = PreAuthState {
             user_id: user.id,
-            risk: Some(CachedRiskEvaluation::capture(&risk_ctx, risk.as_ref().ok())),
             remember_me,
             method: Some(method),
         };
@@ -726,7 +604,6 @@ pub async fn login(
         None,
     )
     .await?;
-    let cached_risk = CachedRiskEvaluation::capture(&risk_ctx, risk.as_ref().ok());
 
     tokio::try_join!(
         async {
@@ -770,10 +647,6 @@ pub async fn login(
             )
             .await
             .map_err(|e| AppError::Internal(e.into()))
-        },
-        async {
-            post_login_hooks(state, &user, ip, user_agent, request_id, Some(&cached_risk)).await;
-            Ok::<(), AppError>(())
         },
     )?;
 
@@ -942,18 +815,6 @@ pub async fn complete_two_factor_login(
             )
             .await
             .map_err(|e| AppError::Internal(e.into()))
-        },
-        async {
-            post_login_hooks(
-                state,
-                &user,
-                ip,
-                user_agent,
-                request_id,
-                pre_auth_state.risk.as_ref(),
-            )
-            .await;
-            Ok::<(), AppError>(())
         },
     )?;
 
@@ -1487,6 +1348,23 @@ pub async fn reset_password(
 
     invalidate_session_caches(state, &revoked_session_ids).await;
 
+    events::publish(
+        state,
+        "user.password_changed",
+        &events::UserPasswordChanged {
+            user_id: record.user_id,
+        },
+    )
+    .await;
+    events::publish(
+        state,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked {
+            user_id: record.user_id,
+        },
+    )
+    .await;
+
     // Close the post-reset hijack window: any pre-auth (2FA challenge) token
     // or email-change flow that was already in flight before the reset would
     // otherwise survive and could be used by an attacker who knew them.
@@ -1576,19 +1454,6 @@ async fn guard_token_submission(
     }
 }
 
-/// Record login location and send new-device notification if applicable.
-/// Record login location and send new-device notification if applicable.
-pub async fn post_login_hooks(
-    state: &AppState,
-    user: &User,
-    ip: Option<IpNetwork>,
-    user_agent: Option<&str>,
-    request_id: Option<Uuid>,
-    cached_risk: Option<&CachedRiskEvaluation>,
-) {
-    maybe_notify_new_device(state, user, ip, user_agent, request_id, cached_risk).await;
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn issue_tokens(
     state: &AppState,
@@ -1661,7 +1526,7 @@ async fn build_access_token(
     let permission_names: Vec<String> = user_permissions.iter().map(|p| p.name.clone()).collect();
 
     let mut claims = Claims::new(user_id, session_id, exp).with_rbac(role_names, permission_names);
-    // Stamp iss/aud so resource servers (core-api, billing-api, ...) can pin
+    // Stamp iss/aud so downstream resource servers can pin
     // the token to this issuer and to themselves. `aud` is emitted as a JSON
     // array so a single token can be accepted by multiple downstream services.
     claims.iss = Some(state.config.server.public_url.clone());
@@ -1831,18 +1696,6 @@ pub async fn complete_email_2fa_login(
             )
             .await
             .map_err(|e| AppError::Internal(e.into()))
-        },
-        async {
-            post_login_hooks(
-                state,
-                &user,
-                ip,
-                user_agent,
-                request_id,
-                pre_auth_state.risk.as_ref(),
-            )
-            .await;
-            Ok::<(), AppError>(())
         },
     )?;
 
@@ -2177,142 +2030,6 @@ pub async fn resolve_pre_auth(
     load_pre_auth_state_from_redis(&mut conn, &redis_key).await
 }
 
-/// Record the login location and send a new-device notification if needed.
-/// Also writes an audit entry when a new device is detected but risk is below alert threshold.
-/// Fire-and-forget; failures are logged and ignored.
-async fn maybe_notify_new_device(
-    state: &AppState,
-    user: &User,
-    ip: Option<IpNetwork>,
-    user_agent: Option<&str>,
-    request_id: Option<Uuid>,
-    cached_risk: Option<&CachedRiskEvaluation>,
-) {
-    if let Some(cached_risk) = cached_risk
-        && let Some(risk_ctx) = cached_risk.context.to_login_context(user.id)
-    {
-        if let Some(result) = cached_risk.result.as_ref() {
-            let (record_result, _) = tokio::join!(
-                risk_score::record_login(state, &risk_ctx),
-                send_new_device_notification(state, user, &risk_ctx, result, request_id),
-            );
-            let _ = record_result;
-            return;
-        }
-
-        let _ = risk_score::record_login(state, &risk_ctx).await;
-        return;
-    }
-
-    let ua = match user_agent {
-        Some(u) if !u.is_empty() => u,
-        _ => {
-            let risk_ctx = build_risk_context(state, user.id, ip, None);
-            let _ = risk_score::record_login(state, &risk_ctx).await;
-            return;
-        }
-    };
-
-    let risk_ctx = build_risk_context(state, user.id, ip, Some(ua));
-    let evaluated_risk = risk_score::evaluate(state, &risk_ctx).await;
-
-    if let Ok(result) = evaluated_risk {
-        let (record_result, _) = tokio::join!(
-            risk_score::record_login(state, &risk_ctx),
-            send_new_device_notification(state, user, &risk_ctx, &result, request_id),
-        );
-        let _ = record_result;
-    } else {
-        let _ = risk_score::record_login(state, &risk_ctx).await;
-    }
-}
-
-async fn send_new_device_notification(
-    state: &AppState,
-    user: &User,
-    risk_ctx: &risk_score::LoginContext,
-    result: &risk_score::RiskResult,
-    request_id: Option<Uuid>,
-) {
-    let is_new_device = result.signals.contains(&"new_device".to_string());
-    let already_alerted = result.decision == risk_score::RiskDecision::Alert
-        || result.decision == risk_score::RiskDecision::Challenge;
-    if !is_new_device || already_alerted {
-        return;
-    }
-
-    let country = result
-        .signals
-        .iter()
-        .find_map(|s| s.strip_prefix("new_country:"))
-        .unwrap_or("");
-    let city = result
-        .signals
-        .iter()
-        .find_map(|s| s.strip_prefix("new_city:"))
-        .unwrap_or("");
-
-    // Best-effort: new-device audit entry must not block login completion.
-    let _ = audit::append(
-        &state.db,
-        &NewAuditEntry {
-            user_id: Some(user.id),
-            request_id,
-            action: AuditAction::NewDeviceLogin,
-            ip_address: Some(risk_ctx.ip),
-            metadata: json!({
-                "user_agent": &risk_ctx.user_agent,
-                "country": country,
-                "city": city,
-                "score": result.score,
-            }),
-        },
-    )
-    .await;
-
-    let mailer = state.mailer.clone();
-    let templates = state.templates.clone();
-    let mail_cfg = state.config.mail.clone();
-    let email_to = user.email.clone();
-    let username = user.username.clone();
-    let locale = user.preferred_locale.clone();
-    let ip = risk_ctx.ip;
-    let user_agent = risk_ctx.user_agent.clone();
-    let country = country.to_string();
-    let city = city.to_string();
-    email::dispatch_best_effort("new_device_login", async move {
-        email::send_new_device_login(
-            &mailer,
-            templates.as_ref(),
-            &mail_cfg,
-            &email_to,
-            &username,
-            &locale,
-            Some(ip),
-            &user_agent,
-            &country,
-            &city,
-        )
-        .await
-    });
-}
-
-fn build_risk_context(
-    state: &AppState,
-    user_id: Uuid,
-    ip: Option<IpNetwork>,
-    user_agent: Option<&str>,
-) -> risk_score::LoginContext {
-    let geo = ip.and_then(|ip| state.geoip.lookup(&ip));
-    risk_score::LoginContext {
-        user_id,
-        ip: ip.unwrap_or_else(|| "0.0.0.0/0".parse().expect("0.0.0.0/0 is a valid CIDR")),
-        user_agent: user_agent.unwrap_or("").to_string(),
-        geo,
-        login_time: time::now(),
-    }
-}
-
 fn pre_auth_key(pre_auth_token: &str) -> String {
     format!("{}{}", PRE_AUTH_PREFIX, pre_auth_token)
 }
@@ -2381,7 +2098,6 @@ fn parse_pre_auth_state(raw: &str) -> Result<PreAuthState, AppError> {
     if let Ok(user_id) = raw.parse::<Uuid>() {
         return Ok(PreAuthState {
             user_id,
-            risk: None,
             remember_me: false,
             method: None,
         });
@@ -2402,84 +2118,24 @@ mod tests {
             parse_pre_auth_state(&user_id.to_string()).expect("legacy pre-auth should parse");
 
         assert_eq!(state.user_id, user_id);
-        assert!(state.risk.is_none());
     }
 
     #[test]
-    fn parse_pre_auth_state_accepts_cached_risk_payload() {
+    fn parse_pre_auth_state_ignores_fields_from_older_versions() {
+        // Tokens minted before risk scoring was retired carry a `risk` field;
+        // they must keep parsing until they expire.
         let user_id = Uuid::new_v4();
         let payload = serde_json::json!({
             "user_id": user_id,
-            "risk": {
-                "context": {
-                    "ip": "203.0.113.9/32",
-                    "user_agent": "perf-test-agent",
-                    "country": "FR",
-                    "city": "Paris",
-                    "latitude": 48.8566,
-                    "longitude": 2.3522
-                },
-                "result": {
-                    "score": 35,
-                    "decision": "Alert",
-                    "signals": ["new_device", "new_country:FR"]
-                }
-            }
+            "risk": { "context": { "ip": "203.0.113.9/32" }, "result": null },
+            "remember_me": true,
+            "method": "totp"
         });
 
-        let state = parse_pre_auth_state(&payload.to_string())
-            .expect("cached pre-auth payload should parse");
+        let state = parse_pre_auth_state(&payload.to_string()).expect("payload should parse");
 
-        let risk = state.risk.expect("cached risk should be preserved");
         assert_eq!(state.user_id, user_id);
-        assert_eq!(risk.context.ip, "203.0.113.9/32");
-        assert_eq!(risk.context.user_agent, "perf-test-agent");
-        assert_eq!(
-            risk.result.expect("risk result should be present").score,
-            35
-        );
-    }
-
-    #[test]
-    fn cached_risk_context_roundtrip_preserves_security_relevant_fields() {
-        let user_id = Uuid::new_v4();
-        let ip = "198.51.100.20/32".parse().expect("valid cidr");
-        let original = risk_score::LoginContext {
-            user_id,
-            ip,
-            user_agent: "agent/1.0".to_string(),
-            geo: Some(GeoLocation {
-                country: "FR".to_string(),
-                city: "Paris".to_string(),
-                latitude: Some(48.8566),
-                longitude: Some(2.3522),
-            }),
-            login_time: time::now(),
-        };
-
-        let cached = CachedRiskContext::from_login_context(&original);
-        let restored = cached
-            .to_login_context(user_id)
-            .expect("cached context should restore");
-
-        assert_eq!(restored.user_id, user_id);
-        assert_eq!(restored.ip, original.ip);
-        assert_eq!(restored.user_agent, original.user_agent);
-        assert_eq!(
-            restored.geo.as_ref().expect("restored geo").country,
-            original.geo.as_ref().expect("original geo").country
-        );
-        assert_eq!(
-            restored.geo.as_ref().expect("restored geo").city,
-            original.geo.as_ref().expect("original geo").city
-        );
-        assert_eq!(
-            restored.geo.as_ref().expect("restored geo").latitude,
-            original.geo.as_ref().expect("original geo").latitude
-        );
-        assert_eq!(
-            restored.geo.as_ref().expect("restored geo").longitude,
-            original.geo.as_ref().expect("original geo").longitude
-        );
+        assert!(state.remember_me);
+        assert_eq!(state.method, Some(ChallengeMethod::Totp));
     }
 }

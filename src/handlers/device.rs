@@ -38,7 +38,7 @@ fn default_approve() -> bool {
 // Handlers
 
 /// POST /auth/device
-/// Desktop app calls this to start the device authorization flow.
+/// A device client calls this to start the device authorization flow.
 /// No authentication required.
 pub async fn authorize(
     State(state): State<AppState>,
@@ -52,7 +52,7 @@ pub async fn authorize(
 }
 
 /// POST /auth/device/token
-/// Desktop app polls this with the device_code until tokens are available.
+/// The device client polls this with the device_code until tokens are available.
 /// No authentication required.
 pub async fn token(
     State(state): State<AppState>,

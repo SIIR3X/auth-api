@@ -14,7 +14,6 @@ pub mod email_change;
 pub mod events;
 pub mod key_rotation;
 pub mod reauth;
-pub mod risk_score;
 pub mod session;
 pub mod two_factor;
 pub mod user;

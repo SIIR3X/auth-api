@@ -204,6 +204,19 @@ pub async fn change_password(
 
     auth_svc::invalidate_session_caches(state, &revoked_session_ids).await;
 
+    events::publish(
+        state,
+        "user.password_changed",
+        &events::UserPasswordChanged { user_id },
+    )
+    .await;
+    events::publish(
+        state,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked { user_id },
+    )
+    .await;
+
     audit::append(
         &state.db,
         &NewAuditEntry {
@@ -275,6 +288,11 @@ pub async fn delete_account(
         .map(|s| s.id)
         .collect();
 
+    // Downstream services erase their data on `user.deleted`, and the user id is
+    // the only key to it: once the row is gone nothing can resend the event. It
+    // is therefore stored by JetStream first; if it cannot be, nothing is deleted.
+    events::publish_acked(state, "user.deleted", &events::UserDeleted { user_id }).await?;
+
     // Append the audit entry before deletion (audit_log uses SET NULL on user FK).
     audit::append(
         &state.db,
@@ -296,8 +314,6 @@ pub async fn delete_account(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     auth_svc::invalidate_session_caches(state, &session_ids).await;
-
-    events::publish(state, "user.deleted", &events::UserDeleted { user_id }).await;
 
     Ok(())
 }

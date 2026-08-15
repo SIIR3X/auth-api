@@ -14,12 +14,9 @@ use lettre::{
 };
 use tera::{Context, Tera};
 
-use ipnetwork::IpNetwork;
-
 use crate::{
     config::{MailConfig, SmtpConfig},
     error::AppError,
-    services::risk_score::RiskResult,
     state::Mailer,
 };
 
@@ -27,9 +24,7 @@ use crate::{
 const TNAME_VERIFICATION: &str = "verification";
 const TNAME_EMAIL_CHANGE_OTP: &str = "email_change_otp";
 const TNAME_PASSWORD_RESET: &str = "password_reset";
-const TNAME_SUSPICIOUS_LOGIN: &str = "suspicious_login";
 const TNAME_EMAIL_OTP: &str = "email_otp";
-const TNAME_NEW_DEVICE_LOGIN: &str = "new_device_login";
 const TNAME_PASSWORD_CHANGED: &str = "password_changed";
 const TNAME_TWO_FACTOR_DISABLED: &str = "two_factor_disabled";
 const TNAME_TWO_FACTOR_ENABLED: &str = "two_factor_enabled";
@@ -189,96 +184,6 @@ pub async fn send_email_otp(
         to_email,
         username,
         "Your login verification code",
-        body,
-    )
-    .await
-}
-
-pub async fn send_new_device_login(
-    mailer: &Mailer,
-    templates: &Tera,
-    mail_cfg: &MailConfig,
-    to_email: &str,
-    username: &str,
-    locale: &str,
-    ip: Option<IpNetwork>,
-    user_agent: &str,
-    country: &str,
-    city: &str,
-) -> Result<(), AppError> {
-    let ip_str = ip.map(|i| i.ip().to_string()).unwrap_or_default();
-
-    let mut ctx = Context::new();
-    ctx.insert("username", username);
-    ctx.insert("ip", &ip_str);
-    ctx.insert("user_agent", user_agent);
-    ctx.insert("country", country);
-    ctx.insert("city", city);
-    ctx.insert("app_name", &mail_cfg.smtp.from_name);
-
-    let body = render_with_fallback(
-        templates,
-        TNAME_NEW_DEVICE_LOGIN,
-        locale,
-        &mail_cfg.default_locale,
-        &ctx,
-    )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "New device login detected",
-        body,
-    )
-    .await
-}
-
-pub async fn send_suspicious_login_alert(
-    mailer: &Mailer,
-    templates: &Tera,
-    mail_cfg: &MailConfig,
-    to_email: &str,
-    username: &str,
-    locale: &str,
-    ip: Option<IpNetwork>,
-    risk: &RiskResult,
-) -> Result<(), AppError> {
-    let ip_str = ip.map(|i| i.ip().to_string()).unwrap_or_default();
-    let (country, city) =
-        risk.signals
-            .iter()
-            .fold((String::new(), String::new()), |(mut co, mut ci), s| {
-                if let Some(v) = s.strip_prefix("new_country:") {
-                    co = v.to_string();
-                }
-                if let Some(v) = s.strip_prefix("new_city:") {
-                    ci = v.to_string();
-                }
-                (co, ci)
-            });
-
-    let mut ctx = Context::new();
-    ctx.insert("username", username);
-    ctx.insert("ip", &ip_str);
-    ctx.insert("country", &country);
-    ctx.insert("city", &city);
-    ctx.insert("signals", &risk.signals);
-    ctx.insert("app_name", &mail_cfg.smtp.from_name);
-
-    let body = render_with_fallback(
-        templates,
-        TNAME_SUSPICIOUS_LOGIN,
-        locale,
-        &mail_cfg.default_locale,
-        &ctx,
-    )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "Unusual login detected on your account",
         body,
     )
     .await

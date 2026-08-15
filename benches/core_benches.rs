@@ -2,16 +2,11 @@ use std::hint::black_box;
 
 use auth_api::{
     config::CryptoConfig,
-    repositories::login_location::RiskHistoryEntry,
-    services::{
-        auth::{CachedRiskContext, CachedRiskEvaluation, PreAuthState},
-        risk_score::{self, LoginContext, RiskDecision, RiskResult},
-    },
-    utils::{geoip::GeoLocation, jwt, password, totp},
+    services::auth::{ChallengeMethod, PreAuthState},
+    utils::{jwt, password, totp},
 };
-use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
-use ipnetwork::IpNetwork;
-use time::{Duration, OffsetDateTime};
+use criterion::{Criterion, SamplingMode, criterion_group, criterion_main};
+use time::OffsetDateTime;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 
@@ -74,22 +69,7 @@ fn pre_auth_benches(c: &mut Criterion) {
     let state = PreAuthState {
         user_id: Uuid::new_v4(),
         remember_me: false,
-        method: None,
-        risk: Some(CachedRiskEvaluation {
-            context: CachedRiskContext {
-                ip: "203.0.113.42/32".to_string(),
-                user_agent: "bench-agent/1.0".to_string(),
-                country: "FR".to_string(),
-                city: "Paris".to_string(),
-                latitude: Some(48.8566),
-                longitude: Some(2.3522),
-            },
-            result: Some(RiskResult {
-                score: 60,
-                decision: RiskDecision::Challenge,
-                signals: vec!["new_device".into(), "new_country:FR".into()],
-            }),
-        }),
+        method: Some(ChallengeMethod::Totp),
     };
     let json = serde_json::to_string(&state).expect("failed to serialize pre-auth state");
     let legacy_uuid = state.user_id.to_string();
@@ -107,30 +87,6 @@ fn pre_auth_benches(c: &mut Criterion) {
     group.bench_function("parse_legacy_pre_auth_uuid", |b| {
         b.iter(|| Uuid::parse_str(black_box(&legacy_uuid)).expect("uuid parse failed"))
     });
-}
-
-fn risk_score_benches(c: &mut Criterion) {
-    let mut group = c.benchmark_group("risk_score");
-    let login_time = OffsetDateTime::now_utc();
-    let ctx = LoginContext {
-        user_id: Uuid::new_v4(),
-        ip: "198.51.100.20/32".parse::<IpNetwork>().expect("valid cidr"),
-        user_agent: "Mozilla/5.0 (Benchmark)".into(),
-        geo: Some(GeoLocation {
-            country: "FR".into(),
-            city: "Paris".into(),
-            latitude: Some(48.8566),
-            longitude: Some(2.3522),
-        }),
-        login_time,
-    };
-
-    for size in [0usize, 8, 64, 256] {
-        let history = make_risk_history(size, login_time);
-        group.bench_with_input(BenchmarkId::from_parameter(size), &history, |b, history| {
-            b.iter(|| risk_score::compute_score(black_box(&ctx), black_box(history)))
-        });
-    }
 }
 
 fn totp_benches(c: &mut Criterion) {
@@ -201,22 +157,9 @@ fn password_benches(c: &mut Criterion) {
     });
 }
 
-fn make_risk_history(size: usize, login_time: OffsetDateTime) -> Vec<RiskHistoryEntry> {
-    (0..size)
-        .map(|index| RiskHistoryEntry {
-            country: if index % 4 == 0 { "FR" } else { "DE" }.to_string(),
-            city: format!("city-{index}"),
-            user_agent: format!("agent/{}", index % 12),
-            latitude: Some(48.0 + (index as f64 / 100.0)),
-            longitude: Some(2.0 + (index as f64 / 100.0)),
-            last_seen: login_time - Duration::hours((index % 72) as i64 + 1),
-        })
-        .collect()
-}
-
 criterion_group!(
     name = benches;
     config = Criterion::default().configure_from_args();
-    targets = jwt_benches, pre_auth_benches, risk_score_benches, totp_benches, password_benches
+    targets = jwt_benches, pre_auth_benches, totp_benches, password_benches
 );
 criterion_main!(benches);

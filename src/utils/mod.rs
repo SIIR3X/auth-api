@@ -5,7 +5,6 @@
 
 pub mod backoff;
 pub mod crypto;
-pub mod geoip;
 pub mod jwt;
 pub mod password;
 pub mod redis_counter;

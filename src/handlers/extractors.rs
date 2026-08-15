@@ -30,7 +30,7 @@ pub struct AuthUser {
     pub token_exp: i64,
     /// Role names from the JWT (e.g. ["user", "admin"]).
     pub roles: Vec<String>,
-    /// Permission names from the JWT (e.g. ["billing:read"]).
+    /// Permission names from the JWT (e.g. ["users:read"]).
     pub permissions: Vec<String>,
     /// Request ID injected by the request_id middleware; propagate to audit log entries.
     pub request_id: Option<uuid::Uuid>,

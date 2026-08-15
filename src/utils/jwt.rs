@@ -49,8 +49,8 @@ pub struct Claims {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iss: Option<String>,
     /// Audience (the `aud` standard claim, RFC 7519 section 4.1.3).
-    /// Emitted as a JSON array of strings so multiple downstream services
-    /// (core-api, billing-api, ...) can each accept the same token.
+    /// Emitted as a JSON array of strings so several downstream resource servers
+    /// can each accept the same token.
     /// Defaults to empty for tests / backward compat; production tokens
     /// always carry at least one entry (enforced by config validation).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -58,7 +58,7 @@ pub struct Claims {
     /// Role names assigned to the user (e.g. ["user", "admin"]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<String>,
-    /// Permission names granted through roles (e.g. ["billing:read", "billing:create"]).
+    /// Permission names granted through roles (e.g. ["users:read", "users:manage"]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permissions: Vec<String>,
 }
@@ -93,9 +93,8 @@ pub fn encode_token(
     kid: Option<&str>,
 ) -> Result<String, JwtError> {
     let mut header = Header::new(Algorithm::ES256);
-    // Optional key identifier. When present, JWKS-based verifiers (core-api,
-    // billing-api, ...) can pin verification to a specific key, allowing
-    // safe key rotation.
+    // Optional key identifier. When present, JWKS-based verifiers can pin
+    // verification to a specific key, allowing safe key rotation.
     header.kid = kid.map(str::to_owned);
 
     jsonwebtoken::encode(&header, claims, key).map_err(|e| JwtError::Encode(e.to_string()))
@@ -111,8 +110,8 @@ pub fn decode_token(token: &str, key: &DecodingKey) -> Result<Claims, JwtError> 
 /// and the time-based claims (exp/nbf): they do NOT pin the issuer or the
 /// audience, mostly so legacy tests that produce tokens without those fields
 /// keep passing. Callers that mint and consume tokens within the same trust
-/// boundary (the `AuthenticatedUser` extractor here in auth-api, downstream
-/// resource servers like core-api / billing-api) MUST run this check after
+/// boundary (the `AuthUser` extractor here in auth-api, downstream
+/// resource servers) MUST run this check after
 /// decoding to make sure a token issued by another deployment, or addressed
 /// to another service, is rejected.
 ///

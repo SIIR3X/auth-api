@@ -6,7 +6,6 @@
 pub mod audit;
 pub mod client_quota;
 pub mod login_attempt;
-pub mod login_location;
 pub mod registered_client;
 pub mod role;
 pub mod session;

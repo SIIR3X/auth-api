@@ -63,8 +63,6 @@ pub enum AppError {
     AccountLocked,
     #[error("two-factor authentication required")]
     TwoFactorRequired,
-    #[error("login blocked")]
-    LoginBlocked,
     #[error("recent re-authentication required")]
     ReauthenticationRequired,
 
@@ -204,13 +202,6 @@ impl IntoResponse for AppError {
                 ErrorBody::new(
                     "two_factor_required",
                     "Two-factor authentication is required.",
-                ),
-            ),
-            Self::LoginBlocked => (
-                StatusCode::FORBIDDEN,
-                ErrorBody::new(
-                    "login_blocked",
-                    "This login attempt has been blocked due to suspicious activity.",
                 ),
             ),
             Self::ReauthenticationRequired => (
@@ -442,11 +433,6 @@ mod tests {
     #[test]
     fn two_factor_required_is_403() {
         assert_eq!(status(AppError::TwoFactorRequired), 403);
-    }
-
-    #[test]
-    fn login_blocked_is_403() {
-        assert_eq!(status(AppError::LoginBlocked), 403);
     }
 
     #[test]

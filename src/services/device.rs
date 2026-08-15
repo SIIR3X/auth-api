@@ -1,8 +1,9 @@
 //! Device Authorization Flow service (RFC 8628).
 //!
 //! Manages the lifecycle of device authorization requests using Redis
-//! for ephemeral storage. Desktop apps initiate the flow, users approve
-//! via the browser, and the desktop app polls until tokens are available.
+//! for ephemeral storage. A device client (CLI, TV, desktop application)
+//! initiates the flow, the user approves it in a browser, and the client polls
+//! until tokens are available.
 //!
 //! Redis keys:
 //! - `device:{base64url(sha256(device_code))}` -> JSON DeviceAuthState (TTL)

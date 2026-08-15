@@ -340,50 +340,6 @@ async fn email_2fa_expired_code_rejected() {
 }
 
 #[tokio::test]
-async fn risky_login_without_configured_2fa_falls_back_to_email_challenge() {
-    let app = TestApp::spawn_with_config(|config| {
-        config.risk.challenge_threshold = 20;
-        config.risk.alert_threshold = 10;
-    })
-    .await;
-    let user = fixtures::register_user(&app, 106).await;
-    fixtures::activate_user(&app.db, user.id).await;
-
-    let res = app
-        .client
-        .post(format!("{}/auth/login", app.base_url))
-        .header(reqwest::header::USER_AGENT, "RiskyBrowser/1.0")
-        .json(&serde_json::json!({
-            "identifier": user.email,
-            "password": user.password,
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(res.status().as_u16(), 200);
-
-    let body: Value = res.json().await.unwrap();
-    assert_eq!(body["two_factor_required"].as_bool(), Some(true));
-    assert_eq!(body["two_factor_method"].as_str(), Some("email"));
-
-    let pre_auth_token = body["pre_auth_token"].as_str().unwrap().to_owned();
-    let otp = read_otp_from_db(&app, user.id).await;
-
-    let res = app
-        .post(
-            "/auth/two-factor/email/complete",
-            &serde_json::json!({
-                "pre_auth_token": pre_auth_token,
-                "code": otp,
-            }),
-        )
-        .await;
-
-    assert_eq!(res.status().as_u16(), 200);
-}
-
-#[tokio::test]
 async fn recovery_code_replacement_rolls_back_on_insert_failure() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 107).await;

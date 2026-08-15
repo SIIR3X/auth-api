@@ -18,8 +18,8 @@ use auth_api::{
     config::{
         AuditConfig, CaptchaConfig, CleanupConfig, Config, CorsConfig, CryptoConfig,
         DatabaseConfig, DeviceAuthConfig, Environment, JwtConfig, LogConfig, LogFormat, MailConfig,
-        MetricsConfig, NatsConfig, RateLimitConfig, RedisConfig, RiskConfig, SecurityConfig,
-        ServerConfig, SmtpConfig,
+        MetricsConfig, NatsConfig, RateLimitConfig, RedisConfig, SecurityConfig, ServerConfig,
+        SmtpConfig,
     },
     handlers,
     state::AppState,
@@ -401,14 +401,6 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
         },
         audit: AuditConfig {
             retention_months: 6,
-        },
-        risk: RiskConfig {
-            geoip_db_path: String::new(),
-            geoip_required: false,
-            alert_threshold: 30,
-            challenge_threshold: 60,
-            block_threshold: 80,
-            history_days: 90,
         },
         log: LogConfig {
             level: "error".into(),

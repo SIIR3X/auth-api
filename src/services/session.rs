@@ -14,7 +14,7 @@ use crate::{
     state::AppState,
 };
 
-use super::{auth as auth_svc, reauth as reauth_svc};
+use super::{auth as auth_svc, events, reauth as reauth_svc};
 
 pub async fn list_active(
     state: &AppState,
@@ -113,6 +113,12 @@ pub async fn revoke_all(
 
     let session_ids = active.iter().map(|s| s.id).collect::<Vec<_>>();
     auth_svc::invalidate_session_caches(state, &session_ids).await;
+    events::publish(
+        state,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked { user_id },
+    )
+    .await;
 
     for s in &active {
         auth_svc::blocklist_refresh_token(state, &s.token_hash, s.expires_at).await;
