@@ -1,5 +1,6 @@
 mod account_hardening;
 mod captcha;
+mod device_flow;
 mod events;
 mod headers;
 mod jwt;

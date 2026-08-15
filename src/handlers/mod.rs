@@ -224,6 +224,7 @@ fn auth_router() -> Router<AppState> {
         .route("/device", post(device::authorize))
         .route("/device/token", post(device::token))
         .route("/device/verify", post(device::verify))
+        .route("/device/{user_code}", get(device::describe))
 }
 
 // Sensitive authenticated routes placed under the strict auth rate-limit bucket.

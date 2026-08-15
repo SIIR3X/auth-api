@@ -36,6 +36,30 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // One-off command: create or update a registered client (device and
+    // authorization code flows refuse unregistered clients). Needs only the
+    // database, not Redis, NATS or SMTP.
+    let args: Vec<String> = std::env::args().collect();
+    match auth_api::cli::parse_client_registration(&args) {
+        Ok(Some(registration)) => {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&config.database.url)
+                .await?;
+            let client =
+                auth_api::repositories::registered_client::upsert(&pool, &registration.as_new())
+                    .await?;
+            tracing::info!(
+                client_id = client.client_id,
+                primary = client.is_primary,
+                "registered client saved"
+            );
+            return Ok(());
+        }
+        Ok(None) => {}
+        Err(message) => anyhow::bail!("--register-client: {message}"),
+    }
+
     let addr = format!("{}:{}", config.server.host, config.server.port);
 
     let state = AppState::from_config(config).await?;
