@@ -99,6 +99,8 @@ pub enum AppError {
     DeviceClientNotAllowed,
     #[error("device client unknown")]
     DeviceClientUnknown,
+    #[error("invalid authorization code")]
+    InvalidAuthorizationCode,
 
     // 429
     #[error("rate limit exceeded")]
@@ -285,6 +287,14 @@ impl IntoResponse for AppError {
                 ErrorBody::new(
                     "device_client_not_allowed",
                     "You do not have access to this client application.",
+                ),
+            ),
+
+            Self::InvalidAuthorizationCode => (
+                StatusCode::BAD_REQUEST,
+                ErrorBody::new(
+                    "invalid_authorization_code",
+                    "The authorization code is invalid, expired or already used.",
                 ),
             ),
 

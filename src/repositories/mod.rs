@@ -5,6 +5,7 @@
 //! lives here; only SQL and type conversions.
 
 pub mod audit;
+pub mod authorization_code;
 pub mod client_quota;
 pub mod email_2fa;
 pub mod login_attempt;

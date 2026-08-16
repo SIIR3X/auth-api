@@ -602,6 +602,7 @@ pub async fn login(
         remember_me,
         SessionType::Web,
         None,
+        None,
     )
     .await?;
 
@@ -793,6 +794,7 @@ pub async fn complete_two_factor_login(
         remember_me,
         SessionType::Web,
         None,
+        None,
     )
     .await?;
 
@@ -982,6 +984,7 @@ pub async fn refresh_token(
             session_type: session.session_type,
             client_id: session.client_id.as_deref(),
             family_created_at: Some(session.family_created_at),
+            scopes: None,
         },
     )
     .await
@@ -1019,7 +1022,13 @@ pub async fn refresh_token(
         Err(e) => return Err(AppError::Internal(e.into())),
     };
 
-    let access_token = build_access_token(user.id, new_session.id, state).await?;
+    let access_token = build_access_token(
+        user.id,
+        new_session.id,
+        new_session.scopes.as_deref(),
+        state,
+    )
+    .await?;
 
     Ok(AuthTokens {
         access_token,
@@ -1464,6 +1473,7 @@ pub(crate) async fn issue_tokens(
     remember_me: bool,
     session_type: SessionType,
     client_id: Option<&str>,
+    scopes: Option<&[String]>,
 ) -> Result<AuthTokens, AppError> {
     let raw_token = crypto::generate_token();
     let token_hash = crypto::sha256(raw_token.as_bytes());
@@ -1490,6 +1500,7 @@ pub(crate) async fn issue_tokens(
             session_type,
             client_id,
             family_created_at: None,
+            scopes,
         },
     )
     .await
@@ -1499,7 +1510,7 @@ pub(crate) async fn issue_tokens(
     // password login, an approved device, a 2FA challenge) has not re-proven
     // knowledge of the password for sensitive actions. Only an explicit
     // `POST /users/me/reauth` or a `current_password` in the request does.
-    let access_token = build_access_token(user_id, session.id, state).await?;
+    let access_token = build_access_token(user_id, session.id, scopes, state).await?;
 
     Ok(AuthTokens {
         access_token,
@@ -1511,6 +1522,7 @@ pub(crate) async fn issue_tokens(
 async fn build_access_token(
     user_id: Uuid,
     session_id: uuid::Uuid,
+    scopes: Option<&[String]>,
     state: &AppState,
 ) -> Result<String, AppError> {
     let exp = time::in_secs(state.config.jwt.access_expiry_secs).unix_timestamp();
@@ -1522,8 +1534,18 @@ async fn build_access_token(
         role::find_permissions_by_user(&state.db, user_id),
     )
     .map_err(|e| AppError::Internal(e.into()))?;
-    let role_names: Vec<String> = user_roles.iter().map(|r| r.name.clone()).collect();
-    let permission_names: Vec<String> = user_permissions.iter().map(|p| p.name.clone()).collect();
+    let mut role_names: Vec<String> = user_roles.iter().map(|r| r.name.clone()).collect();
+    let mut permission_names: Vec<String> =
+        user_permissions.iter().map(|p| p.name.clone()).collect();
+
+    // A session issued to a client carries only the permissions consented for
+    // that client, re-evaluated against the user's current permissions on every
+    // issue and refresh. Roles are dropped: a resource server authorizing by
+    // role would otherwise grant more than the consent covered.
+    if let Some(scopes) = scopes {
+        permission_names.retain(|permission| scopes.contains(permission));
+        role_names.clear();
+    }
 
     let mut claims = Claims::new(user_id, session_id, exp).with_rbac(role_names, permission_names);
     // Stamp iss/aud so downstream resource servers can pin
@@ -1674,6 +1696,7 @@ pub async fn complete_email_2fa_login(
         remember_me,
         SessionType::Web,
         None,
+        None,
     )
     .await?;
 
@@ -1802,6 +1825,7 @@ pub async fn complete_login_with_recovery(
         None,
         remember_me,
         SessionType::Web,
+        None,
         None,
     )
     .await?;

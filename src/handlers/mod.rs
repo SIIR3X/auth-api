@@ -26,6 +26,7 @@ use crate::{
 };
 
 pub mod auth;
+pub mod authorize;
 pub mod device;
 pub mod extractors;
 pub mod session;
@@ -225,6 +226,10 @@ fn auth_router() -> Router<AppState> {
         .route("/device/token", post(device::token))
         .route("/device/verify", post(device::verify))
         .route("/device/{user_code}", get(device::describe))
+        // Authorization Code with PKCE (RFC 7636, RFC 8252)
+        .route("/authorize", post(authorize::approve))
+        .route("/authorize/describe", post(authorize::describe))
+        .route("/authorize/token", post(authorize::token))
 }
 
 // Sensitive authenticated routes placed under the strict auth rate-limit bucket.

@@ -5,6 +5,7 @@
 //! No HTTP types belong here; only domain types and errors.
 
 pub mod auth;
+pub mod authorize;
 pub mod captcha;
 pub mod cleanup;
 pub mod device;

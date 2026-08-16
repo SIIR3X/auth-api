@@ -48,6 +48,10 @@ pub struct Session {
     /// When the family's first session was created: the start of the sign-in
     /// that every rotation inherits. The absolute lifetime is measured from it.
     pub family_created_at: OffsetDateTime,
+    /// Permissions consented for the client this session was issued to. Tokens
+    /// carry the user's permissions restricted to these; `None` is unrestricted
+    /// (password sign-in, or a client registered without scopes).
+    pub scopes: Option<Vec<String>>,
     pub revoked_at: Option<OffsetDateTime>,
     pub rotated_at: Option<OffsetDateTime>,
     pub compromised_at: Option<OffsetDateTime>,
@@ -97,6 +101,7 @@ mod tests {
             expires_at: now + time::Duration::seconds(expires_in_secs),
             created_at: now,
             family_created_at: now,
+            scopes: None,
             revoked_at: if revoked { Some(now) } else { None },
             rotated_at: None,
             compromised_at: if compromised { Some(now) } else { None },

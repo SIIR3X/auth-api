@@ -1,4 +1,5 @@
 mod account_hardening;
+mod authorization_code;
 mod captcha;
 mod device_flow;
 mod events;

@@ -80,6 +80,14 @@ async fn run_all(db: &PgPool, config: &Config) {
     )
     .await;
 
+    run(
+        db,
+        "cleanup_expired_authorization_codes",
+        "SELECT cleanup_expired_authorization_codes($1::interval)",
+        "1 hour",
+    )
+    .await;
+
     // TOTP replay-guard rows live ~90 s (one step of skew on each side);
     // the repository already self-cleans per user, this sweeps leftovers.
     run(

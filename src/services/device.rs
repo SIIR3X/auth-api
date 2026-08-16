@@ -340,6 +340,10 @@ pub async fn poll(
             let _: Result<(), _> = conn.del(uc_key(&entry.user_code)).await;
             drop(conn);
 
+            // The consent for a device flow is the approval itself: the session
+            // carries the client's registered scopes (none: unrestricted).
+            let scopes = (!client.scopes.is_empty()).then_some(client.scopes.as_slice());
+
             let tokens = auth_svc::issue_tokens(
                 state,
                 user_id,
@@ -349,6 +353,7 @@ pub async fn poll(
                 false, // device sessions are never "remember me"
                 SessionType::Device,
                 Some(client_id),
+                scopes,
             )
             .await?;
 
