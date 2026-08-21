@@ -78,18 +78,14 @@ pub async fn set_locked_until(
     Ok(())
 }
 
-pub async fn clear_lockout(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE users SET locked_until = NULL WHERE id = $1")
+/// Stamp a completed sign-in: last login time, and the end of any expired lockout.
+pub async fn record_sign_in<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET last_login_at = NOW(), locked_until = NULL WHERE id = $1")
         .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
-pub async fn update_last_login(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE users SET last_login_at = NOW() WHERE id = $1")
-        .bind(id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }

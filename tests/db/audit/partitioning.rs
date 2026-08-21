@@ -93,7 +93,9 @@ fn audit_log_current_month_partition_exists() {
 }
 
 #[test]
-fn audit_log_cron_job_is_registered_when_pg_cron_is_available() {
+fn retention_is_not_left_to_pg_cron() {
+    // pg_cron ran the retention functions with their SQL defaults, ignoring the
+    // configured retention; the application task is the only scheduler.
     let Some(mut db) = TestDatabase::new() else {
         return;
     };
@@ -111,13 +113,41 @@ fn audit_log_cron_job_is_registered_when_pg_cron_is_available() {
     let count: i64 = db
         .client()
         .query_one(
-            "SELECT COUNT(*) FROM cron.job WHERE jobname = 'audit_log_partition_rotation'",
+            "SELECT COUNT(*) FROM cron.job
+             WHERE jobname = 'audit_log_partition_rotation' OR jobname LIKE 'cleanup_%'",
             &[],
         )
         .expect("failed to inspect cron jobs")
         .get(0);
 
-    assert_eq!(count, 1);
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn audit_log_rotation_with_zero_retention_keeps_old_partitions() {
+    let Some(mut db) = TestDatabase::new() else {
+        return;
+    };
+
+    db.client()
+        .batch_execute(
+            "CREATE TABLE IF NOT EXISTS audit_log_2001_01
+             PARTITION OF audit_log
+             FOR VALUES FROM ('2001-01-01') TO ('2001-02-01')",
+        )
+        .expect("failed to create old partition");
+
+    db.client()
+        .execute("SELECT rotate_audit_log_partitions(0)", &[])
+        .expect("failed to rotate audit log partitions");
+
+    let still_there = db
+        .client()
+        .query_one("SELECT to_regclass('audit_log_2001_01') IS NOT NULL", &[])
+        .expect("failed to check old partition after rotation")
+        .get::<_, bool>(0);
+
+    assert!(still_there, "retention 0 means keep forever");
 }
 
 #[test]

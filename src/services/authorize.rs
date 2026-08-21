@@ -214,6 +214,7 @@ pub async fn redeem(
         SessionType::Device,
         Some(&entry.client_id),
         entry.scopes.as_deref(),
+        None,
     )
     .await?;
 

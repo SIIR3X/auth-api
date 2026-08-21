@@ -37,6 +37,33 @@ pub async fn find_default(pool: &PgPool) -> Result<Option<Role>, sqlx::Error> {
 
 // User roles
 
+/// Role and permission names a user holds, in one round trip: what an access
+/// token carries.
+pub async fn find_rbac_names(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<(Vec<String>, Vec<String>), sqlx::Error> {
+    sqlx::query_as::<_, (Vec<String>, Vec<String>)>(
+        "SELECT
+             COALESCE(ARRAY(
+                 SELECT r.name::TEXT FROM user_roles ur
+                 JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = $1
+                 ORDER BY r.name
+             ), '{}'),
+             COALESCE(ARRAY(
+                 SELECT DISTINCT p.name FROM user_roles ur
+                 JOIN role_permissions rp ON rp.role_id = ur.role_id
+                 JOIN permissions p ON p.id = rp.permission_id
+                 WHERE ur.user_id = $1
+                 ORDER BY p.name
+             ), '{}')",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
 pub async fn find_by_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<Role>, sqlx::Error> {
     sqlx::query_as::<_, Role>(
         "SELECT r.*

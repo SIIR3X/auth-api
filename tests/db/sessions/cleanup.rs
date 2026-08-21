@@ -142,3 +142,59 @@ fn rotated_sessions_share_a_family_and_leave_only_the_replacement_active() {
     assert_eq!(family_count, 2);
     assert_eq!(active_count, 1);
 }
+
+#[test]
+fn sessions_cleanup_function_honours_grace_and_batch_size() {
+    let Some(mut db) = TestDatabase::new() else {
+        return;
+    };
+
+    let user_id = insert_user(db.client(), 36);
+    db.client()
+        .execute(
+            "INSERT INTO sessions (user_id, created_at, expires_at, revoked_at, token_hash)
+             VALUES
+             ($1, NOW() - INTERVAL '30 days', NOW() - INTERVAL '10 days', NULL, $2),
+             ($1, NOW() - INTERVAL '30 days', NOW() - INTERVAL '10 days', NULL, $3),
+             ($1, NOW() - INTERVAL '30 days', NOW() - INTERVAL '10 days', NULL, $4),
+             ($1, NOW() - INTERVAL '30 days', NOW() + INTERVAL '10 days', NOW() - INTERVAL '10 days', $5),
+             ($1, NOW() - INTERVAL '2 days', NOW() - INTERVAL '1 day', NULL, $6),
+             ($1, NOW(), NOW() + INTERVAL '1 day', NULL, $7)",
+            &[
+                &user_id,
+                &fixed_hash(40),
+                &fixed_hash(41),
+                &fixed_hash(42),
+                &fixed_hash(43),
+                &fixed_hash(44),
+                &fixed_hash(45),
+            ],
+        )
+        .expect("failed to insert test sessions");
+
+    let mut sweep = || -> i32 {
+        db.client()
+            .query_one(
+                "SELECT cleanup_expired_sessions('7 days'::interval, 3)",
+                &[],
+            )
+            .expect("failed to run cleanup function")
+            .get(0)
+    };
+
+    // Four rows are past the grace period (three expired, one revoked); a batch
+    // deletes at most three, the next one the rest.
+    assert_eq!(sweep(), 3);
+    assert_eq!(sweep(), 1);
+    assert_eq!(sweep(), 0);
+
+    let remaining: i64 = db
+        .client()
+        .query_one(
+            "SELECT COUNT(*) FROM sessions WHERE user_id = $1",
+            &[&user_id],
+        )
+        .expect("failed to count remaining sessions")
+        .get(0);
+    assert_eq!(remaining, 2, "recently expired and active sessions stay");
+}

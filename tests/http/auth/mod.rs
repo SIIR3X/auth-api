@@ -15,6 +15,7 @@ mod register;
 mod second_factor;
 mod security;
 mod session_hardening;
+mod sign_in_records;
 mod totp;
 mod two_factor;
 mod two_factor_management;

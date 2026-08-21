@@ -66,7 +66,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Rotate audit log partitions at startup: creates upcoming monthly partitions
     // and drops partitions older than retention_months.
-    if let Err(e) = rotate_audit_log(&state.db, state.config.audit.retention_months).await {
+    if let Err(e) = cleanup::rotate_audit_log(&state.db, state.config.audit.retention_months).await
+    {
         tracing::warn!(error = ?e, "audit log partition rotation failed at startup");
     }
 
@@ -103,14 +104,6 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     tracing::info!("shutdown complete");
-    Ok(())
-}
-
-async fn rotate_audit_log(db: &sqlx::PgPool, retention_months: u32) -> Result<(), sqlx::Error> {
-    sqlx::query("SELECT rotate_audit_log_partitions($1)")
-        .bind(retention_months as i32)
-        .execute(db)
-        .await?;
     Ok(())
 }
 

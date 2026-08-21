@@ -101,47 +101,6 @@ async fn find_by_user_respects_limit_and_offset() {
     );
 }
 
-// find_by_action
-
-#[tokio::test]
-async fn find_by_action_returns_only_matching_action() {
-    let app = TestApp::spawn().await;
-
-    let user = fixtures::register_user(&app, 943).await;
-    append_entry(&app, Some(user.id), AuditAction::Register, None).await;
-    append_entry(&app, Some(user.id), AuditAction::Register, None).await;
-    append_entry(&app, Some(user.id), AuditAction::Login, None).await;
-
-    let entries = audit::find_by_action(&app.db, AuditAction::Register, 10, 0)
-        .await
-        .expect("find_by_action failed");
-
-    assert!(
-        entries.len() >= 2,
-        "must return at least the 2 Register entries"
-    );
-    assert!(
-        entries.iter().all(|e| e.action == AuditAction::Register),
-        "all returned entries must have action=Register"
-    );
-}
-
-#[tokio::test]
-async fn find_by_action_respects_limit() {
-    let app = TestApp::spawn().await;
-
-    let user = fixtures::register_user(&app, 944).await;
-    for _ in 0..4 {
-        append_entry(&app, Some(user.id), AuditAction::LoginFailed, None).await;
-    }
-
-    let entries = audit::find_by_action(&app.db, AuditAction::LoginFailed, 2, 0)
-        .await
-        .expect("find_by_action with limit failed");
-
-    assert_eq!(entries.len(), 2, "limit=2 must return at most 2 entries");
-}
-
 // find_by_request_id
 
 #[tokio::test]

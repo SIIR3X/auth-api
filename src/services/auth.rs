@@ -603,53 +603,13 @@ pub async fn login(
         SessionType::Web,
         None,
         None,
+        Some(SignIn {
+            identifier: Some(identifier),
+            request_id,
+            audit_metadata: json!({}),
+        }),
     )
     .await?;
-
-    tokio::try_join!(
-        async {
-            user_repo::update_last_login(&state.db, user.id)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))
-        },
-        async {
-            if user.locked_until.is_some() {
-                user_repo::clear_lockout(&state.db, user.id)
-                    .await
-                    .map_err(|e| AppError::Internal(e.into()))?;
-            }
-            Ok::<(), AppError>(())
-        },
-        async {
-            login_attempt::record(
-                &state.db,
-                &NewLoginAttempt {
-                    user_id: Some(user.id),
-                    attempted_identifier: identifier,
-                    was_successful: true,
-                    failure_reason: None,
-                    request_ip: ip,
-                    request_user_agent: user_agent,
-                },
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))
-        },
-        async {
-            audit::append(
-                &state.db,
-                &NewAuditEntry {
-                    user_id: Some(user.id),
-                    request_id,
-                    action: AuditAction::Login,
-                    ip_address: ip,
-                    metadata: json!({}),
-                },
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))
-        },
-    )?;
 
     metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
     Ok(LoginResult::Complete(tokens))
@@ -795,30 +755,13 @@ pub async fn complete_two_factor_login(
         SessionType::Web,
         None,
         None,
+        Some(SignIn {
+            identifier: None,
+            request_id,
+            audit_metadata: json!({"two_factor": true}),
+        }),
     )
     .await?;
-
-    tokio::try_join!(
-        async {
-            user_repo::update_last_login(&state.db, user.id)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))
-        },
-        async {
-            audit::append(
-                &state.db,
-                &NewAuditEntry {
-                    user_id: Some(user.id),
-                    request_id,
-                    action: AuditAction::Login,
-                    ip_address: ip,
-                    metadata: json!({"two_factor": true}),
-                },
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))
-        },
-    )?;
 
     metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
     metrics::counter!("auth_2fa_success_total", "method" => "totp").increment(1);
@@ -1463,6 +1406,15 @@ async fn guard_token_submission(
     }
 }
 
+/// A completed sign-in to record with the session it creates.
+pub(crate) struct SignIn<'a> {
+    /// Identifier typed at the password step; `None` when the attempt was
+    /// already recorded (a second factor completing a login).
+    pub identifier: Option<&'a str>,
+    pub request_id: Option<Uuid>,
+    pub audit_metadata: serde_json::Value,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn issue_tokens(
     state: &AppState,
@@ -1474,6 +1426,7 @@ pub(crate) async fn issue_tokens(
     session_type: SessionType,
     client_id: Option<&str>,
     scopes: Option<&[String]>,
+    sign_in: Option<SignIn<'_>>,
 ) -> Result<AuthTokens, AppError> {
     let raw_token = crypto::generate_token();
     let token_hash = crypto::sha256(raw_token.as_bytes());
@@ -1486,8 +1439,16 @@ pub(crate) async fn issue_tokens(
 
     let device_name = device_name.and_then(crate::domain::session::device_label);
 
+    // The session and the sign-in records commit together: one round of
+    // fsync instead of four, and no session without its audit trail.
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
     let session = session_repo::create(
-        &state.db,
+        &mut *tx,
         &NewSession {
             user_id,
             session_family_id: Uuid::new_v4(),
@@ -1505,6 +1466,45 @@ pub(crate) async fn issue_tokens(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+
+    if let Some(sign_in) = sign_in {
+        user_repo::record_sign_in(&mut *tx, user_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+        if let Some(identifier) = sign_in.identifier {
+            // The user agent is kept for failures only: a successful attempt
+            // is already described by the session it created.
+            login_attempt::record(
+                &mut *tx,
+                &NewLoginAttempt {
+                    user_id: Some(user_id),
+                    attempted_identifier: identifier,
+                    was_successful: true,
+                    failure_reason: None,
+                    request_ip: ip,
+                    request_user_agent: None,
+                },
+            )
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+        }
+        audit::append(
+            &mut *tx,
+            &NewAuditEntry {
+                user_id: Some(user_id),
+                request_id: sign_in.request_id,
+                action: AuditAction::Login,
+                ip_address: ip,
+                metadata: sign_in.audit_metadata,
+            },
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     // No re-authentication marker here: a session that was just created (by a
     // password login, an approved device, a 2FA challenge) has not re-proven
@@ -1527,16 +1527,9 @@ async fn build_access_token(
 ) -> Result<String, AppError> {
     let exp = time::in_secs(state.config.jwt.access_expiry_secs).unix_timestamp();
 
-    // Roles and permissions are independent lookups; run them concurrently to
-    // shave a DB round trip off every token issue/refresh.
-    let (user_roles, user_permissions) = tokio::try_join!(
-        role::find_by_user(&state.db, user_id),
-        role::find_permissions_by_user(&state.db, user_id),
-    )
-    .map_err(|e| AppError::Internal(e.into()))?;
-    let mut role_names: Vec<String> = user_roles.iter().map(|r| r.name.clone()).collect();
-    let mut permission_names: Vec<String> =
-        user_permissions.iter().map(|p| p.name.clone()).collect();
+    let (mut role_names, mut permission_names) = role::find_rbac_names(&state.db, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     // A session issued to a client carries only the permissions consented for
     // that client, re-evaluated against the user's current permissions on every
@@ -1697,30 +1690,13 @@ pub async fn complete_email_2fa_login(
         SessionType::Web,
         None,
         None,
+        Some(SignIn {
+            identifier: None,
+            request_id,
+            audit_metadata: json!({"two_factor": "email"}),
+        }),
     )
     .await?;
-
-    tokio::try_join!(
-        async {
-            user_repo::update_last_login(&state.db, user.id)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))
-        },
-        async {
-            audit::append(
-                &state.db,
-                &NewAuditEntry {
-                    user_id: Some(user.id),
-                    request_id,
-                    action: AuditAction::Login,
-                    ip_address: ip,
-                    metadata: json!({"two_factor": "email"}),
-                },
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))
-        },
-    )?;
 
     metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
     metrics::counter!("auth_2fa_success_total", "method" => "email").increment(1);
@@ -1827,30 +1803,13 @@ pub async fn complete_login_with_recovery(
         SessionType::Web,
         None,
         None,
+        Some(SignIn {
+            identifier: None,
+            request_id,
+            audit_metadata: json!({"two_factor": "recovery_code"}),
+        }),
     )
     .await?;
-
-    tokio::try_join!(
-        async {
-            user_repo::update_last_login(&state.db, user.id)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))
-        },
-        async {
-            audit::append(
-                &state.db,
-                &NewAuditEntry {
-                    user_id: Some(user.id),
-                    request_id,
-                    action: AuditAction::Login,
-                    ip_address: ip,
-                    metadata: json!({"two_factor": "recovery_code"}),
-                },
-            )
-            .await
-            .map_err(|e| AppError::Internal(e.into()))
-        },
-    )?;
 
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();

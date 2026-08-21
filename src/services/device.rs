@@ -354,6 +354,7 @@ pub async fn poll(
                 SessionType::Device,
                 Some(client_id),
                 scopes,
+                None,
             )
             .await?;
 

@@ -213,7 +213,7 @@ pub struct MailConfig {
 
 #[derive(Debug, Clone)]
 pub struct CleanupConfig {
-    /// Interval in seconds between application-side cleanup runs (fallback when pg_cron is unavailable). Default: 3600.
+    /// Interval in seconds between cleanup runs (retention sweeps and audit partition rotation). Default: 3600.
     pub interval_secs: u64,
     /// Grace period in days after session expiry/revocation before deletion. Default: 7.
     pub sessions_grace_days: u32,
@@ -232,7 +232,7 @@ pub struct CleanupConfig {
 pub struct AuditConfig {
     /// Number of months of audit log data to retain. Older monthly partitions are dropped.
     /// The database function rotate_audit_log_partitions() enforces this at startup and
-    /// nightly via pg_cron (if available). 0 = keep forever.
+    /// on every cleanup run. 0 = keep forever.
     pub retention_months: u32,
 }
 

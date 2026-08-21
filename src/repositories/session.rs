@@ -6,7 +6,7 @@
 
 use ipnetwork::IpNetwork;
 
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -71,7 +71,10 @@ impl SessionValidation {
 
 // Writes
 
-pub async fn create(pool: &PgPool, input: &NewSession<'_>) -> Result<Session, sqlx::Error> {
+pub async fn create<'e>(
+    executor: impl PgExecutor<'e>,
+    input: &NewSession<'_>,
+) -> Result<Session, sqlx::Error> {
     sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
              (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes)
@@ -90,7 +93,7 @@ pub async fn create(pool: &PgPool, input: &NewSession<'_>) -> Result<Session, sq
     .bind(input.client_id)
     .bind(input.family_created_at)
     .bind(input.scopes)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 

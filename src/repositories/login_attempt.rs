@@ -5,7 +5,7 @@
 
 use ipnetwork::IpNetwork;
 
-use sqlx::{PgPool, Row};
+use sqlx::{PgExecutor, PgPool, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -57,7 +57,10 @@ pub struct NewLoginAttempt<'a> {
 
 // Writes
 
-pub async fn record(pool: &PgPool, input: &NewLoginAttempt<'_>) -> Result<(), sqlx::Error> {
+pub async fn record<'e>(
+    executor: impl PgExecutor<'e>,
+    input: &NewLoginAttempt<'_>,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO login_attempts
              (user_id, attempted_identifier, was_successful, failure_reason, request_ip, request_user_agent)
@@ -69,7 +72,7 @@ pub async fn record(pool: &PgPool, input: &NewLoginAttempt<'_>) -> Result<(), sq
     .bind(&input.failure_reason)
     .bind(input.request_ip)
     .bind(input.request_user_agent)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
