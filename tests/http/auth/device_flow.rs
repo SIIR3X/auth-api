@@ -270,7 +270,7 @@ async fn a_live_user_code_is_never_handed_out_twice() {
     );
 
     let still: String =
-        deadpool_redis::redis::AsyncCommands::get(&mut conn, format!("device_uc:{taken}"))
+        deadpool_redis::redis::AsyncCommands::get(&mut *conn, format!("device_uc:{taken}"))
             .await
             .unwrap();
     assert_eq!(still, "hash-one");

@@ -88,7 +88,7 @@ async fn forgot_password_sends_reset_email() {
     // Clear the per-IP rate limit key so parallel tests don't exhaust the quota.
     if let Ok(mut conn) = app.redis.get().await {
         let _: Result<(), _> =
-            deadpool_redis::redis::AsyncCommands::del(&mut conn, "fp_req:127.0.0.1").await;
+            deadpool_redis::redis::AsyncCommands::del(&mut *conn, "fp_req:127.0.0.1").await;
     }
 
     let res = app

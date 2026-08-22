@@ -183,3 +183,80 @@ async fn general_rate_limit_blocks_non_auth_routes() {
         .unwrap();
     assert_eq!(res.status().as_u16(), 429);
 }
+
+#[tokio::test]
+async fn an_auth_route_also_counts_against_the_general_bucket() {
+    let app = TestApp::spawn_with_config(|config| {
+        config.rate_limit.requests_per_minute = 3;
+        config.rate_limit.auth_requests_per_minute = 100;
+        config.rate_limit.fail_open_on_redis_error = false;
+        config.rate_limit.allow_requests_without_ip = false;
+        config.redis.url = redis_url_with_db(&config.redis.url, 7);
+    })
+    .await;
+    app.clear_rate_limit_key(&app.client_ip).await;
+    app.clear_auth_rate_limit_key(&app.client_ip).await;
+
+    let payload = serde_json::json!({
+        "identifier": "both-buckets@example.com",
+        "password": "AnyPassword1!",
+    });
+    for _ in 0..3 {
+        assert_ne!(
+            app.post("/auth/login", &payload).await.status().as_u16(),
+            429
+        );
+    }
+
+    // The general bucket is spent: a general route is refused too.
+    let res = app
+        .client
+        .get(format!("{}/health", app.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status().as_u16(), 429);
+}
+
+#[tokio::test]
+async fn a_refused_request_consumes_nothing() {
+    let app = TestApp::spawn_with_config(|config| {
+        config.rate_limit.requests_per_minute = 3;
+        config.rate_limit.auth_requests_per_minute = 1;
+        config.rate_limit.fail_open_on_redis_error = false;
+        config.rate_limit.allow_requests_without_ip = false;
+        config.redis.url = redis_url_with_db(&config.redis.url, 8);
+    })
+    .await;
+    app.clear_rate_limit_key(&app.client_ip).await;
+    app.clear_auth_rate_limit_key(&app.client_ip).await;
+
+    let payload = serde_json::json!({
+        "identifier": "refused@example.com",
+        "password": "AnyPassword1!",
+    });
+    // One general slot used, then refusals by the auth bucket use none.
+    assert_ne!(
+        app.post("/auth/login", &payload).await.status().as_u16(),
+        429
+    );
+    for _ in 0..3 {
+        assert_eq!(
+            app.post("/auth/login", &payload).await.status().as_u16(),
+            429
+        );
+    }
+
+    let me = || async {
+        app.client
+            .get(format!("{}/users/me", app.base_url))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    };
+    assert_ne!(me().await, 429);
+    assert_ne!(me().await, 429);
+    assert_eq!(me().await, 429);
+}

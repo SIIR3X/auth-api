@@ -171,6 +171,7 @@ dependencies = [
  "axum-prometheus",
  "base64",
  "criterion",
+ "deadpool",
  "deadpool-redis",
  "dotenvy",
  "email_address",

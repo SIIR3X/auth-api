@@ -157,7 +157,7 @@ fn redis_error(e: impl std::fmt::Display) -> AppError {
 /// approval would mint tokens for someone else's device. Candidates come from
 /// `next_code` so a test can force a collision.
 pub async fn reserve_user_code(
-    conn: &mut deadpool_redis::Connection,
+    conn: &mut crate::utils::redis_pool::RedisConnection,
     hash_encoded: &str,
     ttl: u64,
     mut next_code: impl FnMut() -> String,
@@ -170,7 +170,7 @@ pub async fn reserve_user_code(
             .arg("NX")
             .arg("EX")
             .arg(ttl)
-            .query_async(&mut *conn)
+            .query_async(&mut **conn)
             .await
             .map_err(redis_error)?;
         if reserved.is_some() {
@@ -276,7 +276,7 @@ pub async fn poll(
                 .arg("NX")
                 .arg("EX")
                 .arg(interval)
-                .query_async(&mut conn)
+                .query_async(&mut *conn)
                 .await
                 .map_err(redis_error)?;
             if paced.is_none() {
@@ -510,7 +510,7 @@ async fn update_status(
         .key(&dk)
         .arg(&raw)
         .arg(&updated)
-        .invoke_async(&mut conn)
+        .invoke_async(&mut *conn)
         .await
         .map_err(redis_error)?;
 

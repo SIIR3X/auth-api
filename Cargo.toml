@@ -14,6 +14,7 @@ axum = "0.8.8"
 axum-prometheus = "0.10"
 metrics = "0.24"
 base64 = "0.22.1"
+deadpool = { version = "0.13", default-features = false, features = ["managed", "rt_tokio_1"] }
 deadpool-redis = { version = "0.23.0", features = ["rt_tokio_1", "script"] }
 dotenvy = "0.15.7"
 p256 = { version = "0.13", features = ["ecdsa", "pem", "jwk"] }

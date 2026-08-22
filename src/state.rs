@@ -7,7 +7,6 @@
 
 use std::{sync::Arc, time::Duration};
 
-use deadpool_redis::{Config as RedisPoolConfig, Pool as RedisPool, Runtime};
 use lettre::{AsyncSmtpTransport, Tokio1Executor, transport::smtp::authentication::Credentials};
 use reqwest::Client;
 use sqlx::PgPool;
@@ -17,10 +16,11 @@ use tera::Tera;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 
 use crate::{
-    config::{
-        CaptchaConfig, Config, ConfigError, DatabaseConfig, MailConfig, RedisConfig, SmtpConfig,
+    config::{CaptchaConfig, Config, ConfigError, DatabaseConfig, MailConfig, SmtpConfig},
+    utils::{
+        jwt,
+        redis_pool::{self, RedisPool},
     },
-    utils::jwt,
 };
 
 // Convenience alias used across services
@@ -35,7 +35,7 @@ pub enum AppStateError {
     #[error("database pool error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("redis pool error: {0}")]
-    Redis(#[from] deadpool_redis::CreatePoolError),
+    Redis(String),
     #[error("smtp transport error: {0}")]
     Smtp(#[from] lettre::transport::smtp::Error),
     #[error("nats connection error: {0}")]
@@ -98,7 +98,7 @@ impl AppState {
 
     /// Connect every remaining dependency around a prepared, validated config.
     async fn assemble(config: Config, db: PgPool) -> Result<Self, AppStateError> {
-        let redis = build_redis_pool(&config.redis)?;
+        let redis = redis_pool::build(&config.redis).map_err(AppStateError::Redis)?;
         let nats = async_nats::connect(&config.nats.url).await?;
         // The stream must exist before any durable publish (account deletion).
         crate::services::events::ensure_user_stream(&nats)
@@ -189,19 +189,6 @@ async fn build_pg_pool(cfg: &DatabaseConfig) -> Result<PgPool, sqlx::Error> {
         .acquire_timeout(Duration::from_secs(cfg.acquire_timeout_secs))
         .connect(&cfg.url)
         .await
-}
-
-fn build_redis_pool(cfg: &RedisConfig) -> Result<RedisPool, deadpool_redis::CreatePoolError> {
-    let mut pool_cfg = RedisPoolConfig::from_url(&cfg.url);
-
-    let mut pool_config = deadpool_redis::PoolConfig {
-        max_size: cfg.pool_size as usize,
-        ..Default::default()
-    };
-    pool_config.timeouts.wait = Some(Duration::from_millis(cfg.wait_timeout_ms));
-
-    pool_cfg.pool = Some(pool_config);
-    pool_cfg.create_pool(Some(Runtime::Tokio1))
 }
 
 fn build_mailer(cfg: &SmtpConfig) -> Result<Mailer, lettre::transport::smtp::Error> {

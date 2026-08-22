@@ -2,7 +2,8 @@
 
 #![allow(dead_code)]
 
-use deadpool_redis::{Pool as RedisPool, redis::AsyncCommands};
+use auth_api::utils::redis_pool::RedisPool;
+use deadpool_redis::redis::AsyncCommands;
 use reqwest::{Client, Response};
 use serde::Serialize;
 use sqlx::{PgPool, postgres::PgPoolOptions};

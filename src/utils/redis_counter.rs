@@ -13,7 +13,9 @@
 
 use std::sync::LazyLock;
 
-use deadpool_redis::{Pool as RedisPool, redis::Script};
+use deadpool_redis::redis::Script;
+
+use super::redis_pool::RedisPool;
 
 use crate::error::AppError;
 
@@ -92,7 +94,7 @@ pub async fn consume(redis: &RedisPool, budgets: &[Budget<'_>]) -> Result<Consum
     }
 
     let raw: Vec<i64> = invocation
-        .invoke_async(&mut conn)
+        .invoke_async(&mut *conn)
         .await
         .map_err(|_| AppError::ServiceUnavailable("redis_query_failed"))?;
 

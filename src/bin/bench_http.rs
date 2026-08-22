@@ -745,7 +745,7 @@ async fn bench_forgot_password(
                         let client = client.clone();
                         let state = state.clone();
                         boxed_http(async move {
-                            clear_forgot_password_rate_limit(&state).await;
+                            clear_forgot_password_rate_limit(&state, credential.user_id).await;
                             let body = json!({ "email": credential.email });
                             send_json_expect_status(
                                 &client,
@@ -1571,6 +1571,14 @@ async fn bench_revoke_session(
                 )
                 .await
                 .context("failed to create main revoke session")?;
+                reauthenticate(
+                    &client,
+                    &base_url,
+                    &main_tokens.access_token,
+                    &credential.password,
+                )
+                .await
+                .context("failed to re-authenticate revoke session")?;
 
                 // Pre-create one extra session per timed run.
                 let total = warmup + iterations;
@@ -1663,6 +1671,9 @@ async fn bench_email_change_start(
                 )
                 .await
                 .context("failed to create email_change_start session")?;
+                reauthenticate(&client, &base_url, &tokens.access_token, &credential.password)
+                    .await
+                    .context("failed to re-authenticate email_change_start session")?;
 
                 run_worker_loop(
                     worker_id,
@@ -1734,6 +1745,9 @@ async fn bench_email_change_full(
                 )
                 .await
                 .context("failed to create email_change_full session")?;
+                reauthenticate(&client, &base_url, &tokens.access_token, &credential.password)
+                    .await
+                    .context("failed to re-authenticate email_change_full session")?;
 
                 run_worker_loop(
                     worker_id,
@@ -1858,7 +1872,10 @@ fn parse_flow_token(payload: &str) -> Result<String> {
 /// Replaces the `otp_hash` field inside `email_change_flow:{flow_token}` in Redis
 /// with the SHA-256 hash of `BENCH_EMAIL_CHANGE_OTP`, encoded as base64url.
 /// This lets the benchmark complete OTP verification steps without a real mail server.
-async fn inject_known_otp_into_flow(redis: &deadpool_redis::Pool, flow_token: &str) {
+async fn inject_known_otp_into_flow(
+    redis: &auth_api::utils::redis_pool::RedisPool,
+    flow_token: &str,
+) {
     let key = format!("email_change_flow:{}", flow_token);
     if let Ok(mut conn) = redis.get().await
         && let Ok(raw) = conn.get::<_, String>(&key).await
@@ -2318,11 +2335,33 @@ async fn clear_email_2fa_cooldown(state: &AppState, user_id: Uuid) {
     }
 }
 
-async fn clear_forgot_password_rate_limit(state: &AppState) {
+async fn clear_forgot_password_rate_limit(state: &AppState, user_id: Uuid) {
     if let Ok(mut conn) = state.redis.get().await {
-        let key = "fp_req:127.0.0.1";
-        let _: Result<(), _> = conn.del(key).await;
+        let _: Result<(), _> = conn.del("fp_req:127.0.0.1").await;
+        let _: Result<(), _> = conn.del(format!("fp_account:{user_id}")).await;
     }
+}
+
+/// Confirm the password once for a session, as a client does before sensitive
+/// actions (session revocation, email change). Kept out of the timed region.
+async fn reauthenticate(
+    client: &reqwest::Client,
+    base_url: &str,
+    access_token: &str,
+    password: &str,
+) -> Result<()> {
+    let (status, payload) = send_json(
+        client,
+        reqwest::Method::POST,
+        &format!("{base_url}/users/me/reauth"),
+        Some(&json!({ "current_password": password })),
+        Some(access_token),
+    )
+    .await?;
+    if status != 204 {
+        anyhow::bail!("reauth returned {status}: {payload}");
+    }
+    Ok(())
 }
 
 async fn clear_totp_reuse_key(state: &AppState, user_id: Uuid, code: &str) {

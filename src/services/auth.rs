@@ -1907,69 +1907,65 @@ pub async fn blocklist_jti(state: &AppState, jti: Uuid, token_exp: i64) {
     }
 }
 
-/// Return true if the given JTI has been blocklisted.
+/// Check that an access token was neither revoked nor issued for a session
+/// that has ended.
 ///
-/// Fail-CLOSED: there is no DB-side fallback for per-JTI revocation (logout
-/// only writes to Redis), so any Redis failure is propagated as
-/// `AppError::ServiceUnavailable` (HTTP 503) rather than being silently
-/// treated as "not blocked". Otherwise, an attacker could bypass an explicit
-/// logout simply by triggering a Redis outage (AUTH-H1).
-pub async fn is_jti_blocked(state: &AppState, jti: Uuid) -> Result<bool, AppError> {
-    let key = format!("{}{}", JTI_BLOCKLIST_PREFIX, jti);
+/// The JTI blocklist and the session-validity cache are read in one pipeline,
+/// one round trip on every authenticated request. On a cache miss the session
+/// is read from the database and cached for SESSION_CACHE_TTL_SECS; both
+/// outcomes are cached so replayed revoked tokens do not hammer the database.
+///
+/// Fails closed: when Redis cannot be read, the revocation of the token cannot
+/// be ruled out, so the request is refused with 503 (AUTH-H1).
+///
+/// **Limitation:** revocations outside explicit logout are reflected once the
+/// cache entry expires; logout and revocation paths invalidate it directly.
+pub async fn verify_token_state(
+    state: &AppState,
+    jti: Uuid,
+    session_id: Uuid,
+) -> Result<(), AppError> {
+    let blocklist_key = format!("{JTI_BLOCKLIST_PREFIX}{jti}");
+    let cache_key = format!("{SESSION_CACHE_PREFIX}{session_id}");
+
     let mut conn = state.redis.get().await.map_err(|e| {
-        tracing::error!(
-            jti = %jti,
-            error = %e,
-            "JTI blocklist check failed: Redis pool unavailable; failing closed (cannot prove token is not revoked)"
-        );
+        tracing::error!(%jti, error = %e, "token state check failed: Redis pool unavailable; failing closed");
         AppError::ServiceUnavailable("redis_unavailable")
     })?;
-    conn.exists::<_, bool>(&key).await.map_err(|e| {
-        tracing::error!(
-            jti = %jti,
-            error = %e,
-            "JTI blocklist EXISTS query failed; failing closed"
-        );
-        AppError::ServiceUnavailable("redis_query_failed")
-    })
-}
-
-/// Check session validity with a short-lived Redis cache to reduce per-request DB queries.
-///
-/// On cache hit, returns the cached result immediately.
-/// On cache miss, queries the database and caches the result for SESSION_CACHE_TTL_SECS.
-/// Both active and inactive results are cached: inactive prevents DB hammering from
-/// replayed revoked tokens (JTI blocklist covers the logout case directly).
-/// Fails open on Redis errors - falls back to a direct DB query.
-///
-/// **Limitation:** admin/bulk session revocations (outside explicit logout) are not
-/// reflected until the cache entry expires (up to SESSION_CACHE_TTL_SECS seconds).
-/// Explicit logouts bypass this by calling `invalidate_session_cache` immediately.
-pub async fn check_session_validity(state: &AppState, session_id: Uuid) -> Result<bool, AppError> {
-    let key = format!("{SESSION_CACHE_PREFIX}{session_id}");
-
-    // Fast path: check Redis cache first.
-    if let Ok(mut conn) = state.redis.get().await
-        && let Ok(Some(cached)) = conn.get::<_, Option<u8>>(&key).await
-    {
-        return Ok(cached == 1);
-    }
-
-    // Slow path: query the database on cache miss.
-    let session = session_repo::find_validation_by_id(&state.db, session_id)
+    let (blocked, cached): (bool, Option<u8>) = deadpool_redis::redis::pipe()
+        .exists(&blocklist_key)
+        .get(&cache_key)
+        .query_async(&mut *conn)
         .await
-        .map_err(|_| AppError::Unauthorized)?
-        .ok_or(AppError::Unauthorized)?;
+        .map_err(|e| {
+            tracing::error!(%jti, error = %e, "token state pipeline failed; failing closed");
+            AppError::ServiceUnavailable("redis_query_failed")
+        })?;
 
-    let is_active = session.is_active();
-
-    // Cache the result to skip the DB on subsequent requests within the TTL window.
-    if let Ok(mut conn) = state.redis.get().await {
-        let value: u8 = if is_active { 1 } else { 0 };
-        let _: Result<(), _> = conn.set_ex(&key, value, SESSION_CACHE_TTL_SECS).await;
+    if blocked {
+        return Err(AppError::TokenInvalid);
     }
 
-    Ok(is_active)
+    let active = match cached {
+        Some(value) => value == 1,
+        None => {
+            let session = session_repo::find_validation_by_id(&state.db, session_id)
+                .await
+                .map_err(|_| AppError::Unauthorized)?
+                .ok_or(AppError::Unauthorized)?;
+            let active = session.is_active();
+            let _: Result<(), _> = conn
+                .set_ex(&cache_key, u8::from(active), SESSION_CACHE_TTL_SECS)
+                .await;
+            active
+        }
+    };
+
+    if active {
+        Ok(())
+    } else {
+        Err(AppError::Unauthorized)
+    }
 }
 
 /// Immediately invalidate the session validity cache entry.
@@ -2065,7 +2061,7 @@ pub async fn purge_user_pre_auth_and_email_change(state: &AppState, user_id: Uui
 }
 
 async fn load_pre_auth_state_from_redis(
-    conn: &mut deadpool_redis::Connection,
+    conn: &mut crate::utils::redis_pool::RedisConnection,
     redis_key: &str,
 ) -> Result<PreAuthState, AppError> {
     let raw: Option<String> = conn

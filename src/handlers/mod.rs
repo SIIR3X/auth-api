@@ -19,7 +19,8 @@ use tower_http::{
 
 use crate::{
     middleware::{
-        rate_limit::{self, RateLimitState},
+        access_log,
+        rate_limit::{self, Bucket, RateLimitState},
         request_id, security_headers,
     },
     state::AppState,
@@ -82,26 +83,26 @@ fn build_router(
     state: AppState,
     prometheus_layer: Option<axum_prometheus::PrometheusMetricLayer<'static>>,
 ) -> Router {
-    let rl_general = RateLimitState {
-        redis: state.redis.clone(),
+    // Every route passes exactly one rate-limit layer, which checks all of its
+    // buckets in a single Redis call. Auth and reauth routes count against the
+    // general bucket and a stricter one of their own.
+    let general = Bucket {
+        prefix: "rl",
         limit: state.config.rate_limit.requests_per_minute,
-        trusted_proxy_cidrs: state.config.server.trusted_proxy_cidrs.clone(),
-        fail_open_on_redis_error: state.config.rate_limit.fail_open_on_redis_error,
-        allow_requests_without_ip: state.config.rate_limit.allow_requests_without_ip,
-        key_prefix: "rl",
     };
-    // Auth and reauth routes use a separate, stricter bucket ("rl_auth:{ip}") so
-    // their limit is independent of the general bucket.  If both shared "rl:{ip}",
-    // each auth request would consume two tokens (once per layer) and the effective
-    // limit would be halved.
-    let rl_auth = RateLimitState {
-        redis: state.redis.clone(),
+    let strict = Bucket {
+        prefix: "rl_auth",
         limit: state.config.rate_limit.auth_requests_per_minute,
+    };
+    let limiter = |buckets: Vec<Bucket>| RateLimitState {
+        redis: state.redis.clone(),
+        buckets,
         trusted_proxy_cidrs: state.config.server.trusted_proxy_cidrs.clone(),
         fail_open_on_redis_error: state.config.rate_limit.fail_open_on_redis_error,
         allow_requests_without_ip: state.config.rate_limit.allow_requests_without_ip,
-        key_prefix: "rl_auth",
     };
+    let rl_general = limiter(vec![general]);
+    let rl_auth = limiter(vec![general, strict]);
     let security_headers_state = security_headers::SecurityHeadersState {
         enable_hsts: state.config.is_production()
             && state.config.server.public_url.starts_with("https://"),
@@ -118,11 +119,24 @@ fn build_router(
             rl_auth.clone(),
             rate_limit::layer_with_state,
         ))
-        .merge(me_router());
+        .merge(me_router().layer(middleware::from_fn_with_state(
+            rl_general.clone(),
+            rate_limit::layer_with_state,
+        )));
 
-    let router = Router::new()
+    let public = Router::new()
         .route("/health", get(health))
         .route("/.well-known/jwks.json", get(jwks))
+        // Logout is authenticated (requires a valid JWT via AuthUser) but intentionally
+        // placed outside the auth rate-limit bucket. Exhausting that bucket during a
+        // brute-force attack must not prevent the legitimate user from ending their session.
+        .route("/auth/logout", post(auth::logout))
+        .layer(middleware::from_fn_with_state(
+            rl_general,
+            rate_limit::layer_with_state,
+        ));
+
+    let router = public
         .nest(
             "/auth",
             auth_router().layer(middleware::from_fn_with_state(
@@ -130,16 +144,9 @@ fn build_router(
                 rate_limit::layer_with_state,
             )),
         )
-        // Logout is authenticated (requires a valid JWT via AuthUser) but intentionally
-        // placed outside the auth rate-limit bucket. Exhausting that bucket during a
-        // brute-force attack must not prevent the legitimate user from ending their session.
-        .route("/auth/logout", post(auth::logout))
         .nest("/users/me", me_with_strict_reauth)
         .layer(cors)
-        .layer(middleware::from_fn_with_state(
-            rl_general,
-            rate_limit::layer_with_state,
-        ))
+        .layer(middleware::from_fn(access_log::layer))
         .layer(middleware::from_fn_with_state(
             security_headers_state,
             security_headers::layer,

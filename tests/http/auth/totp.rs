@@ -894,7 +894,7 @@ async fn recovery_code_regen_cooldown_blocks_second_immediate_request() {
     // Clear any pre-existing cooldown so the first call always succeeds.
     if let Ok(mut conn) = app.redis.get().await {
         let key = format!("rc_regen:{}", user.id);
-        let _: Result<(), _> = deadpool_redis::redis::AsyncCommands::del(&mut conn, &key).await;
+        let _: Result<(), _> = deadpool_redis::redis::AsyncCommands::del(&mut *conn, &key).await;
     }
 
     // First regeneration must succeed.

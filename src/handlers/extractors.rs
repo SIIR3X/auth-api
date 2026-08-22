@@ -72,21 +72,9 @@ impl FromRequestParts<AppState> for AuthUser {
             return Err(AppError::TokenInvalid);
         }
 
-        // Check the JTI blocklist before touching the database.
-        // Fail-closed: a Redis error here is propagated as 503
-        // (ServiceUnavailable) rather than silently treated as "not blocked",
-        // otherwise an attacker could bypass an explicit logout during a
-        // Redis outage (AUTH-H1).
-        if auth_svc::is_jti_blocked(state, claims.jti).await? {
-            return Err(AppError::TokenInvalid);
-        }
-
-        // Verify the session is still active.
-        // Uses a short-lived Redis cache (SESSION_CACHE_TTL_SECS) to avoid a DB query
-        // on every authenticated request. Explicit logouts invalidate the cache immediately.
-        if !auth_svc::check_session_validity(state, claims.sid).await? {
-            return Err(AppError::Unauthorized);
-        }
+        // Revoked token or ended session: one Redis round trip, the database
+        // only on a cache miss. Fails closed when Redis is unavailable.
+        auth_svc::verify_token_state(state, claims.jti, claims.sid).await?;
 
         let request_id = parts
             .headers

@@ -189,6 +189,10 @@ pub fn benchmark_config(db_url: &str, redis_url: &str) -> Config {
     config.rate_limit.fail_open_on_redis_error = true;
     config.rate_limit.allow_requests_without_ip = true;
     config.security.lockout_threshold = config.security.lockout_threshold.max(10_000);
+    // Workers re-authenticate once at setup, as a client does before sensitive
+    // actions; the window must outlast the longest scenario.
+    config.security.sensitive_action_reauth_secs =
+        config.security.sensitive_action_reauth_secs.max(3_600);
     config.captcha.secret = None;
     config.mail.smtp = SmtpConfig {
         host: "127.0.0.1".into(),

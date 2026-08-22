@@ -8,7 +8,7 @@ use auth_api::{
     error::AppError,
     utils::redis_counter::{self, Budget},
 };
-use deadpool_redis::{Config as RedisPoolConfig, Runtime, redis::AsyncCommands};
+use deadpool_redis::redis::AsyncCommands;
 
 use crate::common::app::TestApp;
 
@@ -97,12 +97,12 @@ async fn window_is_armed_on_first_attempt_and_reset_clears_it() {
 
 #[tokio::test]
 async fn unreachable_redis_fails_closed() {
-    let mut cfg = RedisPoolConfig::from_url("redis://127.0.0.1:1");
-    let mut pool_cfg = deadpool_redis::PoolConfig::new(1);
-    pool_cfg.timeouts.wait = Some(std::time::Duration::from_millis(200));
-    pool_cfg.timeouts.create = Some(std::time::Duration::from_millis(200));
-    cfg.pool = Some(pool_cfg);
-    let dead = cfg.create_pool(Some(Runtime::Tokio1)).unwrap();
+    let dead = auth_api::utils::redis_pool::build(&auth_api::config::RedisConfig {
+        url: "redis://127.0.0.1:1".into(),
+        pool_size: 1,
+        wait_timeout_ms: 200,
+    })
+    .unwrap();
 
     let key = unique_key("dead");
     let result = redis_counter::consume(

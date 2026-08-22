@@ -1,84 +1,117 @@
-//! IP-based token bucket rate limiter backed by Redis.
+//! Per-client rate limiting backed by Redis.
 //!
-//! Each client IP gets a bucket with `burst_size` tokens that refills at
-//! `requests_per_second` tokens per second. The state is stored in Redis as a
-//! sorted set so it survives restarts and works across multiple instances.
+//! Each bucket is a sliding-window estimate over one minute, kept as one small
+//! hash per client: the count of the current fixed window, the count of the
+//! previous one, and which window "current" is. The estimate weights the
+//! previous window by the part of it still inside the sliding minute. Memory
+//! and work are O(1) per request, where a sorted set of timestamps grew with
+//! the limit.
 //!
-//! Algorithm: sliding window counter using a Redis sorted set per IP.
-//! Each request adds one entry with score = now_ms. Entries older than the
-//! window are pruned on every check. If the count exceeds the limit the
-//! request is rejected with 429.
+//! A route can be subject to several buckets (the general one and the stricter
+//! auth one). They are checked in a single script call: a request is counted in
+//! every bucket or in none, and a refused request consumes nothing.
 
-use std::{
-    net::IpAddr,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{net::IpAddr, sync::LazyLock};
 
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header::RETRY_AFTER},
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use deadpool_redis::{Pool as RedisPool, redis::Script};
+use deadpool_redis::redis::Script;
 use ipnetwork::IpNetwork;
 
-use crate::handlers::extractors::ClientIp;
+use crate::{handlers::extractors::ClientIp, utils::redis_pool::RedisPool};
 
-const WINDOW_MS: u64 = 60_000; // 1 minute sliding window
+/// Length of the sliding window.
+const WINDOW_MS: u64 = 60_000;
 
-/// Per-process monotonic counter used to make sorted-set members unique without
-/// calling the RNG on every request.
-static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-const RATE_LIMIT_LUA: &str = r#"
-local key = KEYS[1]
-local now_ms = tonumber(ARGV[1])
-local window_ms = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3])
-local member = ARGV[4]
+/// KEYS: one hash per bucket. ARGV: now_ms, window_ms, then one limit per key.
+/// Returns 0 when allowed, otherwise the milliseconds until the first refusing
+/// bucket frees a slot (at least 1).
+static SLIDING_WINDOW: LazyLock<Script> = LazyLock::new(|| {
+    Script::new(
+        r#"
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local current = math.floor(now / window)
+local into = (now % window) / window
 
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now_ms - window_ms)
-
-local count = redis.call('ZCARD', key)
-if count >= limit then
-    redis.call('PEXPIRE', key, window_ms + 1000)
-    return 0
+local state = {}
+for i, key in ipairs(KEYS) do
+    local limit = tonumber(ARGV[2 + i])
+    local fields = redis.call('HMGET', key, 'w', 'c', 'p')
+    local w, c, p = tonumber(fields[1]), tonumber(fields[2]) or 0, tonumber(fields[3]) or 0
+    if w == nil or w < current - 1 then
+        c, p = 0, 0
+    elseif w == current - 1 then
+        c, p = 0, c
+    end
+    if p * (1 - into) + c + 1 > limit then
+        local wait = window - (now % window)
+        if c + 1 <= limit and p > 0 then
+            -- Only the previous window's weight is in the way: it decays
+            -- continuously, so the slot frees before the window turns.
+            local needed = (p * (1 - into) + c + 1 - limit) / p
+            wait = math.ceil(needed * window)
+        end
+        return math.max(wait, 1)
+    end
+    state[i] = {c, p}
 end
 
-redis.call('ZADD', key, now_ms, member)
-redis.call('PEXPIRE', key, window_ms + 1000)
-return 1
-"#;
+for i, key in ipairs(KEYS) do
+    redis.call('HSET', key, 'w', current, 'c', state[i][1] + 1, 'p', state[i][2])
+    redis.call('PEXPIRE', key, 2 * window)
+end
+return 0
+"#,
+    )
+});
 
-async fn check_rate_limit(
+/// One rate-limit bucket: `limit` requests per minute under `prefix:{client}`.
+#[derive(Clone, Copy, Debug)]
+pub struct Bucket {
+    pub prefix: &'static str,
+    pub limit: u64,
+}
+
+#[derive(Clone)]
+pub struct RateLimitState {
+    pub redis: RedisPool,
+    /// Every bucket a request through this layer counts against.
+    pub buckets: Vec<Bucket>,
+    pub trusted_proxy_cidrs: Vec<IpNetwork>,
+    pub fail_open_on_redis_error: bool,
+    pub allow_requests_without_ip: bool,
+}
+
+/// `Ok(None)` when allowed, `Ok(Some(wait_ms))` when refused.
+async fn check(
     redis: &RedisPool,
-    key_prefix: &str,
-    ip: &str,
-    limit: u64,
-) -> Result<bool, anyhow::Error> {
+    buckets: &[Bucket],
+    client: &str,
+) -> Result<Option<u64>, anyhow::Error> {
     let mut conn = redis.get().await?;
+    let now_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
 
-    let key = format!("{key_prefix}:{ip}");
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_millis() as u64;
+    let mut invocation = SLIDING_WINDOW.prepare_invoke();
+    for bucket in buckets {
+        invocation.key(format!("{}:{client}", bucket.prefix));
+    }
+    invocation.arg(now_ms).arg(WINDOW_MS);
+    for bucket in buckets {
+        invocation.arg(bucket.limit);
+    }
 
-    let member = format!(
-        "{now_ms}-{}",
-        REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
-    );
-    let script = Script::new(RATE_LIMIT_LUA);
-    let allowed: i32 = script
-        .key(&key)
-        .arg(now_ms as i64)
-        .arg(WINDOW_MS as i64)
-        .arg(limit as i64)
-        .arg(&member)
-        .invoke_async(&mut conn)
-        .await?;
-
-    Ok(allowed == 1)
+    let wait_ms: u64 = invocation.invoke_async(&mut *conn).await?;
+    Ok((wait_ms > 0).then_some(wait_ms))
 }
 
 /// Key a client address for rate limiting and abuse budgets.
@@ -99,51 +132,34 @@ pub fn ip_bucket(ip: IpAddr) -> String {
     }
 }
 
-// Extractor-free version for use as a plain function from a closure middleware.
-// Returns (pool, limit) as state so the router can configure different limits
-// per route group.
-
-#[derive(Clone)]
-pub struct RateLimitState {
-    pub redis: RedisPool,
-    pub limit: u64,
-    pub trusted_proxy_cidrs: Vec<IpNetwork>,
-    pub fail_open_on_redis_error: bool,
-    pub allow_requests_without_ip: bool,
-    /// Redis key prefix for the rate-limit sorted set.
-    /// Defaults to "rl" when not set. Use different prefixes for buckets that
-    /// must track independently (e.g. "rl_auth" for auth-only limits).
-    pub key_prefix: &'static str,
-}
-
 pub async fn layer_with_state(
     State(state): State<RateLimitState>,
     client_ip: ClientIp,
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ip = match client_ip.0 {
+    let client = match client_ip.0 {
         Some(ip) => ip_bucket(ip.ip()),
         None if state.allow_requests_without_ip => return next.run(req).await,
         None => return (StatusCode::SERVICE_UNAVAILABLE, "client IP unavailable").into_response(),
     };
 
-    match check_rate_limit(&state.redis, state.key_prefix, &ip, state.limit).await {
-        Ok(true) => next.run(req).await,
-        Ok(false) => (
-            StatusCode::TOO_MANY_REQUESTS,
-            [("Retry-After", "60")],
-            "rate limit exceeded",
-        )
-            .into_response(),
+    match check(&state.redis, &state.buckets, &client).await {
+        Ok(None) => next.run(req).await,
+        Ok(Some(wait_ms)) => {
+            let retry_after = wait_ms.div_ceil(1000).max(1);
+            let mut res = (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
+            res.headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from(retry_after));
+            res
+        }
+        Err(e) if state.fail_open_on_redis_error => {
+            tracing::warn!(client = %client, error = %e, "rate limit Redis error, failing open");
+            next.run(req).await
+        }
         Err(e) => {
-            if state.fail_open_on_redis_error {
-                tracing::warn!(ip = %ip, error = %e, "rate limit Redis error, failing open");
-                next.run(req).await
-            } else {
-                tracing::warn!(ip = %ip, error = %e, "rate limit Redis error, failing closed");
-                (StatusCode::SERVICE_UNAVAILABLE, "rate limiter unavailable").into_response()
-            }
+            tracing::warn!(client = %client, error = %e, "rate limit Redis error, failing closed");
+            (StatusCode::SERVICE_UNAVAILABLE, "rate limiter unavailable").into_response()
         }
     }
 }
