@@ -2,6 +2,7 @@ mod account_hardening;
 mod authorization_code;
 mod captcha;
 mod device_flow;
+mod edge;
 mod events;
 mod headers;
 mod jwt;

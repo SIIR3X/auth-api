@@ -1,3 +1,5 @@
+# Development stack. Every port is published on loopback only: the database,
+# cache and broker run with default credentials and must not face the network.
 services:
   api:
     build:
@@ -5,7 +7,7 @@ services:
       dockerfile: Dockerfile.dev
     env_file: .env.dev
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -27,7 +29,7 @@ services:
       POSTGRES_USER: auth_api
       POSTGRES_PASSWORD: auth_api
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
     healthcheck:
@@ -42,7 +44,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_dev_data:/data
     healthcheck:
@@ -55,10 +57,10 @@ services:
       - cache-net
 
   mailpit:
-    image: axllent/mailpit:latest
+    image: axllent/mailpit:v1.21
     ports:
-      - "1025:1025"   # SMTP
-      - "8025:8025"   # Web UI
+      - "127.0.0.1:1025:1025"   # SMTP
+      - "127.0.0.1:8025:8025"   # Web UI
     restart: unless-stopped
     networks:
       - mail-net
@@ -70,8 +72,8 @@ services:
     # so monitoring (probed by the healthcheck) is re-enabled explicitly.
     command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
     ports:
-      - "4222:4222"   # client
-      - "8222:8222"   # monitoring
+      - "127.0.0.1:4222:4222"   # client
+      - "127.0.0.1:8222:8222"   # monitoring
     tmpfs:
       - /data
     healthcheck:

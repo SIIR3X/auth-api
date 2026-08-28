@@ -23,7 +23,9 @@ use axum::{
 use deadpool_redis::redis::Script;
 use ipnetwork::IpNetwork;
 
-use crate::{handlers::extractors::ClientIp, utils::redis_pool::RedisPool};
+use crate::utils::redis_pool::RedisPool;
+
+use super::client_ip::ClientIp;
 
 /// Length of the sliding window.
 const WINDOW_MS: u64 = 60_000;

@@ -11,7 +11,6 @@
 
 use deadpool_redis::redis::AsyncCommands;
 use ipnetwork::IpNetwork;
-use rand::RngExt;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -188,7 +187,7 @@ pub async fn send_code(state: &AppState, user_id: Uuid) -> Result<(), AppError> 
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
 
-    let code = generate_otp();
+    let code = crypto::generate_otp();
     let hash = crypto::sha256(code.as_bytes());
 
     email_2fa::create(
@@ -300,13 +299,3 @@ async fn apply_backoff(failures: i64) {
 }
 
 // OTP generation
-
-/// Generates a 6-digit numeric OTP (000000..999999, ~20 bits of entropy).
-///
-/// Security does not rest on the code entropy alone: a 5-attempt failure budget,
-/// exponential backoff, and a 10-minute TTL together make brute-forcing infeasible
-/// in practice. This matches common Email OTP implementations (RFC 4226 / HOTP style).
-fn generate_otp() -> String {
-    let code: u32 = rand::rng().random_range(0..1_000_000);
-    format!("{:06}", code)
-}

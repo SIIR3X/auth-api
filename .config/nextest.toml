@@ -1,0 +1,16 @@
+# cargo-nextest configuration.
+#
+# Every test runs in its own process against its own database (cloned from a
+# migrated template), so tests are safe to run fully in parallel.
+
+[profile.default]
+# Flag a test as slow after 30 s and kill it after 2 minutes: a hung test (a
+# stalled Redis or NATS call) must fail loudly instead of freezing the run.
+slow-timeout = { period = "30s", terminate-after = 4 }
+# No retries: a flaky test is a bug to fix, not noise to hide.
+retries = 0
+
+[profile.ci]
+# Report every failure in one run.
+fail-fast = false
+failure-output = "immediate-final"

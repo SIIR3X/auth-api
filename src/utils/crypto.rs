@@ -39,6 +39,17 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 
 /// Generates a 32-byte cryptographically secure random token, base64url-encoded.
 /// Used for email verification and password reset tokens.
+/// A 6-digit numeric one-time code (000000..999999, ~20 bits).
+///
+/// Its strength is not the entropy alone: every flow using it pairs the code
+/// with an attempt budget, backoff and a short TTL.
+pub fn generate_otp() -> String {
+    use rand::RngExt;
+
+    let code: u32 = rand::rng().random_range(0..1_000_000);
+    format!("{code:06}")
+}
+
 pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);

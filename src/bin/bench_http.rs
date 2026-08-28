@@ -740,22 +740,38 @@ async fn bench_forgot_password(
                     warmup,
                     iterations,
                     credential,
-                    move |credential, _| {
+                    move |credential, run_index| {
                         let base_url = base_url.clone();
                         let client = client.clone();
                         let state = state.clone();
+                        // A distinct documentation-range address per request: the
+                        // per-IP budget (5 per 15 min) is not what this measures.
+                        let client_ip = format!("198.18.{}.{}", worker_id % 256, run_index % 256);
                         boxed_http(async move {
                             clear_forgot_password_rate_limit(&state, credential.user_id).await;
                             let body = json!({ "email": credential.email });
-                            send_json_expect_status(
+                            match send_json_from(
                                 &client,
                                 reqwest::Method::POST,
                                 &format!("{base_url}/auth/forgot-password"),
                                 Some(&body),
                                 None,
-                                200,
+                                Some(&client_ip),
                             )
                             .await
+                            {
+                                Ok((status, payload)) => HttpOutcome {
+                                    status,
+                                    ok: status == 200,
+                                    error: (status != 200)
+                                        .then(|| format!("expected 200, got {status}: {payload}")),
+                                },
+                                Err(e) => HttpOutcome {
+                                    status: 0,
+                                    ok: false,
+                                    error: Some(format!("request failed: {e:#}")),
+                                },
+                            }
                         })
                     },
                 )
@@ -2256,7 +2272,22 @@ async fn send_json(
     body: Option<&Value>,
     bearer: Option<&str>,
 ) -> Result<(u16, String)> {
+    send_json_from(client, method, url, body, bearer, None).await
+}
+
+/// Like [`send_json`], presenting `forwarded_for` as the client address.
+async fn send_json_from(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+    body: Option<&Value>,
+    bearer: Option<&str>,
+    forwarded_for: Option<&str>,
+) -> Result<(u16, String)> {
     let mut request = client.request(method, url);
+    if let Some(ip) = forwarded_for {
+        request = request.header("x-forwarded-for", ip);
+    }
     if let Some(token) = bearer {
         request = request.bearer_auth(token);
     }

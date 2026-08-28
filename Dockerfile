@@ -1,12 +1,14 @@
+# Base images are pinned by digest: a tag can be repointed, a digest cannot.
+# Refresh with `docker buildx imagetools inspect <image>:<tag>`.
+
 # =============================================================================
 # Stage 1: Chef - install cargo-chef
 # =============================================================================
-FROM rust:1.96-slim-bookworm AS chef
+FROM rust:1.96-slim-bookworm@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3 AS chef
 
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
-    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN cargo install cargo-chef --locked
@@ -38,12 +40,12 @@ RUN cargo build --release --bin auth-api
 # =============================================================================
 # Stage 4: Runtime
 # =============================================================================
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
 
 # hadolint ignore=DL3008
+# TLS is rustls: only the CA bundle is needed, no OpenSSL runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --uid 1001 --no-create-home --shell /bin/false appuser

@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     tmpfs:
       - /var/lib/postgresql/data
     healthcheck:
@@ -20,7 +20,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     tmpfs:
       - /data
     healthcheck:
@@ -34,8 +34,8 @@ services:
   mailpit:
     image: axllent/mailpit:v1.21
     ports:
-      - "1026:1025"
-      - "8026:8025"
+      - "127.0.0.1:1026:1025"
+      - "127.0.0.1:8026:8025"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8025/api/v1/info"]
       interval: 5s
@@ -51,8 +51,8 @@ services:
     # so monitoring (probed by the healthcheck) is re-enabled explicitly.
     command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
     ports:
-      - "4224:4222"
-      - "8224:8222"
+      - "127.0.0.1:4224:4222"
+      - "127.0.0.1:8224:8222"
     tmpfs:
       - /data
     healthcheck:

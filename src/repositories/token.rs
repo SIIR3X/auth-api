@@ -78,8 +78,8 @@ pub async fn consume_verification(pool: &PgPool, id: Uuid) -> Result<bool, sqlx:
 }
 
 /// Invalidates any active token before issuing a new one.
-pub async fn revoke_active_verification_by_user(
-    pool: &PgPool,
+pub async fn revoke_active_verification_by_user<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     user_id: Uuid,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -88,7 +88,7 @@ pub async fn revoke_active_verification_by_user(
          WHERE user_id = $1 AND used_at IS NULL",
     )
     .bind(user_id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }

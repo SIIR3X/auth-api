@@ -15,7 +15,6 @@
 use base64::Engine;
 use deadpool_redis::redis::AsyncCommands;
 use ipnetwork::IpNetwork;
-use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -25,7 +24,7 @@ use crate::{
     error::AppError,
     repositories::{
         audit::{self, NewAuditEntry},
-        session as session_repo, user as user_repo,
+        session as session_repo, token as token_repo, user as user_repo,
     },
     state::AppState,
     utils::{
@@ -125,7 +124,7 @@ pub async fn start(
     }
 
     let flow_token = crypto::generate_token();
-    let otp = generate_otp();
+    let otp = crypto::generate_otp();
     let otp_hash = hash_otp(&otp);
 
     let flow = FlowState {
@@ -216,19 +215,15 @@ pub async fn submit_new(
         return Err(AppError::Unauthorized);
     }
 
-    let taken: Option<(i32,)> =
-        sqlx::query_as("SELECT 1 FROM users WHERE email = $1 AND id <> $2 LIMIT 1")
-            .bind(new_email)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+    let taken = user_repo::email_taken(&state.db, new_email, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
-    if taken.is_some() {
+    if taken {
         return Err(AppError::Conflict("email_taken"));
     }
 
-    let otp = generate_otp();
+    let otp = crypto::generate_otp();
     let otp_hash = hash_otp(&otp);
 
     flow.step = FlowStep::NewVerify;
@@ -325,64 +320,36 @@ pub async fn confirm_new(
             .map_err(|e| AppError::Internal(e.into()))?;
 
         // Re-check uniqueness inside the transaction.
-        let taken: Option<(i32,)> =
-            sqlx::query_as("SELECT 1 FROM users WHERE email = $1 AND id <> $2 LIMIT 1")
-                .bind(new_email)
-                .bind(user_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
-
-        if taken.is_some() {
+        if user_repo::email_taken(&mut *tx, new_email, user_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+        {
             return Err(AppError::Conflict("email_taken"));
         }
 
-        sqlx::query(
-            "UPDATE email_verification_tokens
-             SET used_at = NOW()
-             WHERE user_id = $1 AND used_at IS NULL",
-        )
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        token_repo::revoke_active_verification_by_user(&mut *tx, user_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
 
-        // Ownership of the new address is proven via OTP, so email_verified_at
-        // is set immediately. The status is left alone: confirming an address
-        // must never reactivate a suspended or inactive account.
-        sqlx::query(
-            "UPDATE users
-             SET email = $2,
-                 email_verified_at = NOW()
-             WHERE id = $1",
-        )
-        .bind(user_id)
-        .bind(new_email)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        // Ownership of the new address is proven via OTP, so it is verified at once.
+        user_repo::change_email(&mut *tx, user_id, new_email)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
 
-        sqlx::query(
-            "UPDATE sessions
-             SET revoked_at = NOW()
-             WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL",
-        )
-        .bind(user_id)
-        .bind(current_session_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        session_repo::revoke_others(&mut *tx, user_id, current_session_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
 
-        sqlx::query(
-            "INSERT INTO audit_log (user_id, request_id, action, ip_address, metadata)
-             VALUES ($1, $2, $3, $4, $5)",
+        audit::append(
+            &mut *tx,
+            &NewAuditEntry {
+                user_id: Some(user_id),
+                request_id,
+                action: AuditAction::EmailChanged,
+                ip_address: ip,
+                metadata: json!({}),
+            },
         )
-        .bind(Some(user_id))
-        .bind(request_id)
-        .bind(AuditAction::EmailChanged)
-        .bind(ip)
-        .bind(json!({}))
-        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -553,12 +520,4 @@ async fn apply_backoff(failures: i64) {
         .saturating_mul(2u64.pow(exp))
         .min(BACKOFF_MAX_SECS);
     tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-}
-
-/// Generates a 6-digit numeric OTP (000000..999999).
-/// Security relies on the 5-attempt budget, exponential backoff, and 15-minute TTL
-/// rather than on entropy alone - matching the Email 2FA approach.
-fn generate_otp() -> String {
-    let code: u32 = rand::rng().random_range(0..1_000_000);
-    format!("{:06}", code)
 }

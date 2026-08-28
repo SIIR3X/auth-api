@@ -91,7 +91,8 @@ test-local: ## Run all tests against already-running infrastructure (no Docker)
 	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) cargo nextest run
 
 .PHONY: ci
-ci: quality test-local ## Full local CI gate: formatting, lints, dependency policy, all tests
+ci: quality ## Full local CI gate: formatting, lints, dependency policy, all tests
+	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) cargo nextest run --profile ci
 
 .PHONY: test-verbose
 test-verbose: test-infra-up ## Run all tests with detailed output

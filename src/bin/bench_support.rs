@@ -178,7 +178,10 @@ pub fn benchmark_config(db_url: &str, redis_url: &str) -> Config {
     config.server.host = "127.0.0.1".into();
     config.server.port = 0;
     config.server.public_url = "http://127.0.0.1".into();
-    config.server.trusted_proxy_cidrs.clear();
+    // The benchmark client is the only peer; trusting it lets a scenario give
+    // each request its own client address through X-Forwarded-For, so per-IP
+    // budgets measure the endpoint instead of contention between workers.
+    config.server.trusted_proxy_cidrs = vec!["127.0.0.1/32".parse().expect("valid CIDR")];
     config.database.url = db_url.into();
     config.database.max_connections = config.database.max_connections.max(32);
     config.database.min_connections = config.database.min_connections.min(4);

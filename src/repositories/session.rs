@@ -172,6 +172,23 @@ pub async fn revoke_all_by_user(pool: &PgPool, user_id: Uuid) -> Result<u64, sql
     Ok(result.rows_affected())
 }
 
+/// Revoke every active session of a user except `keep` (the one making the request).
+pub async fn revoke_others<'e>(
+    executor: impl PgExecutor<'e>,
+    user_id: Uuid,
+    keep: Uuid,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE sessions SET revoked_at = NOW()
+         WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL",
+    )
+    .bind(user_id)
+    .bind(keep)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Calls the database function that revokes every session in the same family.
 /// Used when a refresh token replay attack is detected.
 pub async fn revoke_family(pool: &PgPool, session_id: Uuid) -> Result<u64, sqlx::Error> {

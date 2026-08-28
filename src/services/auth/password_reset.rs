@@ -1,0 +1,236 @@
+//! Forgotten password: reset token issuance and redemption.
+
+use super::*;
+
+/// Always returns Ok (or 429 for an abusive IP) so the response never reveals
+/// whether an account exists.
+///
+/// Both outcomes take the same time: the work for a known address runs, and the
+/// response is padded to `FORGOT_PASSWORD_MIN_DURATION` either way. Padding only
+/// the unknown path, as before, made the unknown address the slow one.
+pub async fn forgot_password(
+    state: &AppState,
+    email: &str,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+    request_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    if let Some(ip_val) = ip {
+        let key = format!("fp_req:{}", ip_bucket(ip_val.ip()));
+        if budget_exhausted(
+            state,
+            &key,
+            MAX_FORGOT_PASSWORD_BY_IP,
+            FORGOT_PASSWORD_IP_WINDOW_SECS,
+        )
+        .await
+        {
+            return Err(AppError::RateLimitExceeded);
+        }
+    }
+
+    let started = std::time::Instant::now();
+    let result = issue_password_reset(state, email, ip, user_agent, request_id).await;
+    let elapsed = started.elapsed();
+    if elapsed < FORGOT_PASSWORD_MIN_DURATION {
+        tokio::time::sleep(FORGOT_PASSWORD_MIN_DURATION - elapsed).await;
+    }
+    result
+}
+
+pub(super) async fn issue_password_reset(
+    state: &AppState,
+    email: &str,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+    request_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    let Some(user) = user_repo::find_by_email(&state.db, email).await? else {
+        return Ok(());
+    };
+
+    // Cap resets per account across every IP, so nobody can flood a mailbox or
+    // keep invalidating its pending link from many addresses.
+    let account_key = format!("fp_account:{}", user.id);
+    if budget_exhausted(
+        state,
+        &account_key,
+        MAX_FORGOT_PASSWORD_BY_ACCOUNT,
+        FORGOT_PASSWORD_ACCOUNT_WINDOW_SECS,
+    )
+    .await
+    {
+        return Ok(());
+    }
+
+    // Revoke any previous pending reset before issuing a new one
+    token::revoke_active_password_reset_by_user(&state.db, user.id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let raw_token = crypto::generate_token();
+    let hash = crypto::sha256(raw_token.as_bytes());
+
+    token::create_password_reset(
+        &state.db,
+        &NewPasswordResetToken {
+            user_id: user.id,
+            token_hash: &hash,
+            expires_at: time::in_secs(RESET_TOKEN_EXPIRY_SECS),
+            request_ip: ip,
+            request_user_agent: user_agent,
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = email.to_string();
+    let username = user.username.clone();
+    let locale = user.preferred_locale.clone();
+    let raw_token = raw_token.clone();
+    let public_url = state.config.server.public_url.clone();
+    email::dispatch_best_effort("password_reset_email", async move {
+        email::send_password_reset_email(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+            &raw_token,
+            &public_url,
+        )
+        .await
+    });
+
+    audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(user.id),
+            request_id,
+            action: AuditAction::PasswordResetRequested,
+            ip_address: ip,
+            metadata: json!({}),
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+
+    Ok(())
+}
+
+pub async fn reset_password(
+    state: &AppState,
+    raw_token: &str,
+    new_password: &str,
+    ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    use crate::domain::token::OneTimeToken;
+
+    let hash = crypto::sha256(raw_token.as_bytes());
+    guard_token_submission(state, "rp", ip, &hash).await?;
+
+    // Constant-time token validation (see verify_email for rationale).
+    let start = std::time::Instant::now();
+    let min_duration = std::time::Duration::from_millis(100);
+
+    let result = async {
+        let record = token::find_password_reset_by_hash(&state.db, &hash)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .ok_or(AppError::TokenInvalid)?;
+
+        if record.is_expired() {
+            return Err(AppError::TokenExpired);
+        }
+        if record.is_used() {
+            return Err(AppError::TokenInvalid);
+        }
+
+        Ok(record)
+    }
+    .await;
+
+    let elapsed = start.elapsed();
+    if elapsed < min_duration {
+        tokio::time::sleep(min_duration - elapsed).await;
+    }
+
+    let record = result?;
+
+    let new_hash = password::hash_async(new_password, &state.config.crypto)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let consumed = token::consume_password_reset(&state.db, record.id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    if !consumed {
+        return Err(AppError::TokenInvalid);
+    }
+
+    user_repo::update_password_hash(&state.db, record.user_id, &new_hash)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let revoked_session_ids = session_repo::find_active_by_user(&state.db, record.user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .into_iter()
+        .map(|session| session.id)
+        .collect::<Vec<_>>();
+
+    // Invalidate all active sessions to force re-login with the new password
+    session_repo::revoke_all_by_user(&state.db, record.user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    invalidate_session_caches(state, &revoked_session_ids).await;
+
+    events::publish(
+        state,
+        "user.password_changed",
+        &events::UserPasswordChanged {
+            user_id: record.user_id,
+        },
+    )
+    .await;
+    events::publish(
+        state,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked {
+            user_id: record.user_id,
+        },
+    )
+    .await;
+
+    // Close the post-reset hijack window: any pre-auth (2FA challenge) token
+    // or email-change flow that was already in flight before the reset would
+    // otherwise survive and could be used by an attacker who knew them.
+    // Best-effort: Redis failures here must not fail the reset.
+    purge_user_pre_auth_and_email_change(state, record.user_id).await;
+
+    // Also purge pending verification and reset tokens
+    token::revoke_active_password_reset_by_user(&state.db, record.user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(record.user_id),
+            request_id,
+            action: AuditAction::PasswordResetCompleted,
+            ip_address: ip,
+            metadata: json!({}),
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+
+    Ok(())
+}

@@ -55,6 +55,8 @@ services:
     depends_on:
       nats:
         condition: service_healthy
+    networks:
+      - auth-api
 
   # Domain-event broker. The API connects to it at startup (fail-fast), so it
   # ships in the same compose file. No host ports: only the api container
@@ -62,7 +64,7 @@ services:
   # defence in depth on top of the network isolation; the API embeds the same
   # token in NATS_URL.
   nats:
-    image: nats:2-alpine
+    image: nats:2-alpine@sha256:ad7a43eb7e3337c3c38ce5d784d1461791f95f730f252d2b25eee699752a0ca3
     restart: unless-stopped
     # Overriding the command bypasses the image's config file, so monitoring
     # (which the healthcheck probes) must be re-enabled explicitly. JetStream
@@ -85,6 +87,21 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - auth-api
 
 volumes:
   nats_data:
+
+# A fixed subnet makes the trusted proxy address predictable. The host's nginx
+# reaches the published loopback port through Docker's port proxy, so the
+# application sees the bridge gateway (172.30.0.1) as its peer - not
+# 127.0.0.1. TRUSTED_PROXY_CIDRS in config.prod.env must name that gateway,
+# or X-Forwarded-For is ignored and every client shares one rate-limit bucket.
+networks:
+  auth-api:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1

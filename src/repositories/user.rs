@@ -90,6 +90,35 @@ pub async fn record_sign_in<'e>(
     Ok(())
 }
 
+/// Whether another account already uses `email`.
+pub async fn email_taken<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    email: &str,
+    except: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE email = $1::citext AND id <> $2)")
+        .bind(email)
+        .bind(except)
+        .fetch_one(executor)
+        .await
+}
+
+/// Move an account to an address whose ownership was just proven. The status
+/// is left alone: confirming an address must never reactivate a suspended or
+/// inactive account.
+pub async fn change_email<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+    email: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET email = $2, email_verified_at = NOW() WHERE id = $1")
+        .bind(id)
+        .bind(email)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
 /// Sets email_verified_at and activates an account that was pending
 /// verification. Any other status (suspended, inactive) is left untouched.
 pub async fn mark_email_verified(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
