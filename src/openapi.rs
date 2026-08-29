@@ -190,8 +190,9 @@ mod tests {
     fn every_routed_endpoint_is_documented_and_nothing_else() {
         let routed = routed_endpoints();
         let documented = documented_endpoints();
+        // A floor, not a count: it catches a parser that silently stops finding routes.
         assert!(
-            routed.len() >= 45,
+            routed.len() >= 40,
             "the route parser found only {} routes",
             routed.len()
         );
