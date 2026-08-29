@@ -123,16 +123,6 @@ pass insert prod/auth-api/nats-url
 # nats://<token>@nats:4222
 ```
 
----
-
-### GitHub Token
-
-Personal Access Token with `read:packages` scope. Used to authenticate against GHCR to pull the Docker image.
-
-```bash
-pass insert prod/auth-api/github-token
-```
-
 ## Verify
 
 List all inserted secrets:

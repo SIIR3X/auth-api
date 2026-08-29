@@ -1,6 +1,7 @@
 services:
   api:
-    image: ghcr.io/siir3x/auth-api:latest
+    # Built by `make release` and loaded on the server (see docs/deploy/guides/update.md).
+    image: auth-api:${AUTH_API_VERSION:?set AUTH_API_VERSION to the release being deployed}
     env_file: config.prod.env
     environment:
       # Secrets - exported from pass before running

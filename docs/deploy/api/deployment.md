@@ -4,31 +4,27 @@ Previous: [Database Deployment](../database/deployment.md) | [Index](../README.m
 
 ## Overview
 
-The API is distributed as a Docker image published to GitHub Container Registry (GHCR). The production server only needs Docker - no Rust, no source code.
+The API runs from a release bundle built with `make release` (see
+[Creating a Release](../../dev/guides/release.md)). The server needs Docker and
+`sqlx-cli` for migrations - no source code and no registry.
 
 ```
-git tag v1.2.3
+trusted machine: make ci && make release VERSION=X.Y.Z
     |
-GitHub Actions builds the image
+scp dist/auth-api-X.Y.Z -> API VPS
     |
-Image pushed to ghcr.io/siir3x/auth-api:latest
-    |
-VPS: docker compose pull && docker compose up -d
+API VPS: verify checksums, docker load, migrate, docker compose up -d
 ```
-
-## Prerequisites
 
 The NATS event broker ships in `docker-compose.api.yml` and starts with the
-API - no external infrastructure is required. Nginx runs directly on this VPS
-as the reverse proxy (see [Nginx](nginx.md)); the API and its metrics endpoint
-are published on loopback only and are reachable exclusively through it.
+API. Nginx runs on the host as the reverse proxy (see [Nginx](nginx.md)); the
+API and its metrics listener are published on loopback only.
 
 ## 1. Initial Setup
 
 ### 1.1 Open the firewall
 
-**On the API VPS** - allow WireGuard (database tunnel) and HTTP/HTTPS for
-the local Nginx, which terminates TLS on this VPS:
+**On the API VPS** - WireGuard (database tunnel) and HTTP/HTTPS for Nginx:
 
 ```bash
 sudo ufw allow 51820/udp
@@ -38,58 +34,71 @@ sudo ufw allow 443/tcp
 
 ---
 
-### 1.2 Install Docker
+### 1.2 Install Docker and sqlx-cli
 
 ```bash
 curl -fsSL https://get.docker.com | sh
 ```
 
----
-
-### 1.3 Authenticate to GHCR
-
-A GitHub Personal Access Token with `read:packages` scope is required.
+Build `sqlx` on a machine with Rust and copy the binary to the server:
 
 ```bash
-echo "<YOUR_GITHUB_TOKEN>" | docker login ghcr.io -u SIIR3X --password-stdin
+cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
+scp ~/.cargo/bin/sqlx api-vps:/usr/local/bin/sqlx
 ```
 
 ---
 
-### 1.4 Fetch the deployment files
+### 1.3 Copy and verify the bundle
 
-Only two files are needed on the VPS - no need to clone the full repository.
+```bash
+# On the trusted machine
+scp -r dist/auth-api-X.Y.Z api-vps:/srv/auth-api/releases/
+
+# On the API VPS
+cd /srv/auth-api/releases/auth-api-X.Y.Z
+sha256sum SHA256SUMS          # compare with the value recorded at build time
+sha256sum -c SHA256SUMS
+gunzip -c auth-api-X.Y.Z.image.tar.gz | docker load
+```
+
+---
+
+### 1.4 Configure
+
+Copy the deployment files next to each other and fill in the non-sensitive
+values:
 
 ```bash
 mkdir -p /srv/auth-api && cd /srv/auth-api
-
-curl -O https://raw.githubusercontent.com/SIIR3X/auth-api/main/docker-compose.api.yml
-curl -O https://raw.githubusercontent.com/SIIR3X/auth-api/main/config.prod.env
-```
-
----
-
-### 1.5 Edit non-sensitive configuration
-
-Open `config.prod.env` and fill in the values specific to your environment:
-
-```bash
+cp releases/auth-api-X.Y.Z/docker-compose.api.yml releases/auth-api-X.Y.Z/config.prod.env .
 nano config.prod.env
 ```
 
-Key values to update:
+Values to set:
 
-- `APP_PUBLIC_URL` - public URL of the API
-- `CORS_ALLOWED_ORIGINS` - frontend origin(s)
-- `SMTP_HOST`, `SMTP_FROM_ADDRESS` - email provider
-- `TOTP_ISSUER` - name shown in authenticator apps
-- `ARGON2_*` - tune for your server hardware
+- `APP_PUBLIC_URL`, `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, `JWT_AUDIENCE`
+- `DEVICE_AUTH_VERIFICATION_URI`
+- `SMTP_HOST`, `SMTP_FROM_ADDRESS`, `TOTP_ISSUER`
+- `ARGON2_*` for the server's memory and cores
+- `TRUSTED_PROXY_CIDRS` stays `172.30.0.1/32` (the compose network gateway, see [Nginx](nginx.md#trusted-proxy))
 
 ---
 
-### 1.6 Export secrets and deploy
+### 1.5 Run the migrations
 
 ```bash
+DATABASE_URL=$(pass prod/auth-api/database-url) \
+  sqlx migrate run --source /srv/auth-api/releases/auth-api-X.Y.Z/migrations
+```
+
+---
+
+### 1.6 Export secrets and start
+
+```bash
+cd /srv/auth-api
+export AUTH_API_VERSION=X.Y.Z
 export DATABASE_URL=$(pass prod/auth-api/database-url)
 export REDIS_URL=$(pass prod/auth-api/redis-url)
 export JWT_PRIVATE_KEY=$(pass prod/auth-api/jwt-private-key)
@@ -98,9 +107,23 @@ export ENCRYPTION_KEY=$(pass prod/auth-api/encryption-key)
 export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
 export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
 export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
-# NATS runs in the same compose file, guarded by a token (see Secrets):
 export NATS_URL=$(pass prod/auth-api/nats-url)
 export NATS_AUTH_TOKEN=$(pass prod/auth-api/nats-auth-token)
 
 docker compose -f docker-compose.api.yml up -d
 ```
+
+---
+
+### 1.7 Register the client applications
+
+Device and authorization code flows only serve registered clients. Register the
+application this instance owns as primary, then any other client:
+
+```bash
+docker compose -f docker-compose.api.yml run --rm api \
+  ./auth-api --register-client web-app --name "Web app" --primary \
+  --redirect-uri https://app.example.com/callback
+```
+
+Options are listed in [Commands](../../dev/guides/commands.md#binary-commands).

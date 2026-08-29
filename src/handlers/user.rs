@@ -14,7 +14,7 @@ use super::extractors::{AuthUser, ClientIp};
 
 // Request types
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ChangeUsernameRequest {
     pub username: String,
     pub current_password: Option<String>,
@@ -22,58 +22,58 @@ pub struct ChangeUsernameRequest {
 
 /// Optional body for sensitive actions that accept the current password in
 /// place of a recent re-authentication.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::ToSchema)]
 pub struct CurrentPasswordRequest {
     pub current_password: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct FlowTokenResponse {
     pub flow_token: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct VerifyCurrentEmailRequest {
     pub flow_token: String,
     pub code: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SubmitNewEmailRequest {
     pub flow_token: String,
     pub new_email: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ConfirmNewEmailRequest {
     pub flow_token: String,
     pub code: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ChangePasswordRequest {
     pub current_password: Option<String>,
     pub new_password: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ChangeLocaleRequest {
     pub locale: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct DeleteAccountRequest {
     pub current_password: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ReauthenticateRequest {
     pub current_password: String,
 }
 
 // Response types
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct UserResponse {
     pub id: Uuid,
     pub username: String,
@@ -89,6 +89,16 @@ pub struct UserResponse {
 
 // Handlers
 
+#[utoipa::path(
+    get,
+    path = "/users/me",
+    tag = "account",
+    responses(
+        (status = 200, description = "The caller's profile", body = UserResponse),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn me(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -107,6 +117,20 @@ pub async fn me(
     }))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/users/me/username",
+    tag = "account",
+    request_body = ChangeUsernameRequest,
+    responses(
+        (status = 204, description = "Username changed"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+        (status = 409, description = "Username taken", body = crate::error::ErrorBody),
+        (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn change_username(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -130,6 +154,18 @@ pub async fn change_username(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/users/me/email/start",
+    tag = "email-change",
+    request_body = Option<CurrentPasswordRequest>,
+    responses(
+        (status = 200, description = "Code sent to the current address", body = FlowTokenResponse),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn start_email_change(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -149,6 +185,17 @@ pub async fn start_email_change(
     Ok(Json(FlowTokenResponse { flow_token }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/users/me/email/verify-current",
+    tag = "email-change",
+    request_body = VerifyCurrentEmailRequest,
+    responses(
+        (status = 204, description = "Current address confirmed"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn verify_current_email(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -158,6 +205,19 @@ pub async fn verify_current_email(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/users/me/email/submit",
+    tag = "email-change",
+    request_body = SubmitNewEmailRequest,
+    responses(
+        (status = 204, description = "Code sent to the new address"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 409, description = "Address taken", body = crate::error::ErrorBody),
+        (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn submit_new_email(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -177,6 +237,18 @@ pub async fn submit_new_email(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/users/me/email/confirm",
+    tag = "email-change",
+    request_body = ConfirmNewEmailRequest,
+    responses(
+        (status = 204, description = "Address changed; other sessions revoked"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 409, description = "Address taken", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn confirm_new_email(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -196,6 +268,19 @@ pub async fn confirm_new_email(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    patch,
+    path = "/users/me/password",
+    tag = "account",
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 204, description = "Password changed; other sessions revoked"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+        (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn change_password(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -218,6 +303,18 @@ pub async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    patch,
+    path = "/users/me/locale",
+    tag = "account",
+    request_body = ChangeLocaleRequest,
+    responses(
+        (status = 204, description = "Locale changed"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn change_locale(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -282,6 +379,18 @@ pub fn validate_password(password: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/users/me",
+    tag = "account",
+    request_body = Option<DeleteAccountRequest>,
+    responses(
+        (status = 204, description = "Account deleted"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn delete_account(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -301,6 +410,18 @@ pub async fn delete_account(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/users/me/reauth",
+    tag = "account",
+    request_body = ReauthenticateRequest,
+    responses(
+        (status = 204, description = "Re-authenticated for SENSITIVE_ACTION_REAUTH_SECS"),
+        (status = 401, description = "Wrong password or invalid token", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn reauthenticate(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,

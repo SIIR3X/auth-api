@@ -182,89 +182,15 @@ psql "$(pass prod/auth-api/database-url)"
 
 ### 2.5 Run migrations
 
-Each release publishes a `migrations.tar.gz` asset on GitHub. The archive is fetched directly into `/dev/shm` (RAM) - nothing is written to disk.
-
-**On the API VPS** - install `sqlx-cli`:
-
-```bash
-cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
-```
-
-Fetch and run migrations:
+Migrations ship in every release bundle (see [Deploying a New Release](../guides/update.md)).
+**On the API VPS**, with `sqlx-cli` installed (see [API Deployment](../api/deployment.md#12-install-docker-and-sqlx-cli)):
 
 ```bash
-curl -sL https://github.com/SIIR3X/auth-api/releases/latest/download/migrations.tar.gz \
-  | tar -xz -C /dev/shm
-
 DATABASE_URL=$(pass prod/auth-api/database-url) \
-  sqlx migrate run --source /dev/shm/migrations
-
-rm -rf /dev/shm/migrations
+  sqlx migrate run --source /srv/auth-api/releases/auth-api-X.Y.Z/migrations
 ```
 
-## 3. Appsmith
-
-**On the DB VPS** - install Docker:
-
-```bash
-curl -fsSL https://get.docker.com | sh
-```
-
----
-
-### 3.1 Create the Appsmith user
-
-```bash
-sudo -u postgres psql -d auth_api
-```
-
-```sql
-CREATE USER appsmith WITH PASSWORD '<strong-password>';
-GRANT CONNECT ON DATABASE auth_api TO appsmith;
-GRANT USAGE ON SCHEMA public TO appsmith;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO appsmith;
-ALTER DEFAULT PRIVILEGES FOR ROLE auth_api IN SCHEMA public
-    GRANT SELECT ON TABLES TO appsmith;
-\q
-```
-
----
-
-### 3.2 Deploy Appsmith
-
-```bash
-mkdir -p /srv/auth-api && cd /srv/auth-api
-curl -O https://raw.githubusercontent.com/SIIR3X/auth-api/main/docker-compose.db.yml
-docker compose -f docker-compose.db.yml up -d
-```
-
-Appsmith is bound to `127.0.0.1:8080` - never exposed publicly.
-
----
-
-### 3.3 Access the panel
-
-From your local machine, open an SSH tunnel:
-
-```powershell
-ssh -L 8080:127.0.0.1:8080 -p 2222 <username>@<db-vps-vpn-ip>
-```
-
-Then open `http://localhost:8080`.
-
----
-
-### 3.4 Connect to the database
-
-In Appsmith: **Settings -> Datasources -> New datasource -> PostgreSQL**
-
-- Host: `localhost`
-- Port: `5432`
-- Database: `auth_api`
-- Username: `appsmith`
-- Password: the password set in 3.1
-
-## 4. Redis
+## 3. Redis
 
 **On the DB VPS** - install Redis:
 
@@ -275,7 +201,7 @@ sudo apt install -y redis-server
 
 ---
 
-### 4.1 Configure authentication and binding
+### 3.1 Configure authentication and binding
 
 **On the DB VPS** - inject the password from `pass` and bind to the VPN interface:
 
@@ -293,7 +219,7 @@ sudo systemctl restart redis
 
 ---
 
-### 4.2 Open the firewall
+### 3.2 Open the firewall
 
 **On the DB VPS:**
 
@@ -303,7 +229,7 @@ sudo ufw allow from 10.0.0.1 to any port 6379
 
 ---
 
-### 4.3 Verify connectivity
+### 3.3 Verify connectivity
 
 **On the API VPS:**
 
@@ -311,14 +237,14 @@ sudo ufw allow from 10.0.0.1 to any port 6379
 redis-cli -h 10.0.0.2 ping
 ```
 
-## 5. Backups
+## 4. Backups
 
 Backups are encrypted with [age](https://github.com/FiloSottile/age) before touching disk.
 The private key never lives on the DB VPS - only the public key is needed to encrypt.
 
 ---
 
-### 5.1 Generate a key pair
+### 4.1 Generate a key pair
 
 Run this **on a secure machine** (your laptop, a password manager export, etc.) - not the DB VPS.
 
@@ -354,7 +280,7 @@ Store `backup.key` somewhere safe and offline (e.g. alongside your other secrets
 
 ---
 
-### 5.2 Install age on the DB VPS
+### 4.2 Install age on the DB VPS
 
 ```bash
 sudo apt update
@@ -363,19 +289,21 @@ sudo apt install -y age
 
 ---
 
-### 5.3 Deploy the backup script
+### 4.3 Deploy the backup script
 
-**On the DB VPS** - fetch the script from the repository, then set the public key:
+**On the DB VPS** - install the script from the release bundle, then set the public key:
 
 ```bash
+# From the trusted machine
+scp dist/auth-api-X.Y.Z/scripts/backup-db.sh db-vps:/tmp/backup-db.sh
+
+# On the DB VPS
 sudo mkdir -p /opt/auth-api
-curl -sL https://raw.githubusercontent.com/SIIR3X/auth-api/main/scripts/backup-db.sh \
-    | sudo tee /opt/auth-api/backup-db.sh > /dev/null
-sudo chmod 700 /opt/auth-api/backup-db.sh
-sudo chown root:root /opt/auth-api/backup-db.sh
+sudo install -m 700 -o root -g root /tmp/backup-db.sh /opt/auth-api/backup-db.sh
+rm /tmp/backup-db.sh
 ```
 
-Edit the script and replace `AGE_PUBLIC_KEY` with the public key from step 5.1:
+Edit the script and replace `AGE_PUBLIC_KEY` with the public key from step 4.1:
 
 ```bash
 sudo nano /opt/auth-api/backup-db.sh
@@ -384,7 +312,7 @@ sudo nano /opt/auth-api/backup-db.sh
 
 ---
 
-### 5.4 Test the script
+### 4.4 Test the script
 
 ```bash
 sudo /opt/auth-api/backup-db.sh
@@ -393,7 +321,7 @@ ls -lh /var/backups/auth-api/
 
 ---
 
-### 5.5 Schedule via cron
+### 4.5 Schedule via cron
 
 ```bash
 sudo crontab -e
@@ -409,7 +337,7 @@ Backups run nightly at 2:00 AM and are retained for 7 days.
 
 ---
 
-### 5.6 Restore a backup
+### 4.6 Restore a backup
 
 On any machine that has the private key and `psql` available:
 

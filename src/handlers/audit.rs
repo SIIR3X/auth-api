@@ -24,14 +24,14 @@ const DEFAULT_LIMIT: i64 = 50;
 /// Most entries one page may hold; larger requests are clamped, not refused.
 const MAX_LIMIT: i64 = 200;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ListParams {
     pub limit: Option<i64>,
     /// `next_cursor` of the previous page.
     pub cursor: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AuditEntryResponse {
     pub id: Uuid,
     /// Unix timestamp (seconds), like every other timestamp of this API.
@@ -42,10 +42,11 @@ pub struct AuditEntryResponse {
     pub ip_address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<Uuid>,
+    #[schema(value_type = Object)]
     pub metadata: serde_json::Value,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AuditPageResponse {
     pub entries: Vec<AuditEntryResponse>,
     /// Pass back as `cursor` to read the next page; absent on the last one.
@@ -54,6 +55,18 @@ pub struct AuditPageResponse {
 }
 
 /// GET /users/me/audit - newest first.
+#[utoipa::path(
+    get,
+    path = "/users/me/audit",
+    tag = "account",
+    params(("limit" = Option<i64>, Query, description = "Entries per page, 1-200 (default 50)"), ("cursor" = Option<String>, Query, description = "next_cursor of the previous page")),
+    responses(
+        (status = 200, description = "The caller's security history, newest first", body = AuditPageResponse),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 422, description = "Invalid cursor", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,

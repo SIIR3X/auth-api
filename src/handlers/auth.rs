@@ -17,7 +17,7 @@ use super::{
 
 // Request types
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RegisterRequest {
     pub username: String,
     pub email: String,
@@ -27,7 +27,7 @@ pub struct RegisterRequest {
     pub captcha_token: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct LoginRequest {
     pub identifier: String,
     pub password: String,
@@ -38,47 +38,47 @@ pub struct LoginRequest {
     pub captcha_token: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct VerifyEmailRequest {
     pub token: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ForgotPasswordRequest {
     pub email: String,
     pub captcha_token: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ResetPasswordRequest {
     pub token: String,
     pub new_password: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CompleteTwoFactorRequest {
     pub pre_auth_token: String,
     pub code: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RecoveryLoginRequest {
     pub pre_auth_token: String,
     pub recovery_code: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CompleteEmailTwoFactorRequest {
     pub pre_auth_token: String,
     pub code: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ResendEmailTwoFactorRequest {
     pub pre_auth_token: String,
 }
@@ -87,19 +87,19 @@ pub struct ResendEmailTwoFactorRequest {
 
 /// Registration answer. Identical whether the address was free or already had
 /// an account, so it cannot be used to enumerate accounts.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct RegistrationAccepted {
     pub status: &'static str,
     pub message: &'static str,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct TokensResponse {
     pub access_token: String,
     pub refresh_token: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum LoginResponse {
     Complete {
@@ -116,6 +116,17 @@ pub enum LoginResponse {
 
 // Handlers
 
+#[utoipa::path(
+    post,
+    path = "/auth/register",
+    tag = "auth",
+    request_body = RegisterRequest,
+    responses(
+        (status = 202, description = "Accepted; identical whether or not the address is taken", body = RegistrationAccepted),
+        (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
 pub async fn register(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -155,6 +166,19 @@ pub async fn register(
     ))
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/login",
+    tag = "auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Tokens, or a two-factor challenge", body = LoginResponse),
+        (status = 401, description = "Invalid credentials", body = crate::error::ErrorBody),
+        (status = 403, description = "Account locked, suspended or not verified", body = crate::error::ErrorBody),
+        (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
 pub async fn login(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -205,6 +229,16 @@ pub async fn login(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/logout",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Session ended"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn logout(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -223,6 +257,17 @@ pub async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/refresh",
+    tag = "auth",
+    request_body = RefreshRequest,
+    responses(
+        (status = 200, description = "Tokens issued", body = TokensResponse),
+        (status = 401, description = "Invalid, expired or replayed refresh token", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
 pub async fn refresh(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -240,6 +285,17 @@ pub async fn refresh(
 
 // Accepts the token in the request body rather than in the URL query string so
 // that it is not captured in server access logs, browser history, or Referer headers.
+#[utoipa::path(
+    post,
+    path = "/auth/verify-email",
+    tag = "auth",
+    request_body = VerifyEmailRequest,
+    responses(
+        (status = 200, description = "Address verified"),
+        (status = 401, description = "Invalid or expired token", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
 pub async fn verify_email(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -250,6 +306,16 @@ pub async fn verify_email(
     Ok(StatusCode::OK)
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/forgot-password",
+    tag = "auth",
+    request_body = ForgotPasswordRequest,
+    responses(
+        (status = 200, description = "Accepted; identical whether or not the account exists"),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
 pub async fn forgot_password(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -264,6 +330,17 @@ pub async fn forgot_password(
     Ok(StatusCode::OK)
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/reset-password",
+    tag = "auth",
+    request_body = ResetPasswordRequest,
+    responses(
+        (status = 200, description = "Password replaced; every session revoked"),
+        (status = 401, description = "Invalid or expired token", body = crate::error::ErrorBody),
+        (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
+    ),
+)]
 pub async fn reset_password(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -275,6 +352,17 @@ pub async fn reset_password(
     Ok(StatusCode::OK)
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/two-factor/complete",
+    tag = "auth",
+    request_body = CompleteTwoFactorRequest,
+    responses(
+        (status = 200, description = "Tokens issued", body = TokensResponse),
+        (status = 401, description = "Invalid code or pre-auth token", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
 pub async fn complete_two_factor(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -299,6 +387,17 @@ pub async fn complete_two_factor(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/two-factor/recovery",
+    tag = "auth",
+    request_body = RecoveryLoginRequest,
+    responses(
+        (status = 200, description = "Tokens issued", body = TokensResponse),
+        (status = 401, description = "Invalid recovery code or pre-auth token", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
 pub async fn recovery_login(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -322,6 +421,17 @@ pub async fn recovery_login(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/two-factor/email/complete",
+    tag = "auth",
+    request_body = CompleteEmailTwoFactorRequest,
+    responses(
+        (status = 200, description = "Tokens issued", body = TokensResponse),
+        (status = 401, description = "Invalid code or pre-auth token", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
 pub async fn complete_email_two_factor(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -346,6 +456,16 @@ pub async fn complete_email_two_factor(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/two-factor/email/resend",
+    tag = "auth",
+    request_body = ResendEmailTwoFactorRequest,
+    responses(
+        (status = 204, description = "Code sent if the challenge is an email challenge"),
+        (status = 401, description = "Invalid pre-auth token", body = crate::error::ErrorBody),
+    ),
+)]
 pub async fn resend_email_two_factor(
     State(state): State<AppState>,
     Json(body): Json<ResendEmailTwoFactorRequest>,

@@ -1,177 +1,190 @@
 # Configuration Reference
 
+Every setting is an environment variable, read once at startup. A variable
+that is present but does not parse is an error, never a silent fallback to its
+default (`LOCKOUT_THRESHOLD=1O` refuses to start). A blank value counts as
+unset.
+
+In `APP_ENV=production` the configuration is validated before the server
+accepts traffic; the checks are listed under [Production checks](#production-checks).
+
 ## Environment files
 
 | File | Committed | Used in |
 |------|-----------|---------|
-| `.env.dev` | Yes | Development (`make dev`) |
-| `config.prod.env` | Yes | Production (non-sensitive values only) |
+| `.env.dev` | Yes | Development (`make dev`) - development keys only, refused in production |
+| `config.prod.env` | Yes | Production, non-sensitive values only |
 
-Sensitive production values are never stored in files - they are exported from `pass` before deployment.
+Production secrets are never written to files: they are exported from `pass`
+before `docker compose` runs (see [Secrets](../../deploy/api/secrets.md)).
 
-## Secrets (production only)
-
-These variables must be exported from `pass` on the VPS before running `docker compose`:
+## Secrets
 
 | Variable | Description | Generate with |
 |----------|-------------|---------------|
-| `DATABASE_URL` | PostgreSQL connection string including credentials | - |
-| `REDIS_URL` | Redis connection string including password | - |
-| `JWT_PRIVATE_KEY` | EC P-256 private key in PEM format (signs tokens) | `openssl ecparam -genkey -name prime256v1 -noout \| openssl pkcs8 -topk8 -nocrypt` |
-| `JWT_PUBLIC_KEY` | EC P-256 public key in PEM format (verifies tokens) | `openssl ec -pubout < private.pem` |
-| `JWT_PREVIOUS_PUBLIC_KEY` | Previous public key - set only during key rotation | - |
-| `ENCRYPTION_KEY` | AES-256-GCM key for TOTP secret encryption (base64, 32 bytes) | `openssl rand -base64 32` |
-| `PREVIOUS_ENCRYPTION_KEY` | Previous encryption key - set only during key rotation | - |
-| `SMTP_USERNAME` | SMTP authentication username | - |
-| `SMTP_PASSWORD` | SMTP authentication password | - |
-| `CAPTCHA_SECRET` | hCaptcha secret key | - |
-| `NATS_URL` | NATS server connection URL | - |
+| `DATABASE_URL` | PostgreSQL connection string | - |
+| `REDIS_URL` | Redis connection string, password included | - |
+| `JWT_PRIVATE_KEY` | EC P-256 private key, PEM (signs access tokens) | `openssl ecparam -genkey -name prime256v1 -noout \| openssl pkcs8 -topk8 -nocrypt` |
+| `JWT_PUBLIC_KEY` | Matching public key, PEM | `openssl ec -pubout < private.pem` |
+| `JWT_PREVIOUS_PUBLIC_KEY` | Previous public key, only during a signing key rotation | - |
+| `ENCRYPTION_KEY` | AES-256-GCM key for TOTP secrets at rest, base64 of 32 bytes | `openssl rand -base64 32` |
+| `PREVIOUS_ENCRYPTION_KEY` | Previous encryption key, only during a rotation | - |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | SMTP credentials | - |
+| `CAPTCHA_SECRET` | hCaptcha secret | - |
+| `NATS_URL` | NATS URL embedding the broker token (`nats://<token>@nats:4222`) | - |
+| `NATS_AUTH_TOKEN` | Token the bundled broker requires (read by `docker-compose.api.yml`) | `openssl rand -hex 32` |
 
-## Non-sensitive variables
+## Variables
 
-These variables are committed in `config.prod.env` and can be adjusted without any security concern.
+"Required" variables have no default and stop the startup when missing.
 
 ### Server
 
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `APP_ENV` | `production` | Environment name |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APP_ENV` | required | `development`, `test` or `production`. Required so a typo cannot start a deployment with development relaxations |
 | `SERVER_HOST` | `0.0.0.0` | Bind address |
 | `SERVER_PORT` | `3000` | Bind port |
-| `APP_PUBLIC_URL` | - | Public-facing URL of the API |
-| `TRUSTED_PROXY_CIDRS` | - | Comma-separated CIDRs of trusted reverse proxies |
+| `APP_PUBLIC_URL` | `http://localhost:3000` | Public URL of this API: token issuer, audience, JWKS location |
+| `FRONTEND_URL` | `APP_PUBLIC_URL` | Web application whose pages emails link to (`/verify-email`, `/reset-password`) |
+| `TRUSTED_PROXY_CIDRS` | empty | Comma-separated CIDRs allowed to set `X-Forwarded-For` / `X-Real-IP`. Behind the bundled compose file this is the network gateway, `172.30.0.1/32` |
 
 ### Database
 
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `DB_MAX_CONNECTIONS` | `20` | Maximum PostgreSQL pool size |
-| `DB_MIN_CONNECTIONS` | `2` | Minimum PostgreSQL pool size |
-| `DB_ACQUIRE_TIMEOUT_SECS` | `30` | Timeout to acquire a connection |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | required | PostgreSQL connection string |
+| `DB_MAX_CONNECTIONS` | `20` | Pool size |
+| `DB_MIN_CONNECTIONS` | `2` | Connections kept open |
+| `DB_ACQUIRE_TIMEOUT_SECS` | `30` | Wait for a pooled connection |
 
 ### Redis
 
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `REDIS_POOL_SIZE` | `10` | Redis connection pool size |
-| `REDIS_WAIT_TIMEOUT_MS` | `2000` | Max wait time to acquire a Redis connection |
-
-### JWT (ES256)
-
-Tokens are signed with ECDSA P-256 (ES256). The private key signs tokens; only the public key is needed to verify them. Other services can fetch the public key from `GET /.well-known/jwks.json`.
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `JWT_ACCESS_EXPIRY_SECS` | `900` | Access token lifetime (15 minutes) |
-| `JWT_REFRESH_EXPIRY_SECS` | `2592000` | Refresh token lifetime when "remember me" is on (30 days) |
-| `JWT_SHORT_SESSION_EXPIRY_SECS` | `86400` | Refresh token lifetime when "remember me" is off (24 hours) |
-| `JWT_MAX_SESSION_LIFETIME_SECS` | `7776000` | Absolute session lifetime cap regardless of refresh activity (90 days) |
-| `JWT_STRICT_SESSION_BINDING` | `false` | Bind refresh tokens to the login IP (breaks mobile roaming) |
-
-### Argon2id
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `ARGON2_MEMORY_KIB` | `65536` | Memory cost in KiB - tune for your hardware |
-| `ARGON2_ITERATIONS` | `3` | Iteration count |
-| `ARGON2_PARALLELISM` | `4` | Parallelism factor |
-
-### TOTP / 2FA
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `TOTP_ISSUER` | `MyApp` | Issuer name shown in authenticator apps |
-| `TOTP_SKEW` | `1` | Accepted time-step skew (+/-1 window) |
-| `RECOVERY_CODE_EXPIRY_DAYS` | `365` | Recovery code validity in days |
-
-### Rate limiting
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `RATE_LIMIT_RPM` | `300` | Max requests per minute per IP |
-| `RATE_LIMIT_AUTH_RPM` | `20` | Max auth requests per minute per IP |
-| `RATE_LIMIT_FAIL_OPEN` | `false` | Allow requests if Redis is unavailable - must be `false` in production |
-| `RATE_LIMIT_ALLOW_MISSING_IP` | `false` | Allow requests without a resolved IP - must be `false` in production |
-
-### Account lockout
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `LOCKOUT_THRESHOLD` | `10` | Failed attempts before lockout |
-| `LOCKOUT_DURATION_SECS` | `1800` | Lockout duration in seconds (30 minutes) |
-| `SENSITIVE_ACTION_REAUTH_SECS` | `600` | Recent authentication window for sensitive actions |
-
-### GeoIP & risk scoring
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `GEOIP_DB_PATH` | - | Path to the MaxMind GeoLite2-City `.mmdb` file |
-| `GEOIP_REQUIRED` | `false` | Fail on startup if the GeoIP database is missing |
-| `RISK_ALERT_THRESHOLD` | `30` | Risk score above which an alert is triggered |
-| `RISK_CHALLENGE_THRESHOLD` | `60` | Risk score above which a challenge is required |
-| `RISK_BLOCK_THRESHOLD` | `80` | Risk score above which the request is blocked |
-| `RISK_HISTORY_DAYS` | `90` | Days of login history used for risk evaluation |
-
-### SMTP
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `SMTP_HOST` | - | SMTP server hostname |
-| `SMTP_PORT` | `587` | SMTP server port |
-| `SMTP_FROM_NAME` | `MyApp` | Sender display name |
-| `SMTP_FROM_ADDRESS` | - | Sender email address |
-
-### Mail
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `MAIL_TEMPLATES_DIR` | `templates` | Path to email templates directory |
-| `MAIL_DEFAULT_LOCALE` | `en` | Default locale for email templates |
-
-### CAPTCHA
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `CAPTCHA_VERIFY_URL` | hCaptcha URL | Verification endpoint |
-| `CAPTCHA_TIMEOUT_SECS` | `5` | Request timeout for CAPTCHA verification |
-| `CAPTCHA_FAIL_OPEN` | `false` | Allow requests if CAPTCHA provider is unavailable - must be `false` in production |
-
-### CORS
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `CORS_ALLOWED_ORIGINS` | - | Comma-separated list of allowed origins |
-| `CORS_ALLOW_CREDENTIALS` | `true` | Allow credentials in cross-origin requests |
-
-### Audit log
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `AUDIT_LOG_RETENTION_MONTHS` | `12` | Retention period in months - `0` keeps forever |
-
-### Cleanup
-
-Expired-data cleanup runs nightly via pg_cron when available; otherwise the application background task enforces these settings.
-
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLEANUP_INTERVAL_SECS` | `3600` | Interval between application-side cleanup runs (fallback when pg_cron is unavailable) |
-| `CLEANUP_SESSIONS_GRACE_DAYS` | `7` | Grace period after session expiry/revocation before deletion |
-| `CLEANUP_TOKENS_GRACE_DAYS` | `1` | Grace period after token expiry before deletion (email 2FA, password reset, email verification) |
-| `CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS` | `90` | Retention period for `login_attempts` records |
-| `CLEANUP_RECOVERY_CODES_GRACE_DAYS` | `7` | Grace period after recovery code expiry before deletion |
-
-### Logging
-
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `LOG_LEVEL` | `info` | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
-| `LOG_FORMAT` | `json` | Log format - `json` for production, `pretty` for development |
+| `REDIS_URL` | required | Redis connection string |
+| `REDIS_POOL_SIZE` | `10` | Pool size |
+| `REDIS_WAIT_TIMEOUT_MS` | `2000` | Wait for a pooled connection before failing |
 
 ### NATS
 
-The API publishes domain events (user created, email verified, etc.) to a NATS JetStream broker. The broker ships with the stack: `docker-compose.dev.yml` in development, `docker-compose.api.yml` in production.
+Domain events (`user.deleted`, `user.password_changed`, `user.sessions_revoked`)
+are published to NATS JetStream. The broker ships in the compose files.
 
-| Variable | Default (prod) | Description |
-|----------|----------------|-------------|
-| `NATS_URL` | `nats://nats:4222` | NATS server URL |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NATS_URL` | `nats://nats:4222` | Broker URL |
+
+### Access tokens (ES256)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JWT_PRIVATE_KEY` | required | Signing key, PEM (`\n` escapes accepted) |
+| `JWT_PUBLIC_KEY` | required | Verification key, PEM |
+| `JWT_PREVIOUS_PUBLIC_KEY` | unset | Still accepted and published in the JWKS during a rotation |
+| `JWT_AUDIENCE` | empty | Comma-separated audiences stamped in `aud`; `APP_PUBLIC_URL` is always added |
+| `JWT_ACCESS_EXPIRY_SECS` | `900` | Access token lifetime |
+| `JWT_REFRESH_EXPIRY_SECS` | `2592000` | Refresh token lifetime with "remember me" (30 days) |
+| `JWT_SHORT_SESSION_EXPIRY_SECS` | `86400` | Refresh token lifetime without "remember me" (24 hours) |
+| `JWT_MAX_SESSION_LIFETIME_SECS` | `7776000` | Absolute lifetime of a sign-in, whatever the refresh activity (90 days) |
+| `JWT_STRICT_SESSION_BINDING` | `false` | Refuse a refresh from another address than the sign-in |
+
+### Passwords and second factors
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ARGON2_MEMORY_KIB` | `65536` | Argon2id memory cost |
+| `ARGON2_ITERATIONS` | `3` | Argon2id iterations |
+| `ARGON2_PARALLELISM` | `4` | Argon2id lanes |
+| `ARGON2_MAX_CONCURRENCY` | CPU cores | Hashes computed at once; the rest queue |
+| `ENCRYPTION_KEY` | required | Current key for TOTP secrets |
+| `PREVIOUS_ENCRYPTION_KEY` | unset | Previous key, readable during a rotation |
+| `TOTP_ISSUER` | `auth-api` | Issuer shown in authenticator apps |
+| `TOTP_SKEW` | `1` | Accepted 30-second steps before and after the current one |
+| `RECOVERY_CODE_EXPIRY_DAYS` | `365` | Recovery code lifetime; `0` never expires |
+
+### Abuse protection
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_RPM` | `300` | Requests per minute per client, every route |
+| `RATE_LIMIT_AUTH_RPM` | `20` | Additional per-minute budget of credential-bearing routes |
+| `RATE_LIMIT_FAIL_OPEN` | `true` outside production | Serve requests when Redis is unreachable |
+| `RATE_LIMIT_ALLOW_MISSING_IP` | `true` outside production | Serve requests whose client address cannot be resolved |
+| `LOCKOUT_THRESHOLD` | `10` | Consecutive wrong passwords before a lockout |
+| `LOCKOUT_DURATION_SECS` | `1800` | Lockout duration |
+| `SENSITIVE_ACTION_REAUTH_SECS` | `600` | How long a re-authentication (`POST /users/me/reauth`) covers sensitive actions |
+| `CAPTCHA_SECRET` | unset | hCaptcha secret; unset disables the check |
+| `CAPTCHA_VERIFY_URL` | `https://hcaptcha.com/siteverify` | Verification endpoint |
+| `CAPTCHA_TIMEOUT_SECS` | `5` | Verification timeout |
+| `CAPTCHA_FAIL_OPEN` | `true` outside production | Accept the request when the provider cannot be reached |
+
+IPv6 clients are limited per `/64`, the prefix a subscriber is usually given.
+
+### Mail
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SMTP_HOST` | required | SMTP server; empty skips sending (tests) |
+| `SMTP_PORT` | `587` | STARTTLS port |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | required | Credentials; an empty username sends without TLS or authentication (Mailpit) |
+| `SMTP_FROM_NAME` | `auth-api` | Sender name |
+| `SMTP_FROM_ADDRESS` | required | Sender address |
+| `MAIL_TEMPLATES_DIR` | `templates` | Holds `emails/{locale}/{name}.html` and `{name}.subject` |
+| `MAIL_DEFAULT_LOCALE` | `en` | Locale used when the user's has no template |
+
+### Client applications
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEVICE_AUTH_VERIFICATION_URI` | required | Page where a user enters a device code (RFC 8628 `verification_uri`) |
+| `DEVICE_AUTH_TTL_SECS` | `300` | Lifetime of a device code |
+| `DEVICE_AUTH_POLL_INTERVAL_SECS` | `5` | Minimum polling interval; faster polls get `slow_down` |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated origins allowed to call the API from a browser |
+| `CORS_ALLOW_CREDENTIALS` | `true` | Allow credentialed cross-origin requests |
+
+Registered clients (device and authorization code flows) live in the database
+and are managed with `auth-api --register-client` (see [Commands](commands.md)).
+
+### Retention
+
+The application is the only scheduler: every `CLEANUP_INTERVAL_SECS`, one
+instance (advisory lock) deletes expired rows in bounded batches and rotates
+the audit log partitions.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLEANUP_INTERVAL_SECS` | `3600` | Interval between runs |
+| `CLEANUP_SESSIONS_GRACE_DAYS` | `7` | Kept after expiry or revocation |
+| `CLEANUP_TOKENS_GRACE_DAYS` | `1` | Kept after expiry: email codes, verification and reset tokens |
+| `CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS` | `90` | Login attempt ledger retention |
+| `CLEANUP_RECOVERY_CODES_GRACE_DAYS` | `7` | Kept after expiry |
+| `AUDIT_LOG_RETENTION_MONTHS` | `12` | Monthly audit partitions kept; `0` keeps every partition |
+
+Authorization codes are kept one hour past expiry (so a replay still finds the
+session it produced) and TOTP replay records 90 seconds; neither is configurable.
+
+### Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug`, `trace` |
+| `LOG_FORMAT` | `pretty` | `json` in production |
+| `METRICS_ENABLED` | `true` | Serve Prometheus metrics on a separate listener |
+| `METRICS_PORT` | `9464` | Metrics listener port; publish on loopback only |
+
+## Production checks
+
+With `APP_ENV=production` the service refuses to start when:
+
+- `APP_PUBLIC_URL`, `FRONTEND_URL` or `CAPTCHA_VERIFY_URL` is not HTTPS;
+- `TRUSTED_PROXY_CIDRS` is empty (every client would share the proxy's address);
+- the JWT keys do not form a pair, or are the committed development pair;
+- `ENCRYPTION_KEY` is not 32 bytes, is a committed development key, or is an
+  arithmetic sequence;
+- `JWT_AUDIENCE` is empty or has a blank entry;
+- `CORS_ALLOWED_ORIGINS` contains `*` or a non-HTTPS origin;
+- `SMTP_USERNAME` or `CAPTCHA_SECRET` is empty;
+- `RATE_LIMIT_FAIL_OPEN`, `RATE_LIMIT_ALLOW_MISSING_IP` or `CAPTCHA_FAIL_OPEN`
+  is `true`, or `JWT_STRICT_SESSION_BINDING` is `false`;
+- `SENSITIVE_ACTION_REAUTH_SECS` or `ARGON2_MAX_CONCURRENCY` is `0`.

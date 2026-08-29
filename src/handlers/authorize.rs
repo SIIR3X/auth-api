@@ -13,13 +13,13 @@ use super::extractors::{AuthUser, ClientIp, UserAgent};
 /// Longest `state` parameter echoed back to the client.
 const MAX_STATE_LEN: usize = 512;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct DescribeRequest {
     pub client_id: String,
     pub redirect_uri: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DescribeResponse {
     pub client_id: String,
     pub client_name: String,
@@ -30,7 +30,7 @@ pub struct DescribeResponse {
     pub sessions_allowed: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ApproveRequest {
     pub client_id: String,
     pub redirect_uri: String,
@@ -47,13 +47,13 @@ fn s256() -> String {
     "S256".into()
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ApproveResponse {
     /// Where to send the browser: the redirect URI carrying `code` (and `state`).
     pub redirect_to: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RedeemRequest {
     pub code: String,
     pub code_verifier: String,
@@ -62,13 +62,26 @@ pub struct RedeemRequest {
     pub device_name: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct TokenResponse {
     pub access_token: String,
     pub refresh_token: String,
 }
 
 /// POST /auth/authorize/describe
+#[utoipa::path(
+    post,
+    path = "/auth/authorize/describe",
+    tag = "authorize",
+    request_body = DescribeRequest,
+    responses(
+        (status = 200, description = "What the consent screen shows", body = DescribeResponse),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 400, description = "Unknown client", body = crate::error::ErrorBody),
+        (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn describe(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -89,6 +102,20 @@ pub async fn describe(
 }
 
 /// POST /auth/authorize
+#[utoipa::path(
+    post,
+    path = "/auth/authorize",
+    tag = "authorize",
+    request_body = ApproveRequest,
+    responses(
+        (status = 200, description = "Code minted; redirect the browser", body = ApproveResponse),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+        (status = 400, description = "Unknown client", body = crate::error::ErrorBody),
+        (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn approve(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -136,6 +163,17 @@ pub async fn approve(
 }
 
 /// POST /auth/authorize/token
+#[utoipa::path(
+    post,
+    path = "/auth/authorize/token",
+    tag = "authorize",
+    request_body = RedeemRequest,
+    responses(
+        (status = 200, description = "Tokens issued", body = TokenResponse),
+        (status = 400, description = "Invalid, expired or already used code", body = crate::error::ErrorBody),
+        (status = 403, description = "Session limit reached or account unusable", body = crate::error::ErrorBody),
+    ),
+)]
 pub async fn token(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,

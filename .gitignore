@@ -8,3 +8,4 @@ reports/
 docs/report/*
 !docs/report/*.tex
 !docs/report/*.pdf
+dist/

@@ -35,11 +35,27 @@ pub mod session;
 pub mod two_factor;
 pub mod user;
 
-async fn health() -> &'static str {
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "Serving", body = String, content_type = "text/plain"),
+    ),
+)]
+pub async fn health() -> &'static str {
     "ok"
 }
 
-async fn jwks(
+#[utoipa::path(
+    get,
+    path = "/.well-known/jwks.json",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "JSON Web Key Set of the current and previous signing keys", body = Object),
+    ),
+)]
+pub async fn jwks(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> impl axum::response::IntoResponse {
     // Public key material is safe to cache: a short max-age lets downstream

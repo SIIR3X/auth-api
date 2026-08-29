@@ -89,13 +89,3 @@ sudo apt install pass
 # Arch
 sudo pacman -S pass
 ```
-
----
-
-### GHCR authentication
-
-A GitHub Personal Access Token (PAT) with `read:packages` scope is required to pull the Docker image from GitHub Container Registry.
-
-```bash
-echo "<YOUR_GITHUB_TOKEN>" | docker login ghcr.io -u <YOUR_GITHUB_USERNAME> --password-stdin
-```

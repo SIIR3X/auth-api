@@ -21,7 +21,7 @@ pub fn device_label(raw: &str) -> Option<String> {
     (!label.is_empty()).then(|| label.to_owned())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, sqlx::Type, utoipa::ToSchema)]
 #[sqlx(type_name = "session_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum SessionType {

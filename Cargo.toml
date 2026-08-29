@@ -41,6 +41,7 @@ uuid = { version = "1.22.0", features = ["v4", "serde"] }
 tower-http = { version = "0.7.0", features = ["cors", "timeout"] }
 email_address = "0.2.9"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "form"] }
+utoipa = { version = "5", features = ["time", "uuid", "yaml"] }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }

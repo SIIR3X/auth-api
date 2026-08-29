@@ -17,9 +17,13 @@ use tracing::error;
 
 // Response body
 
-#[derive(Serialize)]
-struct ErrorBody {
+/// Body of every error response.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ErrorBody {
+    /// Stable and machine-readable: `invalid_credentials`, `reauthentication_required`, ...
     code: &'static str,
+    /// Human-readable explanation; may change between versions.
+    #[schema(value_type = String)]
     message: Cow<'static, str>,
 }
 

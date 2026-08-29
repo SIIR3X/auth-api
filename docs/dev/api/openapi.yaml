@@ -1,0 +1,2070 @@
+openapi: 3.1.0
+info:
+  title: Auth API
+  description: 'Authentication API: accounts, sessions, second factors and client applications. Issues ES256 access tokens and rotating refresh tokens, and publishes the JWKS resource servers verify them with.'
+  license:
+    name: MIT
+  version: 0.1.0
+servers:
+- url: http://localhost:3000
+  description: Local development
+paths:
+  /.well-known/jwks.json:
+    get:
+      tags:
+      - discovery
+      operationId: jwks
+      responses:
+        '200':
+          description: JSON Web Key Set of the current and previous signing keys
+          content:
+            application/json:
+              schema:
+                type: object
+  /auth/authorize:
+    post:
+      tags:
+      - authorize
+      summary: POST /auth/authorize
+      operationId: approve
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveRequest'
+        required: true
+      responses:
+        '200':
+          description: Code minted; redirect the browser
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApproveResponse'
+        '400':
+          description: Unknown client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /auth/authorize/describe:
+    post:
+      tags:
+      - authorize
+      summary: POST /auth/authorize/describe
+      operationId: describe
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DescribeRequest'
+        required: true
+      responses:
+        '200':
+          description: What the consent screen shows
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DescribeResponse'
+        '400':
+          description: Unknown client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /auth/authorize/token:
+    post:
+      tags:
+      - authorize
+      summary: POST /auth/authorize/token
+      operationId: token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Invalid, expired or already used code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Session limit reached or account unusable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /auth/device:
+    post:
+      tags:
+      - device
+      summary: POST /auth/device
+      operationId: authorize
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceAuthorizeRequest'
+        required: true
+      responses:
+        '200':
+          description: Flow started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceInitResponse'
+        '400':
+          description: Unknown client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+  /auth/device/token:
+    post:
+      tags:
+      - device
+      summary: POST /auth/device/token
+      operationId: token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTokenRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DevicePollResult'
+        '400':
+          description: authorization_pending, slow_down, expired or denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Session limit reached or account unusable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /auth/device/verify:
+    post:
+      tags:
+      - device
+      summary: POST /auth/device/verify
+      operationId: verify
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceVerifyRequest'
+        required: true
+      responses:
+        '200':
+          description: Decision recorded
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: Unknown or expired code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Already decided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /auth/device/{user_code}:
+    get:
+      tags:
+      - device
+      summary: GET /auth/device/{user_code}
+      operationId: describe
+      parameters:
+      - name: user_code
+        in: path
+        description: Code shown on the device, XXXX-9999
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: What the user is about to approve
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DevicePreview'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: Unknown or expired code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /auth/forgot-password:
+    post:
+      tags:
+      - auth
+      operationId: forgot_password
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+        required: true
+      responses:
+        '200':
+          description: Accepted; identical whether or not the account exists
+        '429':
+          description: Rate limited; see Retry-After
+  /auth/login:
+    post:
+      tags:
+      - auth
+      operationId: login
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens, or a two-factor challenge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Account locked, suspended or not verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+  /auth/logout:
+    post:
+      tags:
+      - auth
+      operationId: logout
+      responses:
+        '204':
+          description: Session ended
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /auth/refresh:
+    post:
+      tags:
+      - auth
+      operationId: refresh
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokensResponse'
+        '401':
+          description: Invalid, expired or replayed refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+  /auth/register:
+    post:
+      tags:
+      - auth
+      operationId: register
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      responses:
+        '202':
+          description: Accepted; identical whether or not the address is taken
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationAccepted'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+  /auth/reset-password:
+    post:
+      tags:
+      - auth
+      operationId: reset_password
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+        required: true
+      responses:
+        '200':
+          description: Password replaced; every session revoked
+        '401':
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /auth/two-factor/complete:
+    post:
+      tags:
+      - auth
+      operationId: complete_two_factor
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteTwoFactorRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokensResponse'
+        '401':
+          description: Invalid code or pre-auth token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+  /auth/two-factor/email/complete:
+    post:
+      tags:
+      - auth
+      operationId: complete_email_two_factor
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteEmailTwoFactorRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokensResponse'
+        '401':
+          description: Invalid code or pre-auth token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+  /auth/two-factor/email/resend:
+    post:
+      tags:
+      - auth
+      operationId: resend_email_two_factor
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendEmailTwoFactorRequest'
+        required: true
+      responses:
+        '204':
+          description: Code sent if the challenge is an email challenge
+        '401':
+          description: Invalid pre-auth token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /auth/two-factor/recovery:
+    post:
+      tags:
+      - auth
+      operationId: recovery_login
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecoveryLoginRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokensResponse'
+        '401':
+          description: Invalid recovery code or pre-auth token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+  /auth/verify-email:
+    post:
+      tags:
+      - auth
+      operationId: verify_email
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+        required: true
+      responses:
+        '200':
+          description: Address verified
+        '401':
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+  /health:
+    get:
+      tags:
+      - discovery
+      operationId: health
+      responses:
+        '200':
+          description: Serving
+          content:
+            text/plain:
+              schema:
+                type: string
+  /users/me:
+    get:
+      tags:
+      - account
+      operationId: me
+      responses:
+        '200':
+          description: The caller's profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+    delete:
+      tags:
+      - account
+      operationId: delete_account
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/DeleteAccountRequest'
+      responses:
+        '204':
+          description: Account deleted
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/audit:
+    get:
+      tags:
+      - account
+      summary: GET /users/me/audit - newest first.
+      operationId: list
+      parameters:
+      - name: limit
+        in: query
+        description: Entries per page, 1-200 (default 50)
+        required: false
+        schema:
+          type: integer
+          format: int64
+      - name: cursor
+        in: query
+        description: next_cursor of the previous page
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The caller's security history, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPageResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid cursor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/email/confirm:
+    post:
+      tags:
+      - email-change
+      operationId: confirm_new_email
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmNewEmailRequest'
+        required: true
+      responses:
+        '204':
+          description: Address changed; other sessions revoked
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Address taken
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/email/start:
+    post:
+      tags:
+      - email-change
+      operationId: start_email_change
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/CurrentPasswordRequest'
+      responses:
+        '200':
+          description: Code sent to the current address
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowTokenResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/email/submit:
+    post:
+      tags:
+      - email-change
+      operationId: submit_new_email
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitNewEmailRequest'
+        required: true
+      responses:
+        '204':
+          description: Code sent to the new address
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Address taken
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/email/verify-current:
+    post:
+      tags:
+      - email-change
+      operationId: verify_current_email
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyCurrentEmailRequest'
+        required: true
+      responses:
+        '204':
+          description: Current address confirmed
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/locale:
+    patch:
+      tags:
+      - account
+      operationId: change_locale
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeLocaleRequest'
+        required: true
+      responses:
+        '204':
+          description: Locale changed
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/password:
+    patch:
+      tags:
+      - account
+      operationId: change_password
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+        required: true
+      responses:
+        '204':
+          description: Password changed; other sessions revoked
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/reauth:
+    post:
+      tags:
+      - account
+      operationId: reauthenticate
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReauthenticateRequest'
+        required: true
+      responses:
+        '204':
+          description: Re-authenticated for SENSITIVE_ACTION_REAUTH_SECS
+        '401':
+          description: Wrong password or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+      security:
+      - bearer: []
+  /users/me/sessions:
+    get:
+      tags:
+      - sessions
+      operationId: list
+      responses:
+        '200':
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+    delete:
+      tags:
+      - sessions
+      operationId: revoke_all
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/RevokeAllRequest'
+      responses:
+        '204':
+          description: Every other session revoked
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/sessions/{id}:
+    delete:
+      tags:
+      - sessions
+      operationId: revoke
+      parameters:
+      - name: id
+        in: path
+        description: Method or session id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/RevokeAllRequest'
+      responses:
+        '204':
+          description: Session revoked
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/two-factor:
+    get:
+      tags:
+      - two-factor
+      summary: GET /users/me/two-factor
+      description: |-
+        What the account has set up. The disable routes need a method id that only
+        the setup call returned: without this, a refreshed page could not turn its
+        own second factor off.
+      operationId: list
+      responses:
+        '200':
+          description: Configured methods and remaining recovery codes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwoFactorOverviewResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/two-factor/email/send:
+    post:
+      tags:
+      - two-factor
+      operationId: send_email_otp_code
+      responses:
+        '204':
+          description: Code sent
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+      security:
+      - bearer: []
+  /users/me/two-factor/email/setup:
+    post:
+      tags:
+      - two-factor
+      operationId: setup_email_otp
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/SetupTwoFactorRequest'
+      responses:
+        '200':
+          description: Method created; first code sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailOtpSetupResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Already enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/two-factor/email/{id}:
+    delete:
+      tags:
+      - two-factor
+      operationId: disable_email_otp
+      parameters:
+      - name: id
+        in: path
+        description: Method or session id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/DisableEmailOtpRequest'
+      responses:
+        '204':
+          description: Method removed
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such method
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/two-factor/email/{id}/verify:
+    post:
+      tags:
+      - two-factor
+      operationId: verify_email_otp_setup
+      parameters:
+      - name: id
+        in: path
+        description: Method or session id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailOtpSetupRequest'
+        required: true
+      responses:
+        '200':
+          description: Method enabled; recovery codes shown once
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodesResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such method
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/two-factor/recovery-codes:
+    post:
+      tags:
+      - two-factor
+      operationId: regenerate_recovery_codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegenerateRecoveryCodesRequest'
+        required: true
+      responses:
+        '200':
+          description: New codes, shown once
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodesResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/two-factor/recovery-codes/use:
+    post:
+      tags:
+      - two-factor
+      operationId: use_recovery_code
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UseRecoveryCodeRequest'
+        required: true
+      responses:
+        '204':
+          description: Code consumed
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/two-factor/totp/setup:
+    post:
+      tags:
+      - two-factor
+      operationId: setup_totp
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/SetupTwoFactorRequest'
+      responses:
+        '200':
+          description: Secret provisioned, shown once
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotpSetupResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Already enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/two-factor/totp/{id}:
+    delete:
+      tags:
+      - two-factor
+      operationId: disable_totp
+      parameters:
+      - name: id
+        in: path
+        description: Method or session id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/DisableTotpRequest'
+      responses:
+        '204':
+          description: Method removed
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such method
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/two-factor/totp/{id}/verify:
+    post:
+      tags:
+      - two-factor
+      operationId: verify_totp_setup
+      parameters:
+      - name: id
+        in: path
+        description: Method or session id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyTotpSetupRequest'
+        required: true
+      responses:
+        '200':
+          description: Method enabled; recovery codes shown once
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodesResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such method
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Already verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/username:
+    patch:
+      tags:
+      - account
+      operationId: change_username
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeUsernameRequest'
+        required: true
+      responses:
+        '204':
+          description: Username changed
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: Username taken
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+components:
+  schemas:
+    ApproveRequest:
+      type: object
+      required:
+      - client_id
+      - redirect_uri
+      - code_challenge
+      properties:
+        client_id:
+          type: string
+        code_challenge:
+          type: string
+        code_challenge_method:
+          type: string
+        current_password:
+          type:
+          - string
+          - 'null'
+          description: Required for a non-primary client unless the session re-authenticated recently.
+        redirect_uri:
+          type: string
+        state:
+          type:
+          - string
+          - 'null'
+          description: Opaque client value echoed in the redirect (CSRF protection, RFC 6749).
+    ApproveResponse:
+      type: object
+      required:
+      - redirect_to
+      properties:
+        redirect_to:
+          type: string
+          description: 'Where to send the browser: the redirect URI carrying `code` (and `state`).'
+    AuditEntryResponse:
+      type: object
+      required:
+      - id
+      - created_at
+      - action
+      - metadata
+      properties:
+        action:
+          type: string
+          description: 'Stable snake_case name: `login`, `password_changed`, ...'
+        created_at:
+          type: integer
+          format: int64
+          description: Unix timestamp (seconds), like every other timestamp of this API.
+        id:
+          type: string
+          format: uuid
+        ip_address:
+          type:
+          - string
+          - 'null'
+        metadata:
+          type: object
+        request_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+    AuditPageResponse:
+      type: object
+      required:
+      - entries
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntryResponse'
+        next_cursor:
+          type:
+          - string
+          - 'null'
+          description: Pass back as `cursor` to read the next page; absent on the last one.
+    ChangeLocaleRequest:
+      type: object
+      required:
+      - locale
+      properties:
+        locale:
+          type: string
+    ChangePasswordRequest:
+      type: object
+      required:
+      - new_password
+      properties:
+        current_password:
+          type:
+          - string
+          - 'null'
+        new_password:
+          type: string
+    ChangeUsernameRequest:
+      type: object
+      required:
+      - username
+      properties:
+        current_password:
+          type:
+          - string
+          - 'null'
+        username:
+          type: string
+    CompleteEmailTwoFactorRequest:
+      type: object
+      required:
+      - pre_auth_token
+      - code
+      properties:
+        code:
+          type: string
+        pre_auth_token:
+          type: string
+    CompleteTwoFactorRequest:
+      type: object
+      required:
+      - pre_auth_token
+      - code
+      properties:
+        code:
+          type: string
+        pre_auth_token:
+          type: string
+    ConfirmNewEmailRequest:
+      type: object
+      required:
+      - flow_token
+      - code
+      properties:
+        code:
+          type: string
+        flow_token:
+          type: string
+    CurrentPasswordRequest:
+      type: object
+      description: |-
+        Optional body for sensitive actions that accept the current password in
+        place of a recent re-authentication.
+      properties:
+        current_password:
+          type:
+          - string
+          - 'null'
+    DeleteAccountRequest:
+      type: object
+      properties:
+        current_password:
+          type:
+          - string
+          - 'null'
+    DescribeRequest:
+      type: object
+      required:
+      - client_id
+      - redirect_uri
+      properties:
+        client_id:
+          type: string
+        redirect_uri:
+          type: string
+    DescribeResponse:
+      type: object
+      required:
+      - client_id
+      - client_name
+      - scopes
+      - unrestricted
+      - unavailable_scopes
+      - sessions_used
+      properties:
+        client_id:
+          type: string
+        client_name:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        sessions_allowed:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        sessions_used:
+          type: integer
+          format: int64
+        unavailable_scopes:
+          type: array
+          items:
+            type: string
+        unrestricted:
+          type: boolean
+    DeviceAuthorizeRequest:
+      type: object
+      properties:
+        client_id:
+          type:
+          - string
+          - 'null'
+          description: 'Registered client starting the flow. Omitted: the primary client.'
+    DeviceInitResponse:
+      type: object
+      required:
+      - device_code
+      - user_code
+      - verification_uri
+      - expires_in
+      - interval
+      properties:
+        device_code:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+          minimum: 0
+        interval:
+          type: integer
+          format: int64
+          minimum: 0
+        user_code:
+          type: string
+        verification_uri:
+          type: string
+    DevicePollResult:
+      type: object
+      required:
+      - access_token
+      - refresh_token
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+    DevicePreview:
+      type: object
+      description: |-
+        What the signed-in user is shown before approving a device. Nothing here is
+        secret from the holder of the code; it is what lets them notice a code being
+        claimed by an unexpected client or from an unexpected place.
+      required:
+      - user_code
+      - created_at
+      properties:
+        client_id:
+          type:
+          - string
+          - 'null'
+        client_name:
+          type:
+          - string
+          - 'null'
+        created_at:
+          type: integer
+          format: int64
+        requested_from_ip:
+          type:
+          - string
+          - 'null'
+        user_agent:
+          type:
+          - string
+          - 'null'
+        user_code:
+          type: string
+    DeviceTokenRequest:
+      type: object
+      required:
+      - device_code
+      properties:
+        device_code:
+          type: string
+        device_name:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Label for the account's session list. Client-supplied, so a label and
+            never an identity; it is normalized before it is stored.
+    DeviceVerifyRequest:
+      type: object
+      required:
+      - user_code
+      properties:
+        approve:
+          type: boolean
+        user_code:
+          type: string
+    DisableEmailOtpRequest:
+      type: object
+      properties:
+        current_password:
+          type:
+          - string
+          - 'null'
+    DisableTotpRequest:
+      type: object
+      properties:
+        current_password:
+          type:
+          - string
+          - 'null'
+    EmailOtpSetupResponse:
+      type: object
+      required:
+      - method_id
+      properties:
+        method_id:
+          type: string
+          format: uuid
+    ErrorBody:
+      type: object
+      description: Body of every error response.
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          description: 'Stable and machine-readable: `invalid_credentials`, `reauthentication_required`, ...'
+        message:
+          type: string
+          description: Human-readable explanation; may change between versions.
+    FlowTokenResponse:
+      type: object
+      required:
+      - flow_token
+      properties:
+        flow_token:
+          type: string
+    ForgotPasswordRequest:
+      type: object
+      required:
+      - email
+      properties:
+        captcha_token:
+          type:
+          - string
+          - 'null'
+        email:
+          type: string
+    LoginRequest:
+      type: object
+      required:
+      - identifier
+      - password
+      properties:
+        captcha_token:
+          type:
+          - string
+          - 'null'
+        device_name:
+          type:
+          - string
+          - 'null'
+        identifier:
+          type: string
+        password:
+          type: string
+        remember_me:
+          type:
+          - boolean
+          - 'null'
+          description: |-
+            When true, issues a long-lived refresh token (30 days).
+            When false or omitted, issues a short-lived token (24 h).
+    LoginResponse:
+      oneOf:
+      - type: object
+        required:
+        - access_token
+        - refresh_token
+        properties:
+          access_token:
+            type: string
+          refresh_token:
+            type: string
+      - type: object
+        required:
+        - two_factor_required
+        - two_factor_method
+        - pre_auth_token
+        properties:
+          pre_auth_token:
+            type: string
+          two_factor_method:
+            type: string
+            description: '"totp" or "email"'
+          two_factor_required:
+            type: boolean
+    ReauthenticateRequest:
+      type: object
+      required:
+      - current_password
+      properties:
+        current_password:
+          type: string
+    RecoveryCodesResponse:
+      type: object
+      required:
+      - recovery_codes
+      properties:
+        recovery_codes:
+          type: array
+          items:
+            type: string
+          description: Plaintext recovery codes shown once. The user must store them securely.
+    RecoveryLoginRequest:
+      type: object
+      required:
+      - pre_auth_token
+      - recovery_code
+      properties:
+        pre_auth_token:
+          type: string
+        recovery_code:
+          type: string
+    RedeemRequest:
+      type: object
+      required:
+      - code
+      - code_verifier
+      - client_id
+      - redirect_uri
+      properties:
+        client_id:
+          type: string
+        code:
+          type: string
+        code_verifier:
+          type: string
+        device_name:
+          type:
+          - string
+          - 'null'
+        redirect_uri:
+          type: string
+    RefreshRequest:
+      type: object
+      required:
+      - refresh_token
+      properties:
+        refresh_token:
+          type: string
+    RegenerateRecoveryCodesRequest:
+      type: object
+      properties:
+        current_password:
+          type:
+          - string
+          - 'null'
+    RegisterRequest:
+      type: object
+      required:
+      - username
+      - email
+      - password
+      properties:
+        captcha_token:
+          type:
+          - string
+          - 'null'
+          description: hCaptcha token from the frontend widget. Required when CAPTCHA_SECRET is configured.
+        email:
+          type: string
+        locale:
+          type:
+          - string
+          - 'null'
+        password:
+          type: string
+        username:
+          type: string
+    RegistrationAccepted:
+      type: object
+      description: |-
+        Registration answer. Identical whether the address was free or already had
+        an account, so it cannot be used to enumerate accounts.
+      required:
+      - status
+      - message
+      properties:
+        message:
+          type: string
+        status:
+          type: string
+    ResendEmailTwoFactorRequest:
+      type: object
+      required:
+      - pre_auth_token
+      properties:
+        pre_auth_token:
+          type: string
+    ResetPasswordRequest:
+      type: object
+      required:
+      - token
+      - new_password
+      properties:
+        new_password:
+          type: string
+        token:
+          type: string
+    RevokeAllRequest:
+      type: object
+      properties:
+        current_password:
+          type:
+          - string
+          - 'null'
+    SessionResponse:
+      type: object
+      required:
+      - id
+      - session_type
+      - last_used_at
+      - expires_at
+      - created_at
+      - is_current
+      properties:
+        client_id:
+          type:
+          - string
+          - 'null'
+        created_at:
+          type: integer
+          format: int64
+        device_name:
+          type:
+          - string
+          - 'null'
+        expires_at:
+          type: integer
+          format: int64
+        id:
+          type: string
+          format: uuid
+        ip_address:
+          type:
+          - string
+          - 'null'
+        is_current:
+          type: boolean
+          description: True when this is the session used to make the current request.
+        last_used_at:
+          type: integer
+          format: int64
+        session_type:
+          $ref: '#/components/schemas/SessionType'
+        user_agent:
+          type:
+          - string
+          - 'null'
+    SessionType:
+      type: string
+      enum:
+      - web
+      - device
+    SetupTwoFactorRequest:
+      type: object
+      description: |-
+        Body of the setup endpoints. Optional: a recent re-authentication
+        (`POST /users/me/reauth`) makes the password unnecessary.
+      properties:
+        current_password:
+          type:
+          - string
+          - 'null'
+    SubmitNewEmailRequest:
+      type: object
+      required:
+      - flow_token
+      - new_email
+      properties:
+        flow_token:
+          type: string
+        new_email:
+          type: string
+    TokenResponse:
+      type: object
+      required:
+      - access_token
+      - refresh_token
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+    TokensResponse:
+      type: object
+      required:
+      - access_token
+      - refresh_token
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+    TotpSetupResponse:
+      type: object
+      required:
+      - method_id
+      - qr_uri
+      - base32_secret
+      properties:
+        base32_secret:
+          type: string
+          description: Base32 secret shown once so the user can manually enter it in their app.
+        method_id:
+          type: string
+          format: uuid
+        qr_uri:
+          type: string
+    TwoFactorMethodResponse:
+      type: object
+      required:
+      - id
+      - method_type
+      - is_verified
+      - is_primary
+      - created_at
+      properties:
+        created_at:
+          type: integer
+          format: int64
+        id:
+          type: string
+          format: uuid
+        is_primary:
+          type: boolean
+        is_verified:
+          type: boolean
+        last_used_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        method_type:
+          type: string
+          description: '`totp` or `email`.'
+    TwoFactorOverviewResponse:
+      type: object
+      required:
+      - methods
+      - recovery_codes_remaining
+      properties:
+        methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/TwoFactorMethodResponse'
+        recovery_codes_remaining:
+          type: integer
+          format: int64
+          description: |-
+            Unused and unexpired. Zero next to a verified method is worth showing:
+            losing the device would then lock the account.
+    UseRecoveryCodeRequest:
+      type: object
+      required:
+      - code
+      properties:
+        code:
+          type: string
+    UserResponse:
+      type: object
+      required:
+      - id
+      - username
+      - email
+      - status
+      - preferred_locale
+      - created_at
+      properties:
+        created_at:
+          type: integer
+          format: int64
+        email:
+          type: string
+        email_verified_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        id:
+          type: string
+          format: uuid
+        last_login_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        preferred_locale:
+          type: string
+        status:
+          type: string
+        username:
+          type: string
+    VerifyCurrentEmailRequest:
+      type: object
+      required:
+      - flow_token
+      - code
+      properties:
+        code:
+          type: string
+        flow_token:
+          type: string
+    VerifyEmailOtpSetupRequest:
+      type: object
+      required:
+      - code
+      properties:
+        code:
+          type: string
+    VerifyEmailRequest:
+      type: object
+      required:
+      - token
+      properties:
+        token:
+          type: string
+    VerifyTotpSetupRequest:
+      type: object
+      required:
+      - code
+      properties:
+        code:
+          type: string
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+tags:
+- name: discovery
+  description: Health and public keys
+- name: auth
+  description: Registration, sign-in, tokens and two-factor challenges
+- name: device
+  description: Device authorization flow (RFC 8628)
+- name: authorize
+  description: Authorization code flow with PKCE (RFC 7636)
+- name: account
+  description: The caller's profile, security history and re-authentication
+- name: email-change
+  description: Changing the account's email address
+- name: sessions
+  description: Active sessions
+- name: two-factor
+  description: Second factors and recovery codes

@@ -17,7 +17,7 @@ use super::extractors::{AuthUser, ClientIp};
 
 // Response types
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SessionResponse {
     pub id: Uuid,
     pub session_type: SessionType,
@@ -38,13 +38,23 @@ pub struct SessionResponse {
 
 // Request types
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RevokeAllRequest {
     pub current_password: Option<String>,
 }
 
 // Handlers
 
+#[utoipa::path(
+    get,
+    path = "/users/me/sessions",
+    tag = "sessions",
+    responses(
+        (status = 200, description = "Active sessions", body = [SessionResponse]),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -73,6 +83,20 @@ pub async fn list(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/users/me/sessions/{id}",
+    tag = "sessions",
+    params(("id" = Uuid, Path, description = "Method or session id")),
+    request_body = Option<RevokeAllRequest>,
+    responses(
+        (status = 204, description = "Session revoked"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+        (status = 404, description = "No such session", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn revoke(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -94,6 +118,18 @@ pub async fn revoke(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    delete,
+    path = "/users/me/sessions",
+    tag = "sessions",
+    request_body = Option<RevokeAllRequest>,
+    responses(
+        (status = 204, description = "Every other session revoked"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn revoke_all(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,

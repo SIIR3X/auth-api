@@ -5,7 +5,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/SIIR3X/auth-api/releases/latest"><img src="https://img.shields.io/github/v/release/SIIR3X/auth-api?color=blue&label=version" alt="Latest release"></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/rust-2024%20edition-orange.svg" alt="Rust 2024 edition">
   <img src="https://img.shields.io/badge/framework-Axum-1793d1.svg" alt="Framework: Axum">
@@ -13,87 +12,75 @@
   <img src="https://img.shields.io/badge/container-Docker-2496ed.svg" alt="Container: Docker">
 </p>
 
-**Production-ready authentication and authorization API for Rust services - JWT
-access and refresh tokens, two-factor auth, RBAC, per-device sessions and
-risk-based login, built on Axum, PostgreSQL and Redis.**
+**A dedicated authentication API: accounts, sessions, second factors and
+client applications, with ES256 tokens other services verify through a JWKS.
+Built on Axum, PostgreSQL, Redis and NATS.**
 
 ## Description
 
-Auth API is a complete authentication and authorization backend for production
-services. It covers the full account lifecycle - registration, email
-verification, login, logout, password reset and email change - and issues
-short-lived JWT access tokens backed by rotating refresh tokens with replay and
-family-compromise detection.
+Auth API owns the whole account lifecycle - registration, email verification,
+sign-in, password reset and email change - and issues short-lived ES256 access
+tokens backed by rotating refresh tokens. Resource servers verify tokens
+offline with the published JWKS; nothing else needs to call it on every request.
 
-Security is built in rather than bolted on: two-factor authentication (TOTP and
-email OTP) with recovery codes, role-based access control, per-device session
-management, risk scoring on every login (GeoIP, new-device detection,
-behavioral history), account lockout, per-IP rate limiting and CAPTCHA on
-sensitive endpoints. Sensitive data is protected at rest - TOTP secrets are
-encrypted with AES-256-GCM - and every security-relevant action is written to an
-append-only audit log partitioned by month.
+Security is the design constraint rather than a feature list: sign-in answers
+never reveal whether an account exists, sensitive changes require a recent
+re-authentication, second factors cannot be bypassed or brute-forced, a replayed
+refresh token revokes its whole session, and production refuses to start with a
+configuration that disables any of it. The [security model](docs/dev/security-model.md)
+describes each control and the tests that pin it.
 
 ### What it provides
 
 | Area | Capabilities |
 |------|--------------|
-| Account lifecycle | registration, login, logout, email verification, password reset, email change with OTP at each step |
-| Tokens | JWT access + refresh, rotation, replay detection |
-| Two-factor | TOTP and email OTP, recovery codes for backup access |
-| Authorization | RBAC with roles and permissions |
-| Sessions | per-device visibility, revocation, family compromise detection |
-| Threat protection | risk scoring (GeoIP, new device, behavioral history), account lockout, per-IP rate limiting with a separate auth bucket, CAPTCHA |
-| Audit & crypto | append-only audit log partitioned by month, AES-256-GCM encryption for TOTP secrets at rest |
+| Accounts | Registration, email verification, sign-in by email or username, password reset, email change confirmed on both addresses, account deletion |
+| Tokens | ES256 access tokens, rotating refresh tokens with replay detection, absolute session lifetime, JWKS with zero-downtime key rotation |
+| Second factors | TOTP and email codes, recovery codes, replay guard, per-challenge and per-account budgets |
+| Client applications | Registered clients, device authorization (RFC 8628), authorization code with PKCE (RFC 7636, RFC 8252), per-client scopes and session limits |
+| Sessions | Per-device listing and revocation, re-authentication for sensitive actions |
+| Protection | Sliding-window rate limits per client (IPv6 per /64), account lockout, CAPTCHA, trusted-proxy address resolution |
+| Records | Append-only audit log partitioned by month, readable by each user; durable domain events on NATS JetStream |
+| Localization | English and French emails |
 
 ## Requirements
 
-**To run locally:**
+**To develop:** Rust (2024 edition), Docker with Compose, GNU Make - see
+[prerequisites](docs/dev/guides/prerequisites.md).
 
-- **Docker** and **Docker Compose**
-- **GNU Make**
-
-See [prerequisites](docs/dev/guides/prerequisites.md) for the full list.
-
-**To deploy:** PostgreSQL, Redis and the shared infrastructure (NATS, API
-Gateway) - see the [Deployment Guide](docs/deploy/README.md).
+**To deploy:** a server with Docker and a PostgreSQL and Redis reachable from
+it - see the [Deployment Guide](docs/deploy/README.md). NATS ships in the
+compose file.
 
 ## Installation
 
-### From source (development)
-
 ```bash
-git clone https://github.com/SIIR3X/auth-api.git
+git clone <repository-url> auth-api
 cd auth-api
 make dev
 ```
 
-The API is available at `http://localhost:3000`. A Mailpit instance for catching
-emails is available at `http://localhost:8025`.
-
-### Container image
-
-Released images are published to the GitHub Container Registry, tagged `latest`,
-the full version and `major.minor`:
-
-```bash
-docker pull ghcr.io/siir3x/auth-api:latest
-```
+The API serves at `http://localhost:3000`, and Mailpit catches emails at
+`http://localhost:8025`. Every port is bound to loopback.
 
 ## Usage
 
-`make dev` brings up the full stack (API, PostgreSQL, Redis, Mailpit) with
-migrations applied. The API then serves at `http://localhost:3000`.
+| Task | Command |
+|------|---------|
+| Run the full quality gate | `make test-infra-up && make ci` |
+| Register a client application | `auth-api --register-client <id> --name <name> [--primary]` |
+| Build a release bundle | `make release VERSION=x.y.z` |
 
-For all available commands see [commands](docs/dev/guides/commands.md). API
-routes and the database schema are documented in the
-[Developer Guide](docs/dev/README.md).
+All commands are in [commands](docs/dev/guides/commands.md); routes in
+[routes](docs/dev/api/routes.md) and the generated [OpenAPI document](docs/dev/api/openapi.yaml).
 
 ## Documentation
 
 | Document | Contents |
 |----------|----------|
-| [Developer Guide](docs/dev/README.md) | Prerequisites, commands, workflows, configuration, API routes, database schema |
-| [Deployment Guide](docs/deploy/README.md) | Secrets, database setup, API deployment, release process |
+| [Developer Guide](docs/dev/README.md) | Prerequisites, commands, quality gate, release, configuration, routes, schema, security model |
+| [Deployment Guide](docs/deploy/README.md) | Secrets, database, API and Nginx deployment, updates, operations runbook |
+| [`CHANGELOG.md`](CHANGELOG.md) | Changes per release, breaking changes and upgrade notes |
 | [`LICENSE`](LICENSE) | MIT license terms |
 
 ## License

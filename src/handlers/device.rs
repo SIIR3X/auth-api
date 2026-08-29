@@ -19,13 +19,13 @@ use super::extractors::{AuthUser, ClientIp, UserAgent};
 /// Longest client identifier accepted (`registered_clients.client_id`).
 const MAX_CLIENT_ID_LEN: usize = 100;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct DeviceAuthorizeRequest {
     /// Registered client starting the flow. Omitted: the primary client.
     pub client_id: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct DeviceTokenRequest {
     pub device_code: String,
     /// Label for the account's session list. Client-supplied, so a label and
@@ -33,7 +33,7 @@ pub struct DeviceTokenRequest {
     pub device_name: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct DeviceVerifyRequest {
     pub user_code: String,
     #[serde(default = "default_approve")]
@@ -45,6 +45,17 @@ fn default_approve() -> bool {
 }
 
 /// POST /auth/device
+#[utoipa::path(
+    post,
+    path = "/auth/device",
+    tag = "device",
+    request_body = DeviceAuthorizeRequest,
+    responses(
+        (status = 200, description = "Flow started", body = device_svc::DeviceInitResponse),
+        (status = 400, description = "Unknown client", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
 pub async fn authorize(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -63,6 +74,17 @@ pub async fn authorize(
 }
 
 /// POST /auth/device/token
+#[utoipa::path(
+    post,
+    path = "/auth/device/token",
+    tag = "device",
+    request_body = DeviceTokenRequest,
+    responses(
+        (status = 200, description = "Tokens issued", body = device_svc::DevicePollResult),
+        (status = 400, description = "authorization_pending, slow_down, expired or denied", body = crate::error::ErrorBody),
+        (status = 403, description = "Session limit reached or account unusable", body = crate::error::ErrorBody),
+    ),
+)]
 pub async fn token(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -85,6 +107,18 @@ pub async fn token(
 }
 
 /// GET /auth/device/{user_code}
+#[utoipa::path(
+    get,
+    path = "/auth/device/{user_code}",
+    tag = "device",
+    params(("user_code" = String, Path, description = "Code shown on the device, XXXX-9999")),
+    responses(
+        (status = 200, description = "What the user is about to approve", body = device_svc::DevicePreview),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 404, description = "Unknown or expired code", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn describe(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -97,6 +131,19 @@ pub async fn describe(
 }
 
 /// POST /auth/device/verify
+#[utoipa::path(
+    post,
+    path = "/auth/device/verify",
+    tag = "device",
+    request_body = DeviceVerifyRequest,
+    responses(
+        (status = 200, description = "Decision recorded"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 404, description = "Unknown or expired code", body = crate::error::ErrorBody),
+        (status = 409, description = "Already decided", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn verify(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,

@@ -85,7 +85,7 @@ struct DeviceAuthState {
     created_at: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DeviceInitResponse {
     pub device_code: String,
     pub user_code: String,
@@ -94,7 +94,7 @@ pub struct DeviceInitResponse {
     pub interval: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DevicePollResult {
     pub access_token: String,
     pub refresh_token: String,
@@ -103,7 +103,7 @@ pub struct DevicePollResult {
 /// What the signed-in user is shown before approving a device. Nothing here is
 /// secret from the holder of the code; it is what lets them notice a code being
 /// claimed by an unexpected client or from an unexpected place.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DevicePreview {
     pub user_code: String,
     pub client_id: Option<String>,

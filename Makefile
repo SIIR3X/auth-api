@@ -139,6 +139,17 @@ docker-build: ## Build the production Docker image
 docker-build-dev: ## Build the development Docker image
 	docker build -f Dockerfile.dev -t $(IMAGE_DEV) .
 
+.PHONY: release
+release: ## Build a release bundle in dist/ (VERSION=x.y.z): image, migrations, deployment files, checksums
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=x.y.z"; exit 1; }
+	@git diff --quiet && git diff --cached --quiet || { echo "commit or stash your changes first"; exit 1; }
+	docker build -t auth-api:$(VERSION) .
+	rm -rf dist/auth-api-$(VERSION) && mkdir -p dist/auth-api-$(VERSION)
+	docker save auth-api:$(VERSION) | gzip > dist/auth-api-$(VERSION)/auth-api-$(VERSION).image.tar.gz
+	git archive HEAD migrations docker-compose.api.yml config.prod.env nginx/nginx.conf scripts/backup-db.sh scripts/restore-db.sh | tar -x -C dist/auth-api-$(VERSION)
+	cd dist/auth-api-$(VERSION) && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+	@echo "bundle ready: dist/auth-api-$(VERSION)"
+
 # =============================================================================
 # Docker Security
 # =============================================================================
