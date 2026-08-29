@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
         let result = key_rotation::rotate_totp_encryption_key(&state).await?;
         tracing::info!(
             rotated = result.rotated,
+            skipped = result.skipped,
             failed = result.failed,
             "TOTP key rotation complete"
         );

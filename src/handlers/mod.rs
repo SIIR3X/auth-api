@@ -26,6 +26,7 @@ use crate::{
     state::AppState,
 };
 
+pub mod audit;
 pub mod auth;
 pub mod authorize;
 pub mod device;
@@ -259,6 +260,8 @@ fn me_router() -> Router<AppState> {
     Router::new()
         // Profile
         .route("/", get(user::me))
+        .route("/audit", get(audit::list))
+        .route("/two-factor", get(two_factor::list))
         .route("/username", patch(user::change_username))
         .route("/password", patch(user::change_password))
         .route("/locale", patch(user::change_locale))

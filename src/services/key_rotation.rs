@@ -1,11 +1,16 @@
-//! TOTP encryption key rotation.
+//! Re-encryption of TOTP secrets after an encryption key change.
 //!
-//! Decrypts every stored TOTP secret with the previous key and re-encrypts it
-//! with the current key. Intended to be run as a one-off CLI command while the
-//! server is either stopped or in a maintenance window.
+//! Every secret not yet under the current key is decrypted (with the key its
+//! ciphertext names, or by trying both keys for values written before
+//! ciphertexts were versioned) and written back under the current key.
+//!
+//! Each row is replaced only if it still holds the value that was read, so the
+//! command is safe beside live traffic, and it can be interrupted and run
+//! again: rows already under the current key are skipped.
 //!
 //! Usage:
-//!   PREVIOUS_ENCRYPTION_KEY=<old_b64_key> ./auth-api --rotate-totp-keys
+//!   ENCRYPTION_KEY=<new> PREVIOUS_ENCRYPTION_KEY=<old> ./auth-api --rotate-totp-keys
+//! and remove PREVIOUS_ENCRYPTION_KEY once a run reports nothing rotated or failed.
 
 use serde_json::json;
 
@@ -26,11 +31,10 @@ pub struct RotationResult {
     pub failed: usize,
 }
 
-/// Re-encrypts all TOTP secrets from `previous_encryption_key` to `encryption_key`.
-/// Returns a summary of the operation.
-/// Fails fast if `previous_encryption_key` is not configured.
+/// Rewrite every TOTP secret under the current key. Fails fast when no
+/// previous key is configured or when it equals the current one.
 pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResult, AppError> {
-    let prev_b64 = state
+    let previous = state
         .config
         .crypto
         .previous_encryption_key
@@ -42,35 +46,48 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
         })?;
 
     let old_key =
-        crypto::decode_encryption_key(prev_b64).map_err(|e| AppError::Internal(e.into()))?;
+        crypto::decode_encryption_key(previous).map_err(|e| AppError::Internal(e.into()))?;
     let new_key = crypto::decode_encryption_key(&state.config.crypto.encryption_key)
         .map_err(|e| AppError::Internal(e.into()))?;
-
     if old_key == new_key {
         return Err(AppError::Internal(anyhow::anyhow!(
             "PREVIOUS_ENCRYPTION_KEY and ENCRYPTION_KEY are identical - nothing to rotate"
         )));
     }
 
+    let keyring = &state.keyring;
     let methods = tf_repo::find_all_totp_secrets(&state.db)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let total = methods.len();
-    let mut rotated = 0usize;
-    let mut failed = 0usize;
+    let (mut rotated, mut skipped, mut failed) = (0usize, 0usize, 0usize);
 
-    for (id, encrypted_secret) in methods {
-        match crypto::re_encrypt(&encrypted_secret, &old_key, &new_key) {
-            Ok(new_secret) => match tf_repo::update_totp_secret(&state.db, id, &new_secret).await {
-                Ok(_) => rotated += 1,
-                Err(e) => {
-                    tracing::warn!(method_id = %id, error = ?e, "failed to update TOTP secret during rotation");
-                    failed += 1;
-                }
-            },
+    for (id, stored) in methods {
+        if !keyring.needs_rotation(&stored) {
+            skipped += 1;
+            continue;
+        }
+
+        let reencrypted = match keyring
+            .decrypt(&stored)
+            .and_then(|plaintext| keyring.encrypt(&plaintext))
+        {
+            Ok(value) => value,
             Err(e) => {
-                tracing::warn!(method_id = %id, error = ?e, "failed to re-encrypt TOTP secret during rotation");
+                tracing::warn!(method_id = %id, error = ?e, "cannot re-encrypt TOTP secret");
+                failed += 1;
+                continue;
+            }
+        };
+
+        match tf_repo::replace_totp_secret(&state.db, id, &stored, &reencrypted).await {
+            Ok(true) => rotated += 1,
+            // Changed since it was read (re-created or removed): whatever is
+            // there now was written with the current key.
+            Ok(false) => skipped += 1,
+            Err(e) => {
+                tracing::warn!(method_id = %id, error = ?e, "cannot store re-encrypted TOTP secret");
                 failed += 1;
             }
         }
@@ -81,12 +98,14 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
         &NewAuditEntry {
             user_id: None,
             request_id: None,
-            action: AuditAction::TwoFactorEnabled, // closest available; extend AuditAction if needed
+            action: AuditAction::EncryptionKeyRotated,
             ip_address: None,
             metadata: json!({
-                "event": "totp_key_rotation",
+                "scope": "totp_secrets",
+                "key_id": keyring.current_kid(),
                 "total": total,
                 "rotated": rotated,
+                "skipped": skipped,
                 "failed": failed,
             }),
         },
@@ -96,7 +115,7 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
 
     Ok(RotationResult {
         rotated,
-        skipped: 0,
+        skipped,
         failed,
     })
 }

@@ -82,6 +82,7 @@ async fn build_rotation_state(
             host: "127.0.0.1".into(),
             port: 0,
             public_url: "http://localhost".into(),
+            frontend_url: "http://localhost".into(),
             trusted_proxy_cidrs: Vec::new(),
         },
         database: DatabaseConfig {
@@ -213,7 +214,8 @@ async fn rotate_totp_key_re_encrypts_secret_successfully() {
 
     // Verify it decrypts with KEY_A.
     let key_a: [u8; 32] = B64.decode(KEY_A_B64).unwrap().try_into().unwrap();
-    let plaintext_original = crypto::decrypt(&encrypted_before, &key_a)
+    let plaintext_original = crypto::Keyring::new(key_a, None)
+        .decrypt(&encrypted_before)
         .expect("encrypted_before must decrypt with KEY_A");
 
     // Build rotation state: previous = KEY_A, current = KEY_B.
@@ -249,8 +251,9 @@ async fn rotate_totp_key_re_encrypts_secret_successfully() {
 
     // Must decrypt with KEY_B and yield the same plaintext.
     let key_b: [u8; 32] = B64.decode(KEY_B_B64).unwrap().try_into().unwrap();
-    let plaintext_after =
-        crypto::decrypt(&encrypted_after, &key_b).expect("encrypted_after must decrypt with KEY_B");
+    let plaintext_after = crypto::Keyring::new(key_b, None)
+        .decrypt(&encrypted_after)
+        .expect("encrypted_after must decrypt with KEY_B");
     assert_eq!(
         plaintext_after, plaintext_original,
         "plaintext must be preserved after rotation"
@@ -258,7 +261,9 @@ async fn rotate_totp_key_re_encrypts_secret_successfully() {
 
     // Must NOT decrypt with KEY_A anymore.
     assert!(
-        crypto::decrypt(&encrypted_after, &key_a).is_err(),
+        crypto::Keyring::new(key_a, None)
+            .decrypt(&encrypted_after)
+            .is_err(),
         "re-encrypted secret must not be readable with old key"
     );
 }

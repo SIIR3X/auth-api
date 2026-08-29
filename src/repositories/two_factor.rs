@@ -211,18 +211,24 @@ pub async fn find_all_totp_secrets(pool: &PgPool) -> Result<Vec<(Uuid, String)>,
     Ok(rows)
 }
 
-/// Updates the encrypted TOTP secret for a single method row.
-pub async fn update_totp_secret(
+/// Replace a TOTP secret only if the row still holds `expected`: a rotation
+/// running beside live traffic never overwrites a secret re-created meanwhile.
+/// Returns whether the row was updated.
+pub async fn replace_totp_secret(
     pool: &PgPool,
     id: Uuid,
+    expected: &str,
     new_secret: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE two_factor_methods SET totp_secret = $2 WHERE id = $1")
-        .bind(id)
-        .bind(new_secret)
-        .execute(pool)
-        .await?;
-    Ok(())
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE two_factor_methods SET totp_secret = $3 WHERE id = $1 AND totp_secret = $2",
+    )
+    .bind(id)
+    .bind(expected)
+    .bind(new_secret)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 pub async fn find_by_type(

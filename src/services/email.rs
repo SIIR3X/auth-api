@@ -1,7 +1,8 @@
 //! Email delivery service.
 //!
 //! Renders Tera templates and sends messages via SMTP.
-//! Template lookup order: emails/{locale}/{name}.html -> emails/{default_locale}/{name}.html.
+//! Template lookup order: emails/{locale}/{name}.html -> emails/{default_locale}/{name}.html;
+//! subjects live next to their bodies as `{name}.subject`, with the same fallback.
 //! The caller supplies only the data; this module handles rendering and transport.
 
 #![allow(clippy::too_many_arguments)]
@@ -51,14 +52,14 @@ pub async fn send_verification_email(
     username: &str,
     locale: &str,
     token: &str,
-    public_url: &str,
+    frontend_url: &str,
 ) -> Result<(), AppError> {
     // Use URL fragment (`#token=...`) instead of query string (`?token=...`).
     // Fragments are not sent in the Referer header, not stored in CDN/proxy
     // access logs, and are kept out of most browser-history sync mechanisms,
     // which prevents leaking the single-use verification token.
     // The frontend SPA reads it via `window.location.hash` (not URLSearchParams).
-    let verification_url = format!("{}/verify-email#token={}", public_url, token);
+    let verification_url = format!("{}/verify-email#token={}", frontend_url, token);
 
     let mut ctx = Context::new();
     ctx.insert("username", username);
@@ -73,15 +74,14 @@ pub async fn send_verification_email(
         &mail_cfg.default_locale,
         &ctx,
     )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "Verify your email address",
-        body,
-    )
-    .await
+    let subject = render_subject(
+        templates,
+        TNAME_VERIFICATION,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
 pub async fn send_password_reset_email(
@@ -92,12 +92,12 @@ pub async fn send_password_reset_email(
     username: &str,
     locale: &str,
     token: &str,
-    public_url: &str,
+    frontend_url: &str,
 ) -> Result<(), AppError> {
     // Use URL fragment (`#token=...`) instead of query string (`?token=...`)
     // for the same reasons as `send_verification_email`: fragments stay
     // client-side and avoid Referer / log / history leakage of the reset token.
-    let reset_url = format!("{}/reset-password#token={}", public_url, token);
+    let reset_url = format!("{}/reset-password#token={}", frontend_url, token);
 
     let mut ctx = Context::new();
     ctx.insert("username", username);
@@ -112,15 +112,14 @@ pub async fn send_password_reset_email(
         &mail_cfg.default_locale,
         &ctx,
     )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "Reset your password",
-        body,
-    )
-    .await
+    let subject = render_subject(
+        templates,
+        TNAME_PASSWORD_RESET,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
 pub async fn send_email_change_otp(
@@ -145,15 +144,14 @@ pub async fn send_email_change_otp(
         &mail_cfg.default_locale,
         &ctx,
     )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "Your email change verification code",
-        body,
-    )
-    .await
+    let subject = render_subject(
+        templates,
+        TNAME_EMAIL_CHANGE_OTP,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
 pub async fn send_email_otp(
@@ -178,15 +176,14 @@ pub async fn send_email_otp(
         &mail_cfg.default_locale,
         &ctx,
     )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "Your login verification code",
-        body,
-    )
-    .await
+    let subject = render_subject(
+        templates,
+        TNAME_EMAIL_OTP,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
 pub async fn send_password_changed(
@@ -208,15 +205,14 @@ pub async fn send_password_changed(
         &mail_cfg.default_locale,
         &ctx,
     )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "Your password has been changed",
-        body,
-    )
-    .await
+    let subject = render_subject(
+        templates,
+        TNAME_PASSWORD_CHANGED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
 /// Mask an address for display in a notification: `j***@example.com`.
@@ -251,15 +247,14 @@ pub async fn send_email_changed(
         &mail_cfg.default_locale,
         &ctx,
     )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "Your account email address was changed",
-        body,
-    )
-    .await
+    let subject = render_subject(
+        templates,
+        TNAME_EMAIL_CHANGED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
 pub async fn send_account_exists(
@@ -281,15 +276,14 @@ pub async fn send_account_exists(
         &mail_cfg.default_locale,
         &ctx,
     )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "Someone tried to register with your email address",
-        body,
-    )
-    .await
+    let subject = render_subject(
+        templates,
+        TNAME_ACCOUNT_EXISTS,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
 pub async fn send_two_factor_enabled(
@@ -313,15 +307,14 @@ pub async fn send_two_factor_enabled(
         &mail_cfg.default_locale,
         &ctx,
     )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "Two-factor authentication enabled",
-        body,
-    )
-    .await
+    let subject = render_subject(
+        templates,
+        TNAME_TWO_FACTOR_ENABLED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
 pub async fn send_two_factor_disabled(
@@ -345,15 +338,14 @@ pub async fn send_two_factor_disabled(
         &mail_cfg.default_locale,
         &ctx,
     )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "Two-factor authentication disabled",
-        body,
-    )
-    .await
+    let subject = render_subject(
+        templates,
+        TNAME_TWO_FACTOR_DISABLED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
 pub async fn send_recovery_code_used(
@@ -375,15 +367,14 @@ pub async fn send_recovery_code_used(
         &mail_cfg.default_locale,
         &ctx,
     )?;
-    send(
-        mailer,
-        &mail_cfg.smtp,
-        to_email,
-        username,
-        "A recovery code was used on your account",
-        body,
-    )
-    .await
+    let subject = render_subject(
+        templates,
+        TNAME_RECOVERY_CODE_USED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
 // Tries locale template first, falls back to default_locale.
@@ -401,6 +392,25 @@ fn render_with_fallback(
         .render(&primary, ctx)
         .or_else(|_| templates.render(&fallback, ctx))
         .map_err(|e| AppError::Internal(anyhow::anyhow!("template render error: {}", e)))
+}
+
+/// Subject line of `name`, from `emails/{locale}/{name}.subject` with the same
+/// locale fallback as the body.
+fn render_subject(
+    templates: &Tera,
+    name: &str,
+    locale: &str,
+    default_locale: &str,
+    ctx: &Context,
+) -> Result<String, AppError> {
+    let primary = format!("emails/{locale}/{name}.subject");
+    let fallback = format!("emails/{default_locale}/{name}.subject");
+
+    templates
+        .render(&primary, ctx)
+        .or_else(|_| templates.render(&fallback, ctx))
+        .map(|subject| subject.trim().to_owned())
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("subject render error: {e}")))
 }
 
 async fn send(
@@ -442,7 +452,45 @@ async fn send(
 
 #[cfg(test)]
 mod tests {
-    use super::mask_email;
+    use super::*;
+
+    const ALL_TEMPLATES: [&str; 10] = [
+        TNAME_VERIFICATION,
+        TNAME_EMAIL_CHANGE_OTP,
+        TNAME_PASSWORD_RESET,
+        TNAME_EMAIL_OTP,
+        TNAME_PASSWORD_CHANGED,
+        TNAME_TWO_FACTOR_DISABLED,
+        TNAME_TWO_FACTOR_ENABLED,
+        TNAME_ACCOUNT_EXISTS,
+        TNAME_EMAIL_CHANGED,
+        TNAME_RECOVERY_CODE_USED,
+    ];
+
+    #[test]
+    fn every_email_has_a_subject_in_every_locale() {
+        let mut templates = Tera::new();
+        templates
+            .load_from_glob("templates/**/*")
+            .expect("templates load");
+        let ctx = Context::new();
+
+        for name in ALL_TEMPLATES {
+            for locale in ["en", "fr"] {
+                let subject = templates
+                    .render(&format!("emails/{locale}/{name}.subject"), &ctx)
+                    .unwrap_or_else(|e| panic!("{locale}/{name}.subject: {e}"));
+                assert!(
+                    !subject.trim().is_empty(),
+                    "{locale}/{name}.subject is empty"
+                );
+                assert!(
+                    !subject.trim().contains('\n'),
+                    "{locale}/{name}.subject spans lines"
+                );
+            }
+        }
+    }
 
     #[test]
     fn mask_email_keeps_only_the_first_character_and_domain() {

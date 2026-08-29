@@ -96,7 +96,7 @@ pub async fn register(
     let username = username.to_string();
     let locale = locale.to_string();
     let raw_token = raw_token.clone();
-    let public_url = state.config.server.public_url.clone();
+    let frontend_url = state.config.server.frontend_url.clone();
     email::dispatch_best_effort("verification_email", async move {
         email::send_verification_email(
             &mailer,
@@ -106,7 +106,7 @@ pub async fn register(
             &username,
             &locale,
             &raw_token,
-            &public_url,
+            &frontend_url,
         )
         .await
     });

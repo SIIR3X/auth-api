@@ -18,7 +18,7 @@ use jsonwebtoken::{DecodingKey, EncodingKey};
 use crate::{
     config::{CaptchaConfig, Config, ConfigError, DatabaseConfig, MailConfig, SmtpConfig},
     utils::{
-        jwt,
+        crypto, jwt,
         redis_pool::{self, RedisPool},
     },
 };
@@ -58,6 +58,8 @@ pub struct AppState {
     pub mailer: Mailer,
     pub http_client: Client,
     pub templates: Arc<Tera>,
+    /// Keys for secrets encrypted at rest (TOTP seeds), decoded once.
+    pub keyring: Arc<crypto::Keyring>,
     pub config: Arc<Config>,
     pub jwt_signing_key: EncodingKey,
     pub jwt_verifying_key: DecodingKey,
@@ -108,6 +110,17 @@ impl AppState {
         let http_client = build_http_client(&config.captcha)?;
         let templates = Arc::new(build_templates(&config.mail)?);
         let jwt_keys = parse_jwt_keys(&config)?;
+        let keyring = crypto::Keyring::from_base64(
+            &config.crypto.encryption_key,
+            config.crypto.previous_encryption_key.as_deref(),
+        )
+        .map(Arc::new)
+        .map_err(|e| {
+            AppStateError::Config(ConfigError::Invalid {
+                key: "ENCRYPTION_KEY".into(),
+                reason: e.to_string(),
+            })
+        })?;
 
         Ok(Self {
             db,
@@ -116,6 +129,7 @@ impl AppState {
             mailer,
             http_client,
             templates,
+            keyring,
             jwt_signing_key: jwt_keys.signing_key,
             jwt_verifying_key: jwt_keys.verifying_key,
             jwt_previous_verifying_key: jwt_keys.previous_verifying_key,

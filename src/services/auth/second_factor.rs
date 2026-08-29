@@ -71,9 +71,6 @@ pub async fn complete_two_factor_login(
         .filter(|m| m.method_type == crate::domain::two_factor::TwoFactorType::Totp)
         .ok_or(AppError::TokenInvalid)?;
 
-    let enc_key = crypto::decode_encryption_key(&state.config.crypto.encryption_key)
-        .map_err(|e| AppError::Internal(e.into()))?;
-
     let encrypted_secret = method
         .totp_secret
         .as_deref()
@@ -82,7 +79,7 @@ pub async fn complete_two_factor_login(
     let valid = totp::verify_code(
         encrypted_secret,
         code,
-        &enc_key,
+        &state.keyring,
         state.config.crypto.totp_skew,
     )
     .map_err(|e| AppError::Internal(e.into()))?;

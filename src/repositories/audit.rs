@@ -7,6 +7,7 @@ use ipnetwork::IpNetwork;
 
 use serde_json::Value as JsonValue;
 use sqlx::{PgExecutor, PgPool};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditLog};
@@ -42,6 +43,46 @@ pub async fn append<'e>(
 }
 
 // Reads
+
+/// One page of a user's history, newest first: rows strictly older than
+/// `before` (`created_at`, `id`) when given. Keyset pagination keeps a page as
+/// cheap at the end of a long history as at its start, and a row written while
+/// someone pages cannot shift the next page.
+pub async fn find_page_by_user(
+    pool: &PgPool,
+    user_id: Uuid,
+    before: Option<(OffsetDateTime, Uuid)>,
+    limit: i64,
+) -> Result<Vec<AuditLog>, sqlx::Error> {
+    match before {
+        None => {
+            sqlx::query_as::<_, AuditLog>(
+                "SELECT * FROM audit_log
+                 WHERE user_id = $1
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT $2",
+            )
+            .bind(user_id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+        }
+        Some((created_at, id)) => {
+            sqlx::query_as::<_, AuditLog>(
+                "SELECT * FROM audit_log
+                 WHERE user_id = $1 AND (created_at, id) < ($2, $3)
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT $4",
+            )
+            .bind(user_id)
+            .bind(created_at)
+            .bind(id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+        }
+    }
+}
 
 pub async fn find_by_user(
     pool: &PgPool,

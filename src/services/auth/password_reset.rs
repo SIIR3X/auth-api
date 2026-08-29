@@ -91,7 +91,7 @@ pub(super) async fn issue_password_reset(
     let username = user.username.clone();
     let locale = user.preferred_locale.clone();
     let raw_token = raw_token.clone();
-    let public_url = state.config.server.public_url.clone();
+    let frontend_url = state.config.server.frontend_url.clone();
     email::dispatch_best_effort("password_reset_email", async move {
         email::send_password_reset_email(
             &mailer,
@@ -101,7 +101,7 @@ pub(super) async fn issue_password_reset(
             &username,
             &locale,
             &raw_token,
-            &public_url,
+            &frontend_url,
         )
         .await
     });

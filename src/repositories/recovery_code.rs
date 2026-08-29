@@ -123,6 +123,17 @@ pub async fn find_unused_by_user(
     .await
 }
 
+/// Codes still spendable: unused and not expired.
+pub async fn count_usable_by_user(pool: &PgPool, user_id: Uuid) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM recovery_codes
+         WHERE user_id = $1 AND used_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+}
+
 /// Finds a still-usable code (unused, not expired) by its hash.
 ///
 /// Expiry belongs in the predicate: a batch issued with a lifetime only has one

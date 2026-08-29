@@ -43,6 +43,7 @@ async fn security_headers_enable_hsts_for_https_production() {
     let app = TestApp::spawn_with_config(|config| {
         config.env = Environment::Production;
         config.server.public_url = "https://api.example.com".into();
+        config.server.frontend_url = "https://app.example.com".into();
         config.cors.allowed_origins = vec!["https://app.example.com".into()];
         config.cors.allow_credentials = true;
         // Production validation requires non-empty SMTP credentials and CAPTCHA secret.

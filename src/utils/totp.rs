@@ -7,7 +7,7 @@
 
 use totp_rs::{Algorithm, Secret, TOTP};
 
-use crate::utils::crypto::{self, CryptoError};
+use crate::utils::crypto::{CryptoError, Keyring};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TotpError {
@@ -41,10 +41,10 @@ pub fn qr_uri(base32_secret: &str, email: &str, issuer: &str) -> String {
 pub fn verify_code(
     encrypted_secret: &str,
     code: &str,
-    key: &[u8; 32],
+    keyring: &Keyring,
     skew: u8,
 ) -> Result<bool, TotpError> {
-    let plaintext = crypto::decrypt(encrypted_secret, key)?;
+    let plaintext = keyring.decrypt(encrypted_secret)?;
 
     let secret_bytes = Secret::Encoded(plaintext)
         .to_bytes()
@@ -77,6 +77,10 @@ fn percent_encode(input: &str) -> String {
 mod tests {
     use super::*;
     use crate::utils::crypto;
+
+    fn keyring() -> Keyring {
+        Keyring::new(*KEY, None)
+    }
     use totp_rs::{Algorithm, Secret, TOTP};
 
     const KEY: &[u8; 32] = &[7u8; 32];
@@ -117,14 +121,14 @@ mod tests {
         let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes).unwrap();
         let code = totp.generate_current().unwrap();
 
-        assert!(verify_code(&encrypted, &code, KEY, 1).unwrap());
+        assert!(verify_code(&encrypted, &code, &keyring(), 1).unwrap());
     }
 
     #[test]
     fn verify_wrong_code_returns_false() {
         let secret_b32 = generate_secret();
         let encrypted = crypto::encrypt(&secret_b32, KEY).unwrap();
-        assert!(!verify_code(&encrypted, "000000", KEY, 1).unwrap());
+        assert!(!verify_code(&encrypted, "000000", &keyring(), 1).unwrap());
     }
 
     #[test]
@@ -132,6 +136,6 @@ mod tests {
         let secret_b32 = generate_secret();
         let encrypted = crypto::encrypt(&secret_b32, KEY).unwrap();
         let wrong_key = &[99u8; 32];
-        assert!(verify_code(&encrypted, "123456", wrong_key, 1).is_err());
+        assert!(verify_code(&encrypted, "123456", &Keyring::new(*wrong_key, None), 1).is_err());
     }
 }

@@ -92,8 +92,10 @@ fn pre_auth_benches(c: &mut Criterion) {
 fn totp_benches(c: &mut Criterion) {
     let mut group = c.benchmark_group("totp");
     let secret = totp::generate_secret();
-    let encryption_key = [7u8; 32];
-    let encrypted = auth_api::utils::crypto::encrypt(&secret, &encryption_key)
+    // The production path: a keyring and a versioned ciphertext.
+    let keyring = auth_api::utils::crypto::Keyring::new([7u8; 32], None);
+    let encrypted = keyring
+        .encrypt(&secret)
         .expect("failed to encrypt benchmark secret");
     let secret_bytes = Secret::Encoded(secret.clone())
         .to_bytes()
@@ -116,7 +118,7 @@ fn totp_benches(c: &mut Criterion) {
             totp::verify_code(
                 black_box(&encrypted),
                 black_box(&code),
-                black_box(&encryption_key),
+                black_box(&keyring),
                 1,
             )
             .expect("verify")

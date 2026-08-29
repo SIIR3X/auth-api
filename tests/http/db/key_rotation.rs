@@ -99,7 +99,9 @@ async fn rotate_re_encrypts_totp_secret_with_new_key() {
     .expect("no TOTP method found");
 
     // Confirm it decrypts under KEY_A.
-    let plaintext = crypto::decrypt(&before, &key_a).expect("must decrypt under KEY_A");
+    let plaintext = crypto::Keyring::new(key_a, None)
+        .decrypt(&before)
+        .expect("must decrypt under KEY_A");
 
     // Rotate KEY_A --> KEY_B on the same isolated DB via a shared-pool state.
     let rot_state = rotation_state(&app, KEY_B, KEY_A).await;
@@ -122,14 +124,16 @@ async fn rotate_re_encrypts_totp_secret_with_new_key() {
 
     assert_ne!(before, after, "secret must change after rotation");
 
-    let rotated_plaintext = crypto::decrypt(&after, &key_b).expect("must decrypt under KEY_B");
+    let rotated_plaintext = crypto::Keyring::new(key_b, None)
+        .decrypt(&after)
+        .expect("must decrypt under KEY_B");
     assert_eq!(plaintext, rotated_plaintext, "plaintext must be preserved");
 }
 
 #[tokio::test]
 async fn rotate_is_idempotent_when_run_twice() {
     // First run: A --> B (rotated=1, failed=0).
-    // Second run: A --> B again, data already under B --> re_encrypt fails per method.
+    // Second run: A --> B again, the secret is already under B and is skipped.
     let app = TestApp::spawn_with_config(|c| {
         c.crypto.encryption_key = KEY_A.into();
     })
@@ -151,11 +155,75 @@ async fn rotate_is_idempotent_when_run_twice() {
     assert_eq!(first.rotated, 1);
     assert_eq!(first.failed, 0);
 
-    // Second run with the same config: data is under B, decrypt with A fails.
+    // An interrupted rotation is simply run again: finished rows are skipped.
     let second = rotate_totp_encryption_key(&rot_state).await.unwrap();
-    assert_eq!(second.rotated, 0);
     assert_eq!(
-        second.failed, 1,
-        "re-running same rotation must fail per-method"
+        (second.rotated, second.skipped, second.failed),
+        (0, 1, 0),
+        "a second run must find nothing left to rotate"
     );
+}
+
+#[tokio::test]
+async fn rotate_upgrades_secrets_written_before_ciphertexts_were_versioned() {
+    use auth_api::utils::crypto;
+
+    let key_a = crypto::decode_encryption_key(KEY_A).unwrap();
+    let key_b = crypto::decode_encryption_key(KEY_B).unwrap();
+
+    let app = TestApp::spawn_with_config(|c| {
+        c.crypto.encryption_key = KEY_A.into();
+    })
+    .await;
+    let user = fixtures::authenticated_user(&app, 902).await;
+    let setup_res = app
+        .post_auth(
+            "/users/me/two-factor/totp/setup",
+            &user.access_token,
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(setup_res.status().as_u16(), 200);
+
+    // Put the secret back in the pre-versioning format: bare base64, no key id.
+    let stored: String = sqlx::query_scalar(
+        "SELECT totp_secret FROM two_factor_methods WHERE user_id = $1 AND method_type = 'totp'",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    let plaintext = crypto::Keyring::new(key_a, None).decrypt(&stored).unwrap();
+    let legacy = crypto::encrypt(&plaintext, &key_a).unwrap();
+    sqlx::query("UPDATE two_factor_methods SET totp_secret = $1 WHERE user_id = $2")
+        .bind(&legacy)
+        .bind(user.id)
+        .execute(&app.db)
+        .await
+        .unwrap();
+
+    let rot_state = rotation_state(&app, KEY_B, KEY_A).await;
+    let result = rotate_totp_encryption_key(&rot_state).await.unwrap();
+    assert_eq!((result.rotated, result.failed), (1, 0));
+
+    let after: String = sqlx::query_scalar(
+        "SELECT totp_secret FROM two_factor_methods WHERE user_id = $1 AND method_type = 'totp'",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert!(after.starts_with("v1:"), "rotated secrets are versioned");
+    assert_eq!(
+        crypto::Keyring::new(key_b, None).decrypt(&after).unwrap(),
+        plaintext
+    );
+
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'encryption_key_rotated'",
+    )
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1, "a rotation is audited under its own action");
 }

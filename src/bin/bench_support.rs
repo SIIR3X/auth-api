@@ -324,6 +324,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             host: "127.0.0.1".into(),
             port: 0,
             public_url: "http://localhost".into(),
+            frontend_url: "http://localhost".into(),
             trusted_proxy_cidrs: Vec::new(),
         },
         database: DatabaseConfig {

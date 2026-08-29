@@ -14,7 +14,10 @@ use uuid::Uuid;
 use deadpool_redis::redis::AsyncCommands;
 
 use crate::{
-    domain::{audit::AuditAction, two_factor::TwoFactorType},
+    domain::{
+        audit::AuditAction,
+        two_factor::{TwoFactorMethod, TwoFactorType},
+    },
     error::AppError,
     repositories::{
         audit::{self, NewAuditEntry},
@@ -144,17 +147,16 @@ pub async fn setup_totp(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
-    let enc_key = crypto::decode_encryption_key(&state.config.crypto.encryption_key)
-        .map_err(|e| AppError::Internal(e.into()))?;
-
     let base32_secret = totp::generate_secret();
     let qr_uri = totp::qr_uri(
         &base32_secret,
         &user.email,
         &state.config.crypto.totp_issuer,
     );
-    let encrypted =
-        crypto::encrypt(&base32_secret, &enc_key).map_err(|e| AppError::Internal(e.into()))?;
+    let encrypted = state
+        .keyring
+        .encrypt(&base32_secret)
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     let method = create_or_restart_method(
         state,
@@ -192,14 +194,11 @@ pub async fn verify_setup(
         return Err(AppError::Conflict("already_verified"));
     }
 
-    let enc_key = crypto::decode_encryption_key(&state.config.crypto.encryption_key)
-        .map_err(|e| AppError::Internal(e.into()))?;
-
     let encrypted_secret = method.totp_secret.as_deref().ok_or(AppError::NotFound)?;
     let valid = totp::verify_code(
         encrypted_secret,
         code,
-        &enc_key,
+        &state.keyring,
         state.config.crypto.totp_skew,
     )
     .map_err(|e| AppError::Internal(e.into()))?;
@@ -481,4 +480,16 @@ pub(crate) async fn disable_method(
 
     notify_two_factor_change(state, &user, label, false);
     Ok(())
+}
+
+/// The account's second factors, and how many recovery codes remain spendable.
+pub async fn list_methods(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<(Vec<TwoFactorMethod>, i64), AppError> {
+    tokio::try_join!(
+        tf_repo::find_by_user(&state.db, user_id),
+        recovery_code::count_usable_by_user(&state.db, user_id),
+    )
+    .map_err(|e| AppError::Internal(e.into()))
 }

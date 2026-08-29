@@ -399,6 +399,7 @@ fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             host: "127.0.0.1".into(),
             port: 0,
             public_url: "http://localhost".into(),
+            frontend_url: "http://localhost".into(),
             // The test client talks to the server over loopback and forwards a
             // per-app address in X-Forwarded-For (see `TestApp::client_ip`).
             trusted_proxy_cidrs: vec!["127.0.0.1/32".parse().unwrap()],

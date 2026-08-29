@@ -16,6 +16,7 @@ fn valid_config() -> Config {
             host: "127.0.0.1".into(),
             port: 3000,
             public_url: "https://api.example.com".into(),
+            frontend_url: "https://api.example.com".into(),
             trusted_proxy_cidrs: vec!["10.0.0.0/8".parse().unwrap()],
         },
         database: DatabaseConfig {
@@ -628,4 +629,14 @@ fn ensure_self_in_audience_is_idempotent() {
 
     let own = config.server.public_url.clone();
     assert_eq!(config.jwt.audience.iter().filter(|a| **a == own).count(), 1);
+}
+
+#[test]
+fn validate_rejects_non_https_frontend_url_in_production() {
+    let mut config = valid_config();
+    config.server.frontend_url = "http://app.example.com".into();
+
+    let err = config.validate().unwrap_err();
+
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "FRONTEND_URL"));
 }

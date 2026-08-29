@@ -35,6 +35,7 @@ impl Config {
             }
 
             validate_https_url("APP_PUBLIC_URL", &self.server.public_url)?;
+            validate_https_url("FRONTEND_URL", &self.server.frontend_url)?;
 
             // TLS terminates at a reverse proxy in production. With no trusted
             // CIDR every request resolves to the proxy's address: one rate-limit

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
+    domain::two_factor::TwoFactorType,
     error::AppError,
     services::{email_2fa as email_2fa_svc, two_factor as tf_svc},
     state::AppState,
@@ -229,4 +230,56 @@ pub async fn disable_email_otp(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// Overview
+
+#[derive(Serialize)]
+pub struct TwoFactorMethodResponse {
+    pub id: Uuid,
+    /// `totp` or `email`.
+    pub method_type: &'static str,
+    pub is_verified: bool,
+    pub is_primary: bool,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct TwoFactorOverviewResponse {
+    pub methods: Vec<TwoFactorMethodResponse>,
+    /// Unused and unexpired. Zero next to a verified method is worth showing:
+    /// losing the device would then lock the account.
+    pub recovery_codes_remaining: i64,
+}
+
+/// GET /users/me/two-factor
+///
+/// What the account has set up. The disable routes need a method id that only
+/// the setup call returned: without this, a refreshed page could not turn its
+/// own second factor off.
+pub async fn list(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<TwoFactorOverviewResponse>, AppError> {
+    let (methods, recovery_codes_remaining) = tf_svc::list_methods(&state, auth.user_id).await?;
+
+    Ok(Json(TwoFactorOverviewResponse {
+        methods: methods
+            .into_iter()
+            .map(|method| TwoFactorMethodResponse {
+                id: method.id,
+                method_type: match method.method_type {
+                    TwoFactorType::Totp => "totp",
+                    TwoFactorType::Email => "email",
+                },
+                is_verified: method.is_verified,
+                is_primary: method.is_primary,
+                created_at: method.created_at.unix_timestamp(),
+                last_used_at: method.last_used_at.map(|at| at.unix_timestamp()),
+            })
+            .collect(),
+        recovery_codes_remaining,
+    }))
 }

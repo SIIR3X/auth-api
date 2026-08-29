@@ -40,6 +40,7 @@ pub enum AuditAction {
     UsernameChanged,
     RecoveryCodeUsed,
     EmailChanged,
+    EncryptionKeyRotated,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

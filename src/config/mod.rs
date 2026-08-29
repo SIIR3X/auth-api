@@ -48,8 +48,13 @@ impl FromStr for Environment {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
-    /// Public-facing base URL used to build links in emails (e.g. "https://api.example.com").
+    /// Public base URL of this API (e.g. "https://api.example.com"): token
+    /// issuer, audience, and the JWKS location.
     pub public_url: String,
+    /// Base URL of the web application whose pages emails link to
+    /// (`/verify-email`, `/reset-password`). `FRONTEND_URL`, defaulting to
+    /// `APP_PUBLIC_URL` when the API and the application share an origin.
+    pub frontend_url: String,
     /// Reverse-proxy CIDRs allowed to supply X-Forwarded-For / X-Real-IP.
     /// Requests coming from other peers use the socket address directly.
     pub trusted_proxy_cidrs: Vec<IpNetwork>,
@@ -310,6 +315,11 @@ impl Config {
                 port: env_parse("SERVER_PORT")?.unwrap_or(3000u16),
                 public_url: env_string("APP_PUBLIC_URL")
                     .unwrap_or_else(|| "http://localhost:3000".into()),
+                frontend_url: env_string("FRONTEND_URL")
+                    .or_else(|| env_string("APP_PUBLIC_URL"))
+                    .unwrap_or_else(|| "http://localhost:3000".into())
+                    .trim_end_matches('/')
+                    .to_owned(),
                 trusted_proxy_cidrs: env_ip_network_list("TRUSTED_PROXY_CIDRS")?,
             },
             database: DatabaseConfig {
