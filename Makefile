@@ -123,6 +123,15 @@ bench-sql: test-infra-up ## Run SQL integration benchmarks
 	cargo run --release --bin bench_sql; \
 	EXIT=$$?; $(MAKE) test-infra-down; exit $$EXIT
 
+.PHONY: perf
+perf: ## Run the performance campaign: data volume x load (hours, see perf/README.md)
+	perf/run.sh
+
+.PHONY: perf-report
+perf-report: ## Tables and charts of a campaign into docs/perf (RUN=reports/perf/<run>)
+	@test -n "$(RUN)" || { echo "usage: make perf-report RUN=reports/perf/<run>"; exit 1; }
+	python3 perf/report.py $(RUN) docs/perf
+
 # =============================================================================
 # Build
 # =============================================================================

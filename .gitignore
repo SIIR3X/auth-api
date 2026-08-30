@@ -9,3 +9,4 @@ docs/report/*
 !docs/report/*.tex
 !docs/report/*.pdf
 dist/
+__pycache__/
