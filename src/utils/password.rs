@@ -140,6 +140,47 @@ fn record_argon2_permits(semaphore: &Semaphore) {
     metrics::gauge!("argon2_queue_available_permits").set(semaphore.available_permits() as f64);
 }
 
+/// Log the Argon2 capacity at startup, and warn when the container's memory
+/// limit cannot hold every concurrent hash beside the rest of the process.
+///
+/// Sign-ins are the first thing to saturate (about 11-13 per second per core
+/// with the production parameters, see docs/perf/performance-report.md), so
+/// the operator should see the bound the process actually runs with.
+pub fn log_capacity(cfg: &CryptoConfig) {
+    let concurrency = u64::from(cfg.argon2_max_concurrency.max(1));
+    let per_hash_mib = u64::from(cfg.argon2_memory_kib) / 1024;
+    let budget_mib = concurrency * per_hash_mib;
+    tracing::info!(
+        concurrency,
+        per_hash_mib,
+        budget_mib,
+        "argon2: at most {concurrency} concurrent hashes"
+    );
+    if let Some(limit_mib) = cgroup_memory_limit_mib()
+        && limit_mib < budget_mib + BASELINE_MIB
+    {
+        tracing::warn!(
+            limit_mib,
+            budget_mib,
+            "memory limit leaves less than {BASELINE_MIB} MiB beside the Argon2 budget: \
+             lower ARGON2_MAX_CONCURRENCY or raise the limit"
+        );
+    }
+}
+
+/// Memory the process needs besides Argon2 (pools, caches, runtime).
+const BASELINE_MIB: u64 = 256;
+
+/// The cgroup v2 memory limit, when the process runs under one.
+fn cgroup_memory_limit_mib() -> Option<u64> {
+    std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|bytes| bytes / 1024 / 1024)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

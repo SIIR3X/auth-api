@@ -19,6 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env().expect("failed to load config");
 
     init_tracing(&config.log);
+    auth_api::utils::password::log_capacity(&config.crypto);
 
     // One-off command: re-encrypt all TOTP secrets with the new key.
     // Set PREVIOUS_ENCRYPTION_KEY=<old> ENCRYPTION_KEY=<new>, run, then remove PREVIOUS_ENCRYPTION_KEY.

@@ -190,6 +190,42 @@ DATABASE_URL=$(pass prod/auth-api/database-url) \
   sqlx migrate run --source /srv/auth-api/releases/auth-api-X.Y.Z/migrations
 ```
 
+---
+
+### 2.6 Size PostgreSQL's memory
+
+Reads barely notice the number of accounts. Writes do, once the indexes they
+update no longer fit in memory: at 1 million accounts the sign-in transaction
+lost 25 to 35 % of its throughput in the performance campaign. Give PostgreSQL
+enough memory to keep those indexes cached:
+
+| Accounts | Database | Indexes updated by sign-ins and refreshes | RAM for PostgreSQL |
+|---------:|---------:|------------------------------------------:|-------------------:|
+| 100 000 | 1.3 GB | 0.6 GB | 2 GB |
+| 1 000 000 | 10.5 GB | 4 GB | 8 GB |
+| more | ~10 KB per account | ~4 KB per account | index size x 2 |
+
+**On the DB VPS**, in `postgresql.conf`, for R GB of RAM dedicated to PostgreSQL:
+
+```conf
+shared_buffers = <R / 4>GB
+effective_cache_size = <R * 3 / 4>GB
+random_page_cost = 1.1        # SSD
+max_wal_size = 4GB
+```
+
+The two largest tables grow with retention, not with accounts alone:
+`login_attempts` keeps `CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS` days (90) and the
+audit log `AUDIT_LOG_RETENTION_MONTHS` months (12). Shortening them shrinks
+the tables and their indexes in proportion.
+
+Check whether reads are served from memory (above 0.99 is healthy):
+
+```sql
+SELECT round(blks_hit::numeric / nullif(blks_hit + blks_read, 0), 4) AS cache_hit_ratio
+FROM pg_stat_database WHERE datname = 'auth_api';
+```
+
 ## 3. Redis
 
 **On the DB VPS** - install Redis:

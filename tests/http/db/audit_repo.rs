@@ -3,8 +3,8 @@
 //! Tests index range 940-949.
 //!
 //! `append` is exercised by every HTTP integration test that triggers an
-//! auditable action; these tests cover the three read paths that are not
-//! reached via the HTTP layer.
+//! auditable action; these tests cover the read paths that are not reached
+//! via the HTTP layer.
 
 use auth_api::{
     domain::audit::AuditAction,
@@ -98,45 +98,5 @@ async fn find_by_user_respects_limit_and_offset() {
         page2.len(),
         total - 3,
         "page2 must have the remaining entries"
-    );
-}
-
-// find_by_request_id
-
-#[tokio::test]
-async fn find_by_request_id_returns_all_events_for_request() {
-    let app = TestApp::spawn().await;
-
-    let req_id = Uuid::new_v4();
-    let other_req = Uuid::new_v4();
-
-    // user_id=None is allowed (no FK constraint when NULL)
-    append_entry(&app, None, AuditAction::Login, Some(req_id)).await;
-    append_entry(&app, None, AuditAction::TwoFactorVerified, Some(req_id)).await;
-    append_entry(&app, None, AuditAction::Login, Some(other_req)).await;
-
-    let entries = audit::find_by_request_id(&app.db, req_id)
-        .await
-        .expect("find_by_request_id failed");
-
-    assert_eq!(
-        entries.len(),
-        2,
-        "must return exactly the 2 entries for this request_id"
-    );
-    assert!(entries.iter().all(|e| e.request_id == Some(req_id)));
-}
-
-#[tokio::test]
-async fn find_by_request_id_returns_empty_for_unknown_id() {
-    let app = TestApp::spawn().await;
-
-    let entries = audit::find_by_request_id(&app.db, Uuid::new_v4())
-        .await
-        .expect("find_by_request_id failed");
-
-    assert!(
-        entries.is_empty(),
-        "unknown request_id must return empty list"
     );
 }

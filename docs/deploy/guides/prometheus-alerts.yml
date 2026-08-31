@@ -38,18 +38,32 @@ groups:
             usual suspects - see the operations runbook.
 
       - alert: AuthApiArgon2Saturated
-        # Sustained zero available permits means logins/registrations are
-        # queueing behind the Argon2 concurrency bound (see "Measured
-        # Capacity" in the runbook): scale cores or raise the bound.
-        expr: argon2_queue_available_permits == 0
-        for: 5m
+        # Not a single free Argon2 slot for 5 minutes: sign-ins and
+        # registrations are queueing. Measured capacity is about 11-13
+        # sign-ins per second per API core (docs/perf/performance-report.md);
+        # beyond it, latency grows with the queue (8 s at 256 concurrent
+        # sign-ins on 3 cores). Add an instance or cores.
+        expr: max_over_time(argon2_queue_available_permits[5m]) == 0
+        for: 1m
         labels:
           severity: warning
         annotations:
-          summary: "Argon2 concurrency bound saturated for 5 minutes"
+          summary: "Argon2 saturated: sign-ins are queueing"
           description: >-
-            Credential operations are queueing. Sustained saturation degrades
-            login latency far beyond the deliberate Argon2 cost.
+            Every Argon2 slot stayed busy for 5 minutes. Each queued sign-in
+            waits for the ones ahead of it; scale out the API (each core adds
+            about 12 sign-ins per second and needs ARGON2_MEMORY_KIB of RAM).
+
+      - alert: AuthApiArgon2SaturatedLong
+        expr: max_over_time(argon2_queue_available_permits[15m]) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Argon2 saturated for 15 minutes"
+          description: >-
+            Sign-in latency is now measured in seconds for every user. Scale
+            out immediately; see "Capacity Planning" in the operations runbook.
 
       - alert: AuthApiSlowTokenPaths
         # Non-credential paths (refresh, profile) are single-digit ms; a slow

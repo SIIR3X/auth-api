@@ -36,6 +36,7 @@ fn migrations_are_sorted_and_contiguous() {
         "0023_authorization_codes.sql",
         "0024_query_performance.sql",
         "0025_encryption_key_rotated.sql",
+        "0026_bounded_cleanups.sql",
     ];
 
     assert_eq!(names, expected);

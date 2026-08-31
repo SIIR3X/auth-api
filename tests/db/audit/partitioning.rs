@@ -184,8 +184,10 @@ fn audit_log_rotation_can_drop_old_partition() {
     assert!(!exists_after);
 }
 
+/// No route searches the audit log by request id: the index cost every insert
+/// 755 MB at 1 million accounts for nothing (migration 0026).
 #[test]
-fn audit_log_request_index_exists() {
+fn audit_log_request_index_is_dropped() {
     let Some(mut db) = TestDatabase::new() else {
         return;
     };
@@ -199,7 +201,7 @@ fn audit_log_request_index_exists() {
         .expect("failed to check request_id index")
         .get::<_, bool>(0);
 
-    assert!(exists);
+    assert!(!exists);
 }
 
 #[test]

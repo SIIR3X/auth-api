@@ -108,11 +108,21 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   limiter is O(1) and checks every bucket in one script; token checks read the
   blocklist and session cache in one pipeline. Profile reads went from 1.05 ms to
   0.71 ms at p50 in the HTTP benchmark.
+- Retention batches select their rows through a TID scan (migration 0026):
+  a session purge batch at 1 million accounts went from 950 ms (the old query
+  gathered the whole backlog) to about 20 ms.
+- Indexes no query uses are dropped: `idx_sessions_family_active` and the
+  audit log's request id index (755 MB at 1 million accounts); the internal
+  `audit::find_by_request_id`, which no route called, is removed.
+- The audit history page skips the empty partitions created for future months.
+- The API logs its Argon2 capacity at startup and warns when the container
+  memory limit cannot hold it; Argon2 saturation alerts at 5 and 15 minutes.
+- Measurement campaign and report: `make perf`, `docs/perf/performance-report.md`.
 
 ### Upgrading
 
 1. Back up the database.
-2. Run migrations 0020 to 0025. Migration 0024 builds indexes in a transaction:
+2. Run migrations 0020 to 0026. Migration 0024 builds indexes in a transaction:
    on large tables, create them `CONCURRENTLY` by hand first (the migration then
    skips them).
 3. Set `APP_ENV`, `FRONTEND_URL`, `DEVICE_AUTH_VERIFICATION_URI` and

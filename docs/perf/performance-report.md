@@ -1,7 +1,9 @@
 # Rapport de performance - base de données et API
 
 Campagne du 15 septembre 2026, commit `3ac984d`. Données brutes :
-[`data.md`](data.md) ; protocole et limites plus bas.
+[`data.md`](data.md) ; protocole et limites plus bas. Les recommandations ont
+été appliquées et mesurées à nouveau : voir la
+[section 6](#6-suite-donnée-aux-recommandations).
 
 ## Résumé
 
@@ -398,6 +400,61 @@ Par ordre d'impact :
    à `created_at <= now()` permettrait de les écarter. Le refresh, limité par
    PostgreSQL, garde une marge de ×90 sur l'hypothèse de trafic : inutile de
    l'optimiser pour l'instant.
+
+## 6. Suite donnée aux recommandations
+
+Toutes les recommandations ont été appliquées (migration `0026_bounded_cleanups`,
+code, supervision et documentation), puis mesurées sur la même base de
+1 million de comptes, avant et après, dans les mêmes conditions. Les écritures
+ont été mesurées deux fois de chaque côté : les fourchettes montrent l'écart
+entre les deux passes.
+
+| # | Recommandation | Ce qui a été fait | Avant | Après |
+|---|----------------|-------------------|------:|------:|
+| 1 | Dimensionner l'API sur les connexions | Guide « Capacity Planning » dans le runbook d'exploitation ; l'API journalise son budget Argon2 au démarrage et avertit si la limite mémoire du conteneur ne le couvre pas | - | Documenté |
+| 2 | Surveiller la saturation d'Argon2 | Deux alertes : aucun créneau libre pendant 5 minutes (avertissement) et 15 minutes (critique) | 1 alerte à 5 min | 2 niveaux |
+| 3 | Borner la purge des sessions | Expirées puis révoquées en deux suppressions bornées ; toutes les purges passent par un parcours de TID (`ctid = ANY (ARRAY(...))`) | 750-820 ms par lot | **24-27 ms par lot** |
+| 4 | Supprimer `idx_sessions_family_active` | Supprimé | 118 Mo | 0 |
+| 5 | Index `request_id` de l'audit | Supprimé, avec la fonction `audit::find_by_request_id` qu'aucune route n'appelait | 755 Mo | 0 |
+| 6 | Mémoire de PostgreSQL au-delà du million | Section « Size PostgreSQL's memory » du guide de déploiement de la base : tailles par volume, réglages, requête de contrôle | - | Documenté |
+| 7 | BRIN après un import | Procédure « Bulk Imports » (contrôle de corrélation, `CLUSTER`), vérifiée sur la base de test | lot vide : 0,9-3,6 s | **lot vide : 0,2-1,7 ms** |
+| 8 | Page d'historique bornée à `created_at <= NOW()` | Requête bornée : les 12 partitions futures sont écartées à l'exécution | 14 partitions lues | 2 partitions + défaut |
+| 9 | Refresh | Aucune action (marge ×90) | - | - |
+
+Effets mesurés à 1 million de comptes :
+
+| Mesure | Avant | Après | Lecture |
+|--------|------:|------:|---------|
+| Taille de la base | 10 910 Mo | 10 123 Mo | -787 Mo d'index |
+| Index de `audit_log` | 2 371 Mo | 1 632 Mo | -31 % |
+| Lot de purge des sessions | 750-820 ms | 24-27 ms | ×30 ; le plan ne rassemble plus les 4,9 millions de candidats (113 Mo écrits sur disque avant) |
+| Lot vide de purge des tentatives, table ordonnée | 0,9-3,6 s | 0,2-1,7 ms | `CLUSTER` de 10 millions de lignes en 31 s ; corrélation -0,04 → 1 |
+| Transaction de connexion, 1 connexion | 424-441 tx/s | 342-472 tx/s | dans le bruit |
+| Transaction de connexion, 8 connexions | 1 382-1 888 tx/s | 2 118-2 499 tx/s | meilleure |
+| Transaction de connexion, 32 connexions | 4 868-5 387 tx/s | 5 064-5 380 tx/s | dans le bruit |
+| Taux de cache pendant ces écritures | 0,88-0,97 | 0,92-1,00 | moins d'index à garder en mémoire |
+| Page d'historique, 1 connexion, cache chaud | - | 4 777-4 802 req/s, p50 0,21 ms | niveau de 10 000 comptes |
+| Page d'historique, 8 connexions | 17 878 req/s | 17 730 req/s | identique |
+
+Ce que ces chiffres disent :
+
+- **La purge était le vrai problème**, et il était plus grave que prévu : ce n'était
+  pas seulement l'`UNION`, mais le motif `ctid IN (SELECT ... LIMIT)` qui agrégeait
+  tous les candidats avant d'en garder 5 000. Résorber un arriéré de 3 millions de
+  sessions prend désormais environ 15 secondes au lieu de plus de 7 minutes.
+- **Supprimer les deux index** libère 787 Mo et améliore le taux de cache des
+  écritures. Le débit de la transaction de connexion ne progresse clairement qu'à
+  8 connexions : à 1 et 32 connexions, l'écart reste dans la variation entre deux
+  passes. Le gain principal est la place et la marge mémoire, pas le débit.
+- **La borne de la page d'historique** a un effet négligeable, comme annoncé
+  (0,035 → 0,032 ms d'exécution) : les partitions futures étaient vides.
+- Une mesure juste après la migration montrait la page d'historique ralentie
+  (1 626 req/s) : c'était le cache froid (taux de 0,70), disparu à la mesure
+  suivante.
+
+Vérification : suite de tests complète (547 tests) et Clippy sans avertissement.
+Données brutes de cette seconde mesure : `reports/perf/followup-20260915-*/`
+(non versionnées).
 
 ## Limites de la mesure
 

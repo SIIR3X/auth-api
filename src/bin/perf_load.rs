@@ -1059,7 +1059,7 @@ async fn run_explain(args: &Args) -> Result<()> {
         ),
         (
             "audit_page",
-            "SELECT * FROM audit_log WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2".into(),
+            "SELECT * FROM audit_log WHERE user_id = $1 AND created_at <= NOW() ORDER BY created_at DESC, id DESC LIMIT $2".into(),
         ),
         (
             "two_factor_methods",

@@ -214,3 +214,61 @@ queueing.
 
 _Recorded 2026-09-15 on the development machine; re-run per environment before
 capacity planning._
+
+## 9. Capacity Planning
+
+Measured in [the performance campaign](../../perf/performance-report.md)
+(3 API cores, PostgreSQL on 3 cores, 1 million accounts):
+
+| Traffic | Measured capacity | Limiting factor |
+|---------|------------------:|-----------------|
+| Sign-ins and registrations | 33 per second | Argon2id, about 90 ms of CPU per hash |
+| Refreshes | 5 000 per second | PostgreSQL write transaction |
+| Authenticated reads | 11 000 to 12 600 per second | API CPU |
+
+**Size the API on sign-ins**: they saturate first, by two orders of magnitude.
+For a peak of N sign-ins per second:
+
+- API cores: N / 11, rounded up, plus one of headroom. Each core adds 11 to 13
+  sign-ins per second with the production Argon2 parameters.
+- `ARGON2_MAX_CONCURRENCY`: the cores of the instance (the default when unset;
+  it follows the container CPU limit).
+- Memory per instance: `ARGON2_MEMORY_KIB` x concurrency + 256 MiB. The API logs
+  its Argon2 budget at startup (`argon2: at most N concurrent hashes`) and warns
+  when the container memory limit is below it.
+
+The API keeps no state: add instances behind Nginx rather than growing one.
+`docker-compose.api.yml` gives an instance 2 CPUs (about 22 sign-ins per second)
+and 768 MiB (128 MiB of Argon2 budget).
+
+Example: 1 million accounts with 20 % signing in during the peak hour is
+56 sign-ins per second: 6 cores, two 3-CPU instances of 450 MiB each.
+
+**Alerts**: `AuthApiArgon2Saturated` fires when no Argon2 slot was free for
+5 minutes, `AuthApiArgon2SaturatedLong` after 15 (see
+[`prometheus-alerts.yml`](prometheus-alerts.yml)). Either means sign-ins are
+queueing: each waits for the ones ahead of it (8 seconds at 256 concurrent
+sign-ins on 3 cores). Add an instance.
+
+## 10. Bulk Imports
+
+`login_attempts` is purged through a BRIN index on `attempted_at`. BRIN is
+selective only while rows sit on disk in time order, which is the case for rows
+the API writes. After loading attempts in another order (a migration from
+another system, a reordered restore), check **on the DB VPS**:
+
+```sql
+SELECT correlation FROM pg_stats
+WHERE tablename = 'login_attempts' AND attname = 'attempted_at';
+```
+
+Close to 1: nothing to do. Close to 0: every purge batch reads the whole table
+(1.1 s at 10 million rows, whatever it deletes). Rewrite the table in time order
+during a maintenance window - `CLUSTER` locks the table while it runs:
+
+```sql
+CREATE INDEX CONCURRENTLY tmp_login_attempts_order ON login_attempts (attempted_at);
+CLUSTER login_attempts USING tmp_login_attempts_order;
+DROP INDEX tmp_login_attempts_order;
+ANALYZE login_attempts;
+```
