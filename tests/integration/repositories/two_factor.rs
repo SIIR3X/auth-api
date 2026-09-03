@@ -1,7 +1,5 @@
 //! Two-factor method repository tests.
 //!
-//! Tests index range 970-979.
-//!
 //! Covers `find_by_type` and `find_all_by_type`, which are used by the
 //! email-2FA flow but never directly tested.
 

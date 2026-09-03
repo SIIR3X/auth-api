@@ -22,6 +22,10 @@ pub mod fixtures;
 pub mod keys;
 pub mod mail;
 pub mod mailpit;
+pub mod sql;
+
+/// Re-exported for [`pg_args!`].
+pub use sqlx;
 
 pub use app::{TestApp, TestAppBuilder};
 pub use clock::TestClock;

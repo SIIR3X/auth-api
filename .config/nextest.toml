@@ -10,7 +10,17 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 # No retries: a flaky test is a bug to fix, not noise to hide.
 retries = 0
 
+# Simulations hold dependencies down or slow on purpose, and the long
+# scenarios run for minutes.
+[[profile.default.overrides]]
+filter = 'binary(simulation)'
+slow-timeout = { period = "60s", terminate-after = 20 }
+
 [profile.ci]
 # Report every failure in one run.
 fail-fast = false
 failure-output = "immediate-final"
+
+[profile.ci.junit]
+# target/nextest/ci/junit.xml
+path = "junit.xml"

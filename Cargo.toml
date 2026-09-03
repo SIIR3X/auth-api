@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 publish = false
+autotests = false
 
 [workspace]
 members = ["crates/testkit"]
@@ -101,8 +102,16 @@ name = "performance"
 path = "tests/db/performance/mod.rs"
 
 [[test]]
-name = "http"
-path = "tests/http/mod.rs"
+name = "integration"
+path = "tests/integration/main.rs"
+
+[[test]]
+name = "security"
+path = "tests/security/main.rs"
+
+[[test]]
+name = "simulation"
+path = "tests/simulation/main.rs"
 
 [[bench]]
 name = "core_benches"

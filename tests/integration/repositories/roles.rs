@@ -1,7 +1,5 @@
 //! Role and permission repository tests.
 //!
-//! Tests index range 920-939.
-//!
 //! All tests use `app.db` directly so they exercise repository functions
 //! without going through the HTTP layer.
 

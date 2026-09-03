@@ -1,8 +1,6 @@
 //! Redis-resilience tests - verify the API degrades gracefully when Redis
 //! is unavailable, without breaking core authentication flows.
 //!
-//! Tests index range 370-389.
-//!
 //! All tests use a dead Redis port (1) so that every `redis.get()` call fails
 //! immediately. Operations that fail-open (rate limits, cooldowns) must still
 //! allow the request through. Core DB-backed operations must still succeed.

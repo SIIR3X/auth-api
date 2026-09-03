@@ -1,6 +1,7 @@
-//! Key-rotation service tests.
+//! TOTP encryption key rotation (`auth-api --rotate-totp-keys`).
 //!
-//! Tests index range 900-919.
+//! The rotation runs on a second `AppState` sharing the app's database, as the
+//! one-off command does next to a running service.
 
 use auth_api::{services::key_rotation::rotate_totp_encryption_key, state::AppState};
 
@@ -128,6 +129,38 @@ async fn rotate_re_encrypts_totp_secret_with_new_key() {
         .decrypt(&after)
         .expect("must decrypt under KEY_B");
     assert_eq!(plaintext, rotated_plaintext, "plaintext must be preserved");
+    assert!(
+        crypto::Keyring::new(key_a, None).decrypt(&after).is_err(),
+        "re-encrypted secret must not be readable with old key"
+    );
+}
+
+#[tokio::test]
+async fn rotate_totp_key_with_multiple_users_rotates_all() {
+    let app = TestApp::spawn_with_config(|c| {
+        c.crypto.encryption_key = KEY_A.into();
+    })
+    .await;
+
+    for index in [903, 904] {
+        let user = fixtures::authenticated_user(&app, index).await;
+        let setup_res = app
+            .post_auth(
+                "/users/me/two-factor/totp/setup",
+                &user.access_token,
+                &serde_json::json!({}),
+            )
+            .await;
+        assert_eq!(setup_res.status().as_u16(), 200);
+    }
+
+    let rot_state = rotation_state(&app, KEY_B, KEY_A).await;
+    let result = rotate_totp_encryption_key(&rot_state)
+        .await
+        .expect("rotation must succeed");
+
+    assert_eq!(result.rotated, 2, "expected both secrets rotated");
+    assert_eq!(result.failed, 0);
 }
 
 #[tokio::test]

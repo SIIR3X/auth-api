@@ -60,7 +60,7 @@ fmt-check: ## Check formatting without modifying files
 
 .PHONY: clippy
 clippy: ## Run Clippy linter on every target (lib, bins, tests, benches)
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings
 
 .PHONY: deny
 deny: ## Enforce dependency policy and security audit (cargo-deny)
@@ -73,8 +73,12 @@ quality: fmt-check clippy deny ## Run all code quality checks
 # Tests
 # =============================================================================
 
+# Suites: `tests/integration`, `tests/security` and `tests/simulation` need the
+# test infrastructure; unit tests (`src/`, `crates/testkit`) need none.
+TEST_ENV := TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL)
+
 .PHONY: test-infra-up
-test-infra-up: ## Start test infrastructure (postgres + redis)
+test-infra-up: ## Start test infrastructure (PostgreSQL, Redis, NATS, Mailpit)
 	docker compose -p $(TEST_PROJECT) -f $(TEST_COMPOSE) up -d --wait
 
 .PHONY: test-infra-down
@@ -82,30 +86,44 @@ test-infra-down: ## Stop test infrastructure
 	docker compose -p $(TEST_PROJECT) -f $(TEST_COMPOSE) down
 
 .PHONY: test
-test: test-infra-up ## Run all tests (starts/stops infrastructure automatically)
-	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) cargo nextest run; \
+test: test-infra-up ## Run every suite (starts/stops infrastructure automatically)
+	$(TEST_ENV) cargo nextest run --workspace; \
 	EXIT=$$?; $(MAKE) test-infra-down; exit $$EXIT
 
 .PHONY: test-local
-test-local: ## Run all tests against already-running infrastructure (no Docker)
-	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) cargo nextest run
+test-local: ## Run every suite against already-running infrastructure
+	$(TEST_ENV) cargo nextest run --workspace
 
-.PHONY: ci
-ci: quality ## Full local CI gate: formatting, lints, dependency policy, all tests
-	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) cargo nextest run --profile ci
+.PHONY: test-unit
+test-unit: ## Unit tests of the service and of the test harness (no infrastructure)
+	cargo nextest run --workspace --lib --bins
+
+.PHONY: test-integration
+test-integration: ## Integration suite: API end to end, repositories, services
+	$(TEST_ENV) cargo nextest run --test integration
+
+.PHONY: test-security
+test-security: ## Security suite: authentication, limits, headers, audit regressions
+	$(TEST_ENV) cargo nextest run --test security
+
+.PHONY: test-sim
+test-sim: ## Simulation suite, long scenarios included
+	$(TEST_ENV) cargo nextest run --test simulation --run-ignored all
 
 .PHONY: test-verbose
-test-verbose: test-infra-up ## Run all tests with detailed output
-	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) cargo nextest run --no-capture; \
+test-verbose: test-infra-up ## Run every suite with detailed output
+	$(TEST_ENV) cargo nextest run --workspace --no-capture; \
 	EXIT=$$?; $(MAKE) test-infra-down; exit $$EXIT
 
+.PHONY: ci
+ci: quality ## Full local CI gate: formatting, lints, dependency policy, every suite
+	$(TEST_ENV) cargo nextest run --workspace --profile ci
+
 .PHONY: coverage
-coverage: test-infra-up ## Run tests with coverage report (tarpaulin) - outputs HTML to reports/coverage/
-	TEST_DATABASE_URL=$(TEST_DB_URL) TEST_REDIS_URL=$(TEST_REDIS_URL) TEST_NATS_URL=$(TEST_NATS_URL) \
-	cargo tarpaulin --tests --skip-clean \
-		--exclude-files "src/main.rs" "src/bin/*" \
-		--out html --out json --output-dir reports/coverage; \
-	EXIT=$$?; $(MAKE) test-infra-down; exit $$EXIT
+coverage: ## Coverage of every suite (cargo-llvm-cov), HTML report in reports/coverage/
+	$(TEST_ENV) cargo llvm-cov nextest --workspace --profile ci \
+		--ignore-filename-regex '(src/bin/|crates/testkit/)' \
+		--html --output-dir reports/coverage
 
 .PHONY: bench
 bench: ## Run Criterion benchmarks (CPU only, no infrastructure needed)

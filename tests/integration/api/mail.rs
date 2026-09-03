@@ -5,11 +5,8 @@
 //! performs an action that triggers an email and asserts on the captured
 //! message via the Mailpit HTTP API.
 //!
-//! Tests use index range 800-850 to avoid collisions with other test files.
-//!
-//! Each test uses a unique user index (800-806) so their email addresses never
-//! collide. No `delete_all()` calls are needed: `wait_for_message` filters by
-//! both recipient and subject, so parallel tests cannot steal each other's mail.
+//! No `delete_all()` calls are needed: `wait_for_message` filters by recipient,
+//! subject and time, so parallel tests cannot steal each other's mail.
 
 use crate::common::{app::TestApp, fixtures};
 
