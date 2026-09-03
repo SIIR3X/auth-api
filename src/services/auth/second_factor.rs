@@ -60,7 +60,7 @@ pub async fn complete_two_factor_login(
     if !user.is_active() {
         return Err(AppError::AccountSuspended);
     }
-    if user.is_locked() {
+    if user.is_locked(state.clock.now()) {
         return Err(AppError::AccountLocked);
     }
 
@@ -81,6 +81,7 @@ pub async fn complete_two_factor_login(
         code,
         &state.keyring,
         state.config.crypto.totp_skew,
+        state.clock.now().unix_timestamp(),
     )
     .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -181,7 +182,7 @@ pub async fn complete_email_2fa_login(
     if !user.is_active() {
         return Err(AppError::AccountSuspended);
     }
-    if user.is_locked() {
+    if user.is_locked(state.clock.now()) {
         return Err(AppError::AccountLocked);
     }
 
@@ -276,7 +277,7 @@ pub async fn complete_login_with_recovery(
     if !user.is_active() {
         return Err(AppError::AccountSuspended);
     }
-    if user.is_locked() {
+    if user.is_locked(state.clock.now()) {
         return Err(AppError::AccountLocked);
     }
 

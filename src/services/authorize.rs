@@ -23,7 +23,7 @@ use crate::{
     },
     services::{auth as auth_svc, reauth as reauth_svc},
     state::AppState,
-    utils::{crypto, time},
+    utils::crypto,
 };
 
 /// Lifetime of a minted code. RFC 6749 allows ten minutes; the browser redirects
@@ -147,7 +147,7 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
             redirect_uri: approval.redirect_uri,
             code_challenge: approval.code_challenge,
             scopes: scopes.as_deref(),
-            expires_at: time::in_secs(CODE_TTL_SECS),
+            expires_at: state.clock.in_secs(CODE_TTL_SECS),
         },
     )
     .await
@@ -254,7 +254,7 @@ async fn ensure_account_usable(state: &AppState, user_id: Uuid) -> Result<(), Ap
     if !user.is_active() {
         return Err(AppError::AccountSuspended);
     }
-    if user.is_locked() {
+    if user.is_locked(state.clock.now()) {
         return Err(AppError::AccountLocked);
     }
     Ok(())

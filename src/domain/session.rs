@@ -68,8 +68,8 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn is_active(&self) -> bool {
-        self.revoked_at.is_none() && self.expires_at > OffsetDateTime::now_utc()
+    pub fn is_active(&self, now: OffsetDateTime) -> bool {
+        self.revoked_at.is_none() && self.expires_at > now
     }
 
     pub fn is_compromised(&self) -> bool {
@@ -79,11 +79,11 @@ impl Session {
     /// True when this session was rotated within `grace` and not for a
     /// compromise: presenting its token again is then a concurrent refresh
     /// from the same client (two tabs, a retried request), not a replay.
-    pub fn rotated_within(&self, grace: time::Duration) -> bool {
+    pub fn rotated_within(&self, grace: time::Duration, now: OffsetDateTime) -> bool {
         self.compromised_at.is_none()
             && self
                 .rotated_at
-                .is_some_and(|rotated| OffsetDateTime::now_utc() - rotated <= grace)
+                .is_some_and(|rotated| now - rotated <= grace)
     }
 }
 
@@ -91,8 +91,12 @@ impl Session {
 mod tests {
     use super::*;
 
+    fn now() -> OffsetDateTime {
+        OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000)
+    }
+
     fn make_session(revoked: bool, expires_in_secs: i64, compromised: bool) -> Session {
-        let now = OffsetDateTime::now_utc();
+        let now = now();
         Session {
             id: uuid::Uuid::new_v4(),
             user_id: uuid::Uuid::new_v4(),
@@ -119,17 +123,59 @@ mod tests {
 
     #[test]
     fn is_active_true_when_not_revoked_and_not_expired() {
-        assert!(make_session(false, 3600, false).is_active());
+        assert!(make_session(false, 3600, false).is_active(now()));
     }
 
     #[test]
     fn is_active_false_when_revoked() {
-        assert!(!make_session(true, 3600, false).is_active());
+        assert!(!make_session(true, 3600, false).is_active(now()));
     }
 
     #[test]
     fn is_active_false_when_expired() {
-        assert!(!make_session(false, -1, false).is_active());
+        assert!(!make_session(false, -1, false).is_active(now()));
+    }
+
+    #[test]
+    fn is_active_ends_at_the_expiry_instant() {
+        let session = make_session(false, 60, false);
+        assert!(session.is_active(session.expires_at - time::Duration::nanoseconds(1)));
+        assert!(!session.is_active(session.expires_at));
+    }
+
+    #[test]
+    fn rotated_within_accepts_the_grace_boundary_only() {
+        let grace = time::Duration::seconds(2);
+        let mut session = make_session(true, 3600, false);
+        session.rotated_at = Some(now());
+
+        assert!(session.rotated_within(grace, now()));
+        assert!(session.rotated_within(grace, now() + grace));
+        assert!(!session.rotated_within(grace, now() + grace + time::Duration::nanoseconds(1)));
+    }
+
+    #[test]
+    fn rotated_within_is_false_without_rotation_or_after_compromise() {
+        let grace = time::Duration::seconds(2);
+        assert!(!make_session(true, 3600, false).rotated_within(grace, now()));
+
+        let mut compromised = make_session(true, 3600, true);
+        compromised.rotated_at = Some(now());
+        assert!(!compromised.rotated_within(grace, now()));
+    }
+
+    #[test]
+    fn device_label_strips_controls_and_bounds_length() {
+        assert_eq!(
+            device_label("  My\u{7}Phone \n").as_deref(),
+            Some("MyPhone")
+        );
+        assert_eq!(device_label("\u{0}\t "), None);
+        let long = "é".repeat(DEVICE_NAME_MAX_CHARS + 20);
+        assert_eq!(
+            device_label(&long).unwrap().chars().count(),
+            DEVICE_NAME_MAX_CHARS
+        );
     }
 
     #[test]

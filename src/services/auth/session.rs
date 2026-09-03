@@ -62,7 +62,7 @@ pub async fn refresh_token(
     // Revoked session presented again: a concurrent refresh when it was rotated
     // moments ago, a replay attack otherwise.
     if session.revoked_at.is_some() {
-        if session.rotated_within(REFRESH_REUSE_GRACE) {
+        if session.rotated_within(REFRESH_REUSE_GRACE, state.clock.now()) {
             return Err(AppError::TokenInvalid);
         }
         session_repo::revoke_family(&state.db, session.id)
@@ -85,7 +85,7 @@ pub async fn refresh_token(
         return Err(AppError::TokenInvalid);
     }
 
-    if !session.is_active() {
+    if !session.is_active(state.clock.now()) {
         return Err(AppError::TokenExpired);
     }
 
@@ -93,7 +93,7 @@ pub async fn refresh_token(
     let max_lifetime = state.config.jwt.max_session_lifetime_secs as i64;
     // Measured from the family's first sign-in: every rotation creates a new
     // row, so the current row's created_at would restart the clock each time.
-    let session_age = (time::now() - session.family_created_at).whole_seconds();
+    let session_age = (state.clock.now() - session.family_created_at).whole_seconds();
     if session_age >= max_lifetime {
         return Err(AppError::TokenExpired);
     }
@@ -150,7 +150,7 @@ pub async fn refresh_token(
         &NewSession {
             user_id: user.id,
             session_family_id: session.session_family_id,
-            expires_at: time::in_secs(refresh_expiry),
+            expires_at: state.clock.in_secs(refresh_expiry),
             ip_address: ip,
             device_name: session.device_name.as_deref(),
             remember_me: session.remember_me,
@@ -169,7 +169,7 @@ pub async fn refresh_token(
             // Another request rotated this session between our read and the
             // lock. Moments ago: the same client refreshing twice.
             if let Ok(Some(current)) = session_repo::find_by_id(&state.db, session.id).await
-                && current.rotated_within(REFRESH_REUSE_GRACE)
+                && current.rotated_within(REFRESH_REUSE_GRACE, state.clock.now())
             {
                 return Err(AppError::TokenInvalid);
             }

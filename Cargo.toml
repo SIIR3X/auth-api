@@ -5,6 +5,10 @@ edition = "2024"
 rust-version = "1.88"
 publish = false
 
+[workspace]
+members = ["crates/testkit"]
+exclude = ["fuzz"]
+
 [dependencies]
 aes-gcm = "0.11.0"
 anyhow = "1.0.102"
@@ -44,6 +48,7 @@ reqwest = { version = "0.13.2", default-features = false, features = ["json", "r
 utoipa = { version = "5", features = ["time", "uuid", "yaml"] }
 
 [dev-dependencies]
+testkit = { path = "crates/testkit" }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 futures = "0.3"
 postgres = { version = "0.19.12", features = ["with-uuid-1", "with-time-0_3"] }

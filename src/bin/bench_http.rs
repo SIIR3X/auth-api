@@ -26,7 +26,7 @@ use auth_api::{
     },
     services::{email_2fa, two_factor},
     state::AppState,
-    utils::{crypto, password, time as time_utils},
+    utils::{crypto, password},
 };
 
 #[derive(Debug, Clone)]
@@ -408,7 +408,7 @@ async fn create_email_2fa_credentials(
             &email_2fa_repo::NewEmail2faCode {
                 user_id: credential.user_id,
                 code_hash: &hash,
-                expires_at: time_utils::in_secs(600),
+                expires_at: ::time::OffsetDateTime::now_utc() + ::time::Duration::seconds(600),
             },
         )
         .await?;
@@ -2351,7 +2351,7 @@ async fn replace_email_code(pool: &PgPool, user_id: Uuid, code: &str) -> Result<
         &email_2fa_repo::NewEmail2faCode {
             user_id,
             code_hash: &hash,
-            expires_at: time_utils::in_secs(600),
+            expires_at: ::time::OffsetDateTime::now_utc() + ::time::Duration::seconds(600),
         },
     )
     .await

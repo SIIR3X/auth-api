@@ -29,7 +29,7 @@ use crate::{
     utils::{
         crypto,
         redis_counter::{self, Budget},
-        time, totp,
+        totp,
     },
 };
 
@@ -200,6 +200,7 @@ pub async fn verify_setup(
         code,
         &state.keyring,
         state.config.crypto.totp_skew,
+        state.clock.now().unix_timestamp(),
     )
     .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -325,7 +326,7 @@ async fn create_recovery_codes(state: &AppState, user_id: Uuid) -> Result<Vec<St
 
     let expires_at = match state.config.crypto.recovery_code_expiry_days {
         0 => None,
-        days => Some(time::in_secs(days as u64 * 86400)),
+        days => Some(state.clock.in_secs(days as u64 * 86400)),
     };
 
     recovery_code::replace_all_by_user(&state.db, user_id, &refs, expires_at)

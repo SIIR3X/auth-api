@@ -84,8 +84,8 @@ pub struct Email2faCode {
 }
 
 impl Email2faCode {
-    pub fn is_expired(&self) -> bool {
-        self.expires_at < crate::utils::time::now()
+    pub fn is_expired(&self, now: OffsetDateTime) -> bool {
+        self.expires_at < now
     }
 
     pub fn is_used(&self) -> bool {

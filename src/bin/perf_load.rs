@@ -537,8 +537,12 @@ fn mint_tokens(count: usize, users: u64) -> Result<Vec<String>> {
     (0..count)
         .map(|_| {
             let i = rng.user(users);
-            let mut claims =
-                jwt::Claims::new(user_id(i), perf_uuid(&format!("perf-session-{i}-1")), exp);
+            let mut claims = jwt::Claims::new(
+                user_id(i),
+                perf_uuid(&format!("perf-session-{i}-1")),
+                exp - 4 * 3600,
+                exp,
+            );
             // Issued a moment ago: `nbf` is checked without leeway.
             claims.nbf = Some(claims.iat - 60);
             claims.iss = Some(public_url.clone());

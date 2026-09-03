@@ -27,7 +27,6 @@ use crate::{
     utils::{
         backoff, crypto,
         redis_counter::{self, Budget},
-        time,
     },
 };
 
@@ -195,7 +194,7 @@ pub async fn send_code(state: &AppState, user_id: Uuid) -> Result<(), AppError> 
         &email_2fa::NewEmail2faCode {
             user_id,
             code_hash: &hash,
-            expires_at: time::in_secs(OTP_EXPIRY_SECS),
+            expires_at: state.clock.in_secs(OTP_EXPIRY_SECS),
         },
     )
     .await

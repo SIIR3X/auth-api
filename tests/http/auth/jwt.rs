@@ -85,8 +85,12 @@ async fn jwt_signed_with_wrong_secret_returns_401() {
     let user = fixtures::authenticated_user(&app, 351).await;
 
     // Decode claims from the real token, re-sign with a different key.
-    let claims = jwt::decode_token(&user.access_token, &app.state.jwt_verifying_key)
-        .expect("real token must decode");
+    let claims = jwt::decode_token(
+        &user.access_token,
+        &app.state.jwt_verifying_key,
+        app.state.clock.now().unix_timestamp(),
+    )
+    .expect("real token must decode");
     let wrong_key = {
         use p256::pkcs8::EncodePrivateKey;
         let sk = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
@@ -114,8 +118,12 @@ async fn expired_access_token_returns_401() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 352).await;
 
-    let real_claims = jwt::decode_token(&user.access_token, &app.state.jwt_verifying_key)
-        .expect("real token must decode");
+    let real_claims = jwt::decode_token(
+        &user.access_token,
+        &app.state.jwt_verifying_key,
+        app.state.clock.now().unix_timestamp(),
+    )
+    .expect("real token must decode");
 
     // Build a claims with exp in the past.
     let expired_claims = Claims {

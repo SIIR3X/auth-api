@@ -64,15 +64,15 @@ pub struct Claims {
 }
 
 impl Claims {
-    pub fn new(user_id: Uuid, session_id: Uuid, exp: i64) -> Self {
-        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    /// Claims issued at `issued_at` (Unix timestamp), valid from then until `exp`.
+    pub fn new(user_id: Uuid, session_id: Uuid, issued_at: i64, exp: i64) -> Self {
         Self {
             sub: user_id,
             sid: session_id,
             jti: Uuid::new_v4(),
             exp,
-            iat: now,
-            nbf: Some(now),
+            iat: issued_at,
+            nbf: Some(issued_at),
             iss: None,
             aud: Vec::new(),
             roles: Vec::new(),
@@ -100,8 +100,9 @@ pub fn encode_token(
     jsonwebtoken::encode(&header, claims, key).map_err(|e| JwtError::Encode(e.to_string()))
 }
 
-pub fn decode_token(token: &str, key: &DecodingKey) -> Result<Claims, JwtError> {
-    decode_token_with_fallback(token, key, None)
+/// Decode a token and check its time claims against `now` (Unix timestamp).
+pub fn decode_token(token: &str, key: &DecodingKey, now: i64) -> Result<Claims, JwtError> {
+    decode_token_with_fallback(token, key, None, now)
 }
 
 /// Defense-in-depth post-decode validation of the `iss` and `aud` claims.
@@ -139,16 +140,19 @@ pub fn validate_iss_aud(
 
 /// Decodes a JWT, trying `key` first and then `previous_key` if provided.
 /// Used to accept tokens signed with the previous key during a rotation window.
+/// The time claims are checked against `now` (Unix timestamp), read from the
+/// application clock.
 pub fn decode_token_with_fallback(
     token: &str,
     key: &DecodingKey,
     previous_key: Option<&DecodingKey>,
+    now: i64,
 ) -> Result<Claims, JwtError> {
-    match decode_token_inner(token, key) {
+    match decode_token_inner(token, key, now) {
         Ok(claims) => Ok(claims),
         Err(primary_error) => {
             if let Some(previous_key) = previous_key {
-                decode_token_inner(token, previous_key).map_err(|_| primary_error)
+                decode_token_inner(token, previous_key, now).map_err(|_| primary_error)
             } else {
                 Err(primary_error)
             }
@@ -156,19 +160,35 @@ pub fn decode_token_with_fallback(
     }
 }
 
-fn decode_token_inner(token: &str, key: &DecodingKey) -> Result<Claims, JwtError> {
+fn decode_token_inner(token: &str, key: &DecodingKey, now: i64) -> Result<Claims, JwtError> {
     let mut validation = Validation::new(Algorithm::ES256);
-    // Match the historical in-house behaviour: strict time-based validation
-    // with no leeway, `nbf` checked when present, and `iss`/`aud` left to the
-    // explicit `validate_iss_aud` call so trust-boundary pinning stays visible
-    // at the call sites (extractor, downstream resource servers).
+    // The signature and the algorithm are checked by `jsonwebtoken`; the time
+    // claims are checked by `check_time_claims` against the application clock
+    // rather than the library's own reading of the wall clock. `exp` stays a
+    // required claim. `iss`/`aud` are left to the explicit `validate_iss_aud`
+    // call so trust-boundary pinning stays visible at the call sites.
     validation.leeway = 0;
-    validation.validate_nbf = true;
+    validation.validate_exp = false;
+    validation.validate_nbf = false;
     validation.validate_aud = false;
 
-    jsonwebtoken::decode::<Claims>(token, key, &validation)
+    let claims = jsonwebtoken::decode::<Claims>(token, key, &validation)
         .map(|data| data.claims)
-        .map_err(|e| JwtError::Decode(e.to_string()))
+        .map_err(|e| JwtError::Decode(e.to_string()))?;
+    check_time_claims(&claims, now)?;
+    Ok(claims)
+}
+
+/// Refuse a token at or after its expiry, or before its `nbf`. No leeway: the
+/// issuer and this check read the same clock.
+pub fn check_time_claims(claims: &Claims, now: i64) -> Result<(), JwtError> {
+    if now >= claims.exp {
+        return Err(JwtError::Decode("token expired".into()));
+    }
+    if claims.nbf.is_some_and(|nbf| nbf > now) {
+        return Err(JwtError::Decode("token not yet valid".into()));
+    }
+    Ok(())
 }
 
 // Key parsing helpers
@@ -250,12 +270,42 @@ mod tests {
         (private_pem, public_pem)
     }
 
+    fn current_time() -> i64 {
+        time::OffsetDateTime::now_utc().unix_timestamp()
+    }
+
     fn valid_claims() -> Claims {
-        Claims::new(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            time::OffsetDateTime::now_utc().unix_timestamp() + 3600,
-        )
+        let now = current_time();
+        Claims::new(Uuid::new_v4(), Uuid::new_v4(), now, now + 3600)
+    }
+
+    #[test]
+    fn time_claims_follow_the_supplied_clock() {
+        let (sk, vk) = test_keys();
+        let claims = Claims::new(Uuid::new_v4(), Uuid::new_v4(), 1_000, 1_900);
+        let token = encode_token(&claims, &sk, None).unwrap();
+
+        assert!(
+            decode_token(&token, &vk, 999).is_err(),
+            "accepted before nbf"
+        );
+        assert!(decode_token(&token, &vk, 1_000).is_ok());
+        assert!(decode_token(&token, &vk, 1_899).is_ok());
+        assert!(decode_token(&token, &vk, 1_900).is_err(), "accepted at exp");
+    }
+
+    #[test]
+    fn token_without_expiry_is_rejected() {
+        let (sk, vk) = test_keys();
+        let now = current_time();
+        let payload = serde_json::json!({
+            "sub": Uuid::new_v4(),
+            "sid": Uuid::new_v4(),
+            "jti": Uuid::new_v4(),
+            "iat": now,
+        });
+        let token = jsonwebtoken::encode(&Header::new(Algorithm::ES256), &payload, &sk).unwrap();
+        assert!(decode_token(&token, &vk, now).is_err());
     }
 
     #[test]
@@ -263,7 +313,7 @@ mod tests {
         let (sk, vk) = test_keys();
         let claims = valid_claims();
         let token = encode_token(&claims, &sk, None).unwrap();
-        let decoded = decode_token(&token, &vk).unwrap();
+        let decoded = decode_token(&token, &vk, current_time()).unwrap();
 
         assert_eq!(decoded.sub, claims.sub);
         assert_eq!(decoded.sid, claims.sid);
@@ -276,8 +326,8 @@ mod tests {
         let user_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
         let exp = time::OffsetDateTime::now_utc().unix_timestamp() + 3600;
-        let c1 = Claims::new(user_id, session_id, exp);
-        let c2 = Claims::new(user_id, session_id, exp);
+        let c1 = Claims::new(user_id, session_id, 0, exp);
+        let c2 = Claims::new(user_id, session_id, 0, exp);
         assert_ne!(c1.jti, c2.jti);
     }
 
@@ -287,7 +337,7 @@ mod tests {
         let (_sk2, vk2) = test_keys();
         let token = encode_token(&valid_claims(), &sk, None).unwrap();
         assert!(matches!(
-            decode_token(&token, &vk2),
+            decode_token(&token, &vk2, current_time()),
             Err(JwtError::Decode(_))
         ));
     }
@@ -309,7 +359,7 @@ mod tests {
         };
         let token = encode_token(&claims, &sk, None).unwrap();
         assert!(matches!(
-            decode_token(&token, &vk),
+            decode_token(&token, &vk, current_time()),
             Err(JwtError::Decode(_))
         ));
     }
@@ -332,7 +382,7 @@ mod tests {
         };
         let token = encode_token(&claims, &sk, None).unwrap();
         assert!(matches!(
-            decode_token(&token, &vk),
+            decode_token(&token, &vk, current_time()),
             Err(JwtError::Decode(_))
         ));
     }
@@ -341,7 +391,7 @@ mod tests {
     fn decode_malformed_token_fails() {
         let (_sk, vk) = test_keys();
         assert!(matches!(
-            decode_token("not.a.token", &vk),
+            decode_token("not.a.token", &vk, current_time()),
             Err(JwtError::Decode(_))
         ));
     }
@@ -356,7 +406,7 @@ mod tests {
             .encode(serde_json::to_vec(&valid_claims()).expect("claims must serialize"));
         let token = format!("{header}.{payload}.AAAA");
         assert!(matches!(
-            decode_token(&token, &vk),
+            decode_token(&token, &vk, current_time()),
             Err(JwtError::Decode(_))
         ));
     }
@@ -368,7 +418,8 @@ mod tests {
         let claims = valid_claims();
         let token = encode_token(&claims, &old_sk, None).unwrap();
 
-        let decoded = decode_token_with_fallback(&token, &new_vk, Some(&old_vk)).unwrap();
+        let decoded =
+            decode_token_with_fallback(&token, &new_vk, Some(&old_vk), current_time()).unwrap();
 
         assert_eq!(decoded.sub, claims.sub);
         assert_eq!(decoded.sid, claims.sid);
@@ -486,7 +537,7 @@ mod tests {
 
         let claims = valid_claims();
         let token = encode_token(&claims, &encoding_key, None).unwrap();
-        let decoded = decode_token(&token, &decoding_key).unwrap();
+        let decoded = decode_token(&token, &decoding_key, current_time()).unwrap();
         assert_eq!(decoded.sub, claims.sub);
     }
 
@@ -524,7 +575,7 @@ mod tests {
             };
 
             let token = encode_token(&claims, &sk, None).unwrap();
-            let decoded = decode_token(&token, &vk).unwrap();
+            let decoded = decode_token(&token, &vk, current_time()).unwrap();
 
             prop_assert_eq!(decoded.sub, claims.sub);
             prop_assert_eq!(decoded.sid, claims.sid);
@@ -561,7 +612,7 @@ mod tests {
             let tampered = parts.join(".");
 
             prop_assert!(matches!(
-                decode_token(&tampered, &vk),
+                decode_token(&tampered, &vk, current_time()),
                 Err(JwtError::Decode(_))
             ));
         }

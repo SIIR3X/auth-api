@@ -64,8 +64,8 @@ pub struct ActiveSessionSummary {
 }
 
 impl SessionValidation {
-    pub fn is_active(&self) -> bool {
-        self.revoked_at.is_none() && self.expires_at > OffsetDateTime::now_utc()
+    pub fn is_active(&self, now: OffsetDateTime) -> bool {
+        self.revoked_at.is_none() && self.expires_at > now
     }
 }
 

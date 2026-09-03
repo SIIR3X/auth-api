@@ -48,7 +48,7 @@ pub(crate) async fn issue_tokens(
         &NewSession {
             user_id,
             session_family_id: Uuid::new_v4(),
-            expires_at: time::in_secs(expiry_secs),
+            expires_at: state.clock.in_secs(expiry_secs),
             ip_address: ip,
             device_name: device_name.as_deref(),
             remember_me,
@@ -121,7 +121,12 @@ pub(super) async fn build_access_token(
     scopes: Option<&[String]>,
     state: &AppState,
 ) -> Result<String, AppError> {
-    let exp = time::in_secs(state.config.jwt.access_expiry_secs).unix_timestamp();
+    let issued_at = state.clock.now();
+    let exp = issued_at
+        .saturating_add(::time::Duration::seconds(
+            i64::try_from(state.config.jwt.access_expiry_secs).unwrap_or(i64::MAX),
+        ))
+        .unix_timestamp();
 
     let (mut role_names, mut permission_names) = role::find_rbac_names(&state.db, user_id)
         .await
@@ -136,7 +141,8 @@ pub(super) async fn build_access_token(
         role_names.clear();
     }
 
-    let mut claims = Claims::new(user_id, session_id, exp).with_rbac(role_names, permission_names);
+    let mut claims = Claims::new(user_id, session_id, issued_at.unix_timestamp(), exp)
+        .with_rbac(role_names, permission_names);
     // Stamp iss/aud so downstream resource servers can pin
     // the token to this issuer and to themselves. `aud` is emitted as a JSON
     // array so a single token can be accepted by multiple downstream services.
@@ -155,7 +161,7 @@ pub async fn blocklist_refresh_token(
     token_hash: &[u8],
     session_expires_at: ::time::OffsetDateTime,
 ) {
-    let ttl = (session_expires_at - time::now()).whole_seconds();
+    let ttl = (session_expires_at - state.clock.now()).whole_seconds();
     if ttl <= 0 {
         return;
     }
@@ -201,7 +207,7 @@ pub(super) fn rt_hash_key(token_hash: &[u8]) -> String {
 /// Write a JTI to the Redis blocklist with TTL = remaining token lifetime.
 /// Fail-open: if Redis is unavailable the logout still succeeds.
 pub async fn blocklist_jti(state: &AppState, jti: Uuid, token_exp: i64) {
-    let ttl = token_exp - time::now().unix_timestamp();
+    let ttl = token_exp - state.clock.now().unix_timestamp();
     if ttl <= 0 {
         return;
     }
@@ -257,7 +263,7 @@ pub async fn verify_token_state(
                 .await
                 .map_err(|_| AppError::Unauthorized)?
                 .ok_or(AppError::Unauthorized)?;
-            let active = session.is_active();
+            let active = session.is_active(state.clock.now());
             let _: Result<(), _> = conn
                 .set_ex(&cache_key, u8::from(active), SESSION_CACHE_TTL_SECS)
                 .await;

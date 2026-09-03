@@ -80,7 +80,7 @@ pub async fn register(
         &NewEmailVerificationToken {
             user_id: user.id,
             token_hash: &hash_bytes,
-            expires_at: time::in_secs(EMAIL_TOKEN_EXPIRY_SECS),
+            expires_at: state.clock.in_secs(EMAIL_TOKEN_EXPIRY_SECS),
             request_ip: ip,
             request_user_agent: user_agent,
             target_email: email,
@@ -161,7 +161,7 @@ pub async fn verify_email(
             .map_err(|e| AppError::Internal(e.into()))?
             .ok_or(AppError::TokenInvalid)?;
 
-        if record.is_expired() {
+        if record.is_expired(state.clock.now()) {
             return Err(AppError::TokenExpired);
         }
         if record.is_used() {

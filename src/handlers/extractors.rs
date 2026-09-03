@@ -53,6 +53,7 @@ impl FromRequestParts<AppState> for AuthUser {
             token,
             &state.jwt_verifying_key,
             state.jwt_previous_verifying_key.as_ref(),
+            state.clock.now().unix_timestamp(),
         )
         .map_err(|_| AppError::TokenInvalid)?;
 

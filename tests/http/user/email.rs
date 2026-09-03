@@ -371,8 +371,12 @@ async fn start_and_verify_current(app: &TestApp, token: &str) -> String {
             "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEeAQKUycvAJ76fju2DVZU3gmwWftW\nCZPq+RCxxhSF3IgBBkqwkzpApt8goUmK6GFixN2TeK3oeiQ2yDF/0JwRsQ==\n-----END PUBLIC KEY-----",
         )
         .expect("failed to parse test public key");
-        let claims =
-            auth_api::utils::jwt::decode_token(token, &vk).expect("failed to decode access token");
+        let claims = auth_api::utils::jwt::decode_token(
+            token,
+            &vk,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )
+        .expect("failed to decode access token");
         claims.sub
     };
 

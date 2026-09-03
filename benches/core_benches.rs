@@ -28,11 +28,8 @@ fn jwt_benches(c: &mut Criterion) {
     }
 
     let mut group = c.benchmark_group("jwt");
-    let claims = jwt::Claims::new(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        OffsetDateTime::now_utc().unix_timestamp() + 3600,
-    );
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let claims = jwt::Claims::new(Uuid::new_v4(), Uuid::new_v4(), now, now + 3600);
     let (signing_key, verifying_key) = generate_key_pair();
     let (old_signing_key, old_verifying_key) = generate_key_pair();
     let token = jwt::encode_token(&claims, &signing_key, None).expect("failed to encode token");
@@ -48,7 +45,8 @@ fn jwt_benches(c: &mut Criterion) {
 
     group.bench_function("decode_es256", |b| {
         b.iter(|| {
-            jwt::decode_token(black_box(&token), black_box(&verifying_key)).expect("decode failed")
+            jwt::decode_token(black_box(&token), black_box(&verifying_key), now)
+                .expect("decode failed")
         })
     });
 
@@ -58,6 +56,7 @@ fn jwt_benches(c: &mut Criterion) {
                 black_box(&rotated_token),
                 black_box(&verifying_key),
                 Some(black_box(&old_verifying_key)),
+                now,
             )
             .expect("decode with fallback failed")
         })
@@ -120,6 +119,7 @@ fn totp_benches(c: &mut Criterion) {
                 black_box(&code),
                 black_box(&keyring),
                 1,
+                OffsetDateTime::now_utc().unix_timestamp(),
             )
             .expect("verify")
         })

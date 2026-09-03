@@ -9,16 +9,13 @@
 
 use std::future::Future;
 
-use lettre::{
-    AsyncTransport,
-    message::{Mailbox, Message, header::ContentType},
-};
+use lettre::message::{Mailbox, Message, header::ContentType};
 use tera::{Context, Tera};
 
 use crate::{
     config::{MailConfig, SmtpConfig},
     error::AppError,
-    state::Mailer,
+    services::mailer::Mailer,
 };
 
 // Template names (without locale prefix or extension)
@@ -421,11 +418,6 @@ async fn send(
     subject: &str,
     html_body: String,
 ) -> Result<(), AppError> {
-    // Skip silently when no SMTP host is configured (e.g. in tests without mailpit).
-    if cfg.host.is_empty() {
-        return Ok(());
-    }
-
     let from: Mailbox = format!("{} <{}>", cfg.from_name, cfg.from_address)
         .parse()
         .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid from address: {}", e)))?;
@@ -445,7 +437,7 @@ async fn send(
     mailer
         .send(msg)
         .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("smtp send failed: {}", e)))?;
+        .map_err(|e| AppError::Internal(e.context("mail send failed")))?;
 
     Ok(())
 }

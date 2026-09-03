@@ -31,9 +31,8 @@ pub struct User {
 }
 
 impl User {
-    pub fn is_locked(&self) -> bool {
-        self.locked_until
-            .is_some_and(|t| t > OffsetDateTime::now_utc())
+    pub fn is_locked(&self, now: OffsetDateTime) -> bool {
+        self.locked_until.is_some_and(|t| t > now)
     }
 }
 
@@ -86,8 +85,12 @@ pub fn is_storable_email(email: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn now() -> OffsetDateTime {
+        OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000)
+    }
+
     fn make_user(status: UserStatus, locked_secs: Option<i64>, verified: bool) -> User {
-        let now = time::OffsetDateTime::now_utc();
+        let now = now();
         User {
             id: uuid::Uuid::new_v4(),
             created_at: now,
@@ -105,17 +108,25 @@ mod tests {
 
     #[test]
     fn is_locked_true_when_locked_until_is_in_future() {
-        assert!(make_user(UserStatus::Active, Some(3600), false).is_locked());
+        assert!(make_user(UserStatus::Active, Some(3600), false).is_locked(now()));
     }
 
     #[test]
     fn is_locked_false_when_locked_until_is_in_past() {
-        assert!(!make_user(UserStatus::Active, Some(-1), false).is_locked());
+        assert!(!make_user(UserStatus::Active, Some(-1), false).is_locked(now()));
     }
 
     #[test]
     fn is_locked_false_when_no_lockout() {
-        assert!(!make_user(UserStatus::Active, None, false).is_locked());
+        assert!(!make_user(UserStatus::Active, None, false).is_locked(now()));
+    }
+
+    #[test]
+    fn lockout_ends_at_locked_until() {
+        let user = make_user(UserStatus::Active, Some(1800), false);
+        let until = user.locked_until.unwrap();
+        assert!(user.is_locked(until - time::Duration::nanoseconds(1)));
+        assert!(!user.is_locked(until));
     }
 
     #[test]

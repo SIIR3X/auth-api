@@ -1,8 +1,5 @@
 use crate::common::{app::TestApp, fixtures};
-use auth_api::{
-    repositories::{email_2fa as email_2fa_repo, recovery_code as recovery_code_repo},
-    utils::time,
-};
+use auth_api::repositories::{email_2fa as email_2fa_repo, recovery_code as recovery_code_repo};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -382,7 +379,7 @@ async fn email_2fa_code_replacement_rolls_back_on_insert_failure() {
     )
     .bind(user.id)
     .bind(&old_hash)
-    .bind(time::in_secs(600))
+    .bind(time::OffsetDateTime::now_utc() + time::Duration::seconds(600))
     .execute(&app.db)
     .await
     .unwrap();
@@ -415,7 +412,7 @@ async fn email_2fa_code_replacement_rolls_back_on_insert_failure() {
         &email_2fa_repo::NewEmail2faCode {
             user_id: user.id,
             code_hash: &new_hash,
-            expires_at: time::in_secs(600),
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::seconds(600),
         },
     )
     .await

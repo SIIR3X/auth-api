@@ -35,7 +35,7 @@ pub async fn login(
     remember_me: bool,
     request_id: Option<Uuid>,
 ) -> Result<LoginResult, AppError> {
-    let brute_force_cutoff = time::now() - TimeDuration::seconds(BRUTE_FORCE_WINDOW_SECS);
+    let brute_force_cutoff = state.clock.now() - TimeDuration::seconds(BRUTE_FORCE_WINDOW_SECS);
 
     let ip_failures_fut = async {
         match ip {
@@ -102,7 +102,7 @@ pub async fn login(
             // A locked account answers the same whatever the password, after the
             // same Argon2 work. Checking the lock only after a correct password
             // turned the lockout into an oracle confirming the guess.
-            if u.is_locked() {
+            if u.is_locked(state.clock.now()) {
                 metrics::counter!("auth_logins_total", "outcome" => "locked").increment(1);
                 return Err(AppError::AccountLocked);
             }
@@ -157,7 +157,7 @@ pub async fn login(
                     .await
                     .unwrap_or(0);
             if consecutive >= threshold {
-                let locked_until = time::now()
+                let locked_until = state.clock.now()
                     + TimeDuration::seconds(state.config.security.lockout_duration_secs as i64);
                 metrics::counter!("auth_lockouts_total").increment(1);
                 // Best-effort: lockout and audit must not leak timing information on the login path.

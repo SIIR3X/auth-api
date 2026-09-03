@@ -4,10 +4,12 @@
 //! via Axum's State extractor. All fields are cheap to clone since they
 //! are Arc-backed internally (PgPool, RedisPool, Mailer, Arc<Config>).
 //! Tera is wrapped in Arc because it does not implement Clone.
+//!
+//! The clock and the mail transport are trait objects: the service runs with
+//! the wall clock and SMTP, and the test suites replace both on a built state.
 
 use std::{sync::Arc, time::Duration};
 
-use lettre::{AsyncSmtpTransport, Tokio1Executor, transport::smtp::authentication::Credentials};
 use reqwest::Client;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -16,15 +18,16 @@ use tera::Tera;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 
 use crate::{
-    config::{CaptchaConfig, Config, ConfigError, DatabaseConfig, MailConfig, SmtpConfig},
+    config::{CaptchaConfig, Config, ConfigError, DatabaseConfig, MailConfig},
+    services::mailer::SmtpMailer,
     utils::{
         crypto, jwt,
         redis_pool::{self, RedisPool},
+        time::{Clock, SystemClock},
     },
 };
 
-// Convenience alias used across services
-pub type Mailer = AsyncSmtpTransport<Tokio1Executor>;
+pub use crate::services::mailer::Mailer;
 
 // Error
 
@@ -55,6 +58,7 @@ pub struct AppState {
     pub db: PgPool,
     pub redis: RedisPool,
     pub nats: async_nats::Client,
+    pub clock: Arc<dyn Clock>,
     pub mailer: Mailer,
     pub http_client: Client,
     pub templates: Arc<Tera>,
@@ -106,7 +110,7 @@ impl AppState {
         crate::services::events::ensure_user_stream(&nats)
             .await
             .map_err(AppStateError::NatsStream)?;
-        let mailer = build_mailer(&config.mail.smtp)?;
+        let mailer = Mailer::new(SmtpMailer::from_config(&config.mail.smtp)?);
         let http_client = build_http_client(&config.captcha)?;
         let templates = Arc::new(build_templates(&config.mail)?);
         let jwt_keys = parse_jwt_keys(&config)?;
@@ -126,6 +130,7 @@ impl AppState {
             db,
             redis,
             nats,
+            clock: Arc::new(SystemClock),
             mailer,
             http_client,
             templates,
@@ -203,25 +208,6 @@ async fn build_pg_pool(cfg: &DatabaseConfig) -> Result<PgPool, sqlx::Error> {
         .acquire_timeout(Duration::from_secs(cfg.acquire_timeout_secs))
         .connect(&cfg.url)
         .await
-}
-
-fn build_mailer(cfg: &SmtpConfig) -> Result<Mailer, lettre::transport::smtp::Error> {
-    let creds = Credentials::new(cfg.username.clone(), cfg.password.clone());
-
-    // Use plain (no TLS) transport for local dev (e.g. Mailpit on port 1025)
-    // and STARTTLS for production SMTP servers
-    let transport = if cfg.username.is_empty() {
-        AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&cfg.host)
-            .port(cfg.port)
-            .build()
-    } else {
-        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&cfg.host)?
-            .port(cfg.port)
-            .credentials(creds)
-            .build()
-    };
-
-    Ok(transport)
 }
 
 fn build_http_client(cfg: &CaptchaConfig) -> Result<Client, reqwest::Error> {

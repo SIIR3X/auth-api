@@ -76,7 +76,7 @@ pub(super) async fn issue_password_reset(
         &NewPasswordResetToken {
             user_id: user.id,
             token_hash: &hash,
-            expires_at: time::in_secs(RESET_TOKEN_EXPIRY_SECS),
+            expires_at: state.clock.in_secs(RESET_TOKEN_EXPIRY_SECS),
             request_ip: ip,
             request_user_agent: user_agent,
         },
@@ -144,7 +144,7 @@ pub async fn reset_password(
             .map_err(|e| AppError::Internal(e.into()))?
             .ok_or(AppError::TokenInvalid)?;
 
-        if record.is_expired() {
+        if record.is_expired(state.clock.now()) {
             return Err(AppError::TokenExpired);
         }
         if record.is_used() {

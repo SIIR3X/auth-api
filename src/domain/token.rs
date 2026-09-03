@@ -43,12 +43,12 @@ pub trait OneTimeToken {
         self.used_at().is_some()
     }
 
-    fn is_expired(&self) -> bool {
-        self.expires_at() < OffsetDateTime::now_utc()
+    fn is_expired(&self, now: OffsetDateTime) -> bool {
+        self.expires_at() < now
     }
 
-    fn is_valid(&self) -> bool {
-        !self.is_used() && !self.is_expired()
+    fn is_valid(&self, now: OffsetDateTime) -> bool {
+        !self.is_used() && !self.is_expired(now)
     }
 }
 
@@ -76,8 +76,12 @@ impl OneTimeToken for PasswordResetToken {
 mod tests {
     use super::*;
 
+    fn now() -> OffsetDateTime {
+        OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000)
+    }
+
     fn make_reset_token(used: bool, expires_in_secs: i64) -> PasswordResetToken {
-        let now = OffsetDateTime::now_utc();
+        let now = now();
         PasswordResetToken {
             id: uuid::Uuid::new_v4(),
             user_id: uuid::Uuid::new_v4(),
@@ -102,26 +106,33 @@ mod tests {
 
     #[test]
     fn is_expired_true_when_past() {
-        assert!(make_reset_token(false, -1).is_expired());
+        assert!(make_reset_token(false, -1).is_expired(now()));
     }
 
     #[test]
     fn is_expired_false_when_future() {
-        assert!(!make_reset_token(false, 3600).is_expired());
+        assert!(!make_reset_token(false, 3600).is_expired(now()));
+    }
+
+    #[test]
+    fn is_expired_only_after_the_expiry_instant() {
+        let token = make_reset_token(false, 60);
+        assert!(!token.is_expired(token.expires_at));
+        assert!(token.is_expired(token.expires_at + time::Duration::nanoseconds(1)));
     }
 
     #[test]
     fn is_valid_true_when_unused_and_not_expired() {
-        assert!(make_reset_token(false, 3600).is_valid());
+        assert!(make_reset_token(false, 3600).is_valid(now()));
     }
 
     #[test]
     fn is_valid_false_when_used() {
-        assert!(!make_reset_token(true, 3600).is_valid());
+        assert!(!make_reset_token(true, 3600).is_valid(now()));
     }
 
     #[test]
     fn is_valid_false_when_expired() {
-        assert!(!make_reset_token(false, -1).is_valid());
+        assert!(!make_reset_token(false, -1).is_valid(now()));
     }
 }

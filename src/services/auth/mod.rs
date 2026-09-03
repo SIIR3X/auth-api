@@ -41,7 +41,7 @@ use crate::{
         user::{self as user_repo, NewUser},
     },
     state::AppState,
-    utils::{crypto, jwt::Claims, password, time, totp},
+    utils::{crypto, jwt::Claims, password, totp},
 };
 
 use ::time::Duration as TimeDuration;

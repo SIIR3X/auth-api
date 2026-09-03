@@ -226,7 +226,7 @@ pub async fn initiate(
         client_id: Some(client.client_id),
         client_ip: client_ip.map(|ip| ip.ip().to_string()),
         user_agent: user_agent.map(str::to_owned),
-        created_at: crate::utils::time::now().unix_timestamp(),
+        created_at: state.clock.now().unix_timestamp(),
     };
     let entry_json = serde_json::to_string(&entry).map_err(|e| AppError::Internal(e.into()))?;
 
@@ -315,7 +315,7 @@ pub async fn poll(
             if !user.is_active() {
                 return Err(AppError::AccountSuspended);
             }
-            if user.is_locked() {
+            if user.is_locked(state.clock.now()) {
                 return Err(AppError::AccountLocked);
             }
 
