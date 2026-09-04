@@ -15,6 +15,7 @@
 
 pub mod app;
 pub mod clock;
+pub mod contract;
 pub mod db;
 pub mod env;
 pub mod faults;

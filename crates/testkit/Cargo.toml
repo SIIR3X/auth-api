@@ -13,6 +13,7 @@ axum = "0.8.8"
 base64 = "0.22.1"
 deadpool-redis = "0.23.0"
 dotenvy = "0.15.7"
+jsonschema = { version = "0.56.0", default-features = false }
 lettre = { version = "0.11.19", default-features = false, features = ["builder"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "form"] }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -22,4 +23,5 @@ sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio
 time = "0.3.47"
 tokio = { version = "1.50.0", features = ["full"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+utoipa = "5"
 uuid = { version = "1.22.0", features = ["v4"] }

@@ -25,6 +25,7 @@ use tokio::{net::TcpListener, task::JoinHandle};
 
 use crate::{
     clock::TestClock,
+    contract,
     db::TestDb,
     env,
     faults::FaultProxy,
@@ -98,6 +99,8 @@ pub struct TestApp {
     pub clock: TestClock,
     pub mail: MailOutbox,
     pub dependencies: Option<Dependencies>,
+    /// Responses outside the OpenAPI contract, checked when the app is dropped.
+    pub contract: contract::Recorder,
     server: JoinHandle<()>,
     mailpit_api_port: Option<u16>,
     // Declared last: dropped after everything holding a connection to it.
@@ -195,7 +198,11 @@ impl TestApp {
             state.mailer = Mailer::new(mail.clone());
         }
 
-        let router = handlers::router(state.clone());
+        let contract = contract::Recorder::default();
+        let router = handlers::router(state.clone()).layer(axum::middleware::from_fn_with_state(
+            contract.clone(),
+            contract::record,
+        ));
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("failed to bind test listener");
@@ -233,6 +240,7 @@ impl TestApp {
             clock,
             mail,
             dependencies,
+            contract,
             server,
             mailpit_api_port: mailpit_ports.map(|p| p.api_port),
             _database: database,
@@ -411,6 +419,7 @@ impl TestApp {
 impl Drop for TestApp {
     fn drop(&mut self) {
         self.server.abort();
+        contract::settle(&self.contract);
     }
 }
 

@@ -7,5 +7,7 @@ mod common {
 }
 
 mod api;
+mod migrations;
 mod repositories;
+mod schema;
 mod services;
