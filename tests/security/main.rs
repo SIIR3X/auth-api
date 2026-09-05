@@ -7,7 +7,11 @@ mod common {
 }
 
 mod authentication;
+mod authorization;
+mod catalog;
 mod edge;
 mod headers;
+mod logs;
 mod rate_limits;
 mod regressions;
+mod static_guards;

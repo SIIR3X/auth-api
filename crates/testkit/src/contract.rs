@@ -7,9 +7,8 @@
 //! integration and security test is thereby a contract test as well.
 //!
 //! A response outside the contract fails the test when its app is dropped
-//! (`TEST_CONTRACT=strict`). `TEST_CONTRACT=report`, the default until the
-//! document covers every response, appends the violations to
-//! `target/contract-report/` instead;
+//! (`TEST_CONTRACT=strict`, the default). `TEST_CONTRACT=report` appends the
+//! violations to `target/contract-report/` instead, to survey a change;
 //! `TEST_CONTRACT=off` disables the check.
 
 use std::{
@@ -37,9 +36,9 @@ pub enum Mode {
 
 pub fn mode() -> Mode {
     match std::env::var("TEST_CONTRACT").as_deref() {
-        Ok("strict") => Mode::Strict,
+        Ok("report") => Mode::Report,
         Ok("off") => Mode::Off,
-        _ => Mode::Report,
+        _ => Mode::Strict,
     }
 }
 

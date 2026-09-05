@@ -2,6 +2,8 @@ pub mod cli;
 pub mod config;
 pub mod domain;
 pub mod error;
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;
 pub mod handlers;
 pub mod middleware;
 pub mod openapi;

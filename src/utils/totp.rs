@@ -47,6 +47,14 @@ pub fn verify_code(
     now: i64,
 ) -> Result<bool, TotpError> {
     let now = u64::try_from(now).map_err(|_| TotpError::TimeError)?;
+    // totp-rs subtracts the skew from the current step, which underflows within
+    // `skew` steps of the epoch: refuse such a time rather than panic.
+    if now < u64::from(skew) * 30 {
+        return Err(TotpError::TimeError);
+    }
+    if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(false);
+    }
     let plaintext = keyring.decrypt(encrypted_secret)?;
 
     let secret_bytes = Secret::Encoded(plaintext)
@@ -180,5 +188,33 @@ mod tests {
     fn verify_with_wrong_key_fails() {
         let wrong_key = Keyring::new([99u8; 32], None);
         assert!(verify_code(&encrypted_rfc_secret(), &code_at(NOW), &wrong_key, 1, NOW).is_err());
+    }
+
+    #[test]
+    fn times_within_the_skew_of_the_epoch_are_refused_without_panicking() {
+        for now in [0, 29, 59] {
+            assert!(matches!(
+                verify_code(&encrypted_rfc_secret(), "287082", &keyring(), 2, now),
+                Err(TotpError::TimeError)
+            ));
+        }
+        assert!(verify_code(&encrypted_rfc_secret(), &code_at(60), &keyring(), 2, 60).unwrap());
+    }
+
+    #[test]
+    fn only_six_ascii_digits_can_match() {
+        let code = code_at(NOW);
+        let fullwidth: String = code
+            .chars()
+            .map(|c| char::from_u32(c as u32 - '0' as u32 + '\u{FF10}' as u32).unwrap())
+            .collect();
+        for candidate in [
+            format!("{code} "),
+            format!("0{code}"),
+            code[..5].to_owned(),
+            fullwidth,
+        ] {
+            assert!(!verify_code(&encrypted_rfc_secret(), &candidate, &keyring(), 1, NOW).unwrap());
+        }
     }
 }

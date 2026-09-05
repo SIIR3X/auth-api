@@ -21,9 +21,11 @@ pub mod env;
 pub mod faults;
 pub mod fixtures;
 pub mod keys;
+pub mod logs;
 pub mod mail;
 pub mod mailpit;
 pub mod sql;
+pub mod tokens;
 
 /// Re-exported for [`pg_args!`].
 pub use sqlx;

@@ -10,6 +10,9 @@ yanked = "deny"
 ignore = []
 
 [bans]
+# Path dependencies inside this repository (the test harness) carry no
+# version; they are never published.
+allow-wildcard-paths = true
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
@@ -49,6 +52,8 @@ allow = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "MIT",
+  # MIT without the attribution clause; pulled by the test harness (jsonschema).
+  "MIT-0",
   "0BSD",
   "BSD-2-Clause",
   "BSD-3-Clause",

@@ -18,26 +18,33 @@ Every port of the development stack is published on `127.0.0.1` only.
 
 | Command | Description |
 |---------|-------------|
-| `make ci` | The full gate, run before every merge: `quality`, then every test with the nextest `ci` profile |
+| `make ci` | The full gate, run before every merge: `quality`, every suite with the nextest `ci` profile, then the fuzz corpus replay |
 | `make quality` | `fmt-check`, `clippy` and `deny` |
 | `make fmt` | Format the code |
 | `make fmt-check` | Check formatting without modifying files |
-| `make clippy` | Clippy on every target (library, binaries, tests, benches), warnings as errors |
+| `make clippy` | Clippy on every target and feature of the workspace, warnings as errors |
 | `make deny` | Dependency policy and security advisories (`cargo-deny`) |
 
 ## Tests
 
 | Command | Description |
 |---------|-------------|
-| `make test` | Start the test infrastructure, run every test, stop the infrastructure |
-| `make test-local` | Run every test against infrastructure already running |
+| `make test` | Start the test infrastructure, run every suite, stop the infrastructure |
+| `make test-local` | Run every suite against infrastructure already running |
+| `make test-unit` | Unit tests of the service and of the harness, no infrastructure |
+| `make test-integration` | API end to end, repositories, services, schema and migrations |
+| `make test-security` | Security suite, then the fuzz corpus replay |
+| `make test-sim` | Simulation suite, long scenarios included |
 | `make test-verbose` | `make test` with test output shown |
 | `make test-infra-up` / `make test-infra-down` | Start / stop PostgreSQL (5433), Redis (6380), NATS (4224) and Mailpit (1026) |
-| `make coverage` | Tests with a coverage report in `reports/coverage/` |
+| `make fuzz` | Every fuzz target for `FUZZ_SECS` seconds (default 60; nightly toolchain and `cargo-fuzz`) |
+| `make coverage` | Coverage of every suite (`cargo-llvm-cov`), HTML report in `reports/coverage/` |
 
 Each test runs in its own process against its own database, cloned from a
 migrated template. The nextest configuration (`.config/nextest.toml`) kills a
-test hung for two minutes and never retries a failure.
+test hung for two minutes (simulations get longer) and never retries a failure.
+See the [testing guide](testing.md) for where a test belongs and what the
+harness provides.
 
 ## Benchmarks
 

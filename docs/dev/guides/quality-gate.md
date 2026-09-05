@@ -13,15 +13,18 @@ make ci
 | Step | Tool | Fails on |
 |------|------|----------|
 | `fmt-check` | `cargo fmt --check` | Any formatting difference |
-| `clippy` | `cargo clippy --all-targets -- -D warnings` | Any warning in the library, binaries, tests or benches |
+| `clippy` | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Any warning in the library, binaries, tests, benches, the test harness or the fuzzing entry points |
 | `deny` | `cargo deny check` | Advisories (RUSTSEC), disallowed licenses, banned or duplicated crates |
-| tests | `cargo nextest run --profile ci` | Any failing test; every failure is reported in one run |
+| tests | `cargo nextest run --workspace --profile ci` | Any failing test of the unit, integration, security and simulation suites; every failure is reported in one run |
+| fuzz corpus | `cargo nextest run --test fuzz_corpus --features fuzzing` | A fuzz seed or recorded crash that breaks its property again |
 
-The test suite covers the HTTP API end to end (one database per test, cloned
-from a migrated template), the SQL layer (constraints, query plans, migrations
-applied from scratch), and unit tests. The OpenAPI test fails when
-`docs/dev/api/openapi.yaml` differs from what the code generates, or when a
-route is missing from it.
+Every response a test receives is checked against `docs/dev/api/openapi.yaml`,
+and a unit test fails when that document differs from what the code generates.
+The security suite attacks every documented operation and fails when a control
+of the [security model](../security-model.md) loses its tests. The
+[testing guide](testing.md) describes the suites and the harness.
+
+JUnit results are written to `target/nextest/ci/junit.xml`.
 
 ## Before a release
 
@@ -29,6 +32,8 @@ In addition to `make ci`:
 
 | Command | Checks |
 |---------|--------|
+| `make fuzz FUZZ_SECS=600` | Every fuzz target for ten minutes (nightly); a crash is fixed and its input added to `fuzz/regressions/` |
+| `make test-sim` | The simulation suite, long scenarios included |
 | `make docker-check` | Hadolint on the Dockerfile, Trivy CVE and secret scans of the image |
 | `make bench-http` | Latency of every scenario; compare with the figures in the [operations runbook](../../deploy/guides/operations.md#8-measured-capacity) |
 

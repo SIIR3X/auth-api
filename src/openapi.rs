@@ -66,7 +66,7 @@ use utoipa::{
         crate::handlers::two_factor::verify_email_otp_setup,
         crate::handlers::two_factor::disable_email_otp,
     ),
-    modifiers(&SecurityAddon),
+    modifiers(&SecurityAddon, &CommonResponses),
     tags(
         (name = "discovery", description = "Health and public keys"),
         (name = "auth", description = "Registration, sign-in, tokens and two-factor challenges"),
@@ -99,6 +99,90 @@ impl Modify for SecurityAddon {
             ),
         );
     }
+}
+
+/// Documents what the layers around the handlers answer, so the contract covers
+/// every status a client can receive: rate limiting and unavailability on every
+/// operation, input rejections where there is input, authentication failures
+/// on protected operations. Each carries the `ErrorBody` that
+/// `middleware::error_body` guarantees.
+struct CommonResponses;
+
+impl Modify for CommonResponses {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::{PathItem, RefOr, response::ResponseBuilder};
+
+        for item in openapi.paths.paths.values_mut() {
+            let PathItem {
+                get,
+                put,
+                post,
+                delete,
+                patch,
+                ..
+            } = item;
+            for operation in [get, put, post, delete, patch].into_iter().flatten() {
+                let has_body = operation.request_body.is_some();
+                let has_parameters = operation
+                    .parameters
+                    .as_ref()
+                    .is_some_and(|parameters| !parameters.is_empty());
+                let protected = operation
+                    .security
+                    .as_ref()
+                    .is_some_and(|requirements| !requirements.is_empty());
+
+                let mut common = vec![
+                    ("429", "Rate limited; see Retry-After"),
+                    (
+                        "503",
+                        "A dependency is unavailable or the request timed out",
+                    ),
+                ];
+                if has_body || has_parameters {
+                    common.extend([("400", "Malformed request"), ("422", "Invalid input")]);
+                }
+                if has_body {
+                    common.extend([
+                        ("413", "Body larger than 64 KB"),
+                        ("415", "Body is not JSON"),
+                    ]);
+                }
+                if protected {
+                    common.push(("401", "Missing, invalid or revoked access token"));
+                }
+
+                let responses = &mut operation.responses.responses;
+                for (status, description) in common {
+                    match responses.get_mut(status) {
+                        Some(RefOr::T(response)) if response.content.is_empty() => {
+                            response
+                                .content
+                                .insert("application/json".into(), error_content());
+                        }
+                        Some(_) => {}
+                        None => {
+                            responses.insert(
+                                status.into(),
+                                RefOr::T(
+                                    ResponseBuilder::new()
+                                        .description(description)
+                                        .content("application/json", error_content())
+                                        .build(),
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn error_content() -> utoipa::openapi::content::Content {
+    utoipa::openapi::content::ContentBuilder::new()
+        .schema(Some(utoipa::openapi::Ref::from_schema_name("ErrorBody")))
+        .build()
 }
 
 /// The document as YAML, exactly as committed.

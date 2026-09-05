@@ -14,6 +14,9 @@ base64 = "0.22.1"
 deadpool-redis = "0.23.0"
 dotenvy = "0.15.7"
 jsonschema = { version = "0.56.0", default-features = false }
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 lettre = { version = "0.11.19", default-features = false, features = ["builder"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "form"] }
 serde = { version = "1.0.228", features = ["derive"] }

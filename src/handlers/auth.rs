@@ -123,6 +123,7 @@ pub enum LoginResponse {
     request_body = RegisterRequest,
     responses(
         (status = 202, description = "Accepted; identical whether or not the address is taken", body = RegistrationAccepted),
+        (status = 409, description = "Username already taken (`username_taken`); a taken address is not revealed", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
@@ -265,6 +266,7 @@ pub async fn logout(
     responses(
         (status = 200, description = "Tokens issued", body = TokensResponse),
         (status = 401, description = "Invalid, expired or replayed refresh token", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
@@ -360,6 +362,7 @@ pub async fn reset_password(
     responses(
         (status = 200, description = "Tokens issued", body = TokensResponse),
         (status = 401, description = "Invalid code or pre-auth token", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or locked since the challenge", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
@@ -395,6 +398,7 @@ pub async fn complete_two_factor(
     responses(
         (status = 200, description = "Tokens issued", body = TokensResponse),
         (status = 401, description = "Invalid recovery code or pre-auth token", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or locked since the challenge", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
@@ -429,6 +433,7 @@ pub async fn recovery_login(
     responses(
         (status = 200, description = "Tokens issued", body = TokensResponse),
         (status = 401, description = "Invalid code or pre-auth token", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or locked since the challenge", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]

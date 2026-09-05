@@ -28,7 +28,7 @@ pub struct ErrorBody {
 }
 
 impl ErrorBody {
-    fn new(code: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             code,
             message: message.into(),

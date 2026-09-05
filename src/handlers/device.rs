@@ -161,7 +161,7 @@ pub async fn verify(
     Ok(StatusCode::OK)
 }
 
-fn validate_user_code(code: &str) -> Result<(), AppError> {
+pub(crate) fn validate_user_code(code: &str) -> Result<(), AppError> {
     let parts: Vec<&str> = code.split('-').collect();
     if parts.len() != 2 || parts[0].len() != 4 || parts[1].len() != 4 {
         return Err(AppError::Validation(

@@ -350,14 +350,17 @@ pub fn validate_locale(locale: &str) -> Result<(), AppError> {
 /// These constraints are intentionally modest; raising the minimum length is
 /// more effective than adding more character-class requirements.
 pub fn validate_password(password: &str) -> Result<(), AppError> {
-    if password.len() < 10 {
+    // Characters, not bytes: an accented password of ten bytes may hold seven.
+    if password.chars().count() < 10 {
         return Err(AppError::Validation(
             "password must be at least 10 characters".into(),
         ));
     }
+    // The upper bound stays in bytes: sign-in refuses longer input before
+    // hashing, so every accepted password must remain usable there.
     if password.len() > 128 {
         return Err(AppError::Validation(
-            "password must not exceed 128 characters".into(),
+            "password must not exceed 128 bytes".into(),
         ));
     }
     if !password.chars().any(|c| c.is_ascii_digit()) {
@@ -449,4 +452,33 @@ pub fn user_status_str(status: &crate::domain::user::UserStatus) -> String {
         UserStatus::PendingVerification => "pending_verification",
     }
     .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn password_minimum_counts_characters_not_bytes() {
+        // Found by the fuzzer: ten bytes, seven characters.
+        assert!(validate_password("n@My\u{202E}e 1").is_err());
+        assert!(validate_password("Ééééééé1!A").is_ok());
+    }
+
+    #[test]
+    fn password_maximum_counts_bytes() {
+        let longest = format!("A1!{}", "a".repeat(125));
+        assert!(validate_password(&longest).is_ok());
+        assert!(validate_password(&format!("{longest}a")).is_err());
+        assert!(validate_password(&format!("A1!{}", "é".repeat(63))).is_err());
+    }
+
+    #[test]
+    fn password_needs_every_character_class() {
+        assert!(validate_password("Password1!").is_ok());
+        assert!(validate_password("password1!").is_err());
+        assert!(validate_password("Password!!").is_err());
+        assert!(validate_password("Password11").is_err());
+        assert!(validate_password("Password\u{0663}!").is_err());
+    }
 }

@@ -107,11 +107,11 @@ pub async fn list(
 }
 
 /// Opaque to clients: the position of the last entry of a page.
-fn encode_cursor(created_at: OffsetDateTime, id: Uuid) -> String {
+pub(crate) fn encode_cursor(created_at: OffsetDateTime, id: Uuid) -> String {
     B64URL.encode(format!("{}:{id}", created_at.unix_timestamp_nanos()))
 }
 
-fn decode_cursor(cursor: &str) -> Result<(OffsetDateTime, Uuid), AppError> {
+pub(crate) fn decode_cursor(cursor: &str) -> Result<(OffsetDateTime, Uuid), AppError> {
     let invalid = || AppError::Validation("invalid cursor".into());
     let raw = B64URL.decode(cursor).map_err(|_| invalid())?;
     let raw = std::str::from_utf8(&raw).map_err(|_| invalid())?;

@@ -60,7 +60,7 @@ fmt-check: ## Check formatting without modifying files
 
 .PHONY: clippy
 clippy: ## Run Clippy linter on every target (lib, bins, tests, benches)
-	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 .PHONY: deny
 deny: ## Enforce dependency policy and security audit (cargo-deny)
@@ -103,8 +103,19 @@ test-integration: ## Integration suite: API end to end, repositories, services
 	$(TEST_ENV) cargo nextest run --test integration
 
 .PHONY: test-security
-test-security: ## Security suite: authentication, limits, headers, audit regressions
+test-security: ## Security suite, fuzz corpus replay included
 	$(TEST_ENV) cargo nextest run --test security
+	cargo nextest run --test fuzz_corpus --features fuzzing
+
+FUZZ_SECS ?= 60
+
+.PHONY: fuzz
+fuzz: ## Fuzz every target FUZZ_SECS seconds each (nightly toolchain, cargo-fuzz)
+	@for target in $$(cargo +nightly fuzz list --fuzz-dir fuzz); do \
+		echo "== $$target"; \
+		mkdir -p fuzz/corpus/$$target; \
+		cargo +nightly fuzz run --fuzz-dir fuzz $$target fuzz/corpus/$$target fuzz/seeds/$$target -- -max_total_time=$(FUZZ_SECS) || exit 1; \
+	done
 
 .PHONY: test-sim
 test-sim: ## Simulation suite, long scenarios included
@@ -118,6 +129,7 @@ test-verbose: test-infra-up ## Run every suite with detailed output
 .PHONY: ci
 ci: quality ## Full local CI gate: formatting, lints, dependency policy, every suite
 	$(TEST_ENV) cargo nextest run --workspace --profile ci
+	cargo nextest run --profile ci --test fuzz_corpus --features fuzzing
 
 .PHONY: coverage
 coverage: ## Coverage of every suite (cargo-llvm-cov), HTML report in reports/coverage/

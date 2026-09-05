@@ -80,7 +80,7 @@ pub(super) async fn load_pre_auth_state_from_redis(
     parse_pre_auth_state(&raw)
 }
 
-pub(super) fn parse_pre_auth_state(raw: &str) -> Result<PreAuthState, AppError> {
+pub(crate) fn parse_pre_auth_state(raw: &str) -> Result<PreAuthState, AppError> {
     if let Ok(user_id) = raw.parse::<Uuid>() {
         return Ok(PreAuthState {
             user_id,

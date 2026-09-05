@@ -19,7 +19,7 @@ use tower_http::{
 
 use crate::{
     middleware::{
-        access_log,
+        access_log, error_body,
         rate_limit::{self, Bucket, RateLimitState},
         request_id, security_headers,
     },
@@ -164,11 +164,6 @@ fn build_router(
         .nest("/users/me", me_with_strict_reauth)
         .layer(cors)
         .layer(middleware::from_fn(access_log::layer))
-        .layer(middleware::from_fn_with_state(
-            security_headers_state,
-            security_headers::layer,
-        ))
-        .layer(middleware::from_fn(request_id::layer))
         // 64 KB is more than sufficient for any JSON payload this API accepts.
         // Overrides Axum's default 2 MB limit to reduce DoS exposure.
         .layer(DefaultBodyLimit::max(65_536))
@@ -181,7 +176,15 @@ fn build_router(
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             std::time::Duration::from_secs(30),
-        ));
+        ))
+        // Outside the timeout, the body limit and the rate limiters, whose
+        // refusals are plain text: every error leaves with the documented body.
+        .layer(middleware::from_fn(error_body::layer))
+        .layer(middleware::from_fn_with_state(
+            security_headers_state,
+            security_headers::layer,
+        ))
+        .layer(middleware::from_fn(request_id::layer));
 
     // Outermost layer so HTTP metrics include time spent in every middleware.
     let router = match prometheus_layer {

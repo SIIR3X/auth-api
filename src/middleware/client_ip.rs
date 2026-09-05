@@ -7,7 +7,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use axum::{
     extract::{ConnectInfo, FromRequestParts},
-    http::{StatusCode, request::Parts},
+    http::{HeaderMap, StatusCode, request::Parts},
 };
 use ipnetwork::IpNetwork;
 
@@ -35,34 +35,35 @@ impl<S: Send + Sync + TrustedProxySource> FromRequestParts<S> for ClientIp {
     type Rejection = (StatusCode, &'static str);
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let trusted = state.trusted_proxy_cidrs();
-        let peer_ip = parts
+        let peer = parts
             .extensions
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ci| ci.0.ip());
-
-        let ip = match peer_ip {
-            Some(peer) if is_trusted_proxy(peer, trusted) => {
-                forwarded_client_ip(parts, trusted).unwrap_or(peer)
-            }
-            Some(peer) => peer,
-            None => return Ok(ClientIp(None)),
-        };
-
-        Ok(ClientIp(Some(IpNetwork::from(ip))))
+        let ip = resolve_client_ip(peer, &parts.headers, state.trusted_proxy_cidrs());
+        Ok(ClientIp(ip.map(IpNetwork::from)))
     }
+}
+
+/// The client address of a request: its peer, or, when the peer is a trusted
+/// proxy, the address the forwarding headers name. `None` without a peer.
+pub(crate) fn resolve_client_ip(
+    peer: Option<IpAddr>,
+    headers: &HeaderMap,
+    trusted_proxy_cidrs: &[IpNetwork],
+) -> Option<IpAddr> {
+    let peer = peer?;
+    if !is_trusted_proxy(peer, trusted_proxy_cidrs) {
+        return Some(peer);
+    }
+    Some(forwarded_client_ip(headers, trusted_proxy_cidrs).unwrap_or(peer))
 }
 
 fn is_trusted_proxy(ip: IpAddr, trusted_proxy_cidrs: &[IpNetwork]) -> bool {
     trusted_proxy_cidrs.iter().any(|cidr| cidr.contains(ip))
 }
 
-fn forwarded_client_ip(parts: &Parts, trusted_proxy_cidrs: &[IpNetwork]) -> Option<IpAddr> {
-    if let Some(forwarded_for) = parts
-        .headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-    {
+fn forwarded_client_ip(headers: &HeaderMap, trusted_proxy_cidrs: &[IpNetwork]) -> Option<IpAddr> {
+    if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
         let forwarded_chain = forwarded_for
             .split(',')
             .map(str::trim)
@@ -80,8 +81,7 @@ fn forwarded_client_ip(parts: &Parts, trusted_proxy_cidrs: &[IpNetwork]) -> Opti
         }
     }
 
-    parts
-        .headers
+    headers
         .get("x-real-ip")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse::<IpAddr>().ok())

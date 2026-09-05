@@ -262,7 +262,7 @@ async fn ensure_account_usable(state: &AppState, user_id: Uuid) -> Result<(), Ap
 
 /// RFC 7636 section 4.2: S256 only, a 43-character base64url SHA-256 digest.
 /// `plain` would let whoever saw the challenge redeem the code.
-fn validate_challenge(challenge: &str, method: &str) -> Result<(), AppError> {
+pub(crate) fn validate_challenge(challenge: &str, method: &str) -> Result<(), AppError> {
     if method != "S256" {
         return Err(AppError::Validation(
             "only the S256 code_challenge_method is accepted".into(),
@@ -282,7 +282,7 @@ fn is_base64url(b: u8) -> bool {
 
 /// RFC 7636 section 4.1 (verifier charset and length) and 4.6 (S256), compared
 /// in constant time.
-fn verifier_matches(challenge: &str, verifier: &str) -> bool {
+pub(crate) fn verifier_matches(challenge: &str, verifier: &str) -> bool {
     let well_formed = (43..=128).contains(&verifier.len())
         && verifier
             .bytes()
@@ -303,7 +303,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// `http://[::1]:<any port>/<path>` where the path is registered on a loopback
 /// URI (RFC 8252 section 7.3: native apps cannot know their port in advance).
 /// `localhost` is refused: it can resolve elsewhere.
-fn validate_redirect(client: &RegisteredClient, redirect_uri: &str) -> Result<(), AppError> {
+pub(crate) fn validate_redirect(
+    client: &RegisteredClient,
+    redirect_uri: &str,
+) -> Result<(), AppError> {
     if client
         .redirect_uris
         .iter()
@@ -315,7 +318,8 @@ fn validate_redirect(client: &RegisteredClient, redirect_uri: &str) -> Result<()
     let loopback_ok = client.allows_loopback_redirect
         && reqwest::Url::parse(redirect_uri).is_ok_and(|url| {
             is_loopback(&url)
-                && url.port().is_some()
+                // Port 0 is no destination: a native app listens on a real one.
+                && url.port().is_some_and(|port| port != 0)
                 && url.as_str() == redirect_uri
                 && client
                     .redirect_uris

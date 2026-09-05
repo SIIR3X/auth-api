@@ -118,3 +118,39 @@ list is in [Configuration](guides/configuration.md#production-checks).
   lifetime, not their entropy.
 - Outside production, rate limiting and CAPTCHA fail open by default.
 - Anyone holding both `ENCRYPTION_KEY` and a database dump can read TOTP secrets.
+
+## Control catalog
+
+Each control names the tests that pin it; `tests/security/catalog.rs` fails
+when a cited test no longer exists.
+
+| ID | Control | Tests |
+|----|---------|-------|
+| SEC-01 | Passwords are hashed with Argon2id, salted per hash | `hash_and_verify_correct_password`, `same_password_produces_different_hashes`, `async_hash_and_verify_match_sync_behavior` |
+| SEC-02 | No account oracle: unknown identifiers, locked accounts, taken addresses and forgotten passwords answer alike | `locked_account_answers_the_same_whatever_the_password`, `registering_a_taken_email_looks_like_a_new_signup`, `forgot_password_takes_the_same_minimum_time_either_way`, `forgot_password_returns_200_for_unknown_email`, `login_unknown_user` |
+| SEC-03 | Lockout after consecutive wrong passwords, never after failed second factors | `account_locked_after_threshold_failures`, `account_unlocked_after_lockout_expires`, `second_factor_failures_do_not_lock_the_account` |
+| SEC-04 | Attempt budgets are consumed atomically and fail closed | `concurrent_attempts_never_exceed_the_budget`, `unreachable_redis_fails_closed`, `refresh_rate_limited_after_20_invalid_tokens`, `forgot_password_is_capped_per_account` |
+| SEC-05 | Access tokens: ES256 only, issuer, audience and time claims checked, revocation checked on every request | `missing_or_malformed_credentials_are_refused`, `forged_tokens_for_a_live_session_are_refused`, `a_token_outlives_neither_its_expiry_nor_its_logout`, `time_claims_follow_the_supplied_clock`, `decode_rejects_non_es256_alg` |
+| SEC-06 | Every operation outside a short public list requires an access token | `the_public_list_matches_the_document`, `a_valid_token_passes_authentication_everywhere` |
+| SEC-07 | Refresh tokens rotate; a replay revokes the family, a concurrent refresh does not | `refresh_token_replay_is_rejected`, `refresh_token_theft_invalidates_entire_session_family`, `concurrent_refreshes_keep_the_family_alive`, `rotated_within_accepts_the_grace_boundary_only` |
+| SEC-08 | Absolute session lifetime and optional address binding | `session_lifetime_counts_from_the_first_sign_in`, `a_rotation_inherits_the_family_start`, `refresh_rejects_mismatched_ip_with_strict_binding` |
+| SEC-09 | Sensitive actions need a recent re-authentication; signing in does not count | `signing_in_does_not_grant_sensitive_actions`, `revoke_session_requires_recent_reauth`, `delete_account_without_password_and_no_recent_reauth_rejected`, `a_device_session_cannot_change_the_password_without_reauthentication`, `enrolling_a_second_factor_requires_reauthentication` |
+| SEC-10 | A pre-auth token completes only the method it was issued for | `totp_challenge_cannot_be_completed_with_an_email_code`, `seeds_and_regressions_hold` |
+| SEC-11 | Second-factor codes are single-use and budgeted per challenge and per account | `totp_replay_within_window_rejected`, `totp_replay_rejected_even_after_redis_key_loss`, `concurrent_totp_guesses_never_exceed_the_token_budget`, `account_budget_blocks_fresh_pre_auth_tokens`, `recovery_challenge_rate_limited_after_max_failures`, `email_2fa_lockout_after_max_failures`, `recovery_login_replay_rejected` |
+| SEC-12 | Changes to second factors are notified and keep a usable configuration | `removing_the_last_method_drops_recovery_codes`, `removing_the_primary_method_promotes_the_remaining_one`, `disable_totp_sends_two_factor_disabled_email` |
+| SEC-13 | TOTP secrets are encrypted with named keys; rotation is resumable | `keyring_writes_versioned_ciphertexts_it_can_read`, `keyring_refuses_a_key_it_does_not_hold`, `encrypt_produces_different_output_each_call`, `rotate_is_idempotent_when_run_twice`, `rotate_re_encrypts_totp_secret_with_new_key` |
+| SEC-14 | Only registered clients obtain sessions through client flows | `a_flow_needs_a_registered_client` |
+| SEC-15 | Device flow: user codes reserved atomically, polling paced, approval collected once, account rechecked | `a_live_user_code_is_never_handed_out_twice`, `polling_faster_than_the_interval_is_slowed_down`, `an_approval_is_collected_exactly_once_under_concurrent_polls`, `a_suspended_account_cannot_collect_approved_tokens`, `a_non_primary_client_is_capped_without_a_quota_row`, `unknown_user_codes_are_rate_limited` |
+| SEC-16 | Authorization code: S256 only, exact or loopback redirects, single use, replay revokes, third-party consent re-authenticates | `only_s256_challenges_are_accepted`, `only_registered_or_loopback_redirects_are_accepted`, `loopback_redirects_accept_any_port_on_a_registered_path`, `a_replayed_code_is_refused_and_revokes_its_session`, `a_wrong_verifier_burns_the_code`, `a_code_is_bound_to_its_client_and_redirect`, `a_third_party_client_requires_a_fresh_reauthentication`, `challenges_and_verifiers_follow_rfc_7636` |
+| SEC-17 | Client tokens carry only consented permissions, re-derived on refresh | `tokens_carry_only_the_consented_scopes_even_after_refresh`, `granted_is_an_intersection_unless_unrestricted` |
+| SEC-18 | Tokens and codes are stored as digests | `sessions_require_32_byte_hashes`, `email_verification_tokens_are_fixed_length` |
+| SEC-19 | The audit log is append-only and holds no personal data | `audit_log_is_append_only`, `audit_log_delete_blocked_by_trigger`, `account_deletion_leaves_no_identity_in_the_audit_log`, `an_email_change_keeps_the_status_and_audits_no_address`, `a_forged_cursor_is_refused_and_the_history_needs_a_session` |
+| SEC-20 | An email change is confirmed on both addresses by the user who started it | `email_change_full_flow_success`, `email_change_steps_cannot_be_skipped`, `email_change_token_bound_to_initiating_user` |
+| SEC-21 | Account deletion is acknowledged downstream before the row goes | `account_deletion_publishes_user_deleted_through_jetstream` |
+| SEC-22 | Forwarding headers count only from trusted proxies; IPv6 clients share their /64 | `direct_peer_ignores_forwarded_headers`, `trusted_proxy_uses_forwarded_client_ip`, `ipv6_addresses_share_their_64` |
+| SEC-23 | Rate limits per client, failing closed in production | `auth_rate_limit_blocks_requests_exceeding_limit`, `auth_routes_fail_closed_when_rate_limiter_backend_is_down`, `a_refused_request_consumes_nothing`, `validate_rejects_production_config_with_rate_limit_fail_open` |
+| SEC-24 | Bounded bodies, security headers, CORS allowlist, one error format | `an_oversized_body_is_refused_before_the_handler`, `security_headers_present_on_200_response`, `security_headers_enable_hsts_for_https_production`, `cross_origin_access_is_limited_to_the_allowlist`, `plain_text_errors_become_error_bodies_with_their_headers`, `parser_details_do_not_leak` |
+| SEC-25 | Logs carry route templates and never a secret | `access_logs_carry_route_templates_not_codes`, `account_flows_never_log_their_secrets` |
+| SEC-26 | Production refuses a configuration that disables a control | `validate_accepts_hardened_production_config`, `validate_rejects_committed_dev_key_in_production`, `validate_rejects_wildcard_cors_in_production`, `validate_rejects_non_https_public_url_in_production` |
+| SEC-27 | Code hygiene: bound SQL parameters, no unsafe code, no panics on request paths, released migrations frozen | `sql_is_never_assembled_from_strings`, `there_is_no_unsafe_code`, `request_paths_never_unwrap`, `released_migrations_are_never_edited` |
+| SEC-28 | Every response matches the published OpenAPI contract | `schemas_are_enforced_through_references`, `undocumented_statuses_and_bodies_are_violations` |
