@@ -14,6 +14,8 @@ impl Config {
         )?;
         validate_cors(&self.cors, self.is_production())?;
         validate_security(&self.security)?;
+        validate_device_auth(&self.device_auth)?;
+        validate_session_lifetime(&self.jwt)?;
         validate_crypto(&self.crypto)?;
 
         validate_jwt_audience(&self.jwt.audience, self.is_production())?;
@@ -312,6 +314,41 @@ pub(super) fn validate_security(security: &SecurityConfig) -> Result<(), ConfigE
     Ok(())
 }
 
+/// A device flow needs a code that lives long enough to be polled at least once.
+pub(super) fn validate_device_auth(device: &DeviceAuthConfig) -> Result<(), ConfigError> {
+    if device.ttl_secs == 0 {
+        return Err(ConfigError::Invalid {
+            key: "DEVICE_AUTH_TTL_SECS".into(),
+            reason: "must be greater than 0".into(),
+        });
+    }
+    // 0 was advertised to clients as is, while polling was paced at one second:
+    // a client following the advertised interval was always told to slow down.
+    if device.poll_interval_secs == 0 {
+        return Err(ConfigError::Invalid {
+            key: "DEVICE_AUTH_POLL_INTERVAL_SECS".into(),
+            reason: "must be at least 1".into(),
+        });
+    }
+    if device.poll_interval_secs >= device.ttl_secs {
+        return Err(ConfigError::Invalid {
+            key: "DEVICE_AUTH_POLL_INTERVAL_SECS".into(),
+            reason: "must be shorter than DEVICE_AUTH_TTL_SECS, or no poll can succeed".into(),
+        });
+    }
+    Ok(())
+}
+
+/// A zero absolute lifetime would refuse every refresh.
+pub(super) fn validate_session_lifetime(jwt: &JwtConfig) -> Result<(), ConfigError> {
+    if jwt.max_session_lifetime_secs == 0 {
+        return Err(ConfigError::Invalid {
+            key: "JWT_MAX_SESSION_LIFETIME_SECS".into(),
+            reason: "must be greater than 0".into(),
+        });
+    }
+    Ok(())
+}
 pub(super) fn validate_cors(cors: &CorsConfig, is_production: bool) -> Result<(), ConfigError> {
     if cors.allowed_origins.is_empty() {
         return Err(ConfigError::Invalid {

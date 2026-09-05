@@ -348,3 +348,40 @@ async fn second_factor_failures_do_not_lock_the_account() {
         .await;
     assert_eq!(res.status().as_u16(), 200);
 }
+
+#[tokio::test]
+async fn a_pre_auth_state_without_a_method_cannot_complete_with_a_recovery_code() {
+    use deadpool_redis::redis::AsyncCommands;
+
+    let app = crate::common::app::TestApp::spawn().await;
+    let user = crate::common::fixtures::register_user(&app, 1).await;
+    crate::common::fixtures::activate_user(&app.db, user.id).await;
+    let code = "LEGACY-RECOVERY-CODE";
+    let hash = auth_api::utils::crypto::sha256(code.as_bytes());
+    auth_api::repositories::recovery_code::replace_all_by_user(
+        &app.db,
+        user.id,
+        &[(1, hash.as_slice())],
+        None,
+    )
+    .await
+    .unwrap();
+
+    // The format written before challenges named their method: a bare user id.
+    let token = "legacy-pre-auth-token";
+    let mut conn = app.redis.get().await.unwrap();
+    let _: () = conn
+        .set_ex(format!("pre_auth:{token}"), user.id.to_string(), 300)
+        .await
+        .unwrap();
+
+    let res = app
+        .post(
+            "/auth/two-factor/recovery",
+            &serde_json::json!({ "pre_auth_token": token, "recovery_code": code }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 401);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["code"], "token_invalid");
+}

@@ -9,17 +9,22 @@ pub async fn refresh_token(
     user_agent: Option<&str>,
     request_id: Option<Uuid>,
 ) -> Result<AuthTokens, AppError> {
-    // Brute-force guard on refresh attempts per IP.
+    // Brute-force guard on refresh attempts per IP. It bounds volume and guards
+    // no secret (refresh tokens carry 256 bits), so it fails open like the other
+    // abuse budgets: without Redis the refresh goes on to the database, the
+    // durable authority on revocation.
     if let Some(ip_val) = ip {
         let key = format!("refresh_fail:{}", ip_bucket(ip_val.ip()));
-        let mut conn = state
-            .redis
-            .get()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-        let failures: i64 = conn.get(&key).await.unwrap_or(0);
-        if failures >= MAX_REFRESH_FAILURES_BY_IP {
-            return Err(AppError::RateLimitExceeded);
+        match state.redis.get().await {
+            Ok(mut conn) => {
+                let failures: i64 = conn.get(&key).await.unwrap_or(0);
+                if failures >= MAX_REFRESH_FAILURES_BY_IP {
+                    return Err(AppError::RateLimitExceeded);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "refresh budget unavailable, failing open");
+            }
         }
     }
 
@@ -90,7 +95,8 @@ pub async fn refresh_token(
     }
 
     // Absolute session lifetime guard
-    let max_lifetime = state.config.jwt.max_session_lifetime_secs as i64;
+    let max_lifetime =
+        i64::try_from(state.config.jwt.max_session_lifetime_secs).unwrap_or(i64::MAX);
     // Measured from the family's first sign-in: every rotation creates a new
     // row, so the current row's created_at would restart the clock each time.
     let session_age = (state.clock.now() - session.family_created_at).whole_seconds();

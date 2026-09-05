@@ -651,3 +651,43 @@ fn validate_rejects_zero_lockout_threshold() {
         .expect_err("a zero lockout threshold should fail");
     assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "LOCKOUT_THRESHOLD"));
 }
+
+#[test]
+fn validate_rejects_zero_device_poll_interval() {
+    let mut config = valid_config();
+    config.device_auth.poll_interval_secs = 0;
+
+    let err = config
+        .validate()
+        .expect_err("a zero poll interval should fail");
+    assert!(
+        matches!(err, ConfigError::Invalid { key, .. } if key == "DEVICE_AUTH_POLL_INTERVAL_SECS")
+    );
+}
+
+#[test]
+fn validate_rejects_poll_interval_not_below_device_ttl() {
+    let mut config = valid_config();
+    config.device_auth.ttl_secs = 60;
+    config.device_auth.poll_interval_secs = 60;
+
+    let err = config
+        .validate()
+        .expect_err("a poll interval as long as the code lifetime should fail");
+    assert!(
+        matches!(err, ConfigError::Invalid { key, .. } if key == "DEVICE_AUTH_POLL_INTERVAL_SECS")
+    );
+}
+
+#[test]
+fn validate_rejects_zero_session_lifetime() {
+    let mut config = valid_config();
+    config.jwt.max_session_lifetime_secs = 0;
+
+    let err = config
+        .validate()
+        .expect_err("a zero absolute session lifetime should fail");
+    assert!(
+        matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_MAX_SESSION_LIFETIME_SECS")
+    );
+}

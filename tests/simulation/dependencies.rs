@@ -174,3 +174,22 @@ async fn an_account_is_not_deleted_while_its_deletion_cannot_be_announced() {
     assert_eq!(status, 204, "deletion did not recover with NATS");
     assert!(!exists().await);
 }
+
+#[tokio::test]
+async fn a_refresh_goes_through_without_redis() {
+    let app = app_with_fault_proxies().await;
+    let user = fixtures::authenticated_user(&app, 1).await;
+
+    dependencies(&app).redis.set(Fault::Refuse);
+    let res = app
+        .post(
+            "/auth/refresh",
+            &json!({ "refresh_token": user.refresh_token }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        200,
+        "the database is the authority on revocation; Redis only speeds it up"
+    );
+}

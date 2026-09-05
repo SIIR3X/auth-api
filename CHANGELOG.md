@@ -43,6 +43,9 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 - `docker-compose.api.yml` runs `auth-api:${AUTH_API_VERSION}` built by
   `make release`; no image is published to a registry.
 - Behind the compose file, `TRUSTED_PROXY_CIDRS` must be `172.30.0.1/32`.
+- Startup refuses `LOCKOUT_THRESHOLD=0`, `DEVICE_AUTH_TTL_SECS=0`, a
+  `DEVICE_AUTH_POLL_INTERVAL_SECS` of 0 or not shorter than the device code
+  lifetime, and `JWT_MAX_SESSION_LIFETIME_SECS=0`.
 
 **Data**
 
@@ -124,6 +127,8 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   address stops the walk at the trusted proxy instead of letting the value to
   its left through. `X-Real-IP` only counts without `X-Forwarded-For`. The
   bundled nginx configuration was not affected: it overwrites both headers.
+- A recovery code no longer completes a pre-auth state that names no method
+  (the format written before challenges were bound to their method).
 
 ### Reliability
 
@@ -133,6 +138,8 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   restart under traffic was never recovered from: each request failed on a dead
   connection and counted as a use, so the connection never went idle long
   enough to be checked.
+- A refresh no longer fails when the Redis pool is unavailable: its per-address
+  budget fails open and the database decides, as documented.
 
 ### Performance
 

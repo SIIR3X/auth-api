@@ -243,8 +243,12 @@ pub async fn complete_login_with_recovery(
     let pre_auth_state = load_pre_auth_state_from_redis(&mut conn, &redis_key).await?;
     drop(conn);
 
-    // Recovery codes stand in for any method, so no method check here. The
-    // token stays alive until success.
+    // Recovery codes stand in for any method, but only for a challenge issued
+    // for one: a state without a method predates method binding and is refused,
+    // as on the other completion endpoints. The token stays alive until success.
+    if pre_auth_state.method.is_none() {
+        return Err(AppError::TokenInvalid);
+    }
     let user_id = pre_auth_state.user_id;
     let remember_me = pre_auth_state.remember_me;
     let user_fail_key = format!("{}{}", RC_USER_FAIL_PREFIX, user_id);
