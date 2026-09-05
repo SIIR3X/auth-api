@@ -217,3 +217,52 @@ async fn a_wrong_reauthentication_password_has_its_own_code() {
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["code"], "reauthentication_failed");
 }
+
+#[tokio::test]
+async fn rotating_ipv6_addresses_within_a_64_does_not_reset_the_failure_budget() {
+    let app = TestApp::spawn().await;
+    let attempt = |n: u32| {
+        let request = app
+            .client
+            .post(app.url("/auth/login"))
+            .header("x-forwarded-for", format!("2001:db8:77:1::{n:x}"))
+            .json(&json!({
+                "identifier": format!("nobody{n}@example.com"),
+                "password": "Wrong-password1!",
+            }));
+        async move { request.send().await.unwrap().status().as_u16() }
+    };
+
+    // Thirty failures, each from its own address of one /64.
+    let statuses = futures::future::join_all((1..=30).map(attempt)).await;
+    assert!(statuses.iter().all(|status| *status == 401), "{statuses:?}");
+
+    assert_eq!(
+        attempt(31).await,
+        429,
+        "a fresh address in the same /64 escaped the per-address budget"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_reauthentication_guesses_never_exceed_the_budget() {
+    // The test configuration locks after 3 wrong passwords.
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 1).await;
+    let wrong = json!({ "current_password": "Wrong-password1!" });
+    let guess = || app.post_auth("/users/me/reauth", &user.access_token, &wrong);
+
+    let responses = futures::future::join_all((0..20).map(|_| guess())).await;
+    let (mut checked, mut locked) = (0, 0);
+    for response in responses {
+        let body: Value = response.json().await.unwrap();
+        match body["code"].as_str() {
+            Some("reauthentication_failed") => checked += 1,
+            Some("account_locked") => locked += 1,
+            other => panic!("unexpected answer {other:?}"),
+        }
+    }
+    // Two plain failures, then the third locks: never more, however parallel.
+    assert_eq!(checked, 2, "{checked} guesses were checked past the budget");
+    assert_eq!(locked, 18);
+}

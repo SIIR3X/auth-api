@@ -41,7 +41,7 @@ pub async fn login(
         match ip {
             Some(ip_val) => login_attempt::count_recent_failures_by_ip(
                 &state.db,
-                ip_val,
+                crate::middleware::rate_limit::ip_bucket_network(ip_val.ip()),
                 brute_force_cutoff,
                 MAX_FAILURES_BY_IP,
             )
@@ -151,14 +151,17 @@ pub async fn login(
             );
 
             // After recording the failure, check if the lockout threshold is reached.
-            let threshold = state.config.security.lockout_threshold as i64;
+            let threshold = i64::from(state.config.security.lockout_threshold);
             let consecutive =
                 login_attempt::count_consecutive_failures_by_user(&state.db, u.id, threshold)
                     .await
                     .unwrap_or(0);
-            if consecutive >= threshold {
-                let locked_until = state.clock.now()
-                    + TimeDuration::seconds(state.config.security.lockout_duration_secs as i64);
+            if let Some(locked_until) = lockout_until(
+                consecutive,
+                state.config.security.lockout_threshold,
+                state.config.security.lockout_duration_secs,
+                state.clock.now(),
+            ) {
                 metrics::counter!("auth_lockouts_total").increment(1);
                 // Best-effort: lockout and audit must not leak timing information on the login path.
                 let _ = user_repo::set_locked_until(&state.db, u.id, locked_until).await;
@@ -264,4 +267,56 @@ pub async fn login(
 
     metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
     Ok(LoginResult::Complete(tokens))
+}
+
+/// When a sign-in locks the account: once `consecutive` wrong passwords reach
+/// `threshold`, for `duration_secs` from `now`. Saturates instead of wrapping,
+/// so an absurd duration locks for a long time rather than not at all.
+pub(crate) fn lockout_until(
+    consecutive: i64,
+    threshold: u32,
+    duration_secs: u64,
+    now: ::time::OffsetDateTime,
+) -> Option<::time::OffsetDateTime> {
+    if threshold == 0 || consecutive < i64::from(threshold) {
+        return None;
+    }
+    let duration = i64::try_from(duration_secs)
+        .map(TimeDuration::seconds)
+        .unwrap_or(TimeDuration::MAX);
+    Some(now.saturating_add(duration))
+}
+
+#[cfg(test)]
+mod lockout_tests {
+    use super::*;
+
+    fn now() -> ::time::OffsetDateTime {
+        ::time::OffsetDateTime::UNIX_EPOCH + TimeDuration::days(20_000)
+    }
+
+    #[test]
+    fn the_lock_starts_at_the_threshold() {
+        assert_eq!(lockout_until(2, 3, 1800, now()), None);
+        assert_eq!(
+            lockout_until(3, 3, 1800, now()),
+            Some(now() + TimeDuration::seconds(1800))
+        );
+        assert_eq!(
+            lockout_until(9, 3, 60, now()),
+            Some(now() + TimeDuration::seconds(60))
+        );
+    }
+
+    #[test]
+    fn a_zero_threshold_never_locks() {
+        assert_eq!(lockout_until(0, 0, 1800, now()), None);
+        assert_eq!(lockout_until(5, 0, 1800, now()), None);
+    }
+
+    #[test]
+    fn an_absurd_duration_saturates_instead_of_unlocking() {
+        let until = lockout_until(3, 3, u64::MAX, now()).expect("locked");
+        assert!(until > now() + TimeDuration::days(365 * 1000));
+    }
 }

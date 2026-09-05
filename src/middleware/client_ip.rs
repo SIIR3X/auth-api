@@ -62,29 +62,37 @@ fn is_trusted_proxy(ip: IpAddr, trusted_proxy_cidrs: &[IpNetwork]) -> bool {
     trusted_proxy_cidrs.iter().any(|cidr| cidr.contains(ip))
 }
 
+/// The client named by the forwarding headers of a trusted proxy.
+///
+/// `X-Forwarded-For` is read across every header line, as one list. Walking it
+/// from the right, trusted proxies are skipped and the first other hop is the
+/// client. A hop that is not an address ends the walk without an answer: what
+/// lies to its left was written by someone no proxy vouched for. When every
+/// hop is a trusted proxy, the leftmost one is the client. `X-Real-IP` counts
+/// only when no `X-Forwarded-For` was sent at all.
 fn forwarded_client_ip(headers: &HeaderMap, trusted_proxy_cidrs: &[IpNetwork]) -> Option<IpAddr> {
-    if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        let forwarded_chain = forwarded_for
-            .split(',')
-            .map(str::trim)
-            .filter_map(|raw| raw.parse::<IpAddr>().ok())
-            .collect::<Vec<_>>();
-
-        for ip in forwarded_chain.iter().rev() {
-            if !is_trusted_proxy(*ip, trusted_proxy_cidrs) {
-                return Some(*ip);
-            }
-        }
-
-        if let Some(first) = forwarded_chain.first() {
-            return Some(*first);
-        }
+    let mut lines = headers.get_all("x-forwarded-for").iter().peekable();
+    if lines.peek().is_none() {
+        return headers
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<IpAddr>().ok());
     }
 
-    headers
-        .get("x-real-ip")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse::<IpAddr>().ok())
+    let mut hops = Vec::new();
+    for line in lines {
+        hops.extend(line.to_str().ok()?.split(',').map(str::trim));
+    }
+
+    let mut leftmost_trusted = None;
+    for hop in hops.iter().rev() {
+        let ip = hop.parse::<IpAddr>().ok()?;
+        if !is_trusted_proxy(ip, trusted_proxy_cidrs) {
+            return Some(ip);
+        }
+        leftmost_trusted = Some(ip);
+    }
+    leftmost_trusted
 }
 
 #[cfg(test)]
@@ -139,5 +147,66 @@ mod tests {
             .unwrap();
 
         assert_eq!(client_ip.0.unwrap().ip(), IpAddr::from([198, 51, 100, 10]));
+    }
+    fn forwarded(lines: &[&str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for line in lines {
+            headers.append("x-forwarded-for", HeaderValue::from_str(line).unwrap());
+        }
+        headers
+    }
+
+    fn trusted() -> Vec<IpNetwork> {
+        vec!["10.0.0.0/8".parse().unwrap()]
+    }
+
+    const PROXY: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+    #[test]
+    fn every_forwarded_line_counts_as_one_list() {
+        // A line the client sent, then the proxy's own: the proxy's hop wins.
+        let ip = resolve_client_ip(Some(PROXY), &forwarded(&["6.6.6.6", "1.2.3.4"]), &trusted());
+        assert_eq!(ip, Some("1.2.3.4".parse().unwrap()));
+    }
+
+    #[test]
+    fn an_unreadable_hop_stops_the_walk_at_the_proxy() {
+        for chain in ["6.6.6.6, unknown", "6.6.6.6, 1.2.3.4:5678", ""] {
+            let ip = resolve_client_ip(Some(PROXY), &forwarded(&[chain]), &trusted());
+            assert_eq!(ip, Some(PROXY), "{chain:?}");
+        }
+    }
+
+    #[test]
+    fn trusted_hops_are_skipped_and_an_all_trusted_chain_names_its_leftmost() {
+        let ip = resolve_client_ip(Some(PROXY), &forwarded(&["1.2.3.4, 10.0.0.3"]), &trusted());
+        assert_eq!(ip, Some("1.2.3.4".parse().unwrap()));
+        let ip = resolve_client_ip(Some(PROXY), &forwarded(&["10.0.0.5, 10.0.0.6"]), &trusted());
+        assert_eq!(ip, Some("10.0.0.5".parse().unwrap()));
+    }
+
+    #[test]
+    fn x_real_ip_counts_only_without_forwarded_for() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", HeaderValue::from_static("5.5.5.5"));
+        let ip = resolve_client_ip(Some(PROXY), &headers, &trusted());
+        assert_eq!(ip, Some("5.5.5.5".parse().unwrap()));
+
+        headers.insert("x-forwarded-for", HeaderValue::from_static("garbage"));
+        assert_eq!(
+            resolve_client_ip(Some(PROXY), &headers, &trusted()),
+            Some(PROXY)
+        );
+    }
+
+    #[test]
+    fn an_untrusted_peer_is_the_client_whatever_the_headers() {
+        let peer: IpAddr = "203.0.113.9".parse().unwrap();
+        let headers = forwarded(&["1.2.3.4"]);
+        assert_eq!(
+            resolve_client_ip(Some(peer), &headers, &trusted()),
+            Some(peer)
+        );
+        assert_eq!(resolve_client_ip(None, &headers, &trusted()), None);
     }
 }

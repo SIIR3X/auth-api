@@ -1689,6 +1689,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: 'Too many wrong passwords: `account_locked` until the window ends'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '413':
           description: Body larger than 64 KB
           content:

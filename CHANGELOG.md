@@ -113,6 +113,17 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 - Every error response carries the documented `{ "code", "message" }` body:
   rate limiter and timeout refusals, unknown routes and malformed or oversized
   JSON no longer answer in plain text, and no longer quote the JSON parser.
+- `LOCKOUT_THRESHOLD=0` is refused at startup: it locked an account on every
+  wrong password instead of disabling the lockout.
+- The re-authentication budget is consumed atomically before the password is
+  hashed, and fails closed: parallel guesses could all pass a count read
+  before any of them was recorded.
+- Failed sign-ins are capped per IPv6 /64, like every other per-address
+  budget: rotating addresses inside one /64 reset the cap.
+- `X-Forwarded-For` is read across every header line, and a hop that is not an
+  address stops the walk at the trusted proxy instead of letting the value to
+  its left through. `X-Real-IP` only counts without `X-Forwarded-For`. The
+  bundled nginx configuration was not affected: it overwrites both headers.
 
 ### Reliability
 

@@ -133,7 +133,23 @@ pub fn ip_bucket(ip: IpAddr) -> String {
         },
     }
 }
-
+/// The network [`ip_bucket`] keys a client by: the address itself for IPv4, its
+/// /64 for IPv6. Budgets counted in SQL use it to group addresses the way the
+/// Redis budgets do.
+pub fn ip_bucket_network(ip: IpAddr) -> ipnetwork::IpNetwork {
+    match ip {
+        IpAddr::V4(v4) => ipnetwork::IpNetwork::from(IpAddr::V4(v4)),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => ipnetwork::IpNetwork::from(IpAddr::V4(v4)),
+            None => {
+                let s = v6.segments();
+                let prefix = std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0);
+                ipnetwork::IpNetwork::new(IpAddr::V6(prefix), 64)
+                    .expect("64 is a valid IPv6 prefix length")
+            }
+        },
+    }
+}
 pub async fn layer_with_state(
     State(state): State<RateLimitState>,
     client_ip: ClientIp,
@@ -189,6 +205,23 @@ mod tests {
         assert_eq!(
             ip_bucket("::ffff:198.51.100.4".parse().unwrap()),
             "198.51.100.4"
+        );
+    }
+    #[test]
+    fn sql_budgets_group_addresses_like_redis_budgets() {
+        use super::ip_bucket_network;
+
+        let network = ip_bucket_network("2001:db8:1:2:aaaa::1".parse().unwrap());
+        assert_eq!(network.to_string(), "2001:db8:1:2::/64");
+        assert!(network.contains("2001:db8:1:2:ffff::9".parse().unwrap()));
+        assert!(!network.contains("2001:db8:1:3::1".parse().unwrap()));
+        assert_eq!(
+            ip_bucket_network("203.0.113.7".parse().unwrap()).to_string(),
+            "203.0.113.7/32"
+        );
+        assert_eq!(
+            ip_bucket_network("::ffff:198.51.100.4".parse().unwrap()).to_string(),
+            "198.51.100.4/32"
         );
     }
 }

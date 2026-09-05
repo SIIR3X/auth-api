@@ -21,7 +21,7 @@ pub const COUNT_RECENT_FAILURES_BY_IDENTIFIER_SQL: &str = "SELECT COUNT(*) FROM 
 
 pub const COUNT_RECENT_FAILURES_BY_IP_SQL: &str = "SELECT COUNT(*) FROM (
          SELECT 1 FROM login_attempts
-         WHERE request_ip = $1::cidr
+         WHERE request_ip <<= $1::cidr
            AND was_successful = FALSE
            AND attempted_at > $2
          LIMIT $3
@@ -97,7 +97,8 @@ pub async fn count_recent_failures_by_identifier(
     Ok(row.get::<i64, _>(0))
 }
 
-/// Counts recent failed attempts from an IP after `cutoff`, capped at `max_count`.
+/// Counts recent failed attempts from a client network (an IPv4 address, an
+/// IPv6 /64: see `ip_bucket_network`) after `cutoff`, capped at `max_count`.
 pub async fn count_recent_failures_by_ip(
     pool: &PgPool,
     ip: IpNetwork,

@@ -3,7 +3,6 @@
 //! Email changes are handled by the email_change service (two-step OTP flow).
 //! Password changes revoke all active sessions to force re-login.
 
-use deadpool_redis::redis::AsyncCommands;
 use ipnetwork::IpNetwork;
 use serde_json::json;
 use uuid::Uuid;
@@ -20,6 +19,7 @@ use crate::{
 };
 
 use super::{auth as auth_svc, events, reauth as reauth_svc};
+use crate::utils::redis_counter::{self, Budget};
 
 /// Redis key prefix for the per-user reauth-failure counter.
 /// Protects re-authentication / sensitive-action endpoints (`change_password`,
@@ -52,18 +52,23 @@ pub async fn verify_password(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
-    let threshold = state.config.security.lockout_threshold as i64;
+    let threshold = i64::from(state.config.security.lockout_threshold);
     let fail_key = reauth_fail_key(user_id);
 
-    // Check the lockout counter BEFORE running argon2: an attacker who has
-    // already tripped the lockout must not be able to keep probing.
-    if threshold > 0
-        && let Ok(mut conn) = state.redis.get().await
-    {
-        let failures: i64 = conn.get(&fail_key).await.unwrap_or(0);
-        if failures >= threshold {
-            return Err(AppError::AccountLocked);
-        }
+    // Reserve the attempt before Argon2 runs, in one atomic step: parallel
+    // guesses cannot all read a count below the threshold. Fails closed when
+    // Redis is unavailable, like every budget guarding a secret.
+    let attempt = redis_counter::consume(
+        &state.redis,
+        &[Budget {
+            key: &fail_key,
+            limit: threshold,
+            window_secs: REAUTH_FAIL_TTL_SECS,
+        }],
+    )
+    .await?;
+    if attempt.exceeded {
+        return Err(AppError::AccountLocked);
     }
 
     let valid = password::verify_async(password, &user.password_hash, &state.config.crypto)
@@ -71,38 +76,21 @@ pub async fn verify_password(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     if !valid {
-        // Increment the per-user failure counter; arm the TTL on every write
-        // so a slow brute-force does not silently outlive the window.
-        if threshold > 0
-            && let Ok(mut conn) = state.redis.get().await
-        {
-            let new_failures: i64 = conn.incr(&fail_key, 1i64).await.unwrap_or(0);
-            let _: Result<(), _> = conn.expire(&fail_key, REAUTH_FAIL_TTL_SECS as i64).await;
-
-            if new_failures >= threshold {
-                // Threshold just reached: surface a distinct error so the
-                // caller (and logs) can tell rate limiting apart from a
-                // simple wrong-password mistake.
-                // TODO: consider sending an account-alert email here once
-                // the email service is plumbed through to user_svc without
-                // creating a circular import.
-                tracing::warn!(
-                    user_id = %user_id,
-                    failures = new_failures,
-                    "reauth lockout triggered for user"
-                );
-                return Err(AppError::AccountLocked);
-            }
+        if attempt.max_count() >= threshold {
+            // Threshold just reached: a distinct error, so the caller (and the
+            // logs) can tell the lockout from a mistyped password.
+            tracing::warn!(
+                user_id = %user_id,
+                failures = attempt.max_count(),
+                "reauth lockout triggered for user"
+            );
+            return Err(AppError::AccountLocked);
         }
-
         return Err(AppError::ReauthenticationFailed);
     }
 
-    // On success, reset the counter so a previously-mistyping user is not
-    // penalised on later legitimate use.
-    if let Ok(mut conn) = state.redis.get().await {
-        let _: Result<(), _> = conn.del(&fail_key).await;
-    }
+    // A success clears the budget, so earlier typos do not count later.
+    redis_counter::reset(&state.redis, &[&fail_key]).await;
 
     Ok(())
 }

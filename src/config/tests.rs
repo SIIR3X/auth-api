@@ -640,3 +640,14 @@ fn validate_rejects_non_https_frontend_url_in_production() {
 
     assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "FRONTEND_URL"));
 }
+
+#[test]
+fn validate_rejects_zero_lockout_threshold() {
+    let mut config = valid_config();
+    config.security.lockout_threshold = 0;
+
+    let err = config
+        .validate()
+        .expect_err("a zero lockout threshold should fail");
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "LOCKOUT_THRESHOLD"));
+}

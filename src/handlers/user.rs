@@ -421,6 +421,7 @@ pub async fn delete_account(
     responses(
         (status = 204, description = "Re-authenticated for SENSITIVE_ACTION_REAUTH_SECS"),
         (status = 401, description = "Wrong password or invalid token", body = crate::error::ErrorBody),
+        (status = 403, description = "Too many wrong passwords: `account_locked` until the window ends", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
     security(("bearer" = [])),

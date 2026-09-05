@@ -294,6 +294,14 @@ pub(super) fn validate_crypto(crypto: &CryptoConfig) -> Result<(), ConfigError> 
 }
 
 pub(super) fn validate_security(security: &SecurityConfig) -> Result<(), ConfigError> {
+    // 0 would not disable the lockout: every wrong password would lock the account.
+    if security.lockout_threshold == 0 {
+        return Err(ConfigError::Invalid {
+            key: "LOCKOUT_THRESHOLD".into(),
+            reason: "must be at least 1".into(),
+        });
+    }
+
     if security.sensitive_action_reauth_secs == 0 {
         return Err(ConfigError::Invalid {
             key: "SENSITIVE_ACTION_REAUTH_SECS".into(),
