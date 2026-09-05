@@ -70,6 +70,14 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 - Access log (route template, status, latency, request id), nextest
   configuration, `make ci`, `make release`, OpenAPI document generated from the
   code, security model, this changelog.
+- The OpenAPI document lists the responses every operation can return (`400`,
+  `401`, `413`, `415`, `422`, `429`, `503`) with their error body.
+- Test suites by layer (`make test-unit`, `test-integration`, `test-security`,
+  `test-sim`), a shared harness (`crates/testkit`), every test response checked
+  against the OpenAPI document, an authorization matrix over every operation,
+  a control catalog in the security model, fuzz targets (`make fuzz`) replayed
+  on stable in `make ci`, and `migrations/SHA256SUMS` freezing released
+  migrations. See `docs/dev/guides/testing.md`.
 
 ### Security
 
@@ -96,6 +104,24 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   configuration.
 - Base images pinned by digest; OpenSSL removed from the images; development
   ports bound to loopback.
+- Passwords need at least 10 characters, not 10 bytes: an accented password of
+  ten bytes could hold seven characters (found by fuzzing). The upper bound
+  stays 128 bytes so every accepted password remains usable at sign-in.
+- A loopback redirect on port 0 is refused.
+- TOTP verification refuses a time within the skew of the epoch instead of
+  panicking.
+- Every error response carries the documented `{ "code", "message" }` body:
+  rate limiter and timeout refusals, unknown routes and malformed or oversized
+  JSON no longer answer in plain text, and no longer quote the JSON parser.
+
+### Reliability
+
+- An unreachable PostgreSQL or Redis answers `503 service_unavailable` instead
+  of `500`, including connections dropped while being set up.
+- The Redis pool replaces a connection whose transport failed. Before, a Redis
+  restart under traffic was never recovered from: each request failed on a dead
+  connection and counted as a use, so the connection never went idle long
+  enough to be checked.
 
 ### Performance
 

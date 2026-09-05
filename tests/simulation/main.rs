@@ -6,4 +6,6 @@ mod common {
     pub use testkit::{app, fixtures, mailpit};
 }
 
+mod clock;
+mod dependencies;
 mod redis_outage;

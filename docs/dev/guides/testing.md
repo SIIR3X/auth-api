@@ -101,6 +101,31 @@ the gate.
 - **Logs**: flows handling passwords, tokens and codes run with trace logging,
   and none of those values may appear.
 
+## Simulations
+
+`tests/simulation/` runs the service through what production eventually
+throws at it:
+
+- **Dependency failures** (`dependencies.rs`): the app reaches PostgreSQL, Redis
+  and NATS through `FaultProxy`s. A test refuses connections, hangs them or
+  adds latency, checks what clients receive and what was (not) written through
+  a direct pool, then restores the dependency and checks the service recovers
+  without a restart. An outage must answer `503 service_unavailable`, never
+  `500`, and must leave no half-written state.
+- **Time** (`clock.rs`): session lifetimes, lockouts and token expiry, driven by
+  `app.clock.advance(..)` rather than sleeps.
+- **Redis without Redis** (`redis_outage.rs`): flows that must keep working, or
+  fail closed, when Redis is unreachable from the start.
+
+Scenarios that take tens of seconds (a hung database bounded by the request
+timeout) are marked `#[ignore = "long: ..."]`: `make test-sim` runs them,
+`make ci` does not.
+
+These scenarios found two defects the rest of the suites could not see: a
+database outage answered `500` instead of `503`, and the Redis pool never
+replaced a connection that failed under traffic, so a Redis restart kept every
+authenticated request failing until traffic paused.
+
 ## Fuzzing
 
 Each target in `fuzz/fuzz_targets/` calls an entry point of `src/fuzzing.rs`,

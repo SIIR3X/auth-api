@@ -114,7 +114,9 @@ fuzz: ## Fuzz every target FUZZ_SECS seconds each (nightly toolchain, cargo-fuzz
 	@for target in $$(cargo +nightly fuzz list --fuzz-dir fuzz); do \
 		echo "== $$target"; \
 		mkdir -p fuzz/corpus/$$target; \
-		cargo +nightly fuzz run --fuzz-dir fuzz $$target fuzz/corpus/$$target fuzz/seeds/$$target -- -max_total_time=$(FUZZ_SECS) || exit 1; \
+		dirs="fuzz/corpus/$$target fuzz/seeds/$$target"; \
+		[ -d fuzz/regressions/$$target ] && dirs="$$dirs fuzz/regressions/$$target"; \
+		cargo +nightly fuzz run --fuzz-dir fuzz $$target $$dirs -- -max_total_time=$(FUZZ_SECS) || exit 1; \
 	done
 
 .PHONY: test-sim

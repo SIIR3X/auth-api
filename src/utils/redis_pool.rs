@@ -1,7 +1,7 @@
 //! Redis connection pool.
 //!
-//! A thin wrapper around `deadpool_redis`'s manager whose only change is *when*
-//! a recycled connection is checked.
+//! A thin wrapper around `deadpool_redis`'s manager that changes *when* a
+//! recycled connection is checked, and remembers which connections failed.
 //!
 //! deadpool-redis pings on every checkout: its `recycle` sends `UNWATCH` +
 //! `PING` and waits for the reply before the caller's own command is written.
@@ -15,17 +15,21 @@
 //! kept, gated on the connection having been idle long enough for any of that
 //! to have happened.
 //!
-//! The trade: a connection dropped within the grace window is handed out and
-//! fails on first use. That failure already existed between the ping and the
-//! command, and every caller treats a Redis error as a Redis error.
+//! A connection whose transport failed is never recycled, whatever its idle
+//! time. Without that, a Redis restart under traffic was never recovered from:
+//! each request failed on a dead connection, the failure counted as a use, and
+//! the connection never went idle long enough to be pinged and replaced.
 
 use std::time::Duration;
 
 use deadpool::{
     Runtime,
-    managed::{self, Metrics, RecycleResult, Timeouts},
+    managed::{self, Metrics, RecycleError, RecycleResult, Timeouts},
 };
-use deadpool_redis::redis::{RedisError, aio::MultiplexedConnection};
+use deadpool_redis::redis::{
+    Cmd, Pipeline, RedisError, RedisFuture, RedisResult, Value,
+    aio::{ConnectionLike, MultiplexedConnection},
+};
 
 use crate::config::RedisConfig;
 
@@ -39,9 +43,61 @@ const PING_AFTER_IDLE: Duration = Duration::from_secs(5);
 /// Pool of multiplexed Redis connections.
 pub type RedisPool = managed::Pool<Manager>;
 
-/// A checked-out connection. Derefs to [`MultiplexedConnection`], so it is used
-/// like one; pass `&mut *conn` where a `ConnectionLike` is expected.
+/// A checked-out connection. Derefs to [`Connection`], which implements the
+/// Redis command traits; pass `&mut *conn` where a `ConnectionLike` is expected.
 pub type RedisConnection = managed::Object<Manager>;
+
+/// A pooled connection that remembers whether its transport failed.
+pub struct Connection {
+    inner: MultiplexedConnection,
+    broken: bool,
+}
+
+impl Connection {
+    fn observe<T>(&mut self, result: &RedisResult<T>) {
+        if let Err(error) = result
+            && transport_failed(error)
+        {
+            self.broken = true;
+        }
+    }
+}
+
+/// Errors that say nothing more will come through this connection, as opposed
+/// to a command the server refused.
+fn transport_failed(error: &RedisError) -> bool {
+    error.is_io_error()
+        || error.is_connection_dropped()
+        || error.is_timeout()
+        || error.is_unrecoverable_error()
+}
+
+impl ConnectionLike for Connection {
+    fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
+        Box::pin(async move {
+            let result = self.inner.req_packed_command(cmd).await;
+            self.observe(&result);
+            result
+        })
+    }
+
+    fn req_packed_commands<'a>(
+        &'a mut self,
+        cmd: &'a Pipeline,
+        offset: usize,
+        count: usize,
+    ) -> RedisFuture<'a, Vec<Value>> {
+        Box::pin(async move {
+            let result = self.inner.req_packed_commands(cmd, offset, count).await;
+            self.observe(&result);
+            result
+        })
+    }
+
+    fn get_db(&self) -> i64 {
+        self.inner.get_db()
+    }
+}
 
 pub struct Manager {
     inner: deadpool_redis::Manager,
@@ -56,22 +112,24 @@ impl Manager {
 }
 
 impl managed::Manager for Manager {
-    type Type = MultiplexedConnection;
+    type Type = Connection;
     type Error = RedisError;
 
-    async fn create(&self) -> Result<MultiplexedConnection, RedisError> {
-        managed::Manager::create(&self.inner).await
+    async fn create(&self) -> Result<Connection, RedisError> {
+        Ok(Connection {
+            inner: managed::Manager::create(&self.inner).await?,
+            broken: false,
+        })
     }
 
-    async fn recycle(
-        &self,
-        conn: &mut MultiplexedConnection,
-        metrics: &Metrics,
-    ) -> RecycleResult<RedisError> {
+    async fn recycle(&self, conn: &mut Connection, metrics: &Metrics) -> RecycleResult<RedisError> {
+        if conn.broken {
+            return Err(RecycleError::message("the connection failed; replacing it"));
+        }
         if metrics.last_used() < PING_AFTER_IDLE {
             return Ok(());
         }
-        managed::Manager::recycle(&self.inner, conn, metrics).await
+        managed::Manager::recycle(&self.inner, &mut conn.inner, metrics).await
     }
 }
 
@@ -110,5 +168,13 @@ mod tests {
             wait_timeout_ms: 100,
         };
         assert!(build(&cfg).is_err());
+    }
+
+    #[test]
+    fn transport_errors_mark_a_connection_for_replacement() {
+        let refused = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        assert!(transport_failed(&RedisError::from(refused)));
+        let reset = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+        assert!(transport_failed(&RedisError::from(reset)));
     }
 }
