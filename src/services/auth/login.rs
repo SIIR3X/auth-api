@@ -319,6 +319,7 @@ mod lockout_tests {
         let until = lockout_until(3, 3, u64::MAX, now()).expect("locked");
         assert!(until > now() + TimeDuration::days(365 * 1000));
     }
+
     mod properties {
         use proptest::prelude::*;
 

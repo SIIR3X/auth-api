@@ -617,4 +617,20 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn a_kid_is_eight_lowercase_hex_digits_stable_per_key() {
+        let (_, public) = test_key_pems();
+        let key = parse_p256_verifying_key(&public).unwrap();
+        let kid = compute_kid(&key);
+        assert_eq!(kid.len(), 8);
+        assert!(
+            kid.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "{kid}"
+        );
+        assert_eq!(compute_kid(&key), kid);
+        let (_, other) = test_key_pems();
+        assert_ne!(compute_kid(&parse_p256_verifying_key(&other).unwrap()), kid);
+    }
 }

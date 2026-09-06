@@ -119,6 +119,20 @@ fuzz: ## Fuzz every target FUZZ_SECS seconds each (nightly toolchain, cargo-fuzz
 		cargo +nightly fuzz run --fuzz-dir fuzz $$target $$dirs -- -max_total_time=$(FUZZ_SECS) || exit 1; \
 	done
 
+# Files whose logic the unit tests must pin down: a surviving mutant is a fault
+# no unit test notices. Copies are built under $(MUTANTS_TMP), not /tmp.
+MUTANTS_FILES := -f 'src/domain/*.rs' -f src/utils/crypto.rs -f src/utils/jwt.rs \
+	-f src/utils/totp.rs -f src/utils/time.rs -f src/utils/backoff.rs -f src/utils/password.rs \
+	-f src/middleware/client_ip.rs -f src/middleware/error_body.rs \
+	-f src/config/validate.rs -f src/handlers/audit.rs
+MUTANTS_TMP ?= $(HOME)/.cache/mutants-tmp
+
+.PHONY: mutants
+mutants: ## Mutation testing of the security-relevant pure code (cargo-mutants, unit tests)
+	mkdir -p $(MUTANTS_TMP) reports
+	TMPDIR=$(MUTANTS_TMP) cargo mutants --package auth-api -j 3 -o reports \
+		--test-tool nextest $(MUTANTS_FILES) -- --lib
+
 .PHONY: test-sim
 test-sim: ## Simulation suite, long scenarios included
 	$(TEST_ENV) cargo nextest run --test simulation --run-ignored all
@@ -134,9 +148,10 @@ ci: quality ## Full local CI gate: formatting, lints, dependency policy, every s
 	cargo nextest run --profile ci --test fuzz_corpus --features fuzzing
 
 .PHONY: coverage
-coverage: ## Coverage of every suite (cargo-llvm-cov), HTML report in reports/coverage/
+coverage: ## Coverage of every suite, failing under 90% lines, 85% regions, 79% functions (HTML in reports/coverage/)
 	$(TEST_ENV) cargo llvm-cov nextest --workspace --profile ci \
 		--ignore-filename-regex '(src/bin/|crates/testkit/)' \
+		--fail-under-lines 90 --fail-under-regions 85 --fail-under-functions 79 \
 		--html --output-dir reports/coverage
 
 .PHONY: bench

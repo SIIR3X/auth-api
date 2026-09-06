@@ -154,4 +154,38 @@ mod tests {
         assert_eq!(describe(StatusCode::BAD_GATEWAY).0, "internal_error");
         assert_eq!(describe(StatusCode::IM_A_TEAPOT).0, "request_failed");
     }
+
+    #[test]
+    fn plain_text_rejections_get_their_own_codes() {
+        assert_eq!(describe(StatusCode::BAD_REQUEST).0, "invalid_request");
+        assert_eq!(
+            describe(StatusCode::UNSUPPORTED_MEDIA_TYPE).0,
+            "unsupported_media_type"
+        );
+        assert_eq!(
+            describe(StatusCode::SERVICE_UNAVAILABLE).0,
+            "service_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_layer_rewrites_what_a_router_answers() {
+        use tower::ServiceExt;
+
+        let router = axum::Router::new()
+            .route(
+                "/down",
+                axum::routing::get(|| async { (StatusCode::SERVICE_UNAVAILABLE, "down") }),
+            )
+            .layer(axum::middleware::from_fn(layer));
+        let request = |path: &str| axum::http::Request::get(path).body(Body::empty()).unwrap();
+
+        let down = router.clone().oneshot(request("/down")).await.unwrap();
+        assert_eq!(down.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body_of(down).await["code"], "service_unavailable");
+
+        let missing = router.oneshot(request("/nowhere")).await.unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(body_of(missing).await["code"], "not_found");
+    }
 }

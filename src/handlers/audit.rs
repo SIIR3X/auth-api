@@ -72,16 +72,15 @@ pub async fn list(
     auth: AuthUser,
     Query(params): Query<ListParams>,
 ) -> Result<Json<AuditPageResponse>, AppError> {
-    let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let limit = page_limit(params.limit);
     let before = params.cursor.as_deref().map(decode_cursor).transpose()?;
 
-    // One row beyond the page tells whether another page follows.
-    let mut rows = audit_repo::find_page_by_user(&state.db, auth.user_id, before, limit + 1)
+    let rows = audit_repo::find_page_by_user(&state.db, auth.user_id, before, rows_to_fetch(limit))
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    let next_cursor = if rows.len() > limit as usize {
-        rows.truncate(limit as usize);
+    let (rows, more) = split_page(rows, limit);
+    let next_cursor = if more {
         rows.last()
             .map(|last| encode_cursor(last.created_at, last.id))
     } else {
@@ -104,6 +103,24 @@ pub async fn list(
             .collect(),
         next_cursor,
     }))
+}
+
+/// Entries per page: the requested count, bounded to 1..=MAX_LIMIT.
+fn page_limit(requested: Option<i64>) -> i64 {
+    requested.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
+}
+
+/// One row beyond the page tells whether another page follows.
+fn rows_to_fetch(limit: i64) -> i64 {
+    limit + 1
+}
+
+/// The page itself, and whether another page follows it.
+fn split_page<T>(mut rows: Vec<T>, limit: i64) -> (Vec<T>, bool) {
+    let limit = usize::try_from(limit).unwrap_or(0);
+    let more = rows.len() > limit;
+    rows.truncate(limit);
+    (rows, more)
 }
 
 /// Opaque to clients: the position of the last entry of a page.
@@ -193,6 +210,7 @@ mod tests {
             "session_replay_detected"
         );
     }
+
     mod properties {
         use proptest::prelude::*;
 
@@ -211,5 +229,27 @@ mod tests {
                 prop_assert_eq!(decode_cursor(&encode_cursor(at, id)).unwrap(), (at, id));
             }
         }
+    }
+
+    #[test]
+    fn a_page_holds_between_one_and_the_maximum_entries() {
+        assert_eq!(page_limit(None), DEFAULT_LIMIT);
+        assert_eq!(page_limit(Some(0)), 1);
+        assert_eq!(page_limit(Some(-7)), 1);
+        assert_eq!(page_limit(Some(MAX_LIMIT)), MAX_LIMIT);
+        assert_eq!(page_limit(Some(MAX_LIMIT + 1)), MAX_LIMIT);
+        assert_eq!(page_limit(Some(i64::MAX)), MAX_LIMIT);
+    }
+
+    #[test]
+    fn one_extra_row_tells_whether_another_page_follows() {
+        assert_eq!(rows_to_fetch(50), 51);
+        let (page, more) = split_page((0..50).collect::<Vec<_>>(), 50);
+        assert_eq!((page.len(), more), (50, false));
+        let (page, more) = split_page((0..51).collect::<Vec<_>>(), 50);
+        assert_eq!((page.len(), more), (50, true));
+        assert_eq!(page.last(), Some(&49));
+        let (page, more) = split_page(Vec::<i32>::new(), 50);
+        assert_eq!((page.len(), more), (0, false));
     }
 }

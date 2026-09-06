@@ -207,6 +207,7 @@ mod tests {
             "198.51.100.4"
         );
     }
+
     #[test]
     fn sql_budgets_group_addresses_like_redis_budgets() {
         use super::ip_bucket_network;
@@ -224,6 +225,7 @@ mod tests {
             "198.51.100.4/32"
         );
     }
+
     mod properties {
         use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 

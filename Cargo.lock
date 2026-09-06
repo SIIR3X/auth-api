@@ -209,6 +209,7 @@ dependencies = [
  "time",
  "tokio",
  "totp-rs",
+ "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",

@@ -135,4 +135,23 @@ mod tests {
     fn is_valid_false_when_expired() {
         assert!(!make_reset_token(false, -1).is_valid(now()));
     }
+
+    #[test]
+    fn email_verification_tokens_follow_the_same_rules() {
+        let now = now();
+        let token = |used: bool| EmailVerificationToken {
+            id: uuid::Uuid::new_v4(),
+            user_id: uuid::Uuid::new_v4(),
+            token_hash: vec![0u8; 32],
+            created_at: now,
+            expires_at: now + time::Duration::hours(24),
+            used_at: used.then_some(now),
+            request_ip: None,
+            request_user_agent: None,
+            target_email: "jane@example.com".into(),
+        };
+        assert!(token(false).is_valid(now));
+        assert!(token(true).is_used());
+        assert!(!token(true).is_valid(now));
+    }
 }

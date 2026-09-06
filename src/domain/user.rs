@@ -169,4 +169,12 @@ mod tests {
             "a".repeat(250)
         )));
     }
+
+    #[test]
+    fn storable_emails_stop_at_254_bytes() {
+        let at_limit = format!("{}@example.com", "a".repeat(242));
+        assert_eq!(at_limit.len(), 254);
+        assert!(is_storable_email(&at_limit));
+        assert!(!is_storable_email(&format!("a{at_limit}")));
+    }
 }

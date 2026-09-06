@@ -147,9 +147,7 @@ fn record_argon2_permits(semaphore: &Semaphore) {
 /// with the production parameters, see docs/perf/performance-report.md), so
 /// the operator should see the bound the process actually runs with.
 pub fn log_capacity(cfg: &CryptoConfig) {
-    let concurrency = u64::from(cfg.argon2_max_concurrency.max(1));
-    let per_hash_mib = u64::from(cfg.argon2_memory_kib) / 1024;
-    let budget_mib = concurrency * per_hash_mib;
+    let (concurrency, per_hash_mib, budget_mib) = argon2_budget(cfg);
     tracing::info!(
         concurrency,
         per_hash_mib,
@@ -157,7 +155,7 @@ pub fn log_capacity(cfg: &CryptoConfig) {
         "argon2: at most {concurrency} concurrent hashes"
     );
     if let Some(limit_mib) = cgroup_memory_limit_mib()
-        && limit_mib < budget_mib + BASELINE_MIB
+        && limit_too_tight(limit_mib, budget_mib)
     {
         tracing::warn!(
             limit_mib,
@@ -168,13 +166,29 @@ pub fn log_capacity(cfg: &CryptoConfig) {
     }
 }
 
+/// Concurrent hashes, memory per hash and their total, in MiB.
+fn argon2_budget(cfg: &CryptoConfig) -> (u64, u64, u64) {
+    let concurrency = u64::from(cfg.argon2_max_concurrency.max(1));
+    let per_hash_mib = u64::from(cfg.argon2_memory_kib) / 1024;
+    (concurrency, per_hash_mib, concurrency * per_hash_mib)
+}
+
+/// Whether a memory limit leaves less than [`BASELINE_MIB`] beside the budget.
+fn limit_too_tight(limit_mib: u64, budget_mib: u64) -> bool {
+    limit_mib < budget_mib + BASELINE_MIB
+}
+
 /// Memory the process needs besides Argon2 (pools, caches, runtime).
 const BASELINE_MIB: u64 = 256;
 
 /// The cgroup v2 memory limit, when the process runs under one.
 fn cgroup_memory_limit_mib() -> Option<u64> {
-    std::fs::read_to_string("/sys/fs/cgroup/memory.max")
-        .ok()?
+    parse_memory_max(&std::fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?)
+}
+
+/// `memory.max` in MiB; `max` (no limit) and anything unreadable give `None`.
+fn parse_memory_max(contents: &str) -> Option<u64> {
+    contents
         .trim()
         .parse::<u64>()
         .ok()
@@ -236,5 +250,30 @@ mod tests {
 
         assert!(verify_async("hunter2", &h, &cfg).await.unwrap());
         assert!(!verify_async("wrong", &h, &cfg).await.unwrap());
+    }
+
+    #[test]
+    fn the_argon2_budget_is_concurrency_times_memory() {
+        let mut cfg = test_config();
+        cfg.argon2_memory_kib = 65_536;
+        cfg.argon2_max_concurrency = 4;
+        assert_eq!(argon2_budget(&cfg), (4, 64, 256));
+        cfg.argon2_max_concurrency = 0;
+        assert_eq!(argon2_budget(&cfg), (1, 64, 64));
+    }
+
+    #[test]
+    fn a_limit_is_too_tight_below_the_budget_plus_the_baseline() {
+        assert!(limit_too_tight(511, 256));
+        assert!(!limit_too_tight(512, 256));
+        assert!(!limit_too_tight(4096, 256));
+    }
+
+    #[test]
+    fn memory_max_is_read_in_mib_and_max_means_unlimited() {
+        assert_eq!(parse_memory_max("536870912\n"), Some(512));
+        assert_eq!(parse_memory_max("1048575"), Some(0));
+        assert_eq!(parse_memory_max("max\n"), None);
+        assert_eq!(parse_memory_max(""), None);
     }
 }

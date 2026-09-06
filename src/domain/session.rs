@@ -187,6 +187,7 @@ mod tests {
     fn is_compromised_false_when_not_compromised() {
         assert!(!make_session(false, 3600, false).is_compromised());
     }
+
     mod properties {
         use proptest::prelude::*;
 

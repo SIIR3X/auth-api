@@ -691,3 +691,62 @@ fn validate_rejects_zero_session_lifetime() {
         matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_MAX_SESSION_LIFETIME_SECS")
     );
 }
+
+/// The production checks also reject most malformed keys, which hid this
+/// validator from the tests: it is exercised on its own here.
+#[test]
+fn encryption_keys_are_checked_for_shape_in_every_environment() {
+    let reason = |value: &str| match validate_encryption_key("ENCRYPTION_KEY", value) {
+        Err(ConfigError::Invalid { key, reason }) => {
+            assert_eq!(key, "ENCRYPTION_KEY");
+            reason
+        }
+        other => panic!("{value:?} was not refused: {other:?}"),
+    };
+
+    assert!(reason("not-base64").contains("base64"));
+    assert!(reason(&STANDARD.encode([0x5a_u8; 16])).contains("32 bytes"));
+    assert!(
+        validate_encryption_key(
+            "ENCRYPTION_KEY",
+            "VVKGNsojoT/vVMlGypXnqcCcJIbrPKbn/8DGfEs496k="
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_well_formed_key_with_little_entropy_is_refused() {
+    // 32 bytes alternating two values: not an arithmetic sequence, so only the
+    // entropy floor (1 bit per byte here) can refuse it.
+    let weak = STANDARD.encode([0xab_u8, 0x13].repeat(16));
+    match validate_encryption_key("ENCRYPTION_KEY", &weak) {
+        Err(ConfigError::Invalid { reason, .. }) => assert!(reason.contains("entropy"), "{reason}"),
+        other => panic!("a low-entropy key was accepted: {other:?}"),
+    }
+}
+
+#[test]
+fn a_key_at_exactly_the_entropy_floor_is_accepted() {
+    // Eight distinct bytes, four times each: exactly 3.0 bits per byte.
+    let bytes = [0x10_u8, 0x9c, 0x2e, 0xf1, 0x47, 0x83, 0x5d, 0xb6].repeat(4);
+    assert!(validate_encryption_key("ENCRYPTION_KEY", &STANDARD.encode(bytes)).is_ok());
+}
+
+#[test]
+fn the_previous_encryption_key_is_optional_but_checked_when_set() {
+    assert!(validate_optional_encryption_key("PREVIOUS_ENCRYPTION_KEY", None).is_ok());
+    let err = validate_optional_encryption_key("PREVIOUS_ENCRYPTION_KEY", Some("not-base64"))
+        .expect_err("a malformed previous key should fail");
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "PREVIOUS_ENCRYPTION_KEY"));
+}
+
+#[test]
+fn argon2_needs_at_least_one_concurrent_hash() {
+    let mut crypto = valid_config().crypto;
+    crypto.argon2_max_concurrency = 0;
+    let err = validate_crypto(&crypto).expect_err("zero concurrency should fail");
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "ARGON2_MAX_CONCURRENCY"));
+    crypto.argon2_max_concurrency = 1;
+    assert!(validate_crypto(&crypto).is_ok());
+}

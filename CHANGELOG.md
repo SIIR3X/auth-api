@@ -80,7 +80,10 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   against the OpenAPI document, an authorization matrix over every operation,
   a control catalog in the security model, fuzz targets (`make fuzz`) replayed
   on stable in `make ci`, and `migrations/SHA256SUMS` freezing released
-  migrations. See `docs/dev/guides/testing.md`.
+  migrations. Property tests pit the validators against the database
+  constraints; `make mutants` runs mutation testing over the security-relevant
+  pure code. `make coverage` fails under 90 % of lines, 85 % of regions and 79 %
+  of functions. See `docs/dev/guides/testing.md`.
 
 ### Security
 

@@ -370,6 +370,7 @@ mod tests {
             Err(CryptoError::UnknownKey)
         ));
     }
+
     mod properties {
         use proptest::prelude::*;
 
@@ -402,5 +403,44 @@ mod tests {
                 prop_assert!(before.decrypt(&rewritten).is_err());
             }
         }
+    }
+
+    #[test]
+    fn one_time_codes_are_six_ascii_digits() {
+        for _ in 0..64 {
+            let otp = generate_otp();
+            assert_eq!(otp.len(), 6, "{otp:?}");
+            assert!(otp.bytes().all(|b| b.is_ascii_digit()), "{otp:?}");
+        }
+    }
+
+    #[test]
+    fn tokens_carry_32_fresh_random_bytes() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let (a, b) = (generate_token(), generate_token());
+        assert_eq!(URL_SAFE_NO_PAD.decode(&a).unwrap().len(), 32);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn re_encryption_moves_a_secret_to_the_new_key() {
+        let stored = encrypt("JBSWY3DPEHPK3PXP", KEY).unwrap();
+        let moved = re_encrypt(&stored, KEY, OTHER_KEY).unwrap();
+        assert_eq!(decrypt(&moved, OTHER_KEY).unwrap(), "JBSWY3DPEHPK3PXP");
+        assert!(decrypt(&moved, KEY).is_err());
+    }
+
+    #[test]
+    fn an_empty_secret_round_trips() {
+        // Nonce and tag only: the shortest ciphertext there is.
+        let stored = encrypt("", KEY).unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&stored)
+                .unwrap()
+                .len(),
+            28
+        );
+        assert_eq!(decrypt(&stored, KEY).unwrap(), "");
     }
 }

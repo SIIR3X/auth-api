@@ -482,6 +482,7 @@ mod tests {
         assert!(validate_password("Password11").is_err());
         assert!(validate_password("Password\u{0663}!").is_err());
     }
+
     mod properties {
         use proptest::prelude::*;
 

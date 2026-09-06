@@ -209,4 +209,22 @@ mod tests {
         );
         assert_eq!(resolve_client_ip(None, &headers, &trusted()), None);
     }
+
+    #[test]
+    fn the_rate_limiter_reads_its_own_trusted_proxies() {
+        let redis = crate::utils::redis_pool::build(&crate::config::RedisConfig {
+            url: "redis://127.0.0.1:1".into(),
+            pool_size: 1,
+            wait_timeout_ms: 10,
+        })
+        .unwrap();
+        let state = RateLimitState {
+            redis,
+            buckets: Vec::new(),
+            trusted_proxy_cidrs: trusted(),
+            fail_open_on_redis_error: false,
+            allow_requests_without_ip: false,
+        };
+        assert_eq!(state.trusted_proxy_cidrs(), trusted().as_slice());
+    }
 }

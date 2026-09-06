@@ -217,4 +217,21 @@ mod tests {
             assert!(!verify_code(&encrypted_rfc_secret(), &candidate, &keyring(), 1, NOW).unwrap());
         }
     }
+
+    #[test]
+    fn a_malformed_code_is_refused_before_the_secret_is_decrypted() {
+        // With a key that cannot decrypt the secret, only a code that reached
+        // the decryption fails with an error: malformed codes stop before it.
+        let wrong_key = Keyring::new([99u8; 32], None);
+        for code in ["12345", "abcdef", "1234567", ""] {
+            assert!(
+                matches!(
+                    verify_code(&encrypted_rfc_secret(), code, &wrong_key, 1, NOW),
+                    Ok(false)
+                ),
+                "{code:?}"
+            );
+        }
+        assert!(verify_code(&encrypted_rfc_secret(), "123456", &wrong_key, 1, NOW).is_err());
+    }
 }

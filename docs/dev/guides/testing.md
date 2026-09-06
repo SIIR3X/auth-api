@@ -22,6 +22,8 @@ policy, every suite but the long simulations, and the fuzz corpus replay.
 - A decision that needs no I/O: a unit test next to the code. If the decision
   hides inside an async service, extract it into a function taking plain
   values (and `now`), then test that function.
+- An invariant over many inputs (a round trip, a bound, a rule restated): a
+  property test in a `mod properties` block next to the code.
 - Behaviour visible through the API: `tests/integration/api/<area>/`.
 - A SQL constraint, trigger or function: `tests/integration/schema/`.
 - An attack, or a control of the [security model](../security-model.md):
@@ -100,6 +102,76 @@ the gate.
   `sha256sum migrations/NNNN_name.sql | sed 's|migrations/||' >> migrations/SHA256SUMS`.
 - **Logs**: flows handling passwords, tokens and codes run with trace logging,
   and none of those values may appear.
+
+## Property tests
+
+Examples pin the cases someone thought of; properties state what must hold for
+every input and let proptest search for the exception.
+
+- **Next to the code** (`mod properties` in `src/`): pure functions with an
+  invariant. Audit cursors round-trip over the whole timestamp range; every
+  address of an IPv6 bucket network maps to the same bucket; any secret
+  survives encryption and a key rotation, and a rewritten ciphertext no longer
+  needs the old key; the password policy is exactly its definition; a lockout
+  follows its threshold and never ends in the past; a device label is bounded,
+  free of control characters and stable.
+- **Against the database** (`tests/integration/api/auth/properties.rs`): inputs
+  generated around the validators' and the SQL constraints' boundaries go
+  through the real API. What the API accepts must be stored exactly as sent;
+  what the database would refuse must be refused first, as a `422`, never as a
+  `500`. These sample a few hundred inputs with a random seed and print the one
+  that fails.
+
+The fuzz targets complement them: fuzzing searches raw bytes for crashes and
+broken security properties, properties search typed inputs for broken rules.
+
+## Mutation testing
+
+Coverage says a line ran; mutation testing says a test would notice if that
+line were wrong. `make mutants` asks `cargo-mutants` to break the
+security-relevant pure code one change at a time (a `<` turned into `<=`, a
+function returning a default, a match arm deleted) and runs the unit tests
+against each broken copy. A mutant no test catches is a fault that would ship.
+
+Scope: `src/domain`, the crypto, token, TOTP, password, time and backoff
+utilities, the client address and error body middlewares, configuration
+validation and the audit cursor. The campaign runs serially (about 30 minutes)
+and writes `reports/mutants.out/`; `missed.txt` lists the survivors.
+
+On 2026-09-15 the first campaign caught 196 of 246 viable mutants (79.7 %).
+The survivors pointed at untested behaviour: the encryption key validator
+masked by the production checks, the entropy floor, the 254-byte email bound,
+backoff delays, OTP and token generation, re-encryption, key ids, the audit
+pagination, the plain-text error codes. Tests now pin each of them. The final
+campaign caught 265 of 272; its one new survivor, `decrypt` refusing the
+28-byte ciphertext of an empty secret, is pinned too, which leaves **266 of
+272 (97.8 %)**. The remaining survivors are accepted, each for a stated reason:
+
+| Survivor | Why no unit test kills it |
+|----------|---------------------------|
+| `TrustedProxySource for AppState` returning no proxy | Covered by every integration test: without the loopback proxy, each `TestApp` would lose its own client address and the per-address budget tests would fail |
+| `record_argon2_permits` doing nothing | Sets a Prometheus gauge; no recorder is installed in unit tests |
+| `log_capacity` doing nothing | Writes a startup log line; its arithmetic lives in tested functions |
+| `cgroup_memory_limit_mib` returning a constant (3 mutants) | Reads the host's `/sys/fs/cgroup/memory.max`; parsing it is tested in `parse_memory_max` |
+
+A new survivor in this scope needs a test, or a line in this table.
+
+## Coverage
+
+`make coverage` runs every suite under `cargo-llvm-cov` (the binaries and the
+harness excluded), writes an HTML report to `reports/coverage/`, and fails
+under 90 % of lines, 85 % of regions or 79 % of functions.
+
+| | Before this work | 2026-09-15 |
+|---|---:|---:|
+| Lines | 90.5 % | 92.1 % |
+| Regions | 85.4 % | 87.4 % |
+| Functions | 78.5 % | 81.3 % |
+
+By area (lines): domain 99.7 %, middleware 98.6 %, repositories 98.2 %,
+utilities 97.3 %, handlers 95.6 %, services 91.8 %. The configuration loader
+(68.5 %, environment variable parsing) and `state.rs` (68.2 %, building real
+SMTP and NATS clients) are the weakest; `main.rs` is not measured by tests.
 
 ## Simulations
 

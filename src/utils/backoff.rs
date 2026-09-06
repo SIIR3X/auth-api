@@ -19,3 +19,37 @@ pub async fn apply(failures: i64) {
     let secs = BASE_SECS.saturating_mul(2u64.pow(exp)).min(MAX_SECS);
     tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    async fn waited(failures: i64) -> Duration {
+        let start = tokio::time::Instant::now();
+        apply(failures).await;
+        start.elapsed()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_delay_doubles_from_one_second_up_to_the_cap() {
+        for (failures, secs) in [
+            (i64::MIN, 0),
+            (0, 0),
+            (1, 1),
+            (2, 2),
+            (3, 4),
+            (4, 8),
+            (5, 16),
+            (6, 16),
+            (i64::MAX, 16),
+        ] {
+            assert_eq!(
+                waited(failures).await,
+                Duration::from_secs(secs),
+                "{failures} failures"
+            );
+        }
+    }
+}

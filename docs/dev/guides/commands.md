@@ -38,6 +38,7 @@ Every port of the development stack is published on `127.0.0.1` only.
 | `make test-verbose` | `make test` with test output shown |
 | `make test-infra-up` / `make test-infra-down` | Start / stop PostgreSQL (5433), Redis (6380), NATS (4224) and Mailpit (1026) |
 | `make fuzz` | Every fuzz target for `FUZZ_SECS` seconds (default 60; nightly toolchain and `cargo-fuzz`) |
+| `make mutants` | Mutation testing of the domain, crypto, token, client address and configuration code (`cargo-mutants`, unit tests); report in `reports/mutants.out/` |
 | `make coverage` | Coverage of every suite (`cargo-llvm-cov`), HTML report in `reports/coverage/` |
 
 Each test runs in its own process against its own database, cloned from a
