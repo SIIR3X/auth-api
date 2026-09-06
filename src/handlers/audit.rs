@@ -193,4 +193,23 @@ mod tests {
             "session_replay_detected"
         );
     }
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            #[test]
+            fn cursors_round_trip_across_the_whole_timestamp_range(
+                nanos in -377_705_116_800_000_000_000i128..=253_402_300_799_999_999_999i128,
+                id in any::<[u8; 16]>(),
+            ) {
+                let at = OffsetDateTime::from_unix_timestamp_nanos(nanos).unwrap();
+                let id = Uuid::from_bytes(id);
+                prop_assert_eq!(decode_cursor(&encode_cursor(at, id)).unwrap(), (at, id));
+            }
+        }
+    }
 }

@@ -319,4 +319,27 @@ mod lockout_tests {
         let until = lockout_until(3, 3, u64::MAX, now()).expect("locked");
         assert!(until > now() + TimeDuration::days(365 * 1000));
     }
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn a_lock_exactly_follows_the_threshold_and_never_ends_in_the_past(
+                consecutive in -5i64..50,
+                threshold in 0u32..20,
+                duration in any::<u64>(),
+                longer in any::<u64>(),
+            ) {
+                let locked = lockout_until(consecutive, threshold, duration, now());
+                prop_assert_eq!(locked.is_some(), threshold > 0 && consecutive >= i64::from(threshold));
+                if let Some(until) = locked {
+                    prop_assert!(until >= now());
+                    let other = lockout_until(consecutive, threshold, duration.max(longer), now()).unwrap();
+                    prop_assert!(other >= until, "a longer lockout ended earlier");
+                }
+            }
+        }
+    }
 }

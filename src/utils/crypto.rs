@@ -370,4 +370,37 @@ mod tests {
             Err(CryptoError::UnknownKey)
         ));
     }
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::super::Keyring;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            #[test]
+            fn any_secret_survives_encryption_and_a_key_rotation(
+                secret in "\\PC{0,200}",
+                old in any::<[u8; 32]>(),
+                new in any::<[u8; 32]>(),
+            ) {
+                prop_assume!(old != new);
+                let before = Keyring::new(old, None);
+                let stored = before.encrypt(&secret).unwrap();
+                prop_assert_eq!(before.decrypt(&stored).unwrap(), secret.clone());
+                prop_assert!(!before.needs_rotation(&stored));
+
+                // During a rotation the old ciphertext stays readable...
+                let during = Keyring::new(new, Some(old));
+                prop_assert!(during.needs_rotation(&stored));
+                prop_assert_eq!(during.decrypt(&stored).unwrap(), secret.clone());
+
+                // ...and once rewritten, no longer needs the old key.
+                let rewritten = during.encrypt(&secret).unwrap();
+                prop_assert!(!during.needs_rotation(&rewritten));
+                prop_assert_eq!(Keyring::new(new, None).decrypt(&rewritten).unwrap(), secret);
+                prop_assert!(before.decrypt(&rewritten).is_err());
+            }
+        }
+    }
 }

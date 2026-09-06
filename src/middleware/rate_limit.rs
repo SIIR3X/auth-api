@@ -224,4 +224,42 @@ mod tests {
             "198.51.100.4/32"
         );
     }
+    mod properties {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        use proptest::prelude::*;
+
+        use super::super::{ip_bucket, ip_bucket_network};
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            #[test]
+            fn every_address_of_a_bucket_network_shares_its_bucket(
+                prefix in any::<[u16; 4]>(),
+                first in any::<[u16; 4]>(),
+                second in any::<[u16; 4]>(),
+            ) {
+                let address = |host: [u16; 4]| IpAddr::V6(Ipv6Addr::new(
+                    prefix[0], prefix[1], prefix[2], prefix[3], host[0], host[1], host[2], host[3],
+                ));
+                let (a, b) = (address(first), address(second));
+                // IPv4-mapped addresses are bucketed as IPv4 on purpose.
+                prop_assume!(prefix[..3] != [0, 0, 0] || prefix[3] != 0 || first[..2] != [0, 0xffff]);
+                prop_assume!(prefix[..3] != [0, 0, 0] || prefix[3] != 0 || second[..2] != [0, 0xffff]);
+
+                prop_assert_eq!(ip_bucket(a), ip_bucket(b));
+                let network = ip_bucket_network(a);
+                prop_assert!(network.contains(a) && network.contains(b));
+                prop_assert_eq!(network, ip_bucket_network(b));
+            }
+
+            #[test]
+            fn an_ipv4_address_is_its_own_bucket(octets in any::<[u8; 4]>()) {
+                let ip = IpAddr::V4(Ipv4Addr::from(octets));
+                prop_assert_eq!(ip_bucket(ip), ip.to_string());
+                prop_assert_eq!(ip_bucket_network(ip).prefix(), 32);
+            }
+        }
+    }
 }

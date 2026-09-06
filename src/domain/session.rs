@@ -187,4 +187,24 @@ mod tests {
     fn is_compromised_false_when_not_compromised() {
         assert!(!make_session(false, 3600, false).is_compromised());
     }
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            #[test]
+            fn a_device_label_is_bounded_clean_and_stable(raw in "(\\PC|[\\x00-\\x1f\\x7f])*") {
+                if let Some(label) = device_label(&raw) {
+                    prop_assert!(!label.is_empty());
+                    prop_assert!(label.chars().count() <= DEVICE_NAME_MAX_CHARS);
+                    prop_assert!(!label.chars().any(char::is_control));
+                    prop_assert_eq!(label.trim(), label.as_str());
+                    prop_assert_eq!(device_label(&label), Some(label.clone()), "not idempotent");
+                }
+            }
+        }
+    }
 }
