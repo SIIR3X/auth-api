@@ -148,7 +148,7 @@ async fn a_non_ascii_username_is_a_validation_error() {
     let res = app
         .post(
             "/auth/register",
-            &json!({ "username": "José_645", "email": "jose645@example.com", "password": "Password645!ok" }),
+            &json!({ "username": "Jos\u{e9}_645", "email": "jose645@example.com", "password": "Password645!ok" }),
         )
         .await;
     assert_eq!(res.status().as_u16(), 422);

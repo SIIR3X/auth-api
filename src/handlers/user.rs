@@ -463,7 +463,7 @@ mod tests {
     fn password_minimum_counts_characters_not_bytes() {
         // Found by the fuzzer: ten bytes, seven characters.
         assert!(validate_password("n@My\u{202E}e 1").is_err());
-        assert!(validate_password("Ééééééé1!A").is_ok());
+        assert!(validate_password(&format!("\u{c9}{}1!A", "\u{e9}".repeat(6))).is_ok());
     }
 
     #[test]
@@ -471,7 +471,7 @@ mod tests {
         let longest = format!("A1!{}", "a".repeat(125));
         assert!(validate_password(&longest).is_ok());
         assert!(validate_password(&format!("{longest}a")).is_err());
-        assert!(validate_password(&format!("A1!{}", "é".repeat(63))).is_err());
+        assert!(validate_password(&format!("A1!{}", "\u{e9}".repeat(63))).is_err());
     }
 
     #[test]
@@ -493,7 +493,7 @@ mod tests {
 
             #[test]
             fn the_password_policy_is_exactly_its_definition(
-                password in prop_oneof!["\\PC{0,140}", "[A-Za-z0-9!?#é]{8,12}", "[a-z]{120,135}A1!"],
+                password in prop_oneof!["\\PC{0,140}", "[A-Za-z0-9!?#\u{e9}]{8,12}", "[a-z]{120,135}A1!"],
             ) {
                 let expected = password.chars().count() >= 10
                     && password.len() <= 128

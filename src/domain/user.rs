@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn usernames_must_match_the_database_constraint() {
         assert!(is_valid_username("alice_42"));
-        assert!(!is_valid_username("José_1"));
+        assert!(!is_valid_username("Jos\u{e9}_1"));
         assert!(!is_valid_username("bad-name"));
         assert!(!is_valid_username(""));
     }
@@ -161,7 +161,7 @@ mod tests {
     fn storable_emails_match_the_database_constraint() {
         assert!(is_storable_email("first.last+tag@mail.example.org"));
         assert!(!is_storable_email("user@localhost"));
-        assert!(!is_storable_email("usér@example.com"));
+        assert!(!is_storable_email("us\u{e9}r@example.com"));
         assert!(!is_storable_email("a@b@example.com"));
         assert!(!is_storable_email("user@example.c0m"));
         assert!(!is_storable_email(&format!(

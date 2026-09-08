@@ -103,7 +103,7 @@ async fn only_one_client_can_be_primary() {
 async fn client_ids_outside_the_allowed_format_are_refused() {
     let db = TestDb::new().await;
     let none: Vec<String> = Vec::new();
-    for client_id in ["bad id", "tabs\tare\tout", "émoji.app", ""] {
+    for client_id in ["bad id", "tabs\tare\tout", "\u{1f600}.app", ""] {
         let result = registered_client::upsert(
             &db.pool,
             &NewRegisteredClient {

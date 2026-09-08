@@ -182,3 +182,49 @@ fn released_migrations_are_never_edited() {
          (`sha256sum migrations/NNNN_name.sql | sed 's|migrations/||' >> migrations/SHA256SUMS`)"
     );
 }
+
+/// The project is written in English. The French email templates are product
+/// content and the fuzz inputs are raw bytes: both are exempt. Non-ASCII test
+/// inputs are written as escapes (`"\u{e9}"`), which keeps them out of this scan.
+#[test]
+fn the_repository_is_written_in_english() {
+    const EXEMPT: [&str; 4] = [
+        "templates/emails/fr/",
+        "fuzz/seeds/",
+        "fuzz/regressions/",
+        "Cargo.lock",
+    ];
+    // Latin letters with the diacritics French uses.
+    // Escaped, so this guard does not flag itself.
+    const FRENCH: &str = "\u{c0}\u{c2}\u{c6}\u{c7}\u{c8}\u{c9}\u{ca}\u{cb}\u{ce}\u{cf}\u{d4}\u{152}\u{d9}\u{db}\u{dc}\u{178}\u{e0}\u{e2}\u{e6}\u{e7}\u{e8}\u{e9}\u{ea}\u{eb}\u{ee}\u{ef}\u{f4}\u{153}\u{f9}\u{fb}\u{fc}\u{ff}";
+
+    let root = testkit::workspace_path("");
+    let listing = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["ls-files", "-z"])
+        .output()
+        .expect("git lists the tracked files");
+    assert!(listing.status.success(), "git ls-files failed");
+
+    let mut found = Vec::new();
+    for path in listing.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        let path = String::from_utf8_lossy(path);
+        if EXEMPT.iter().any(|exempt| path.starts_with(exempt)) {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(root.join(path.as_ref())) else {
+            continue; // binary
+        };
+        for (n, line) in content.lines().enumerate() {
+            if line.chars().any(|c| FRENCH.contains(c)) {
+                found.push(format!("{path}:{}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+    assert_eq!(
+        found,
+        Vec::<String>::new(),
+        "French text outside the exempt paths"
+    );
+}

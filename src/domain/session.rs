@@ -171,7 +171,7 @@ mod tests {
             Some("MyPhone")
         );
         assert_eq!(device_label("\u{0}\t "), None);
-        let long = "é".repeat(DEVICE_NAME_MAX_CHARS + 20);
+        let long = "\u{e9}".repeat(DEVICE_NAME_MAX_CHARS + 20);
         assert_eq!(
             device_label(&long).unwrap().chars().count(),
             DEVICE_NAME_MAX_CHARS

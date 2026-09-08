@@ -247,13 +247,13 @@ mod tests {
     #[test]
     fn decodes_non_ascii_subjects_and_bodies() {
         let body = format!(
-            "<p>Votre code : <b>042917</b>. Réessayez. {}</p>",
-            "é".repeat(200)
+            "<p>Your code: <b>042917</b>. Try again. {}</p>",
+            "\u{e9}".repeat(200)
         );
-        let mail = decode(&message("Vérifiez votre adresse", &body)).unwrap();
+        let mail = decode(&message("Verify your address \u{2713}", &body)).unwrap();
 
         assert_eq!(mail.to, vec!["jane@example.com"]);
-        assert_eq!(mail.subject, "Vérifiez votre adresse");
+        assert_eq!(mail.subject, "Verify your address \u{2713}");
         assert_eq!(mail.html, body);
         assert_eq!(mail.six_digit_code().as_deref(), Some("042917"));
     }
@@ -281,8 +281,8 @@ mod tests {
     #[test]
     fn quoted_printable_handles_escapes_and_soft_breaks() {
         assert_eq!(
-            decode_quoted_printable(b"caf=C3=A9 =\r\nau lait=3D").unwrap(),
-            "café au lait=".as_bytes()
+            decode_quoted_printable(b"na=C3=AFve =\r\nbyte=3D").unwrap(),
+            "na\u{ef}ve byte=".as_bytes()
         );
         assert!(decode_quoted_printable(b"broken=4").is_err());
     }

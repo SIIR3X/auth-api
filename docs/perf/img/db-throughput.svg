@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1224" height="676" viewBox="0 0 1224 676" font-family='system-ui, -apple-system, "Segoe UI", sans-serif'>
 <rect width="1224" height="676" fill="#fcfcfb"/>
-<text x="12.0" y="22.0" font-size="15" fill="#0b0b0b" text-anchor="start" font-weight="600">Débit des requêtes selon le nombre de connexions</text>
-<text x="12.0" y="40.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="400">Requêtes par seconde par volume. Lectures : le générateur plafonne à 1 cœur dès 8 connexions, ces débits sont des minorants</text>
+<text x="12.0" y="22.0" font-size="15" fill="#0b0b0b" text-anchor="start" font-weight="600">Query throughput by number of connections</text>
+<text x="12.0" y="40.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="400">Queries per second per volume. Reads: the generator caps at 1 core from 8 connections, so these rates are lower bounds</text>
 <line x1="12" y1="58" x2="30" y2="58" stroke="#2a78d6" stroke-width="2" stroke-linecap="round"/>
 <circle cx="21" cy="58" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <text x="36.0" y="62.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
@@ -11,7 +11,7 @@
 <line x1="156.5" y1="58" x2="174.5" y2="58" stroke="#1baf7a" stroke-width="2" stroke-linecap="round"/>
 <circle cx="165.5" cy="58" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
 <text x="180.5" y="62.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
-<text x="12.0" y="86.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Utilisateur par e-mail</text>
+<text x="12.0" y="86.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">User by email</text>
 <line x1="60" y1="234.0" x2="260" y2="234.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="54.0" y="238.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="60" y1="188.7" x2="260" y2="188.7" stroke="#e1e0d9" stroke-width="1"/>
@@ -24,7 +24,7 @@
 <text x="60.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="160.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="260.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="260.0" y="262.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="260.0" y="262.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M60.0,207.6 L160.0,138.3 L260.0,124.8" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="60.0" cy="207.6" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="160.0" cy="138.3" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
@@ -40,7 +40,7 @@
 <text x="268.0" y="128.5" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
 <text x="268.0" y="140.5" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
 <text x="268.0" y="152.5" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">100k</text>
-<text x="312.0" y="86.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Session par refresh token</text>
+<text x="312.0" y="86.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Session by refresh token</text>
 <line x1="360" y1="234.0" x2="560" y2="234.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="354.0" y="238.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="360" y1="188.7" x2="560" y2="188.7" stroke="#e1e0d9" stroke-width="1"/>
@@ -53,7 +53,7 @@
 <text x="360.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="460.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="560.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="560.0" y="262.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="560.0" y="262.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M360.0,206.4 L460.0,146.6 L560.0,140.7" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="360.0" cy="206.4" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="460.0" cy="146.6" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
@@ -69,7 +69,7 @@
 <text x="568.0" y="144.1" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
 <text x="568.0" y="156.1" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
 <text x="568.0" y="168.1" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">100k</text>
-<text x="612.0" y="86.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Validité d'une session</text>
+<text x="612.0" y="86.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Session validity</text>
 <line x1="660" y1="234.0" x2="860" y2="234.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="654.0" y="238.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="660" y1="188.7" x2="860" y2="188.7" stroke="#e1e0d9" stroke-width="1"/>
@@ -82,7 +82,7 @@
 <text x="660.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="760.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="860.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="860.0" y="262.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="860.0" y="262.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M660.0,205.4 L760.0,141.7 L860.0,138.2" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="660.0" cy="205.4" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="760.0" cy="141.7" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
@@ -98,7 +98,7 @@
 <text x="868.0" y="138.8" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
 <text x="868.0" y="150.8" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">100k</text>
 <text x="868.0" y="162.8" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
-<text x="912.0" y="86.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Sessions actives d'un compte</text>
+<text x="912.0" y="86.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Active sessions of an account</text>
 <line x1="960" y1="234.0" x2="1160" y2="234.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="954.0" y="238.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="960" y1="188.7" x2="1160" y2="188.7" stroke="#e1e0d9" stroke-width="1"/>
@@ -111,7 +111,7 @@
 <text x="960.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="1060.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="1160.0" y="250.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="1160.0" y="262.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="1160.0" y="262.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M960.0,206.4 L1060.0,147.3 L1160.0,145.3" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="960.0" cy="206.4" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="1060.0" cy="147.3" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
@@ -127,7 +127,7 @@
 <text x="1168.0" y="145.7" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
 <text x="1168.0" y="157.7" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">100k</text>
 <text x="1168.0" y="169.7" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
-<text x="12.0" y="286.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Échecs récents par identifiant</text>
+<text x="12.0" y="286.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Recent failures by identifier</text>
 <line x1="60" y1="434.0" x2="260" y2="434.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="54.0" y="438.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="60" y1="388.7" x2="260" y2="388.7" stroke="#e1e0d9" stroke-width="1"/>
@@ -140,7 +140,7 @@
 <text x="60.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="160.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="260.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="260.0" y="462.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="260.0" y="462.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M60.0,407.3 L160.0,335.1 L260.0,326.0" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="60.0" cy="407.3" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="160.0" cy="335.1" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
@@ -156,7 +156,7 @@
 <text x="268.0" y="325.3" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
 <text x="268.0" y="337.3" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">100k</text>
 <text x="268.0" y="349.3" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
-<text x="312.0" y="286.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Échecs récents par adresse</text>
+<text x="312.0" y="286.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Recent failures by address</text>
 <line x1="360" y1="434.0" x2="560" y2="434.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="354.0" y="438.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="360" y1="388.7" x2="560" y2="388.7" stroke="#e1e0d9" stroke-width="1"/>
@@ -169,7 +169,7 @@
 <text x="360.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="460.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="560.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="560.0" y="462.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="560.0" y="462.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M360.0,406.3 L460.0,341.4 L560.0,336.5" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="360.0" cy="406.3" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="460.0" cy="341.4" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
@@ -185,7 +185,7 @@
 <text x="568.0" y="336.8" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">100k</text>
 <text x="568.0" y="348.8" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
 <text x="568.0" y="360.8" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
-<text x="612.0" y="286.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Échecs consécutifs d'un compte</text>
+<text x="612.0" y="286.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Consecutive failures of an account</text>
 <line x1="660" y1="434.0" x2="860" y2="434.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="654.0" y="438.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="660" y1="388.7" x2="860" y2="388.7" stroke="#e1e0d9" stroke-width="1"/>
@@ -198,7 +198,7 @@
 <text x="660.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="760.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="860.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="860.0" y="462.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="860.0" y="462.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M660.0,408.0 L760.0,333.0 L860.0,324.7" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="660.0" cy="408.0" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="760.0" cy="333.0" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
@@ -214,7 +214,7 @@
 <text x="868.0" y="320.7" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">100k</text>
 <text x="868.0" y="332.7" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
 <text x="868.0" y="344.7" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
-<text x="912.0" y="286.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Rôles et permissions</text>
+<text x="912.0" y="286.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Roles and permissions</text>
 <line x1="960" y1="434.0" x2="1160" y2="434.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="954.0" y="438.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="960" y1="388.7" x2="1160" y2="388.7" stroke="#e1e0d9" stroke-width="1"/>
@@ -227,7 +227,7 @@
 <text x="960.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="1060.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="1160.0" y="450.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="1160.0" y="462.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="1160.0" y="462.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M960.0,408.5 L1060.0,331.1 L1160.0,308.5" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="960.0" cy="408.5" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="1060.0" cy="331.1" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
@@ -243,7 +243,7 @@
 <text x="1168.0" y="312.2" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">100k</text>
 <text x="1168.0" y="324.2" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
 <text x="1168.0" y="336.2" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
-<text x="12.0" y="486.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Page d'historique (50)</text>
+<text x="12.0" y="486.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">History page (50)</text>
 <line x1="60" y1="634.0" x2="260" y2="634.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="54.0" y="638.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="60" y1="588.7" x2="260" y2="588.7" stroke="#e1e0d9" stroke-width="1"/>
@@ -256,7 +256,7 @@
 <text x="60.0" y="650.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="160.0" y="650.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="260.0" y="650.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="260.0" y="662.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="260.0" y="662.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M60.0,611.6 L160.0,551.6 L260.0,544.8" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="60.0" cy="611.6" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="160.0" cy="551.6" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
@@ -272,7 +272,7 @@
 <text x="268.0" y="536.2" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
 <text x="268.0" y="548.2" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">100k</text>
 <text x="268.0" y="560.2" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
-<text x="312.0" y="486.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Seconds facteurs et codes</text>
+<text x="312.0" y="486.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Second factors and codes</text>
 <line x1="360" y1="634.0" x2="560" y2="634.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="354.0" y="638.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="360" y1="588.7" x2="560" y2="588.7" stroke="#e1e0d9" stroke-width="1"/>
@@ -285,7 +285,7 @@
 <text x="360.0" y="650.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="460.0" y="650.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="560.0" y="650.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="560.0" y="662.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="560.0" y="662.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M360.0,605.2 L460.0,537.8 L560.0,530.3" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="360.0" cy="605.2" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="460.0" cy="537.8" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
@@ -301,7 +301,7 @@
 <text x="568.0" y="526.3" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">1M</text>
 <text x="568.0" y="538.3" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">10k</text>
 <text x="568.0" y="550.3" font-size="10" fill="#52514e" text-anchor="start" font-weight="400">100k</text>
-<text x="612.0" y="486.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Écritures d'une connexion (tx)</text>
+<text x="612.0" y="486.0" font-size="12" fill="#0b0b0b" text-anchor="start" font-weight="600">Sign-in writes (tx)</text>
 <line x1="660" y1="634.0" x2="860" y2="634.0" stroke="#c3c2b7" stroke-width="1"/>
 <text x="654.0" y="638.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">0</text>
 <line x1="660" y1="600.0" x2="860" y2="600.0" stroke="#e1e0d9" stroke-width="1"/>
@@ -316,7 +316,7 @@
 <text x="660.0" y="650.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">1</text>
 <text x="760.0" y="650.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">8</text>
 <text x="860.0" y="650.0" font-size="10" fill="#898781" text-anchor="middle" font-weight="400">32</text>
-<text x="860.0" y="662.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connexions</text>
+<text x="860.0" y="662.0" font-size="10" fill="#898781" text-anchor="end" font-weight="400">connections</text>
 <path d="M660.0,625.5 L760.0,585.5 L860.0,524.8" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="660.0" cy="625.5" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="760.0" cy="585.5" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
