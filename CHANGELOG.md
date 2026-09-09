@@ -126,6 +126,23 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   before any of them was recorded.
 - Failed sign-ins are capped per IPv6 /64, like every other per-address
   budget: rotating addresses inside one /64 reset the cap.
+- Device flow approvals check the client's session limit under the same lock
+  as code redemptions: concurrent polls could each count the same sessions and
+  exceed the limit.
+- A refresh no longer dates the new session past the absolute lifetime of its
+  sign-in, so session listings and revocation lifetimes match the real end.
+- Confirming a TOTP method records its code in the durable replay table shared
+  with sign-in (it could complete a sign-in in the same window, and the Redis
+  guard was skipped without Redis), under a budget of 5 wrong codes per 15
+  minutes.
+- Recovery codes have one per-account budget (10 per 24 hours) shared by the
+  sign-in challenge and `POST /users/me/two-factor/recovery-codes/use`, which
+  had its own; purging a user's challenges also clears their email-code
+  budgets.
+- Second factors and client flows answer `account_inactive` and
+  `email_not_verified` like the password sign-in, instead of
+  `account_suspended` for every status other than active.
+- An authorization code redirect keeps the query of its registered URI.
 - `X-Forwarded-For` is read across every header line, and a hop that is not an
   address stops the walk at the trusted proxy instead of letting the value to
   its left through. `X-Real-IP` only counts without `X-Forwarded-For`. The

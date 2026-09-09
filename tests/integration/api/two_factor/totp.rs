@@ -19,6 +19,19 @@ fn generate_totp_code(base32_secret: &str) -> String {
         .expect("failed to get current TOTP code")
 }
 
+/// The code `step_offset` 30-second steps away from now: still accepted within
+/// the skew, and distinct from the code that confirmed the method, which the
+/// replay table refuses.
+fn generate_totp_code_at(base32_secret: &str, step_offset: i64) -> String {
+    use totp_rs::{Algorithm, Secret, TOTP};
+    let bytes = Secret::Encoded(base32_secret.to_owned())
+        .to_bytes()
+        .expect("invalid base32 secret from setup response");
+    let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, bytes).expect("TOTP construction failed");
+    let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
+    totp.generate(now.saturating_add_signed(step_offset * 30))
+}
+
 /// Set up TOTP for a user: calls setup, then verifies with a real code.
 /// Returns `(method_id, recovery_codes)`.
 async fn setup_totp_for(app: &TestApp, access_token: &str) -> (String, Vec<String>) {
@@ -167,8 +180,8 @@ async fn totp_login_full_flow() {
     assert_eq!(login_body["two_factor_method"].as_str(), Some("totp"));
     let pre_auth_token = login_body["pre_auth_token"].as_str().unwrap().to_owned();
 
-    // Complete TOTP challenge with a fresh valid code.
-    let totp_code = generate_totp_code(&base32_secret);
+    // Complete TOTP challenge with a valid code other than the setup one.
+    let totp_code = generate_totp_code_at(&base32_secret, 1);
     let complete_res = app
         .post(
             "/auth/two-factor/complete",
@@ -746,8 +759,8 @@ async fn totp_replay_within_window_rejected() {
         .unwrap();
     let pre_auth1 = login1["pre_auth_token"].as_str().unwrap().to_owned();
 
-    // Complete 2FA successfully with a fresh code.
-    let totp_code = generate_totp_code(&base32_secret);
+    // Complete 2FA successfully with a code other than the setup one.
+    let totp_code = generate_totp_code_at(&base32_secret, 1);
     let first = app
         .post(
             "/auth/two-factor/complete",
@@ -962,7 +975,7 @@ async fn totp_replay_rejected_even_after_redis_key_loss() {
         .unwrap();
     let pre_auth1 = login1["pre_auth_token"].as_str().unwrap().to_owned();
 
-    let totp_code = generate_totp_code(&base32_secret);
+    let totp_code = generate_totp_code_at(&base32_secret, 1);
     let first = app
         .post(
             "/auth/two-factor/complete",

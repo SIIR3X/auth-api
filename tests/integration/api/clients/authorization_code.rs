@@ -487,3 +487,37 @@ async fn a_suspended_account_cannot_redeem_an_approved_code() {
         status_and_code(redeem(&app, &code, &p.verifier, PRIMARY, CALLBACK).await).await;
     assert_eq!((status, err.as_str()), (403, "account_suspended"));
 }
+
+#[tokio::test]
+async fn a_registered_redirect_keeps_its_query() {
+    let app = TestApp::spawn().await;
+    let redirect = "https://app.example.com/callback?tenant=acme";
+    sqlx::query(
+        "INSERT INTO registered_clients (client_id, display_name, is_primary, redirect_uris)
+         VALUES ('tenant-web', 'Tenant', TRUE, $1)",
+    )
+    .bind(vec![redirect.to_owned()])
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let user = fixtures::authenticated_user(&app, 830).await;
+
+    let res = approve_raw(
+        &app,
+        &user,
+        "tenant-web",
+        redirect,
+        json!({ "code_challenge": pkce().challenge, "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(res.status().as_u16(), 200);
+    let body: Value = res.json().await.unwrap();
+    let url = reqwest::Url::parse(body["redirect_to"].as_str().unwrap()).unwrap();
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+    assert_eq!(pairs[0], ("tenant".to_owned(), "acme".to_owned()));
+    let names: Vec<&str> = pairs.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["tenant", "code", "state"]);
+}

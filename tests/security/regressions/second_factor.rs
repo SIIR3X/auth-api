@@ -343,7 +343,8 @@ async fn second_factor_failures_do_not_lock_the_account() {
     let res = app
         .post(
             "/auth/two-factor/complete",
-            &json!({ "pre_auth_token": next["pre_auth_token"], "code": totp_code(&secret, 0) }),
+            // The step-0 code confirmed the method and is spent.
+            &json!({ "pre_auth_token": next["pre_auth_token"], "code": totp_code(&secret, 1) }),
         )
         .await;
     assert_eq!(res.status().as_u16(), 200);
@@ -384,4 +385,128 @@ async fn a_pre_auth_state_without_a_method_cannot_complete_with_a_recovery_code(
     assert_eq!(res.status().as_u16(), 401);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["code"], "token_invalid");
+}
+
+/// Start enabling TOTP. Returns (method id, base32 secret).
+async fn start_totp_setup(app: &TestApp, user: &AuthenticatedUser) -> (String, String) {
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/totp/setup",
+            &user.access_token,
+            &json!({ "current_password": user.password }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200, "totp setup failed");
+    let body: Value = res.json().await.unwrap();
+    (
+        body["method_id"].as_str().unwrap().to_owned(),
+        body["base32_secret"].as_str().unwrap().to_owned(),
+    )
+}
+
+async fn confirm_totp(app: &TestApp, user: &AuthenticatedUser, method_id: &str, code: &str) -> u16 {
+    app.post_auth(
+        &format!("/users/me/two-factor/totp/{method_id}/verify"),
+        &user.access_token,
+        &json!({ "code": code }),
+    )
+    .await
+    .status()
+    .as_u16()
+}
+
+#[tokio::test]
+async fn a_code_confirming_a_new_method_cannot_complete_a_sign_in() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 610).await;
+    let (method_id, secret) = start_totp_setup(&app, &user).await;
+    let code = totp_code(&secret, 0);
+    assert_eq!(confirm_totp(&app, &user, &method_id, &code).await, 200);
+
+    let challenge = login_challenge(&app, &user).await;
+    let res = app
+        .post(
+            "/auth/two-factor/complete",
+            &json!({ "pre_auth_token": challenge["pre_auth_token"], "code": code }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 401, "the setup code was replayed");
+}
+
+#[tokio::test]
+async fn confirming_a_new_method_has_an_attempt_budget() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 611).await;
+    let (method_id, secret) = start_totp_setup(&app, &user).await;
+
+    let wrong = wrong_totp_code(&secret);
+    for attempt in 1..=5 {
+        assert_eq!(
+            confirm_totp(&app, &user, &method_id, &wrong).await,
+            401,
+            "attempt {attempt}"
+        );
+    }
+    assert_eq!(
+        confirm_totp(&app, &user, &method_id, &totp_code(&secret, 0)).await,
+        429,
+        "the budget is spent, even for the right code"
+    );
+}
+
+#[tokio::test]
+async fn recovery_code_guesses_share_one_budget_across_routes() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 612).await;
+    let (_, recovery_codes) = enable_totp(&app, &user).await;
+
+    for attempt in 1..=10 {
+        let res = app
+            .post_auth(
+                "/users/me/two-factor/recovery-codes/use",
+                &user.access_token,
+                &json!({ "code": "XXXX-XXXX-XXXX-XXXX" }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 401, "attempt {attempt}");
+    }
+
+    let challenge = login_challenge(&app, &user).await;
+    let res = app
+        .post(
+            "/auth/two-factor/recovery",
+            &json!({
+                "pre_auth_token": challenge["pre_auth_token"],
+                "recovery_code": recovery_codes[0],
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 429);
+}
+
+#[tokio::test]
+async fn a_second_factor_answers_an_inactive_account_like_the_password_sign_in() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 613).await;
+    let (secret, _) = enable_totp(&app, &user).await;
+    let challenge = login_challenge(&app, &user).await;
+
+    sqlx::query("UPDATE users SET status = 'inactive' WHERE id = $1")
+        .bind(user.id)
+        .execute(&app.db)
+        .await
+        .unwrap();
+
+    let res = app
+        .post(
+            "/auth/two-factor/complete",
+            &json!({
+                "pre_auth_token": challenge["pre_auth_token"],
+                "code": totp_code(&secret, 1),
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 403);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["code"], "account_inactive");
 }

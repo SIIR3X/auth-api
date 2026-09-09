@@ -23,11 +23,8 @@ use crate::{
     domain::{registered_client::RegisteredClient, session::SessionType},
     error::AppError,
     middleware::rate_limit::ip_bucket,
-    repositories::{
-        client_quota as quota_repo, registered_client as client_repo, session as session_repo,
-        user as user_repo,
-    },
-    services::auth as auth_svc,
+    repositories::{registered_client as client_repo, user as user_repo},
+    services::{auth as auth_svc, authorize as authorize_svc},
     state::AppState,
     utils::{
         crypto,
@@ -312,23 +309,14 @@ pub async fn poll(
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?
                 .ok_or(AppError::DeviceAccessDenied)?;
-            if !user.is_active() {
-                return Err(AppError::AccountSuspended);
-            }
-            if user.is_locked(state.clock.now()) {
-                return Err(AppError::AccountLocked);
-            }
+            auth_svc::ensure_account_usable(&user, state.clock.now())?;
 
-            let quota = quota_repo::find_by_user_and_client(&state.db, user_id, client_id)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
-            if let Some(limit) = client.session_limit(quota.as_ref()) {
-                let active = session_repo::count_active_by_client(&state.db, user_id, client_id)
-                    .await
-                    .map_err(|e| AppError::Internal(e.into()))?;
-                if active >= limit {
-                    return Err(AppError::DeviceSessionLimitReached);
-                }
+            // Held until the session exists: concurrent approvals for this user
+            // and client count their sessions one at a time.
+            let lock = authorize_svc::lock_client_sessions(state, user_id, client_id).await?;
+            let (used, allowed) = authorize_svc::session_allowance(state, user_id, &client).await?;
+            if allowed.is_some_and(|allowed| used >= allowed) {
+                return Err(AppError::DeviceSessionLimitReached);
             }
 
             // Claim the approval: of concurrent polls, only the one whose DEL
@@ -357,6 +345,9 @@ pub async fn poll(
                 None,
             )
             .await?;
+            lock.commit()
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
 
             Ok(DevicePollResult {
                 access_token: tokens.access_token,

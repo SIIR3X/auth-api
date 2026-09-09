@@ -21,6 +21,22 @@ pub fn device_label(raw: &str) -> Option<String> {
     (!label.is_empty()).then(|| label.to_owned())
 }
 
+/// When a session issued or rotated at `now` expires: its refresh lifetime,
+/// cut short by the absolute lifetime of the sign-in that started at
+/// `family_started_at`. A rotation never dates a session past the moment the
+/// refresh would refuse it anyway, so session listings and revocation TTLs
+/// stay exact.
+pub fn capped_expiry(
+    now: OffsetDateTime,
+    ttl_secs: u64,
+    family_started_at: OffsetDateTime,
+    max_lifetime_secs: u64,
+) -> OffsetDateTime {
+    let seconds = |secs: u64| time::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX));
+    now.saturating_add(seconds(ttl_secs))
+        .min(family_started_at.saturating_add(seconds(max_lifetime_secs)))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, sqlx::Type, utoipa::ToSchema)]
 #[sqlx(type_name = "session_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -141,6 +157,35 @@ mod tests {
         let session = make_session(false, 60, false);
         assert!(session.is_active(session.expires_at - time::Duration::nanoseconds(1)));
         assert!(!session.is_active(session.expires_at));
+    }
+
+    #[test]
+    fn a_new_sign_in_expires_with_its_refresh_lifetime() {
+        assert_eq!(
+            capped_expiry(now(), 3600, now(), 86_400),
+            now() + time::Duration::hours(1)
+        );
+    }
+
+    #[test]
+    fn rotations_never_outlive_the_absolute_lifetime() {
+        let started = now() - time::Duration::days(2);
+        let end = started + time::Duration::days(3);
+        assert_eq!(capped_expiry(now(), 30 * 86_400, started, 3 * 86_400), end);
+        assert_eq!(capped_expiry(now(), 86_400, started, 3 * 86_400), end);
+        assert_eq!(
+            capped_expiry(now(), 86_399, started, 3 * 86_400),
+            end - time::Duration::seconds(1)
+        );
+    }
+
+    #[test]
+    fn huge_lifetimes_saturate_instead_of_overflowing() {
+        assert_eq!(
+            capped_expiry(now(), u64::MAX, now(), 60),
+            now() + time::Duration::minutes(1)
+        );
+        assert!(capped_expiry(now(), u64::MAX, now(), u64::MAX) > now());
     }
 
     #[test]

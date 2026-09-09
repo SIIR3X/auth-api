@@ -275,3 +275,51 @@ async fn a_live_user_code_is_never_handed_out_twice() {
             .unwrap();
     assert_eq!(still, "hash-one");
 }
+
+#[tokio::test]
+async fn concurrent_approvals_never_exceed_the_session_limit() {
+    let app = TestApp::spawn().await;
+    register_client(&app, "partner-app", false, 1).await;
+    let user = fixtures::authenticated_user(&app, 720).await;
+
+    let mut device_codes = Vec::new();
+    for _ in 0..3 {
+        let (device_code, user_code) = start_ok(&app, Some("partner-app")).await;
+        assert_eq!(approve(&app, &user, &user_code).await, 200);
+        device_codes.push(device_code);
+    }
+
+    let polls = device_codes.into_iter().map(|device_code| {
+        let client = app.client.clone();
+        let url = format!("{}/auth/device/token", app.base_url);
+        let body = json!({ "device_code": device_code, "device_name": "Test laptop" });
+        tokio::spawn(async move {
+            let res = client.post(url).json(&body).send().await.unwrap();
+            let status = res.status().as_u16();
+            let body: Value = res.json().await.unwrap_or(Value::Null);
+            (status, body["code"].as_str().unwrap_or_default().to_owned())
+        })
+    });
+    let mut outcomes = Vec::new();
+    for poll in polls {
+        outcomes.push(poll.await.unwrap());
+    }
+
+    let issued = outcomes.iter().filter(|(status, _)| *status == 200).count();
+    assert_eq!(issued, 1, "one session for a limit of one: {outcomes:?}");
+    assert!(
+        outcomes
+            .iter()
+            .filter(|(status, _)| *status != 200)
+            .all(|(status, code)| (*status, code.as_str()) == (403, "device_session_limit_reached")),
+        "{outcomes:?}"
+    );
+    let sessions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sessions WHERE user_id = $1 AND client_id = 'partner-app'",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(sessions, 1);
+}

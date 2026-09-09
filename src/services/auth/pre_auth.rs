@@ -20,6 +20,17 @@ pub(super) fn pre_auth_key(pre_auth_token: &str) -> String {
     format!("{}{}", PRE_AUTH_PREFIX, pre_auth_token)
 }
 
+/// Every Redis key a pre-auth token owns: its state and its per-challenge
+/// failure budgets. Purging a challenge deletes them all.
+pub(super) fn challenge_keys(pre_auth_token: &str) -> [String; 4] {
+    [
+        pre_auth_key(pre_auth_token),
+        format!("{TOTP_FAIL_PREFIX}{pre_auth_token}"),
+        format!("{RC_FAIL_PREFIX}{pre_auth_token}"),
+        format!("{EMAIL_2FA_FAIL_PREFIX}{pre_auth_token}"),
+    ]
+}
+
 pub(super) fn user_pre_auth_index_key(user_id: Uuid) -> String {
     format!("{}{}", USER_PRE_AUTH_PREFIX, user_id)
 }
@@ -44,10 +55,7 @@ pub async fn purge_user_pre_auth_and_email_change(state: &AppState, user_id: Uui
     let index_key = user_pre_auth_index_key(user_id);
     let tokens: Vec<String> = conn.smembers(&index_key).await.unwrap_or_default();
     for token in &tokens {
-        let pre_key = pre_auth_key(token);
-        let _: Result<(), _> = conn.del(&pre_key).await;
-        let _: Result<(), _> = conn.del(format!("totp_fail:{}", token)).await;
-        let _: Result<(), _> = conn.del(format!("rc_fail:{}", token)).await;
+        let _: Result<(), _> = conn.del(challenge_keys(token).to_vec()).await;
     }
     let _: Result<(), _> = conn.del(&index_key).await;
 
@@ -95,6 +103,14 @@ pub(crate) fn parse_pre_auth_state(raw: &str) -> Result<PreAuthState, AppError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_challenge_owns_its_state_and_every_failure_budget() {
+        assert_eq!(
+            challenge_keys("t"),
+            ["pre_auth:t", "totp_fail:t", "rc_fail:t", "email2fa_fail:t"]
+        );
+    }
 
     #[test]
     fn parse_pre_auth_state_accepts_legacy_uuid_payload() {

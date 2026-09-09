@@ -146,8 +146,8 @@ pub async fn approve(
     )
     .await?;
 
-    // The redirect was validated to carry no query, so these are its only
-    // parameters; the URL builder percent-encodes them.
+    // Appended after any query the registered redirect carries (a loopback
+    // redirect carries none); the URL builder percent-encodes them.
     let mut redirect = reqwest::Url::parse(&body.redirect_uri)
         .map_err(|_| AppError::Validation("invalid redirect_uri".into()))?;
     redirect.query_pairs_mut().append_pair("code", &code);

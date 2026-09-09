@@ -28,7 +28,7 @@ use crate::{
     },
     state::AppState,
     utils::{
-        crypto,
+        backoff, crypto,
         redis_counter::{self, Budget},
     },
 };
@@ -37,8 +37,6 @@ use super::{auth as auth_svc, email as email_svc, events};
 
 const FLOW_TTL_SECS: u64 = 60 * 15; // 15-minute window for the entire flow
 const MAX_OTP_FAILURES: i64 = 5;
-const BACKOFF_BASE_SECS: u64 = 1;
-const BACKOFF_MAX_SECS: u64 = 16;
 
 /// Per-user cooldown between two completed email changes (prevents mailbox spam).
 const CHANGE_COOLDOWN_SECS: u64 = 300;
@@ -497,7 +495,7 @@ async fn verify_otp(
     }
 
     if hash_otp(submitted_code) != expected {
-        apply_backoff(attempt.counts[0]).await;
+        backoff::apply(attempt.counts[0]).await;
         return Err(AppError::TwoFactorFailed);
     }
 
@@ -509,15 +507,4 @@ async fn verify_otp(
 fn hash_otp(code: &str) -> String {
     let hash = crypto::sha256(code.as_bytes());
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash)
-}
-
-async fn apply_backoff(failures: i64) {
-    if failures <= 0 {
-        return;
-    }
-    let exp = (failures - 1).min(4) as u32;
-    let secs = BACKOFF_BASE_SECS
-        .saturating_mul(2u64.pow(exp))
-        .min(BACKOFF_MAX_SECS);
-    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
 }

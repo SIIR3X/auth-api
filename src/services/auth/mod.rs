@@ -63,6 +63,7 @@ mod session;
 mod tokens;
 
 use guards::*;
+pub(crate) use guards::{ensure_account_usable, ensure_status_allows_sign_in};
 pub use login::*;
 pub use password_reset::*;
 pub use pre_auth::*;
@@ -144,13 +145,20 @@ const TOTP_USED_PREFIX: &str = "totp_used:";
 const MAX_RECOVERY_FAILURES: i64 = 5;
 
 /// Max recovery code failures per user in a rolling window (cross-session protection).
-const MAX_RECOVERY_FAILURES_BY_USER: i64 = 10;
+pub(crate) const MAX_RECOVERY_FAILURES_BY_USER: i64 = 10;
 
 /// Rolling window for the per-user recovery code failure counter (24 hours).
-const RECOVERY_FAILURE_USER_WINDOW_SECS: u64 = 86400;
+pub(crate) const RECOVERY_FAILURE_USER_WINDOW_SECS: u64 = 86400;
 
-/// Redis key prefix for the per-user recovery code failure counter.
-const RC_USER_FAIL_PREFIX: &str = "rc_user_fail:";
+/// Redis key prefix for the per-user recovery code failure counter. Recovery
+/// codes guessed at sign-in and through the authenticated route share it.
+pub(crate) const RC_USER_FAIL_PREFIX: &str = "rc_user_fail:";
+
+/// Redis key prefixes of the per-challenge failure budgets, followed by the
+/// pre-auth token.
+pub(crate) const TOTP_FAIL_PREFIX: &str = "totp_fail:";
+pub(crate) const RC_FAIL_PREFIX: &str = "rc_fail:";
+pub(crate) const EMAIL_2FA_FAIL_PREFIX: &str = "email2fa_fail:";
 
 /// Max verify-email or reset-password token submission attempts per IP within the window.
 /// High enough that users sharing an egress IP (CGNAT, corporate proxies) do not

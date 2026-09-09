@@ -1,6 +1,10 @@
 //! Abuse guards shared by the flows: attempt budgets, failure records, backoff.
 
 use super::*;
+use crate::domain::token::{OneTimeToken, TokenVerdict};
+
+/// Every one-time token submission takes at least this long, found or not.
+const ONE_TIME_TOKEN_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Consume one attempt of an abuse-control budget.
 ///
@@ -150,4 +154,113 @@ pub(super) async fn record_second_factor_failure(
 
 pub(super) async fn apply_backoff(failures: i64) {
     backoff::apply(failures).await;
+}
+
+/// Refuse an account whose status does not allow signing in, with the answer
+/// the password sign-in gives. Every flow ending in tokens goes through it, so
+/// a status never reads differently from one route to another.
+pub(crate) fn ensure_status_allows_sign_in(user: &User) -> Result<(), AppError> {
+    match user.status {
+        UserStatus::Active => Ok(()),
+        UserStatus::Suspended => Err(AppError::AccountSuspended),
+        UserStatus::Inactive => Err(AppError::AccountInactive),
+        UserStatus::PendingVerification => Err(AppError::EmailNotVerified),
+    }
+}
+
+/// [`ensure_status_allows_sign_in`], then the lockout: for flows completing
+/// after the password was proven (second factors, client flows).
+pub(crate) fn ensure_account_usable(
+    user: &User,
+    now: ::time::OffsetDateTime,
+) -> Result<(), AppError> {
+    ensure_status_allows_sign_in(user)?;
+    if user.is_locked(now) {
+        return Err(AppError::AccountLocked);
+    }
+    Ok(())
+}
+
+/// Look a one-time token up (email verification, password reset) and judge it.
+///
+/// The lookup always runs and the answer takes at least
+/// [`ONE_TIME_TOKEN_MIN_DURATION`], so the response time does not reveal
+/// whether a token exists.
+pub(super) async fn check_one_time_token<T: OneTimeToken>(
+    state: &AppState,
+    lookup: impl std::future::Future<Output = Result<Option<T>, sqlx::Error>>,
+) -> Result<T, AppError> {
+    let start = std::time::Instant::now();
+    let result = async {
+        let record = lookup
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .ok_or(AppError::TokenInvalid)?;
+        match record.verdict(state.clock.now()) {
+            TokenVerdict::Valid => Ok(record),
+            TokenVerdict::Expired => Err(AppError::TokenExpired),
+            TokenVerdict::Used => Err(AppError::TokenInvalid),
+        }
+    }
+    .await;
+
+    if let Some(rest) = ONE_TIME_TOKEN_MIN_DURATION.checked_sub(start.elapsed()) {
+        tokio::time::sleep(rest).await;
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(status: UserStatus, locked_until: Option<::time::OffsetDateTime>) -> User {
+        let epoch = ::time::OffsetDateTime::UNIX_EPOCH;
+        User {
+            id: Uuid::nil(),
+            created_at: epoch,
+            updated_at: epoch,
+            email_verified_at: None,
+            last_login_at: None,
+            locked_until,
+            status,
+            preferred_locale: "en".into(),
+            username: "jane".into(),
+            email: "jane@example.com".into(),
+            password_hash: String::new(),
+        }
+    }
+
+    #[test]
+    fn each_status_reads_as_the_password_sign_in_answers_it() {
+        assert!(ensure_status_allows_sign_in(&user(UserStatus::Active, None)).is_ok());
+        assert!(matches!(
+            ensure_status_allows_sign_in(&user(UserStatus::Suspended, None)),
+            Err(AppError::AccountSuspended)
+        ));
+        assert!(matches!(
+            ensure_status_allows_sign_in(&user(UserStatus::Inactive, None)),
+            Err(AppError::AccountInactive)
+        ));
+        assert!(matches!(
+            ensure_status_allows_sign_in(&user(UserStatus::PendingVerification, None)),
+            Err(AppError::EmailNotVerified)
+        ));
+    }
+
+    #[test]
+    fn a_usable_account_is_allowed_and_unlocked() {
+        let now = ::time::OffsetDateTime::UNIX_EPOCH + ::time::Duration::days(1);
+        let later = now + ::time::Duration::seconds(1);
+        assert!(ensure_account_usable(&user(UserStatus::Active, None), now).is_ok());
+        assert!(ensure_account_usable(&user(UserStatus::Active, Some(now)), now).is_ok());
+        assert!(matches!(
+            ensure_account_usable(&user(UserStatus::Active, Some(later)), now),
+            Err(AppError::AccountLocked)
+        ));
+        assert!(matches!(
+            ensure_account_usable(&user(UserStatus::Inactive, Some(later)), now),
+            Err(AppError::AccountInactive)
+        ));
+    }
 }

@@ -750,3 +750,12 @@ fn argon2_needs_at_least_one_concurrent_hash() {
     crypto.argon2_max_concurrency = 1;
     assert!(validate_crypto(&crypto).is_ok());
 }
+
+#[test]
+fn remember_me_selects_the_long_session_lifetime() {
+    let mut jwt = valid_config().jwt;
+    jwt.refresh_expiry_secs = 30;
+    jwt.short_session_expiry_secs = 1;
+    assert_eq!(jwt.session_ttl_secs(true), 30);
+    assert_eq!(jwt.session_ttl_secs(false), 1);
+}

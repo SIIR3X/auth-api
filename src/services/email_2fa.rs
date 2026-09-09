@@ -237,7 +237,7 @@ pub async fn verify_login_code(
     pre_auth_token: &str,
     submitted_code: &str,
 ) -> Result<(), AppError> {
-    let fail_key = format!("email2fa_fail:{}", pre_auth_token);
+    let fail_key = format!("{}{pre_auth_token}", super::auth::EMAIL_2FA_FAIL_PREFIX);
     verify_otp(state, user_id, submitted_code, &fail_key).await
 }
 

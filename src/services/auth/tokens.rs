@@ -27,11 +27,13 @@ pub(crate) async fn issue_tokens(
     let raw_token = crypto::generate_token();
     let token_hash = crypto::sha256(raw_token.as_bytes());
 
-    let expiry_secs = if remember_me {
-        state.config.jwt.refresh_expiry_secs
-    } else {
-        state.config.jwt.short_session_expiry_secs
-    };
+    let now = state.clock.now();
+    let expires_at = crate::domain::session::capped_expiry(
+        now,
+        state.config.jwt.session_ttl_secs(remember_me),
+        now,
+        state.config.jwt.max_session_lifetime_secs,
+    );
 
     let device_name = device_name.and_then(crate::domain::session::device_label);
 
@@ -48,7 +50,7 @@ pub(crate) async fn issue_tokens(
         &NewSession {
             user_id,
             session_family_id: Uuid::new_v4(),
-            expires_at: state.clock.in_secs(expiry_secs),
+            expires_at,
             ip_address: ip,
             device_name: device_name.as_deref(),
             remember_me,

@@ -113,6 +113,17 @@ pub struct JwtConfig {
     pub audience: Vec<String>,
 }
 
+impl JwtConfig {
+    /// Lifetime of a refresh token: long with "remember me", short otherwise.
+    pub fn session_ttl_secs(&self, remember_me: bool) -> u64 {
+        if remember_me {
+            self.refresh_expiry_secs
+        } else {
+            self.short_session_expiry_secs
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CryptoConfig {
     // Argon2id parameters, tune for your hardware

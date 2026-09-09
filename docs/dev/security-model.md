@@ -48,7 +48,8 @@ the database together, is out of scope.
   within 2 seconds of the rotation it is treated as a concurrent refresh from
   the same client (two tabs) and refused without revocation.
 - **Absolute lifetime.** A sign-in ends after `JWT_MAX_SESSION_LIFETIME_SECS`
-  however often it is refreshed. `JWT_STRICT_SESSION_BINDING` refuses a refresh
+  however often it is refreshed, and no rotation dates a session past that
+  moment. `JWT_STRICT_SESSION_BINDING` refuses a refresh
   from another address.
 - **Sensitive actions require a recent re-authentication**: changing the
   password, username or email, deleting the account, revoking sessions, and
@@ -60,8 +61,12 @@ the database together, is out of scope.
 - A pre-auth token (5 minutes) is bound to the method it was issued for: a TOTP
   challenge cannot be completed with an email code or vice versa.
 - TOTP codes are accepted once (durable replay table), with per-challenge and
-  per-account failure budgets. Email codes and recovery codes have their own
-  budgets.
+  per-account failure budgets. Confirming a new TOTP method consumes its code
+  in the same table, under its own budget. Email codes have their own budgets;
+  recovery codes share one per-account budget between the sign-in challenge and
+  the authenticated route.
+- A second factor answers an account status exactly as the password sign-in
+  does.
 - Adding or removing a method notifies the account's address. Removing the last
   method deletes the recovery codes; removing a primary method promotes another.
 - TOTP secrets are encrypted with AES-256-GCM. Ciphertexts name their key, so
@@ -118,6 +123,12 @@ list is in [Configuration](guides/configuration.md#production-checks).
   lifetime, not their entropy.
 - Outside production, rate limiting and CAPTCHA fail open by default.
 - Anyone holding both `ENCRYPTION_KEY` and a database dump can read TOTP secrets.
+- A logout racing a refresh of the same session, more than 2 seconds after
+  its rotation, reads as a replay: the family is revoked and a replay audited.
+  Kept on purpose, since the audit signal outweighs this rare race.
+- A refresh does not check the account lockout. A lockout can be triggered by
+  anyone who knows the identifier; cutting the owner's live sessions would
+  turn it into a way to sign them out. Suspending the account does end them.
 
 ## Control catalog
 
@@ -133,14 +144,14 @@ when a cited test no longer exists.
 | SEC-05 | Access tokens: ES256 only, issuer, audience and time claims checked, revocation checked on every request | `missing_or_malformed_credentials_are_refused`, `forged_tokens_for_a_live_session_are_refused`, `a_token_outlives_neither_its_expiry_nor_its_logout`, `time_claims_follow_the_supplied_clock`, `decode_rejects_non_es256_alg` |
 | SEC-06 | Every operation outside a short public list requires an access token | `the_public_list_matches_the_document`, `a_valid_token_passes_authentication_everywhere` |
 | SEC-07 | Refresh tokens rotate; a replay revokes the family, a concurrent refresh does not | `refresh_token_replay_is_rejected`, `refresh_token_theft_invalidates_entire_session_family`, `concurrent_refreshes_keep_the_family_alive`, `rotated_within_accepts_the_grace_boundary_only` |
-| SEC-08 | Absolute session lifetime and optional address binding | `session_lifetime_counts_from_the_first_sign_in`, `a_rotation_inherits_the_family_start`, `refresh_rejects_mismatched_ip_with_strict_binding` |
+| SEC-08 | Absolute session lifetime and optional address binding | `session_lifetime_counts_from_the_first_sign_in`, `a_rotation_inherits_the_family_start`, `refresh_rejects_mismatched_ip_with_strict_binding`, `rotations_never_outlive_the_absolute_lifetime`, `a_rotated_session_is_never_dated_past_its_absolute_lifetime` |
 | SEC-09 | Sensitive actions need a recent re-authentication; signing in does not count | `signing_in_does_not_grant_sensitive_actions`, `revoke_session_requires_recent_reauth`, `delete_account_without_password_and_no_recent_reauth_rejected`, `a_device_session_cannot_change_the_password_without_reauthentication`, `enrolling_a_second_factor_requires_reauthentication` |
 | SEC-10 | A pre-auth token completes only the method it was issued for | `totp_challenge_cannot_be_completed_with_an_email_code`, `a_pre_auth_state_without_a_method_cannot_complete_with_a_recovery_code`, `seeds_and_regressions_hold` |
-| SEC-11 | Second-factor codes are single-use and budgeted per challenge and per account | `totp_replay_within_window_rejected`, `totp_replay_rejected_even_after_redis_key_loss`, `concurrent_totp_guesses_never_exceed_the_token_budget`, `account_budget_blocks_fresh_pre_auth_tokens`, `recovery_challenge_rate_limited_after_max_failures`, `email_2fa_lockout_after_max_failures`, `recovery_login_replay_rejected` |
+| SEC-11 | Second-factor codes are single-use and budgeted per challenge and per account | `totp_replay_within_window_rejected`, `totp_replay_rejected_even_after_redis_key_loss`, `concurrent_totp_guesses_never_exceed_the_token_budget`, `account_budget_blocks_fresh_pre_auth_tokens`, `recovery_challenge_rate_limited_after_max_failures`, `email_2fa_lockout_after_max_failures`, `recovery_login_replay_rejected`, `a_code_confirming_a_new_method_cannot_complete_a_sign_in`, `confirming_a_new_method_has_an_attempt_budget`, `recovery_code_guesses_share_one_budget_across_routes`, `a_challenge_owns_its_state_and_every_failure_budget` |
 | SEC-12 | Changes to second factors are notified and keep a usable configuration | `removing_the_last_method_drops_recovery_codes`, `removing_the_primary_method_promotes_the_remaining_one`, `disable_totp_sends_two_factor_disabled_email` |
 | SEC-13 | TOTP secrets are encrypted with named keys; rotation is resumable | `keyring_writes_versioned_ciphertexts_it_can_read`, `keyring_refuses_a_key_it_does_not_hold`, `encrypt_produces_different_output_each_call`, `rotate_is_idempotent_when_run_twice`, `rotate_re_encrypts_totp_secret_with_new_key` |
 | SEC-14 | Only registered clients obtain sessions through client flows | `a_flow_needs_a_registered_client` |
-| SEC-15 | Device flow: user codes reserved atomically, polling paced, approval collected once, account rechecked | `a_live_user_code_is_never_handed_out_twice`, `polling_faster_than_the_interval_is_slowed_down`, `an_approval_is_collected_exactly_once_under_concurrent_polls`, `a_suspended_account_cannot_collect_approved_tokens`, `a_non_primary_client_is_capped_without_a_quota_row`, `unknown_user_codes_are_rate_limited` |
+| SEC-15 | Device flow: user codes reserved atomically, polling paced, approval collected once, account and session limit rechecked under lock | `a_live_user_code_is_never_handed_out_twice`, `polling_faster_than_the_interval_is_slowed_down`, `an_approval_is_collected_exactly_once_under_concurrent_polls`, `a_suspended_account_cannot_collect_approved_tokens`, `a_non_primary_client_is_capped_without_a_quota_row`, `unknown_user_codes_are_rate_limited`, `concurrent_approvals_never_exceed_the_session_limit`, `a_second_factor_answers_an_inactive_account_like_the_password_sign_in` |
 | SEC-16 | Authorization code: S256 only, exact or loopback redirects, single use, replay revokes, third-party consent re-authenticates | `only_s256_challenges_are_accepted`, `only_registered_or_loopback_redirects_are_accepted`, `loopback_redirects_accept_any_port_on_a_registered_path`, `a_replayed_code_is_refused_and_revokes_its_session`, `a_wrong_verifier_burns_the_code`, `a_code_is_bound_to_its_client_and_redirect`, `a_third_party_client_requires_a_fresh_reauthentication`, `challenges_and_verifiers_follow_rfc_7636` |
 | SEC-17 | Client tokens carry only consented permissions, re-derived on refresh | `tokens_carry_only_the_consented_scopes_even_after_refresh`, `granted_is_an_intersection_unless_unrestricted` |
 | SEC-18 | Tokens and codes are stored as digests | `sessions_require_32_byte_hashes`, `email_verification_tokens_are_fixed_length` |

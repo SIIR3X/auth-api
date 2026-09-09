@@ -35,6 +35,14 @@ pub struct PasswordResetToken {
 
 // Shared helpers for both token types
 
+/// What a submitted one-time token turned out to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenVerdict {
+    Valid,
+    Expired,
+    Used,
+}
+
 pub trait OneTimeToken {
     fn used_at(&self) -> Option<OffsetDateTime>;
     fn expires_at(&self) -> OffsetDateTime;
@@ -49,6 +57,17 @@ pub trait OneTimeToken {
 
     fn is_valid(&self, now: OffsetDateTime) -> bool {
         !self.is_used() && !self.is_expired(now)
+    }
+
+    /// Expiry is reported first: an expired link says so, used or not.
+    fn verdict(&self, now: OffsetDateTime) -> TokenVerdict {
+        if self.is_expired(now) {
+            TokenVerdict::Expired
+        } else if self.is_used() {
+            TokenVerdict::Used
+        } else {
+            TokenVerdict::Valid
+        }
     }
 }
 
@@ -134,6 +153,28 @@ mod tests {
     #[test]
     fn is_valid_false_when_expired() {
         assert!(!make_reset_token(false, -1).is_valid(now()));
+    }
+
+    #[test]
+    fn verdict_reports_expiry_before_use() {
+        assert_eq!(
+            make_reset_token(false, 3600).verdict(now()),
+            TokenVerdict::Valid
+        );
+        assert_eq!(
+            make_reset_token(true, 3600).verdict(now()),
+            TokenVerdict::Used
+        );
+        assert_eq!(
+            make_reset_token(false, -1).verdict(now()),
+            TokenVerdict::Expired
+        );
+        assert_eq!(
+            make_reset_token(true, -1).verdict(now()),
+            TokenVerdict::Expired
+        );
+        let token = make_reset_token(false, 60);
+        assert_eq!(token.verdict(token.expires_at), TokenVerdict::Valid);
     }
 
     #[test]

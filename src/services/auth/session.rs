@@ -137,18 +137,17 @@ pub async fn refresh_token(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
 
-    if !user.is_active() {
-        return Err(AppError::AccountSuspended);
-    }
+    ensure_status_allows_sign_in(&user)?;
 
     let new_raw_token = crypto::generate_token();
     let new_hash = crypto::sha256(new_raw_token.as_bytes());
 
-    let refresh_expiry = if session.remember_me {
-        state.config.jwt.refresh_expiry_secs
-    } else {
-        state.config.jwt.short_session_expiry_secs
-    };
+    let expires_at = crate::domain::session::capped_expiry(
+        state.clock.now(),
+        state.config.jwt.session_ttl_secs(session.remember_me),
+        session.family_created_at,
+        state.config.jwt.max_session_lifetime_secs,
+    );
 
     let new_session = match session_repo::rotate(
         &state.db,
@@ -156,7 +155,7 @@ pub async fn refresh_token(
         &NewSession {
             user_id: user.id,
             session_family_id: session.session_family_id,
-            expires_at: state.clock.in_secs(refresh_expiry),
+            expires_at,
             ip_address: ip,
             device_name: session.device_name.as_deref(),
             remember_me: session.remember_me,

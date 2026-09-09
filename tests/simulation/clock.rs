@@ -78,3 +78,35 @@ async fn an_access_token_expires_with_the_application_clock() {
     let after = app.get_auth("/users/me", &user.access_token).await;
     assert_eq!(after.status().as_u16(), 401);
 }
+
+#[tokio::test]
+async fn a_rotated_session_is_never_dated_past_its_absolute_lifetime() {
+    let app = TestApp::spawn_with_config(|config| {
+        config.jwt.max_session_lifetime_secs = 3 * 86_400;
+        config.jwt.refresh_expiry_secs = 30 * 86_400;
+        config.jwt.short_session_expiry_secs = 30 * 86_400;
+    })
+    .await;
+    let user = fixtures::authenticated_user(&app, 2).await;
+
+    app.clock.advance(Duration::days(1));
+    let res = app
+        .post(
+            "/auth/refresh",
+            &json!({ "refresh_token": user.refresh_token }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+
+    // The database clock does not follow the application clock: a minute of
+    // slack covers the gap between them, not a 30-day refresh lifetime.
+    let overdue: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sessions
+         WHERE user_id = $1 AND expires_at > family_created_at + interval '3 days 1 minute'",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(overdue, 0, "a session outlives its sign-in");
+}

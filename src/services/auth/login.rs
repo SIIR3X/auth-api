@@ -186,12 +186,7 @@ pub async fn login(
     };
 
     // Account status checks
-    match user.status {
-        UserStatus::Suspended => return Err(AppError::AccountSuspended),
-        UserStatus::Inactive => return Err(AppError::AccountInactive),
-        UserStatus::PendingVerification => return Err(AppError::EmailNotVerified),
-        UserStatus::Active => {}
-    }
+    ensure_status_allows_sign_in(&user)?;
 
     let primary_method = tf_repo::find_primary_by_user(&state.db, user.id)
         .await

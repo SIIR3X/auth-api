@@ -12,7 +12,7 @@ pub async fn complete_two_factor_login(
     request_id: Option<Uuid>,
 ) -> Result<AuthTokens, AppError> {
     let redis_key = pre_auth_key(pre_auth_token);
-    let fail_key = format!("totp_fail:{}", pre_auth_token);
+    let fail_key = format!("{TOTP_FAIL_PREFIX}{pre_auth_token}");
 
     let mut conn = state
         .redis
@@ -57,12 +57,7 @@ pub async fn complete_two_factor_login(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
 
-    if !user.is_active() {
-        return Err(AppError::AccountSuspended);
-    }
-    if user.is_locked(state.clock.now()) {
-        return Err(AppError::AccountLocked);
-    }
+    ensure_account_usable(&user, state.clock.now())?;
 
     // The primary method may have changed since the challenge was issued.
     let method = tf_repo::find_primary_by_user(&state.db, user.id)
@@ -179,12 +174,7 @@ pub async fn complete_email_2fa_login(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
 
-    if !user.is_active() {
-        return Err(AppError::AccountSuspended);
-    }
-    if user.is_locked(state.clock.now()) {
-        return Err(AppError::AccountLocked);
-    }
+    ensure_account_usable(&user, state.clock.now())?;
 
     if let Err(e) = email_2fa::verify_login_code(state, user_id, pre_auth_token, code).await {
         if matches!(e, AppError::TwoFactorFailed) {
@@ -233,7 +223,7 @@ pub async fn complete_login_with_recovery(
     request_id: Option<Uuid>,
 ) -> Result<AuthTokens, AppError> {
     let redis_key = pre_auth_key(pre_auth_token);
-    let fail_key = format!("rc_fail:{}", pre_auth_token);
+    let fail_key = format!("{RC_FAIL_PREFIX}{pre_auth_token}");
 
     let mut conn = state
         .redis
@@ -278,12 +268,7 @@ pub async fn complete_login_with_recovery(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
 
-    if !user.is_active() {
-        return Err(AppError::AccountSuspended);
-    }
-    if user.is_locked(state.clock.now()) {
-        return Err(AppError::AccountLocked);
-    }
+    ensure_account_usable(&user, state.clock.now())?;
 
     // The lookup refuses used and expired codes, and the UPDATE re-checks both:
     // a code sitting on its deadline can cross it between the two statements.

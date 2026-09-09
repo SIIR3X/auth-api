@@ -185,19 +185,7 @@ pub async fn redeem(
     let client = load_client(state, &entry.client_id).await?;
     ensure_account_usable(state, entry.user_id).await?;
 
-    // Serialize redemptions for this user and client so two concurrent
-    // exchanges cannot both slip under the session limit. The transaction only
-    // holds the advisory lock; dropping it on any exit releases the lock.
-    let mut lock = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(format!("authorize:{}:{}", entry.user_id, entry.client_id))
-        .execute(&mut *lock)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let lock = lock_client_sessions(state, entry.user_id, &entry.client_id).await?;
 
     let (used, allowed) = session_allowance(state, entry.user_id, &client).await?;
     if allowed.is_some_and(|allowed| used >= allowed) {
@@ -251,13 +239,7 @@ async fn ensure_account_usable(state: &AppState, user_id: Uuid) -> Result<(), Ap
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
-    if !user.is_active() {
-        return Err(AppError::AccountSuspended);
-    }
-    if user.is_locked(state.clock.now()) {
-        return Err(AppError::AccountLocked);
-    }
-    Ok(())
+    auth_svc::ensure_account_usable(&user, state.clock.now())
 }
 
 /// RFC 7636 section 4.2: S256 only, a 43-character base64url SHA-256 digest.
@@ -346,7 +328,31 @@ fn is_loopback(url: &reqwest::Url) -> bool {
         && url.fragment().is_none()
 }
 
-async fn session_allowance(
+/// Serialize session issuance for one user and client, so concurrent flows
+/// (code redemptions, device approvals) cannot all count the same sessions and
+/// slip under the limit together. The transaction only holds the advisory
+/// lock: commit it once the session exists; dropping it on any other exit
+/// releases the lock.
+pub(crate) async fn lock_client_sessions(
+    state: &AppState,
+    user_id: Uuid,
+    client_id: &str,
+) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, AppError> {
+    let mut lock = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("client_sessions:{user_id}:{client_id}"))
+        .execute(&mut *lock)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(lock)
+}
+
+/// Sessions the user holds for the client, and how many the client allows.
+pub(crate) async fn session_allowance(
     state: &AppState,
     user_id: Uuid,
     client: &RegisteredClient,

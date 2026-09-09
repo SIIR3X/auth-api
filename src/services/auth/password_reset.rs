@@ -129,38 +129,11 @@ pub async fn reset_password(
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
-    use crate::domain::token::OneTimeToken;
-
     let hash = crypto::sha256(raw_token.as_bytes());
     guard_token_submission(state, "rp", ip, &hash).await?;
 
-    // Constant-time token validation (see verify_email for rationale).
-    let start = std::time::Instant::now();
-    let min_duration = std::time::Duration::from_millis(100);
-
-    let result = async {
-        let record = token::find_password_reset_by_hash(&state.db, &hash)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?
-            .ok_or(AppError::TokenInvalid)?;
-
-        if record.is_expired(state.clock.now()) {
-            return Err(AppError::TokenExpired);
-        }
-        if record.is_used() {
-            return Err(AppError::TokenInvalid);
-        }
-
-        Ok(record)
-    }
-    .await;
-
-    let elapsed = start.elapsed();
-    if elapsed < min_duration {
-        tokio::time::sleep(min_duration - elapsed).await;
-    }
-
-    let record = result?;
+    let record =
+        check_one_time_token(state, token::find_password_reset_by_hash(&state.db, &hash)).await?;
 
     let new_hash = password::hash_async(new_password, &state.config.crypto)
         .await
