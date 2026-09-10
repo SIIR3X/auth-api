@@ -79,7 +79,8 @@ async fn audit_log_current_month_partition_exists() {
 #[tokio::test]
 async fn retention_is_not_left_to_pg_cron() {
     // pg_cron ran the retention functions with their SQL defaults, ignoring the
-    // configured retention; the application task is the only scheduler.
+    // configured retention; migration 0024 unschedules those jobs so the
+    // application task is the only scheduler.
     let db = TestDb::new().await;
 
     let cron_available =
@@ -88,19 +89,54 @@ async fn retention_is_not_left_to_pg_cron() {
             .await
             .expect("failed to detect cron.job");
 
-    if !cron_available {
+    if cron_available {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cron.job
+                 WHERE jobname = 'audit_log_partition_rotation' OR jobname LIKE 'cleanup_%'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("failed to inspect cron jobs");
+        assert_eq!(count, 0);
         return;
     }
 
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM cron.job
-             WHERE jobname = 'audit_log_partition_rotation' OR jobname LIKE 'cleanup_%'",
+    // Without pg_cron, a stand-in `cron` schema records what the migration asks
+    // of it, and the unscheduling block of 0024 runs against it.
+    sqlx::raw_sql(
+        "CREATE SCHEMA cron;
+         CREATE TABLE cron.job (jobname TEXT PRIMARY KEY);
+         CREATE FUNCTION cron.unschedule(job_name TEXT) RETURNS BOOLEAN
+             LANGUAGE sql AS $$ DELETE FROM cron.job WHERE jobname = job_name RETURNING TRUE $$;
+         INSERT INTO cron.job VALUES
+             ('audit_log_partition_rotation'), ('cleanup_expired_sessions'),
+             ('cleanup_old_login_attempts'), ('cleanup_used_totp_codes'), ('nightly_vacuum');",
     )
-    .fetch_one(&db.pool)
+    .execute(&db.pool)
     .await
-    .expect("failed to inspect cron jobs");
+    .expect("failed to install a stand-in pg_cron");
 
-    assert_eq!(count, 0);
+    let migration = std::fs::read_to_string(testkit::workspace_path(
+        "migrations/0024_query_performance.sql",
+    ))
+    .expect("failed to read migration 0024");
+    let start = migration
+        .find("-- One scheduler.")
+        .expect("migration 0024 unschedules the pg_cron jobs");
+    sqlx::raw_sql(&migration[start..])
+        .execute(&db.pool)
+        .await
+        .expect("failed to run the unscheduling block");
+
+    let left: Vec<String> = sqlx::query_scalar("SELECT jobname FROM cron.job ORDER BY jobname")
+        .fetch_all(&db.pool)
+        .await
+        .expect("failed to read the remaining jobs");
+    assert_eq!(
+        left,
+        ["nightly_vacuum"],
+        "only retention jobs are unscheduled"
+    );
 }
 
 #[tokio::test]

@@ -10,41 +10,31 @@ struct MigrationFile {
 #[test]
 fn migrations_are_sorted_and_contiguous() {
     let files = migration_files();
-    let names = files
-        .iter()
-        .map(|file| file.file_name.as_str())
-        .collect::<Vec<_>>();
+    assert!(!files.is_empty(), "no migration found");
 
-    let expected = vec![
-        "0001_extensions.sql",
-        "0002_users.sql",
-        "0003_roles.sql",
-        "0004_permissions.sql",
-        "0005_role_permissions.sql",
-        "0006_user_roles.sql",
-        "0007_sessions.sql",
-        "0008_two_factor_methods.sql",
-        "0009_email_2fa_codes.sql",
-        "0010_email_verification_tokens.sql",
-        "0011_password_reset_tokens.sql",
-        "0012_recovery_codes.sql",
-        "0013_login_attempts.sql",
-        "0014_audit_log.sql",
-        "0015_login_locations.sql",
-        "0016_seed.sql",
-        "0017_cleanup_schedule.sql",
-        "0018_registered_clients.sql",
-        "0019_used_totp_codes.sql",
-        "0020_session_family_created_at.sql",
-        "0021_drop_login_locations.sql",
-        "0022_client_registry.sql",
-        "0023_authorization_codes.sql",
-        "0024_query_performance.sql",
-        "0025_encryption_key_rotated.sql",
-        "0026_bounded_cleanups.sql",
-    ];
-
-    assert_eq!(names, expected);
+    for (index, file) in files.iter().enumerate() {
+        let name = file.file_name.as_str();
+        let (number, label) = name
+            .strip_suffix(".sql")
+            .and_then(|stem| stem.split_once('_'))
+            .unwrap_or_else(|| panic!("`{name}` is not named NNNN_label.sql"));
+        assert!(
+            number.len() == 4 && number.bytes().all(|b| b.is_ascii_digit()),
+            "`{name}` needs a four-digit number"
+        );
+        assert!(
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+            "`{name}` needs a snake_case label"
+        );
+        assert_eq!(
+            number.parse::<usize>().unwrap(),
+            index + 1,
+            "`{name}` breaks the sequence"
+        );
+    }
 }
 
 #[test]

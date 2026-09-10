@@ -6,17 +6,19 @@ async fn sessions_require_32_byte_hashes() {
     let db = TestDb::new().await;
 
     let user_id = insert_user(&db.pool, 31).await;
-    let err = sqlx::query(
-        "INSERT INTO sessions (user_id, expires_at, token_hash)
-             VALUES ($1, NOW() + INTERVAL '1 day', $2)",
-    )
-    .bind(user_id)
-    .bind(vec![1_u8; 31])
-    .execute(&db.pool)
-    .await
-    .expect_err("31-byte token hash should fail");
+    for length in [31, 33] {
+        let err = sqlx::query(
+            "INSERT INTO sessions (user_id, expires_at, token_hash)
+                 VALUES ($1, NOW() + INTERVAL '1 day', $2)",
+        )
+        .bind(user_id)
+        .bind(vec![1_u8; length])
+        .execute(&db.pool)
+        .await
+        .expect_err("a token hash of another length than 32 bytes should fail");
 
-    assert_constraint_error(&err, "sessions_token_hash_length");
+        assert_constraint_error(&err, "sessions_token_hash_length");
+    }
 }
 
 #[tokio::test]

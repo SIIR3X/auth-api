@@ -592,33 +592,177 @@ fn validate_accepts_dev_encryption_key_outside_production() {
     assert!(config.validate().is_ok());
 }
 
+fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
+    let map: std::collections::HashMap<String, String> = pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    move |key| map.get(key).cloned()
+}
+
 #[test]
 fn env_string_treats_blank_as_unset() {
-    // SAFETY: key names are unique to this test; no other thread reads them.
-    unsafe { std::env::set_var("AUTH_API_TEST_BLANK_STRING", "   ") };
-    assert_eq!(env_string("AUTH_API_TEST_BLANK_STRING"), None);
+    let env = Env::new(lookup(&[("BLANK", "   "), ("SET", " x ")]));
+    assert_eq!(env.string("BLANK"), None);
+    assert_eq!(env.string("ABSENT"), None);
+    assert_eq!(env.string("SET").as_deref(), Some(" x "));
 }
 
 #[test]
 fn env_parse_rejects_unparsable_values() {
-    // SAFETY: key names are unique to this test; no other thread reads them.
-    unsafe { std::env::set_var("AUTH_API_TEST_BAD_NUMBER", "1O") };
-    let parsed: Result<Option<u32>, _> = env_parse("AUTH_API_TEST_BAD_NUMBER");
+    let env = Env::new(lookup(&[("BAD_NUMBER", "1O")]));
+    let parsed: Result<Option<u32>, _> = env.parse("BAD_NUMBER");
 
-    assert!(
-        matches!(parsed, Err(ConfigError::Invalid { key, .. }) if key == "AUTH_API_TEST_BAD_NUMBER")
-    );
+    assert!(matches!(parsed, Err(ConfigError::Invalid { key, .. }) if key == "BAD_NUMBER"));
 }
 
 #[test]
 fn env_parse_accepts_absent_and_valid_values() {
-    // SAFETY: key names are unique to this test; no other thread reads them.
-    unsafe { std::env::set_var("AUTH_API_TEST_GOOD_NUMBER", " 42 ") };
-    let absent: Option<u32> = env_parse("AUTH_API_TEST_ABSENT_NUMBER").unwrap();
-    let present: Option<u32> = env_parse("AUTH_API_TEST_GOOD_NUMBER").unwrap();
+    let env = Env::new(lookup(&[("GOOD_NUMBER", " 42 ")]));
+    assert_eq!(env.parse::<u32>("ABSENT").unwrap(), None);
+    assert_eq!(env.parse::<u32>("GOOD_NUMBER").unwrap(), Some(42));
+}
 
-    assert_eq!(absent, None);
-    assert_eq!(present, Some(42));
+/// Load a configuration from the variables every deployment sets, with
+/// `overrides` applied and `removed` unset.
+fn load(overrides: &[(&str, &str)], removed: &[&str]) -> Result<Config, ConfigError> {
+    let private_key = TEST_PRIVATE_KEY_PEM.replace('\n', "\\n");
+    let public_key = TEST_PUBLIC_KEY_PEM.replace('\n', "\\n");
+    let mut vars: Vec<(&str, &str)> = vec![
+        ("APP_ENV", "development"),
+        ("DATABASE_URL", "postgres://db/auth"),
+        ("REDIS_URL", "redis://redis"),
+        ("JWT_PRIVATE_KEY", &private_key),
+        ("JWT_PUBLIC_KEY", &public_key),
+        ("ENCRYPTION_KEY", "key"),
+        ("SMTP_HOST", "smtp.example.com"),
+        ("SMTP_USERNAME", "user"),
+        ("SMTP_PASSWORD", "password"),
+        ("SMTP_FROM_ADDRESS", "no-reply@example.com"),
+        ("DEVICE_AUTH_VERIFICATION_URI", "https://example.com/device"),
+    ];
+    vars.retain(|(key, _)| !removed.contains(key) && !overrides.iter().any(|(k, _)| k == key));
+    vars.extend_from_slice(overrides);
+    Config::from_lookup(lookup(&vars))
+}
+
+#[test]
+fn loading_applies_the_documented_defaults() {
+    let config = load(&[], &[]).unwrap();
+
+    assert_eq!(config.env, Environment::Development);
+    assert_eq!(config.server.port, 3000);
+    assert_eq!(config.server.public_url, "http://localhost:3000");
+    assert_eq!(config.server.frontend_url, "http://localhost:3000");
+    assert!(config.server.trusted_proxy_cidrs.is_empty());
+    assert_eq!(config.nats.url, "nats://nats:4222");
+    assert_eq!(config.jwt.access_expiry_secs, 900);
+    assert_eq!(config.jwt.refresh_expiry_secs, 30 * 86_400);
+    assert_eq!(config.jwt.short_session_expiry_secs, 86_400);
+    assert_eq!(config.jwt.max_session_lifetime_secs, 90 * 86_400);
+    assert!(!config.jwt.strict_session_binding);
+    assert_eq!(
+        config.jwt.private_key, TEST_PRIVATE_KEY_PEM,
+        "escaped newlines are restored"
+    );
+    assert_eq!(config.security.lockout_threshold, 10);
+    assert_eq!(config.security.lockout_duration_secs, 1800);
+    assert_eq!(config.cors.allowed_origins, vec!["http://localhost:3000"]);
+    assert_eq!(config.captcha.secret, None);
+    assert_eq!(config.mail.default_locale, "en");
+    assert_eq!(config.device_auth.poll_interval_secs, 5);
+    assert!(
+        config.rate_limit.fail_open_on_redis_error,
+        "development fails open"
+    );
+    assert!(config.rate_limit.allow_requests_without_ip);
+    assert!(config.captcha.fail_open_on_error);
+}
+
+#[test]
+fn production_defaults_fail_closed() {
+    let config = load(&[("APP_ENV", "production")], &[]).unwrap();
+
+    assert!(config.is_production());
+    assert!(!config.rate_limit.fail_open_on_redis_error);
+    assert!(!config.rate_limit.allow_requests_without_ip);
+    assert!(!config.captcha.fail_open_on_error);
+}
+
+#[test]
+fn loading_reads_lists_flags_and_urls() {
+    let config = load(
+        &[
+            ("SERVER_PORT", " 8080 "),
+            ("APP_PUBLIC_URL", "https://auth.example.com"),
+            ("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 192.168.1.1/32"),
+            (
+                "JWT_AUDIENCE",
+                "https://api.example.com, ,https://files.example.com",
+            ),
+            ("JWT_STRICT_SESSION_BINDING", "true"),
+            (
+                "CORS_ALLOWED_ORIGINS",
+                "https://a.example.com, https://b.example.com",
+            ),
+            ("CAPTCHA_SECRET", "   "),
+        ],
+        &[],
+    )
+    .unwrap();
+
+    assert_eq!(config.server.port, 8080);
+    assert_eq!(
+        config.server.frontend_url, "https://auth.example.com",
+        "the frontend defaults to the public URL"
+    );
+    assert_eq!(config.server.trusted_proxy_cidrs.len(), 2);
+    assert_eq!(
+        config.jwt.audience,
+        vec!["https://api.example.com", "https://files.example.com"]
+    );
+    assert!(config.jwt.strict_session_binding);
+    assert_eq!(
+        config.cors.allowed_origins,
+        vec!["https://a.example.com", "https://b.example.com"]
+    );
+    assert_eq!(config.captcha.secret, None, "a blank secret is no secret");
+
+    let config = load(&[("FRONTEND_URL", "https://app.example.com/")], &[]).unwrap();
+    assert_eq!(config.server.frontend_url, "https://app.example.com");
+}
+
+#[test]
+fn loading_names_the_variable_at_fault() {
+    for key in [
+        "APP_ENV",
+        "DATABASE_URL",
+        "REDIS_URL",
+        "JWT_PRIVATE_KEY",
+        "JWT_PUBLIC_KEY",
+        "ENCRYPTION_KEY",
+        "SMTP_HOST",
+        "SMTP_FROM_ADDRESS",
+        "DEVICE_AUTH_VERIFICATION_URI",
+    ] {
+        assert!(
+            matches!(load(&[], &[key]), Err(ConfigError::Missing(missing)) if missing == key),
+            "{key} must be required"
+        );
+    }
+
+    for (key, value) in [
+        ("APP_ENV", "prd"),
+        ("SERVER_PORT", "70000"),
+        ("LOCKOUT_THRESHOLD", "1O"),
+        ("TRUSTED_PROXY_CIDRS", "10.0.0.0/33"),
+        ("JWT_STRICT_SESSION_BINDING", "yes"),
+    ] {
+        assert!(
+            matches!(load(&[(key, value)], &[]), Err(ConfigError::Invalid { key: invalid, .. }) if invalid == key),
+            "{key}={value} must be refused"
+        );
+    }
 }
 
 #[test]

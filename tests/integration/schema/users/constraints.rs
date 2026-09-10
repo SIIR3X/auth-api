@@ -184,14 +184,17 @@ async fn users_require_verified_email_for_active_status() {
 async fn users_allow_verified_email_for_active_status() {
     let db = TestDb::new().await;
 
-    sqlx::query(
+    let (status, verified): (String, bool) = sqlx::query_as(
         "INSERT INTO users (username, email, password_hash, status, email_verified_at)
-             VALUES ($1, $2, $3, 'active', NOW())",
+             VALUES ($1, $2, $3, 'active', NOW())
+             RETURNING status::text, email_verified_at IS NOT NULL",
     )
     .bind("active_verified")
     .bind(sample_email(105))
     .bind(SAMPLE_PASSWORD_HASH)
-    .execute(&db.pool)
+    .fetch_one(&db.pool)
     .await
     .expect("active verified user should be allowed");
+
+    assert_eq!((status.as_str(), verified), ("active", true));
 }

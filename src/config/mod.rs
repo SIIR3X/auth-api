@@ -311,135 +311,170 @@ impl Config {
     /// Silently ignores a missing `.env` file; production relies on real env vars.
     pub fn from_env() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
+        Self::from_lookup(|key| std::env::var(key).ok())
+    }
+
+    /// Load configuration from `lookup`, which returns the value of a variable:
+    /// the process environment for `from_env`, a map in tests.
+    pub(crate) fn from_lookup(
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, ConfigError> {
+        let vars = Env::new(lookup);
 
         // Required: a typo such as `APP_ENV=prd` must not silently start a
         // deployment with every development relaxation enabled.
-        let env: Environment =
-            env_parse("APP_ENV")?.ok_or_else(|| ConfigError::Missing("APP_ENV".into()))?;
+        let env: Environment = vars
+            .parse("APP_ENV")?
+            .ok_or_else(|| ConfigError::Missing("APP_ENV".into()))?;
 
         let is_production = matches!(env, Environment::Production);
 
         let config = Self {
             env: env.clone(),
             server: ServerConfig {
-                host: env_string("SERVER_HOST").unwrap_or_else(|| "0.0.0.0".into()),
-                port: env_parse("SERVER_PORT")?.unwrap_or(3000u16),
-                public_url: env_string("APP_PUBLIC_URL")
+                host: vars
+                    .string("SERVER_HOST")
+                    .unwrap_or_else(|| "0.0.0.0".into()),
+                port: vars.parse("SERVER_PORT")?.unwrap_or(3000u16),
+                public_url: vars
+                    .string("APP_PUBLIC_URL")
                     .unwrap_or_else(|| "http://localhost:3000".into()),
-                frontend_url: env_string("FRONTEND_URL")
-                    .or_else(|| env_string("APP_PUBLIC_URL"))
+                frontend_url: vars
+                    .string("FRONTEND_URL")
+                    .or_else(|| vars.string("APP_PUBLIC_URL"))
                     .unwrap_or_else(|| "http://localhost:3000".into())
                     .trim_end_matches('/')
                     .to_owned(),
-                trusted_proxy_cidrs: env_ip_network_list("TRUSTED_PROXY_CIDRS")?,
+                trusted_proxy_cidrs: vars.ip_network_list("TRUSTED_PROXY_CIDRS")?,
             },
             database: DatabaseConfig {
-                url: env_require("DATABASE_URL")?,
-                max_connections: env_parse("DB_MAX_CONNECTIONS")?.unwrap_or(20),
-                min_connections: env_parse("DB_MIN_CONNECTIONS")?.unwrap_or(2),
-                acquire_timeout_secs: env_parse("DB_ACQUIRE_TIMEOUT_SECS")?.unwrap_or(30),
+                url: vars.require("DATABASE_URL")?,
+                max_connections: vars.parse("DB_MAX_CONNECTIONS")?.unwrap_or(20),
+                min_connections: vars.parse("DB_MIN_CONNECTIONS")?.unwrap_or(2),
+                acquire_timeout_secs: vars.parse("DB_ACQUIRE_TIMEOUT_SECS")?.unwrap_or(30),
             },
             redis: RedisConfig {
-                url: env_require("REDIS_URL")?,
-                pool_size: env_parse("REDIS_POOL_SIZE")?.unwrap_or(10),
-                wait_timeout_ms: env_parse("REDIS_WAIT_TIMEOUT_MS")?.unwrap_or(2000),
+                url: vars.require("REDIS_URL")?,
+                pool_size: vars.parse("REDIS_POOL_SIZE")?.unwrap_or(10),
+                wait_timeout_ms: vars.parse("REDIS_WAIT_TIMEOUT_MS")?.unwrap_or(2000),
             },
             nats: NatsConfig {
-                url: env_string("NATS_URL").unwrap_or_else(|| "nats://nats:4222".into()),
+                url: vars
+                    .string("NATS_URL")
+                    .unwrap_or_else(|| "nats://nats:4222".into()),
             },
             jwt: JwtConfig {
-                private_key: env_require("JWT_PRIVATE_KEY")?.replace("\\n", "\n"),
-                public_key: env_require("JWT_PUBLIC_KEY")?.replace("\\n", "\n"),
-                previous_public_key: env_string("JWT_PREVIOUS_PUBLIC_KEY")
+                private_key: vars.require("JWT_PRIVATE_KEY")?.replace("\\n", "\n"),
+                public_key: vars.require("JWT_PUBLIC_KEY")?.replace("\\n", "\n"),
+                previous_public_key: vars
+                    .string("JWT_PREVIOUS_PUBLIC_KEY")
                     .map(|s| s.replace("\\n", "\n")),
-                access_expiry_secs: env_parse("JWT_ACCESS_EXPIRY_SECS")?.unwrap_or(900),
-                refresh_expiry_secs: env_parse("JWT_REFRESH_EXPIRY_SECS")?
+                access_expiry_secs: vars.parse("JWT_ACCESS_EXPIRY_SECS")?.unwrap_or(900),
+                refresh_expiry_secs: vars
+                    .parse("JWT_REFRESH_EXPIRY_SECS")?
                     .unwrap_or(60 * 60 * 24 * 30),
-                short_session_expiry_secs: env_parse("JWT_SHORT_SESSION_EXPIRY_SECS")?
+                short_session_expiry_secs: vars
+                    .parse("JWT_SHORT_SESSION_EXPIRY_SECS")?
                     .unwrap_or(60 * 60 * 24),
-                strict_session_binding: env_parse("JWT_STRICT_SESSION_BINDING")?.unwrap_or(false),
-                max_session_lifetime_secs: env_parse("JWT_MAX_SESSION_LIFETIME_SECS")?
+                strict_session_binding: vars.parse("JWT_STRICT_SESSION_BINDING")?.unwrap_or(false),
+                max_session_lifetime_secs: vars
+                    .parse("JWT_MAX_SESSION_LIFETIME_SECS")?
                     .unwrap_or(60 * 60 * 24 * 90),
-                audience: env_csv("JWT_AUDIENCE").unwrap_or_default(),
+                audience: vars.csv("JWT_AUDIENCE").unwrap_or_default(),
             },
             crypto: CryptoConfig {
-                argon2_memory_kib: env_parse("ARGON2_MEMORY_KIB")?.unwrap_or(65_536), // 64 MB
-                argon2_iterations: env_parse("ARGON2_ITERATIONS")?.unwrap_or(3),
-                argon2_parallelism: env_parse("ARGON2_PARALLELISM")?.unwrap_or(4),
-                argon2_max_concurrency: env_parse("ARGON2_MAX_CONCURRENCY")?
+                argon2_memory_kib: vars.parse("ARGON2_MEMORY_KIB")?.unwrap_or(65_536), // 64 MB
+                argon2_iterations: vars.parse("ARGON2_ITERATIONS")?.unwrap_or(3),
+                argon2_parallelism: vars.parse("ARGON2_PARALLELISM")?.unwrap_or(4),
+                argon2_max_concurrency: vars
+                    .parse("ARGON2_MAX_CONCURRENCY")?
                     .unwrap_or_else(default_argon2_max_concurrency),
-                totp_issuer: env_string("TOTP_ISSUER").unwrap_or_else(|| "auth-api".into()),
-                encryption_key: env_require("ENCRYPTION_KEY")?,
-                previous_encryption_key: env_string("PREVIOUS_ENCRYPTION_KEY"),
-                totp_skew: env_parse("TOTP_SKEW")?.unwrap_or(1),
-                recovery_code_expiry_days: env_parse("RECOVERY_CODE_EXPIRY_DAYS")?.unwrap_or(365), // 0 = never
+                totp_issuer: vars
+                    .string("TOTP_ISSUER")
+                    .unwrap_or_else(|| "auth-api".into()),
+                encryption_key: vars.require("ENCRYPTION_KEY")?,
+                previous_encryption_key: vars.string("PREVIOUS_ENCRYPTION_KEY"),
+                totp_skew: vars.parse("TOTP_SKEW")?.unwrap_or(1),
+                recovery_code_expiry_days: vars.parse("RECOVERY_CODE_EXPIRY_DAYS")?.unwrap_or(365), // 0 = never
             },
             rate_limit: RateLimitConfig {
-                requests_per_minute: env_parse("RATE_LIMIT_RPM")?.unwrap_or(300),
-                auth_requests_per_minute: env_parse("RATE_LIMIT_AUTH_RPM")?.unwrap_or(20),
-                fail_open_on_redis_error: env_parse("RATE_LIMIT_FAIL_OPEN")?
+                requests_per_minute: vars.parse("RATE_LIMIT_RPM")?.unwrap_or(300),
+                auth_requests_per_minute: vars.parse("RATE_LIMIT_AUTH_RPM")?.unwrap_or(20),
+                fail_open_on_redis_error: vars
+                    .parse("RATE_LIMIT_FAIL_OPEN")?
                     .unwrap_or(!is_production),
-                allow_requests_without_ip: env_parse("RATE_LIMIT_ALLOW_MISSING_IP")?
+                allow_requests_without_ip: vars
+                    .parse("RATE_LIMIT_ALLOW_MISSING_IP")?
                     .unwrap_or(!is_production),
             },
             security: SecurityConfig {
-                lockout_threshold: env_parse("LOCKOUT_THRESHOLD")?.unwrap_or(10),
-                lockout_duration_secs: env_parse("LOCKOUT_DURATION_SECS")?.unwrap_or(1800),
-                sensitive_action_reauth_secs: env_parse("SENSITIVE_ACTION_REAUTH_SECS")?
+                lockout_threshold: vars.parse("LOCKOUT_THRESHOLD")?.unwrap_or(10),
+                lockout_duration_secs: vars.parse("LOCKOUT_DURATION_SECS")?.unwrap_or(1800),
+                sensitive_action_reauth_secs: vars
+                    .parse("SENSITIVE_ACTION_REAUTH_SECS")?
                     .unwrap_or(600),
             },
             mail: MailConfig {
                 smtp: SmtpConfig {
-                    host: env_require("SMTP_HOST")?,
-                    port: env_parse("SMTP_PORT")?.unwrap_or(587),
-                    username: env_require("SMTP_USERNAME")?,
-                    password: env_require("SMTP_PASSWORD")?,
-                    from_name: env_string("SMTP_FROM_NAME").unwrap_or_else(|| "auth-api".into()),
-                    from_address: env_require("SMTP_FROM_ADDRESS")?,
+                    host: vars.require("SMTP_HOST")?,
+                    port: vars.parse("SMTP_PORT")?.unwrap_or(587),
+                    username: vars.require("SMTP_USERNAME")?,
+                    password: vars.require("SMTP_PASSWORD")?,
+                    from_name: vars
+                        .string("SMTP_FROM_NAME")
+                        .unwrap_or_else(|| "auth-api".into()),
+                    from_address: vars.require("SMTP_FROM_ADDRESS")?,
                 },
-                templates_dir: env_string("MAIL_TEMPLATES_DIR")
+                templates_dir: vars
+                    .string("MAIL_TEMPLATES_DIR")
                     .unwrap_or_else(|| "templates".into()),
-                default_locale: env_string("MAIL_DEFAULT_LOCALE").unwrap_or_else(|| "en".into()),
+                default_locale: vars
+                    .string("MAIL_DEFAULT_LOCALE")
+                    .unwrap_or_else(|| "en".into()),
             },
             captcha: CaptchaConfig {
-                secret: env_string("CAPTCHA_SECRET"),
-                verify_url: env_string("CAPTCHA_VERIFY_URL")
+                secret: vars.string("CAPTCHA_SECRET"),
+                verify_url: vars
+                    .string("CAPTCHA_VERIFY_URL")
                     .unwrap_or_else(|| "https://hcaptcha.com/siteverify".into()),
-                request_timeout_secs: env_parse("CAPTCHA_TIMEOUT_SECS")?.unwrap_or(5),
-                fail_open_on_error: env_parse("CAPTCHA_FAIL_OPEN")?.unwrap_or(!is_production),
+                request_timeout_secs: vars.parse("CAPTCHA_TIMEOUT_SECS")?.unwrap_or(5),
+                fail_open_on_error: vars.parse("CAPTCHA_FAIL_OPEN")?.unwrap_or(!is_production),
             },
             cors: CorsConfig {
-                allowed_origins: env_string("CORS_ALLOWED_ORIGINS")
+                allowed_origins: vars
+                    .string("CORS_ALLOWED_ORIGINS")
                     .unwrap_or_else(|| "http://localhost:3000".into())
                     .split(',')
                     .map(|s| s.trim().to_owned())
                     .collect(),
-                allow_credentials: env_parse("CORS_ALLOW_CREDENTIALS")?.unwrap_or(true),
+                allow_credentials: vars.parse("CORS_ALLOW_CREDENTIALS")?.unwrap_or(true),
             },
             cleanup: CleanupConfig {
-                interval_secs: env_parse("CLEANUP_INTERVAL_SECS")?.unwrap_or(3600),
-                sessions_grace_days: env_parse("CLEANUP_SESSIONS_GRACE_DAYS")?.unwrap_or(7),
-                tokens_grace_days: env_parse("CLEANUP_TOKENS_GRACE_DAYS")?.unwrap_or(1),
-                login_attempts_retention_days: env_parse("CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS")?
+                interval_secs: vars.parse("CLEANUP_INTERVAL_SECS")?.unwrap_or(3600),
+                sessions_grace_days: vars.parse("CLEANUP_SESSIONS_GRACE_DAYS")?.unwrap_or(7),
+                tokens_grace_days: vars.parse("CLEANUP_TOKENS_GRACE_DAYS")?.unwrap_or(1),
+                login_attempts_retention_days: vars
+                    .parse("CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS")?
                     .unwrap_or(90),
-                recovery_codes_grace_days: env_parse("CLEANUP_RECOVERY_CODES_GRACE_DAYS")?
+                recovery_codes_grace_days: vars
+                    .parse("CLEANUP_RECOVERY_CODES_GRACE_DAYS")?
                     .unwrap_or(7),
             },
             audit: AuditConfig {
-                retention_months: env_parse("AUDIT_LOG_RETENTION_MONTHS")?.unwrap_or(12),
+                retention_months: vars.parse("AUDIT_LOG_RETENTION_MONTHS")?.unwrap_or(12),
             },
             log: LogConfig {
-                level: env_string("LOG_LEVEL").unwrap_or_else(|| "info".into()),
-                format: env_parse("LOG_FORMAT")?.unwrap_or(LogFormat::Pretty),
+                level: vars.string("LOG_LEVEL").unwrap_or_else(|| "info".into()),
+                format: vars.parse("LOG_FORMAT")?.unwrap_or(LogFormat::Pretty),
             },
             device_auth: DeviceAuthConfig {
-                ttl_secs: env_parse("DEVICE_AUTH_TTL_SECS")?.unwrap_or(300),
-                poll_interval_secs: env_parse("DEVICE_AUTH_POLL_INTERVAL_SECS")?.unwrap_or(5),
-                verification_uri: env_require("DEVICE_AUTH_VERIFICATION_URI")?,
+                ttl_secs: vars.parse("DEVICE_AUTH_TTL_SECS")?.unwrap_or(300),
+                poll_interval_secs: vars.parse("DEVICE_AUTH_POLL_INTERVAL_SECS")?.unwrap_or(5),
+                verification_uri: vars.require("DEVICE_AUTH_VERIFICATION_URI")?,
             },
             metrics: MetricsConfig {
-                enabled: env_parse("METRICS_ENABLED")?.unwrap_or(true),
-                port: env_parse("METRICS_PORT")?.unwrap_or(9464),
+                enabled: vars.parse("METRICS_ENABLED")?.unwrap_or(true),
+                port: vars.parse("METRICS_PORT")?.unwrap_or(9464),
             },
         };
 

@@ -1,4 +1,5 @@
 use auth_api::repositories::{login_attempt, session as session_repo, user as user_repo};
+use ipnetwork::IpNetwork;
 use sqlx::PgPool;
 use testkit::sql::{
     assert_plan_contains, explain_plan, fixed_hash, insert_active_user, insert_user, sample_email,
@@ -87,7 +88,7 @@ async fn brute_force_counter_plans_use_partial_failure_indexes() {
 
     let user_id = insert_active_user(&db.pool, 1000).await;
     let hot_identifier = sample_email(1000);
-    let hot_ip = "203.0.113.10/32";
+    let hot_ip: IpNetwork = "203.0.113.10/32".parse().unwrap();
 
     insert_login_attempts(&db.pool, user_id, &hot_identifier, hot_ip).await;
     sqlx::raw_sql(
@@ -112,19 +113,22 @@ async fn brute_force_counter_plans_use_partial_failure_indexes() {
         "idx_login_attempts_failed_identifier_time",
     );
 
-    let explain_ip_sql =
-        login_attempt::COUNT_RECENT_FAILURES_BY_IP_SQL.replacen("$1::cidr", "$1::text::cidr", 1);
     let ip_limit = 30i64;
     let ip_plan = explain_plan(
         &db.pool,
-        &explain_ip_sql,
+        login_attempt::COUNT_RECENT_FAILURES_BY_IP_SQL,
         pg_args![&hot_ip, &cutoff, &ip_limit],
     )
     .await;
     assert_plan_contains(&ip_plan, "idx_login_attempts_failed_ip_time");
 }
 
-async fn insert_login_attempts(pool: &PgPool, user_id: uuid::Uuid, identifier: &str, ip: &str) {
+async fn insert_login_attempts(
+    pool: &PgPool,
+    user_id: uuid::Uuid,
+    identifier: &str,
+    ip: IpNetwork,
+) {
     for offset in 0..180 {
         let was_successful = offset % 6 == 0;
         let other_identifier = format!("other-{offset}@example.com");
@@ -133,10 +137,10 @@ async fn insert_login_attempts(pool: &PgPool, user_id: uuid::Uuid, identifier: &
         } else {
             other_identifier.as_str()
         };
-        let current_ip = if offset % 3 == 0 {
+        let current_ip: IpNetwork = if offset % 3 == 0 {
             ip
         } else {
-            "198.51.100.200/32"
+            "198.51.100.200/32".parse().unwrap()
         };
         let failure_reason = if was_successful {
             None::<&str>
@@ -147,7 +151,7 @@ async fn insert_login_attempts(pool: &PgPool, user_id: uuid::Uuid, identifier: &
         sqlx::query(
             "INSERT INTO login_attempts
                     (user_id, attempted_identifier, was_successful, failure_reason, request_ip, request_user_agent, attempted_at)
-                 VALUES ($1, $2, $3, $4::text::login_failure_reason, $5::text::cidr, $6, NOW() - ($7::int * INTERVAL '1 minute'))",
+                 VALUES ($1, $2, $3, $4::text::login_failure_reason, $5, $6, NOW() - ($7::int * INTERVAL '1 minute'))",
         )
         .bind(Some(user_id))
         .bind(attempted_identifier)
