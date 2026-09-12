@@ -148,10 +148,10 @@ ci: quality ## Full local CI gate: formatting, lints, dependency policy, every s
 	cargo nextest run --profile ci --test fuzz_corpus --features fuzzing
 
 .PHONY: coverage
-coverage: ## Coverage of every suite, failing under 90% lines, 85% regions, 79% functions (HTML in reports/coverage/)
+coverage: ## Coverage of every suite, failing under 93% lines, 89% regions, 83% functions (HTML in reports/coverage/)
 	$(TEST_ENV) cargo llvm-cov nextest --workspace --profile ci \
 		--ignore-filename-regex '(src/bin/|crates/testkit/)' \
-		--fail-under-lines 90 --fail-under-regions 85 --fail-under-functions 79 \
+		--fail-under-lines 93 --fail-under-regions 89 --fail-under-functions 83 \
 		--html --output-dir reports/coverage
 
 .PHONY: bench

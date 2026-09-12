@@ -169,18 +169,20 @@ A new survivor in this scope needs a test, or a line in this table.
 
 `make coverage` runs every suite under `cargo-llvm-cov` (the binaries and the
 harness excluded), writes an HTML report to `reports/coverage/`, and fails
-under 90 % of lines, 85 % of regions or 79 % of functions.
+under 93 % of lines, 89 % of regions or 83 % of functions.
 
-| | Before this work | 2026-09-15 |
-|---|---:|---:|
-| Lines | 90.5 % | 92.1 % |
-| Regions | 85.4 % | 87.4 % |
-| Functions | 78.5 % | 81.3 % |
+| | Before this work | After the test plan | Final, 2026-09-15 |
+|---|---:|---:|---:|
+| Lines | 90.5 % | 92.1 % | 93.9 % |
+| Regions | 85.4 % | 87.4 % | 90.1 % |
+| Functions | 78.5 % | 81.3 % | 83.8 % |
 
-By area (lines): domain 99.7 %, middleware 98.6 %, repositories 98.2 %,
-utilities 97.3 %, handlers 95.6 %, services 91.8 %. The configuration loader
-(68.5 %, environment variable parsing) and `state.rs` (68.2 %, building real
-SMTP and NATS clients) are the weakest; `main.rs` is not measured by tests.
+By area (lines): domain 99.9 %, middleware 98.6 %, repositories 98.2 %,
+utilities 97.3 %, configuration 96.7 %, handlers 95.6 %, services 92.2 %.
+`state.rs` (68.2 %) is the weakest: its failures are tested, but building the
+production database pool and clients from nothing only happens at startup;
+`main.rs` is not measured by tests. The floors sit just under these figures, so
+a change that lowers coverage fails the target.
 
 ## Simulations
 

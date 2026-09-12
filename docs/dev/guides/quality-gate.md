@@ -35,7 +35,7 @@ In addition to `make ci`:
 | `make fuzz FUZZ_SECS=600` | Every fuzz target for ten minutes (nightly); a crash is fixed and its input added to `fuzz/regressions/` |
 | `make test-sim` | The simulation suite, long scenarios included |
 | `make mutants` | Mutation testing of the security-relevant pure code; every surviving mutant in `reports/mutants.out/missed.txt` is a fault no unit test notices, unless the testing guide lists it as accepted |
-| `make coverage` | Coverage of every suite; fails under 90 % of lines, 85 % of regions or 79 % of functions |
+| `make coverage` | Coverage of every suite; fails under 93 % of lines, 89 % of regions or 83 % of functions |
 | `make soak` | An hour of mixed traffic against one API process: no failed request, and resident memory growing less than 20 % between the first and last tenth of the run |
 | `make docker-check` | Hadolint on the Dockerfile, Trivy CVE and secret scans of the image |
 | `make bench-http` | Latency of every scenario; compare with the figures in the [operations runbook](../../deploy/guides/operations.md#8-measured-capacity) |
