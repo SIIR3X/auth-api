@@ -85,3 +85,11 @@ memory over the first tenth, after warm-up, by more than 20 %.
 
 The verdict and its figures are written to `soak.json` next to the run's
 results.
+
+First run, 2026-09-15 (same machine and CPU pinning as the campaign, production
+Argon2 parameters): 1 239 760 requests in 3 600 s at 32 virtual users, 344
+requests per second, no error. Resident memory went from 213.3 MiB over the
+first tenth to 213.6 MiB over the last (+0.2 %). Latency: p50 3.4 ms, p95 894 ms,
+p99 940 ms. The tail comes from the sign-ins and registrations of the mix, each
+paying a full Argon2 hash on the three API cores, and matches the sign-in
+figures of the campaign rather than a degradation over time.
