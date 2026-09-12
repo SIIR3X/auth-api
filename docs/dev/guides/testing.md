@@ -197,6 +197,15 @@ throws at it:
   `app.clock.advance(..)` rather than sleeps.
 - **Redis without Redis** (`redis_outage.rs`): flows that must keep working, or
   fail closed, when Redis is unreachable from the start.
+- **Account lifecycles** (`lifecycle.rs`): proptest generates sequences of
+  sign-ins, refreshes, sign-outs, password changes, sign-outs everywhere and
+  deletions for several accounts, played against the API. After every step, each
+  session a model knows must answer as the model says, the database must hold
+  exactly the live sessions the model counts, and the audit log must not shrink.
+  A failure prints the sequence.
+- **Timing** (`timing.rs`, long): wrong-password sign-ins and password recoveries
+  for existing and unknown accounts, interleaved in the same batches. The median
+  times of both sides must stay within 25 ms.
 
 Scenarios that take tens of seconds (a hung database bounded by the request
 timeout) are marked `#[ignore = "long: ..."]`: `make test-sim` runs them,
@@ -205,7 +214,10 @@ timeout) are marked `#[ignore = "long: ..."]`: `make test-sim` runs them,
 These scenarios found two defects the rest of the suites could not see: a
 database outage answered `500` instead of `503`, and the Redis pool never
 replaced a connection that failed under traffic, so a Redis restart kept every
-authenticated request failing until traffic paused.
+authenticated request failing until traffic paused. The lifecycle model then
+found two operations documented as revoking the *other* sessions, a password
+change and signing out everywhere, when both revoke the current one too; the
+contract now says so.
 
 ## Fuzzing
 

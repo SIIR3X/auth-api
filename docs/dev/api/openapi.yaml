@@ -1612,7 +1612,7 @@ paths:
         required: true
       responses:
         '204':
-          description: Password changed; other sessions revoked
+          description: Password changed; every session revoked, the current one included
         '400':
           description: Malformed request
           content:
@@ -1774,7 +1774,7 @@ paths:
               - $ref: '#/components/schemas/RevokeAllRequest'
       responses:
         '204':
-          description: Every other session revoked
+          description: Every session revoked, the current one included
         '400':
           description: Malformed request
           content:

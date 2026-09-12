@@ -66,3 +66,22 @@ VOLUMES="2000 4000" CONCURRENCY="1 8" DB_CONCURRENCY=2 DURATION=3 WARMUP=1 \
 - **Measurements:** a 1 %-resolution histogram per operation, CPU per pinned
   core group from `/proc/stat`, and `pg_stat_database` counters over the
   measurement window.
+
+## Soak test
+
+`make soak` (`perf/soak.sh`) runs the mixed scenario for an hour against one API
+process, on a data set of 10 000 accounts in its own `auth_soak` database, and
+samples the API's resident memory every 15 seconds into `memory.csv`. It fails
+when a request errors, or when memory over the last tenth of the run exceeds
+memory over the first tenth, after warm-up, by more than 20 %.
+
+| Variable | Default | |
+|----------|--------:|-|
+| `SOAK_SECS` | 3600 | Measured duration |
+| `SOAK_USERS` | 10000 | Accounts seeded |
+| `SOAK_CONCURRENCY` | 32 | Virtual users |
+| `SOAK_WARMUP` | 60 | Seconds excluded before measuring |
+| `SOAK_MAX_GROWTH_PCT` | 20 | Memory growth tolerated |
+
+The verdict and its figures are written to `soak.json` next to the run's
+results.

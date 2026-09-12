@@ -179,6 +179,10 @@ perf-report: ## Tables and charts of a campaign into docs/perf (RUN=reports/perf
 	@test -n "$(RUN)" || { echo "usage: make perf-report RUN=reports/perf/<run>"; exit 1; }
 	python3 perf/report.py $(RUN) docs/perf
 
+.PHONY: soak
+soak: ## One hour of mixed traffic on one API process: no error, stable memory (perf/soak.sh)
+	perf/soak.sh
+
 # =============================================================================
 # Build
 # =============================================================================

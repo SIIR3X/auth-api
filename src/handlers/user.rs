@@ -274,7 +274,7 @@ pub async fn confirm_new_email(
     tag = "account",
     request_body = ChangePasswordRequest,
     responses(
-        (status = 204, description = "Password changed; other sessions revoked"),
+        (status = 204, description = "Password changed; every session revoked, the current one included"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid input", body = crate::error::ErrorBody),

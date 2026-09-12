@@ -57,6 +57,9 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 
 ### Added
 
+- Simulations of random account lifecycles checked against a model, a timing
+  test comparing existing and unknown accounts, and `make soak`: an hour of
+  mixed traffic that fails on any error or on growing memory.
 - Authorization code flow with PKCE: `POST /auth/authorize/describe`,
   `POST /auth/authorize`, `POST /auth/authorize/token`.
 - Client registry: scopes, redirect URIs, loopback redirects, default session
@@ -143,6 +146,9 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   `email_not_verified` like the password sign-in, instead of
   `account_suspended` for every status other than active.
 - An authorization code redirect keeps the query of its registered URI.
+- The OpenAPI document said a password change and `DELETE /users/me/sessions`
+  revoke the other sessions; both revoke every session, the current one
+  included.
 - `X-Forwarded-For` is read across every header line, and a hop that is not an
   address stops the walk at the trusted proxy instead of letting the value to
   its left through. `X-Real-IP` only counts without `X-Forwarded-For`. The

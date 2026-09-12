@@ -8,4 +8,6 @@ mod common {
 
 mod clock;
 mod dependencies;
+mod lifecycle;
 mod redis_outage;
+mod timing;

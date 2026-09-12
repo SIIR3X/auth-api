@@ -124,7 +124,7 @@ pub async fn revoke(
     tag = "sessions",
     request_body = Option<RevokeAllRequest>,
     responses(
-        (status = 204, description = "Every other session revoked"),
+        (status = 204, description = "Every session revoked, the current one included"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
     ),

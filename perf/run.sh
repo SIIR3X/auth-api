@@ -16,7 +16,7 @@ cd "$ROOT"
 VOLUMES=${VOLUMES:-"10000 100000 1000000"}
 CONCURRENCY=${CONCURRENCY:-"1 4 16 64 256"}
 HTTP_SCENARIOS=${HTTP_SCENARIOS:-"profile sessions audit two_factor refresh login register mixed"}
-DB_SCENARIOS=${DB_SCENARIOS:-"user_by_email session_by_token session_validation active_sessions failures_by_identifier failures_by_ip consecutive_failures rbac audit_page two_factor_overview sign_in_write"}
+DB_SCENARIOS=${DB_SCENARIOS-"user_by_email session_by_token session_validation active_sessions failures_by_identifier failures_by_ip consecutive_failures rbac audit_page two_factor_overview sign_in_write"}
 DB_CONCURRENCY=${DB_CONCURRENCY:-"1 8 32"}
 DURATION=${DURATION:-20}
 WARMUP=${WARMUP:-5}
@@ -37,11 +37,13 @@ LOAD_CPUS=${LOAD_CPUS:-7}
 PG_BIN=${PG_BIN:-$(dirname "$(command -v postgres)")}
 REDIS_CLI=${REDIS_CLI:-$(command -v redis-cli)}
 OUT=${OUT:-reports/perf/$(date +%Y%m%d-%H%M%S)}
+# The campaign database, dropped and seeded again on every run.
+PERF_DB=${PERF_DB:-auth_perf}
 export PG_BIN REDIS_CLI PG_PORT REDIS_PORT NATS_PORT PG_CPUS CACHE_CPUS
 
 export PERF_PASSWORD=${PERF_PASSWORD:-Perf-Password-2026!}
 export PERF_CPU_GROUPS="postgres=$PG_CPUS;cache=$CACHE_CPUS;api=$API_CPUS;load=$LOAD_CPUS"
-export DATABASE_URL="postgres://postgres@127.0.0.1:$PG_PORT/auth_perf"
+export DATABASE_URL="postgres://postgres@127.0.0.1:$PG_PORT/$PERF_DB"
 export BASE_URL="http://127.0.0.1:$API_PORT"
 export APP_PUBLIC_URL="$BASE_URL"
 JWT_PRIVATE_KEY=$(grep '^JWT_PRIVATE_KEY=' .env.dev | cut -d= -f2-)
@@ -83,8 +85,8 @@ log "infrastructure"
 perf/infra.sh start | tee -a "$OUT/run.log"
 
 log "fresh database"
-"${PSQL[@]}" -d postgres -c "DROP DATABASE IF EXISTS auth_perf WITH (FORCE)" -c "CREATE DATABASE auth_perf"
-"${PSQL[@]}" -d auth_perf -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements"
+"${PSQL[@]}" -d postgres -c "DROP DATABASE IF EXISTS $PERF_DB WITH (FORCE)" -c "CREATE DATABASE $PERF_DB"
+"${PSQL[@]}" -d "$PERF_DB" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements"
 "${LOAD[@]}" migrate
 HASH=$("${LOAD[@]}" hash)
 
@@ -160,10 +162,10 @@ for volume in $VOLUMES; do
   while [ "$from" -le "$volume" ]; do
     to=$((from + SEED_CHUNK - 1))
     [ "$to" -gt "$volume" ] && to=$volume
-    "${PSQL[@]}" -d auth_perf -v from="$from" -v to="$to" -v hash="$HASH" -f perf/seed.sql
+    "${PSQL[@]}" -d "$PERF_DB" -v from="$from" -v to="$to" -v hash="$HASH" -f perf/seed.sql
     from=$((to + 1))
   done
-  "${PSQL[@]}" -d auth_perf -c "VACUUM (ANALYZE)" -c "CHECKPOINT"
+  "${PSQL[@]}" -d "$PERF_DB" -c "VACUUM (ANALYZE)" -c "CHECKPOINT"
   printf '{"kind":"seed","label":"%s","users":%s,"added":%s,"seconds":%s}\n' \
     "$label" "$volume" "$((volume - seeded))" "$(( $(date +%s) - started ))" >> "$RESULTS"
   seeded=$volume
@@ -199,7 +201,7 @@ for volume in $VOLUMES; do
 
   log "$label: retention batches"
   "${LOAD[@]}" cleanup --users "$volume" --label "$label" --out "$RESULTS"
-  "${PSQL[@]}" -d auth_perf -c "VACUUM (ANALYZE)"
+  "${PSQL[@]}" -d "$PERF_DB" -c "VACUUM (ANALYZE)"
 done
 
 log "done: $RESULTS"
