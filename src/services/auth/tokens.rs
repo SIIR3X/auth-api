@@ -130,7 +130,7 @@ pub(super) async fn build_access_token(
         ))
         .unix_timestamp();
 
-    let (mut role_names, mut permission_names) = role::find_rbac_names(&state.db, user_id)
+    let (role_names, permission_names) = role::find_rbac_names(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -138,10 +138,8 @@ pub(super) async fn build_access_token(
     // that client, re-evaluated against the user's current permissions on every
     // issue and refresh. Roles are dropped: a resource server authorizing by
     // role would otherwise grant more than the consent covered.
-    if let Some(scopes) = scopes {
-        permission_names.retain(|permission| scopes.contains(permission));
-        role_names.clear();
-    }
+    let (role_names, permission_names) =
+        crate::domain::registered_client::restrict_to_consent(role_names, permission_names, scopes);
 
     let mut claims = Claims::new(user_id, session_id, issued_at.unix_timestamp(), exp)
         .with_rbac(role_names, permission_names);
@@ -254,13 +252,11 @@ pub async fn verify_token_state(
             AppError::ServiceUnavailable("redis_query_failed")
         })?;
 
-    if blocked {
-        return Err(AppError::TokenInvalid);
-    }
-
-    let active = match cached {
-        Some(value) => value == 1,
-        None => {
+    let active = match token_state(blocked, cached) {
+        TokenState::Revoked => return Err(AppError::TokenInvalid),
+        TokenState::Active => true,
+        TokenState::Ended => false,
+        TokenState::Unknown => {
             let session = session_repo::find_validation_by_id(&state.db, session_id)
                 .await
                 .map_err(|_| AppError::Unauthorized)?

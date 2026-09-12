@@ -20,7 +20,10 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
-    domain::audit::AuditAction,
+    domain::{
+        audit::AuditAction,
+        email_change::{FlowEvent, FlowStep, Transition},
+    },
     error::AppError,
     repositories::{
         audit::{self, NewAuditEntry},
@@ -40,17 +43,6 @@ const MAX_OTP_FAILURES: i64 = 5;
 
 /// Per-user cooldown between two completed email changes (prevents mailbox spam).
 const CHANGE_COOLDOWN_SECS: u64 = 300;
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum FlowStep {
-    /// OTP sent to the current email; waiting for the user to confirm it.
-    CurrentVerify,
-    /// Current email confirmed; waiting for the user to submit a new address.
-    NewSubmit,
-    /// OTP sent to the new email; waiting for the user to confirm it.
-    NewVerify,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FlowState {
@@ -183,14 +175,14 @@ pub async fn verify_current(
 ) -> Result<(), AppError> {
     let mut flow = load_flow(state, flow_token, user_id).await?;
 
-    if flow.step != FlowStep::CurrentVerify {
+    let Some(Transition::To(next)) = flow.step.after(FlowEvent::CurrentConfirmed) else {
         return Err(AppError::Unauthorized);
-    }
+    };
 
     let fail_key = format!("email_change_fail:{}", flow_token);
     verify_otp(state, submitted_code, flow.otp_hash.as_deref(), &fail_key).await?;
 
-    flow.step = FlowStep::NewSubmit;
+    flow.step = next;
     flow.otp_hash = None;
     save_flow(state, flow_token, &flow).await?;
 
@@ -209,9 +201,9 @@ pub async fn submit_new(
 ) -> Result<(), AppError> {
     let mut flow = load_flow(state, flow_token, user_id).await?;
 
-    if flow.step != FlowStep::NewSubmit {
+    let Some(Transition::To(next)) = flow.step.after(FlowEvent::NewAddressSubmitted) else {
         return Err(AppError::Unauthorized);
-    }
+    };
 
     let taken = user_repo::email_taken(&state.db, new_email, user_id)
         .await
@@ -224,7 +216,7 @@ pub async fn submit_new(
     let otp = crypto::generate_otp();
     let otp_hash = hash_otp(&otp);
 
-    flow.step = FlowStep::NewVerify;
+    flow.step = next;
     flow.otp_hash = Some(otp_hash);
     flow.new_email = Some(new_email.to_string());
     save_flow(state, flow_token, &flow).await?;
@@ -287,7 +279,7 @@ pub async fn confirm_new(
 ) -> Result<(), AppError> {
     let flow = load_flow(state, flow_token, user_id).await?;
 
-    if flow.step != FlowStep::NewVerify {
+    if flow.step.after(FlowEvent::NewConfirmed) != Some(Transition::Done) {
         return Err(AppError::Unauthorized);
     }
 

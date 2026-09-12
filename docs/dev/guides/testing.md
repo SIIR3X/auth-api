@@ -135,8 +135,17 @@ against each broken copy. A mutant no test catches is a fault that would ship.
 
 Scope: `src/domain`, the crypto, token, TOTP, password, time and backoff
 utilities, the client address and error body middlewares, configuration
-validation and the audit cursor. The campaign runs serially (about 30 minutes)
+validation and the audit cursor. The campaign runs serially (about 40 minutes)
 and writes `reports/mutants.out/`; `missed.txt` lists the survivors.
+
+`src/domain` also holds the decisions the services take, as plain functions of
+plain values: the refresh verdict and the per-request token state, the
+brute-force ceilings, consent and the claims a client token carries, device
+polling and the finality of a decision, the steps of an email change, the
+CAPTCHA and rate limiter verdicts, and the one-time token verdict. The services
+do the I/O and map each verdict to its error, so unit tests and mutants reach
+every branch without Redis, PostgreSQL or HTTP. Their own campaign, on
+2026-09-15, produced 96 mutants: 80 caught, 16 unviable, none missed.
 
 On 2026-09-15 the first campaign caught 196 of 246 viable mutants (79.7 %).
 The survivors pointed at untested behaviour: the encryption key validator

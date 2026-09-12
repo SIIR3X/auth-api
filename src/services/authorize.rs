@@ -80,11 +80,7 @@ pub async fn describe(
     validate_redirect(&client, redirect_uri)?;
 
     let held = permission_names(state, user_id).await?;
-    let scopes = if client.scopes.is_empty() {
-        Vec::new()
-    } else {
-        client.granted(&held)
-    };
+    let scopes = client.consented_scopes(&held).unwrap_or_default();
     let unavailable_scopes = client
         .scopes
         .iter()
@@ -131,11 +127,7 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
 
     // Scopes are frozen at consent: a later widening of the client's
     // registration must not widen what this approval grants.
-    let scopes = if client.scopes.is_empty() {
-        None
-    } else {
-        Some(client.granted(&permission_names(state, approval.user_id).await?))
-    };
+    let scopes = client.consented_scopes(&permission_names(state, approval.user_id).await?);
 
     let code = crypto::generate_token();
     code_repo::create(

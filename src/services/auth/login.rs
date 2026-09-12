@@ -1,6 +1,7 @@
 //! Password sign-in: brute-force limits, lockout, and the 2FA hand-off.
 
 use super::*;
+use crate::domain::login_attempt::{FailureCeilings, RecentFailures};
 
 /// Tell the owner of an existing account that someone tried to register with
 /// their address. Best-effort, like every notification.
@@ -77,14 +78,17 @@ pub async fn login(
     let (ip_failures, distinct_identifiers, failures) =
         tokio::try_join!(ip_failures_fut, ip_distinct_fut, identifier_failures_fut)?;
 
-    if ip_failures >= MAX_FAILURES_BY_IP {
-        return Err(AppError::RateLimitExceeded);
-    }
-    if distinct_identifiers >= CS_MAX_DISTINCT_IDENTIFIERS {
-        return Err(AppError::RateLimitExceeded);
-    }
-
-    if failures >= MAX_FAILURES_BY_IDENTIFIER {
+    let recent = RecentFailures {
+        by_ip: ip_failures,
+        distinct_identifiers_by_ip: distinct_identifiers,
+        by_identifier: failures,
+    };
+    let ceilings = FailureCeilings {
+        by_ip: MAX_FAILURES_BY_IP,
+        distinct_identifiers_by_ip: CS_MAX_DISTINCT_IDENTIFIERS,
+        by_identifier: MAX_FAILURES_BY_IDENTIFIER,
+    };
+    if recent.reach(&ceilings) {
         return Err(AppError::RateLimitExceeded);
     }
 

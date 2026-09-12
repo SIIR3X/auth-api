@@ -70,11 +70,14 @@ async fn an_access_token_expires_with_the_application_clock() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 1).await;
 
-    app.clock.advance(Duration::seconds(899));
+    // The clock is the wall clock plus an offset and token times are whole
+    // seconds, so the real time spent signing in blurs the last second: the
+    // exact boundary is pinned by `time_claims_follow_the_supplied_clock`.
+    app.clock.advance(Duration::seconds(890));
     let before = app.get_auth("/users/me", &user.access_token).await;
     assert_eq!(before.status().as_u16(), 200);
 
-    app.clock.advance(Duration::seconds(1));
+    app.clock.advance(Duration::seconds(11));
     let after = app.get_auth("/users/me", &user.access_token).await;
     assert_eq!(after.status().as_u16(), 401);
 }

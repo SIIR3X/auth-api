@@ -23,6 +23,7 @@ use axum::{
 use deadpool_redis::redis::Script;
 use ipnetwork::IpNetwork;
 
+use crate::domain::rate_limit::{LimiterAnswer, RateLimitVerdict, rate_limit_verdict};
 use crate::utils::redis_pool::RedisPool;
 
 use super::client_ip::ClientIp;
@@ -162,21 +163,29 @@ pub async fn layer_with_state(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "client IP unavailable").into_response(),
     };
 
-    match check(&state.redis, &state.buckets, &client).await {
-        Ok(None) => next.run(req).await,
-        Ok(Some(wait_ms)) => {
-            let retry_after = wait_ms.div_ceil(1000).max(1);
+    let answer = match check(&state.redis, &state.buckets, &client).await {
+        Ok(None) => LimiterAnswer::Clear,
+        Ok(Some(ms)) => LimiterAnswer::Wait { ms },
+        Err(e) => {
+            tracing::warn!(
+                client = %client,
+                error = %e,
+                fail_open = state.fail_open_on_redis_error,
+                "rate limit Redis error"
+            );
+            LimiterAnswer::Unreachable
+        }
+    };
+
+    match rate_limit_verdict(answer, state.fail_open_on_redis_error) {
+        RateLimitVerdict::Allow => next.run(req).await,
+        RateLimitVerdict::Refuse { retry_after_secs } => {
             let mut res = (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
             res.headers_mut()
-                .insert(RETRY_AFTER, HeaderValue::from(retry_after));
+                .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs));
             res
         }
-        Err(e) if state.fail_open_on_redis_error => {
-            tracing::warn!(client = %client, error = %e, "rate limit Redis error, failing open");
-            next.run(req).await
-        }
-        Err(e) => {
-            tracing::warn!(client = %client, error = %e, "rate limit Redis error, failing closed");
+        RateLimitVerdict::Unavailable => {
             (StatusCode::SERVICE_UNAVAILABLE, "rate limiter unavailable").into_response()
         }
     }

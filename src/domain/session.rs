@@ -3,6 +3,8 @@
 //! Maps the `sessions` table. token_hash is a SHA-256 digest of the raw
 //! token; the plaintext is never persisted.
 
+use std::net::IpAddr;
+
 use ipnetwork::IpNetwork;
 
 use time::OffsetDateTime;
@@ -103,6 +105,89 @@ impl Session {
     }
 }
 
+/// What a refresh token presented for a session leads to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshVerdict {
+    /// Rotate the session.
+    Rotate,
+    /// Revoked by a rotation moments ago: the same client refreshing twice.
+    /// Refused, the family left alive.
+    ConcurrentRefresh,
+    /// Revoked earlier: the token leaked, and the family is revoked.
+    Replay,
+    /// Past its expiry, or past the absolute lifetime of its sign-in.
+    Expired,
+    /// Presented from another address while sessions are bound to theirs.
+    AddressMismatch,
+}
+
+/// The rules a refresh is judged by.
+#[derive(Debug, Clone, Copy)]
+pub struct RefreshPolicy {
+    /// How long after a rotation a second use reads as concurrent.
+    pub reuse_grace: time::Duration,
+    pub max_lifetime_secs: u64,
+    pub strict_binding: bool,
+}
+
+impl Session {
+    /// Judge a refresh presented at `now` from `request_ip`.
+    ///
+    /// Revocation comes first, so a replayed token is detected even once its
+    /// session has expired; then the expiry, the absolute lifetime counted from
+    /// the family's first sign-in, and the address binding.
+    pub fn refresh_verdict(
+        &self,
+        now: OffsetDateTime,
+        request_ip: Option<IpAddr>,
+        policy: &RefreshPolicy,
+    ) -> RefreshVerdict {
+        if self.revoked_at.is_some() {
+            return if self.rotated_within(policy.reuse_grace, now) {
+                RefreshVerdict::ConcurrentRefresh
+            } else {
+                RefreshVerdict::Replay
+            };
+        }
+        if !self.is_active(now) {
+            return RefreshVerdict::Expired;
+        }
+        let max_lifetime = i64::try_from(policy.max_lifetime_secs).unwrap_or(i64::MAX);
+        if (now - self.family_created_at).whole_seconds() >= max_lifetime {
+            return RefreshVerdict::Expired;
+        }
+        if policy.strict_binding && self.ip_address.map(|network| network.ip()) != request_ip {
+            return RefreshVerdict::AddressMismatch;
+        }
+        RefreshVerdict::Rotate
+    }
+}
+
+/// What the per-request token check learned from Redis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenState {
+    /// The token's id is on the logout blocklist.
+    Revoked,
+    /// The session is cached as active.
+    Active,
+    /// The session is cached as ended (revoked or expired).
+    Ended,
+    /// Nothing cached: the database decides.
+    Unknown,
+}
+
+/// Combine the blocklist and the session cache. The blocklist wins: a logout
+/// takes effect before the cached validity expires. Only a cached `1` means
+/// active; any other cached value reads as ended.
+pub fn token_state(blocklisted: bool, cached: Option<u8>) -> TokenState {
+    match (blocklisted, cached) {
+        (true, _) => TokenState::Revoked,
+        (false, None) => TokenState::Unknown,
+        (false, Some(1)) => TokenState::Active,
+        (false, Some(_)) => TokenState::Ended,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +242,101 @@ mod tests {
         let session = make_session(false, 60, false);
         assert!(session.is_active(session.expires_at - time::Duration::nanoseconds(1)));
         assert!(!session.is_active(session.expires_at));
+    }
+
+    fn policy(strict_binding: bool) -> RefreshPolicy {
+        RefreshPolicy {
+            reuse_grace: time::Duration::seconds(2),
+            max_lifetime_secs: 86_400,
+            strict_binding,
+        }
+    }
+
+    #[test]
+    fn a_revoked_session_reads_as_concurrent_only_within_the_grace() {
+        let mut session = make_session(true, 3600, false);
+        session.rotated_at = Some(now() - time::Duration::seconds(1));
+        assert_eq!(
+            session.refresh_verdict(now(), None, &policy(false)),
+            RefreshVerdict::ConcurrentRefresh
+        );
+        session.rotated_at = Some(now() - time::Duration::seconds(10));
+        assert_eq!(
+            session.refresh_verdict(now(), None, &policy(false)),
+            RefreshVerdict::Replay
+        );
+        session.rotated_at = None;
+        assert_eq!(
+            session.refresh_verdict(now(), None, &policy(false)),
+            RefreshVerdict::Replay,
+            "a logout is not a rotation"
+        );
+    }
+
+    #[test]
+    fn revocation_is_judged_before_expiry() {
+        let session = make_session(true, -60, false);
+        assert_eq!(
+            session.refresh_verdict(now(), None, &policy(false)),
+            RefreshVerdict::Replay
+        );
+    }
+
+    #[test]
+    fn an_expired_or_outlived_session_is_not_rotated() {
+        assert_eq!(
+            make_session(false, -1, false).refresh_verdict(now(), None, &policy(false)),
+            RefreshVerdict::Expired
+        );
+
+        let mut session = make_session(false, 3600, false);
+        session.family_created_at = now() - time::Duration::seconds(86_400);
+        assert_eq!(
+            session.refresh_verdict(now(), None, &policy(false)),
+            RefreshVerdict::Expired,
+            "the lifetime ends at its last second"
+        );
+        session.family_created_at = now() - time::Duration::seconds(86_399);
+        assert_eq!(
+            session.refresh_verdict(now(), None, &policy(false)),
+            RefreshVerdict::Rotate
+        );
+    }
+
+    #[test]
+    fn a_bound_session_refreshes_only_from_its_address() {
+        let mut session = make_session(false, 3600, false);
+        session.family_created_at = now();
+        let home: IpAddr = "203.0.113.7".parse().unwrap();
+        let away: IpAddr = "198.51.100.1".parse().unwrap();
+        session.ip_address = Some(IpNetwork::from(home));
+
+        assert_eq!(
+            session.refresh_verdict(now(), Some(home), &policy(true)),
+            RefreshVerdict::Rotate
+        );
+        assert_eq!(
+            session.refresh_verdict(now(), Some(away), &policy(true)),
+            RefreshVerdict::AddressMismatch
+        );
+        assert_eq!(
+            session.refresh_verdict(now(), None, &policy(true)),
+            RefreshVerdict::AddressMismatch
+        );
+        assert_eq!(
+            session.refresh_verdict(now(), Some(away), &policy(false)),
+            RefreshVerdict::Rotate
+        );
+    }
+
+    #[test]
+    fn the_blocklist_wins_over_the_session_cache() {
+        assert_eq!(token_state(true, Some(1)), TokenState::Revoked);
+        assert_eq!(token_state(true, None), TokenState::Revoked);
+        assert_eq!(token_state(false, Some(1)), TokenState::Active);
+        assert_eq!(token_state(false, Some(0)), TokenState::Ended);
+        assert_eq!(token_state(false, Some(2)), TokenState::Ended);
+        assert_eq!(token_state(false, None), TokenState::Unknown);
     }
 
     #[test]

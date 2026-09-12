@@ -64,51 +64,36 @@ pub async fn refresh_token(
         }
     };
 
-    // Revoked session presented again: a concurrent refresh when it was rotated
-    // moments ago, a replay attack otherwise.
-    if session.revoked_at.is_some() {
-        if session.rotated_within(REFRESH_REUSE_GRACE, state.clock.now()) {
-            return Err(AppError::TokenInvalid);
-        }
-        session_repo::revoke_family(&state.db, session.id)
+    let policy = RefreshPolicy {
+        reuse_grace: REFRESH_REUSE_GRACE,
+        max_lifetime_secs: state.config.jwt.max_session_lifetime_secs,
+        strict_binding: state.config.jwt.strict_session_binding,
+    };
+    match session.refresh_verdict(state.clock.now(), ip.map(|n| n.ip()), &policy) {
+        RefreshVerdict::Rotate => {}
+        RefreshVerdict::ConcurrentRefresh => return Err(AppError::TokenInvalid),
+        RefreshVerdict::Expired => return Err(AppError::TokenExpired),
+        RefreshVerdict::Replay => {
+            session_repo::revoke_family(&state.db, session.id)
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
+
+            audit::append(
+                &state.db,
+                &NewAuditEntry {
+                    user_id: Some(session.user_id),
+                    request_id,
+                    action: AuditAction::SessionReplayDetected,
+                    ip_address: ip,
+                    metadata: json!({"session_id": session.id}),
+                },
+            )
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
 
-        audit::append(
-            &state.db,
-            &NewAuditEntry {
-                user_id: Some(session.user_id),
-                request_id,
-                action: AuditAction::SessionReplayDetected,
-                ip_address: ip,
-                metadata: json!({"session_id": session.id}),
-            },
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-        return Err(AppError::TokenInvalid);
-    }
-
-    if !session.is_active(state.clock.now()) {
-        return Err(AppError::TokenExpired);
-    }
-
-    // Absolute session lifetime guard
-    let max_lifetime =
-        i64::try_from(state.config.jwt.max_session_lifetime_secs).unwrap_or(i64::MAX);
-    // Measured from the family's first sign-in: every rotation creates a new
-    // row, so the current row's created_at would restart the clock each time.
-    let session_age = (state.clock.now() - session.family_created_at).whole_seconds();
-    if session_age >= max_lifetime {
-        return Err(AppError::TokenExpired);
-    }
-
-    // Optional IP binding: reject if the request IP differs from the session's recorded IP.
-    if state.config.jwt.strict_session_binding {
-        let session_ip = session.ip_address.map(|n| n.ip());
-        let request_ip = ip.map(|n| n.ip());
-        if session_ip != request_ip {
+            return Err(AppError::TokenInvalid);
+        }
+        RefreshVerdict::AddressMismatch => {
             metrics::counter!("auth_session_replays_total").increment(1);
             audit::append(
                 &state.db,
@@ -120,8 +105,8 @@ pub async fn refresh_token(
                     metadata: json!({
                         "reason": "ip_mismatch",
                         "session_id": session.id,
-                        "expected_ip": session_ip.map(|i| i.to_string()),
-                        "actual_ip": request_ip.map(|i| i.to_string()),
+                        "expected_ip": session.ip_address.map(|n| n.ip().to_string()),
+                        "actual_ip": ip.map(|n| n.ip().to_string()),
                     }),
                 },
             )

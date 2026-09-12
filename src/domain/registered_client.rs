@@ -53,6 +53,31 @@ impl RegisteredClient {
             .cloned()
             .collect()
     }
+
+    /// The scopes an approval freezes: what the user holds among the client's
+    /// scopes, or `None` for an unrestricted client. `Some` of an empty list is
+    /// a real answer, a token carrying no permission, never "unrestricted".
+    pub fn consented_scopes(&self, user_permissions: &[String]) -> Option<Vec<String>> {
+        (!self.scopes.is_empty()).then(|| self.granted(user_permissions))
+    }
+}
+
+/// The claims of a token: the user's roles and permissions, restricted to
+/// `consent` when its session was issued to a client. Roles are dropped then:
+/// a resource server authorizing by role would grant more than the consent
+/// covered. `Some(&[])` consents to nothing.
+pub fn restrict_to_consent(
+    roles: Vec<String>,
+    mut permissions: Vec<String>,
+    consent: Option<&[String]>,
+) -> (Vec<String>, Vec<String>) {
+    match consent {
+        None => (roles, permissions),
+        Some(consent) => {
+            permissions.retain(|permission| consent.contains(permission));
+            (Vec::new(), permissions)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -96,5 +121,43 @@ mod tests {
             vec!["users:read"]
         );
         assert_eq!(client(false, &[]).granted(&user), user);
+    }
+
+    #[test]
+    fn only_a_restricted_client_freezes_scopes() {
+        let user = vec!["users:read".to_string(), "users:manage".to_string()];
+        assert_eq!(client(false, &[]).consented_scopes(&user), None);
+        assert_eq!(
+            client(false, &["users:read"]).consented_scopes(&user),
+            Some(vec!["users:read".to_string()])
+        );
+        assert_eq!(
+            client(false, &["other:x"]).consented_scopes(&user),
+            Some(vec![]),
+            "consenting to scopes the user lacks grants nothing, not everything"
+        );
+    }
+
+    #[test]
+    fn a_consent_keeps_its_permissions_and_drops_every_role() {
+        let roles = vec!["admin".to_string()];
+        let permissions = vec!["users:read".to_string(), "users:manage".to_string()];
+
+        assert_eq!(
+            restrict_to_consent(roles.clone(), permissions.clone(), None),
+            (roles.clone(), permissions.clone())
+        );
+        assert_eq!(
+            restrict_to_consent(
+                roles.clone(),
+                permissions.clone(),
+                Some(&["users:read".to_string()])
+            ),
+            (vec![], vec!["users:read".to_string()])
+        );
+        assert_eq!(
+            restrict_to_consent(roles, permissions, Some(&[])),
+            (vec![], vec![])
+        );
     }
 }

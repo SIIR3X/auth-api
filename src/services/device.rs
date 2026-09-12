@@ -20,7 +20,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    domain::{registered_client::RegisteredClient, session::SessionType},
+    domain::{
+        device::{PollOutcome, poll_outcome},
+        registered_client::RegisteredClient,
+        session::SessionType,
+    },
     error::AppError,
     middleware::rate_limit::ip_bucket,
     repositories::{registered_client as client_repo, user as user_repo},
@@ -62,13 +66,7 @@ return 0
     )
 });
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceAuthStatus {
-    Pending,
-    Authorized,
-    Denied,
-}
+pub use crate::domain::device::DeviceAuthStatus;
 
 /// Stored in Redis at `device:{hash}`.
 #[derive(Debug, Serialize, Deserialize)]
@@ -262,8 +260,8 @@ pub async fn poll(
         serde_json::from_str(&entry_json.ok_or(AppError::DeviceCodeExpired)?)
             .map_err(|e| AppError::Internal(e.into()))?;
 
-    match entry.status {
-        DeviceAuthStatus::Pending => {
+    match poll_outcome(&entry.status, entry.user_id, entry.client_id.as_deref()) {
+        PollOutcome::Pending => {
             // RFC 8628 section 3.5: polling faster than the advertised interval
             // is answered with `slow_down`.
             let interval = state.config.device_auth.poll_interval_secs.max(1);
@@ -281,23 +279,18 @@ pub async fn poll(
             }
             Err(AppError::DeviceAuthPending)
         }
-        DeviceAuthStatus::Denied => {
+        PollOutcome::Denied => {
             let _: Result<(), _> = conn.del(&dk).await;
             let _: Result<(), _> = conn.del(uc_key(&entry.user_code)).await;
             Err(AppError::DeviceAccessDenied)
         }
-        DeviceAuthStatus::Authorized => {
-            let user_id = entry.user_id.ok_or_else(|| {
-                AppError::Internal(anyhow::anyhow!("authorized device entry missing user_id"))
-            })?;
-
-            // `initiate` records a registered client on every entry: one without
-            // is forged or predates that guarantee, never a reason to skip checks.
-            let client_id = entry
-                .client_id
-                .as_deref()
-                .ok_or(AppError::DeviceClientUnknown)?;
-
+        PollOutcome::MissingUser => Err(AppError::Internal(anyhow::anyhow!(
+            "authorized device entry missing user_id"
+        ))),
+        // `initiate` records a registered client on every entry: one without is
+        // forged or predates that guarantee, never a reason to skip checks.
+        PollOutcome::MissingClient => Err(AppError::DeviceClientUnknown),
+        PollOutcome::Authorized { user_id, client_id } => {
             // Re-read client, account and quota: each can change while the user
             // is approving.
             let client = client_repo::find_by_id(&state.db, client_id)
@@ -420,7 +413,7 @@ pub async fn describe(
         note_unknown_code(state, ip).await;
         return Err(AppError::NotFound);
     };
-    if entry.status != DeviceAuthStatus::Pending {
+    if !entry.status.is_undecided() {
         return Err(AppError::Conflict("device_request_already_decided"));
     }
 
@@ -484,7 +477,7 @@ async fn update_status(
         note_unknown_code(state, ip).await;
         return Err(AppError::NotFound);
     };
-    if entry.status != DeviceAuthStatus::Pending {
+    if !entry.status.is_undecided() {
         return Err(AppError::Conflict("device_request_already_decided"));
     }
 
