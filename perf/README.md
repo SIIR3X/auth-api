@@ -90,6 +90,8 @@ First run, 2026-09-15 (same machine and CPU pinning as the campaign, production
 Argon2 parameters): 1 239 760 requests in 3 600 s at 32 virtual users, 344
 requests per second, no error. Resident memory went from 213.3 MiB over the
 first tenth to 213.6 MiB over the last (+0.2 %). Latency: p50 3.4 ms, p95 894 ms,
-p99 940 ms. The tail comes from the sign-ins and registrations of the mix, each
-paying a full Argon2 hash on the three API cores, and matches the sign-in
-figures of the campaign rather than a degradation over time.
+p99 940 ms. The throughput is the ceiling the campaign measured for the same mix
+at 10 000 accounts (356 requests per second at 64 clients, p95 1 795 ms): the
+sign-ins and registrations of the mix each pay a full Argon2 hash on three API
+cores. The soak judges errors and memory only; it does not record latency over
+time.
