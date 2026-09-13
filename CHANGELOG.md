@@ -155,6 +155,16 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 - The deployment docs said `CAPTCHA_SECRET` could be left unset and redeployed
   a TOTP key rotation before storing the new key; production requires the
   secret, and the rotation now stores both keys first.
+- The production image runs on distroless (no shell, no package manager): the
+  Debian runtime carried two HIGH vulnerabilities in `libpcre2`. The binary and
+  templates belong to root, the service runs as a numeric non-root user, and the
+  image carries its version and commit as OCI labels.
+- `make release` builds the image from the commit rather than the working tree,
+  refuses a dirty tree, a version that differs from `Cargo.toml` or an untagged
+  commit, stops on a HIGH or CRITICAL vulnerability, records the image
+  identifier and signs the checksums with an SSH key. `make docker-refresh-pins`
+  moves every pinned base image to its current digest; the development and test
+  compose files are pinned too.
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

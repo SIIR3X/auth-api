@@ -16,10 +16,17 @@ scp -r dist/auth-api-X.Y.Z api-vps:/srv/auth-api/releases/
 
 # On the API VPS
 cd /srv/auth-api/releases/auth-api-X.Y.Z
-sha256sum SHA256SUMS          # compare with the value recorded at build time
+ssh-keygen -Y verify -f /srv/auth-api/allowed_signers -I release \
+  -n auth-api-release -s SHA256SUMS.sig < SHA256SUMS
 sha256sum -c SHA256SUMS
 gunzip -c auth-api-X.Y.Z.image.tar.gz | docker load
+test "$(docker image inspect --format '{{.Id}}' auth-api:X.Y.Z)" = "$(cat IMAGE_ID)" \
+  && echo "image matches the signed bundle"
 ```
+
+The signature proves `SHA256SUMS` was written by the release key; the checksums
+prove every file matches it, and `IMAGE_ID` that the loaded image is the one
+that was scanned. Stop at the first command that fails.
 
 ## 2. Update the deployment files
 

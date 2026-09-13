@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -18,7 +18,7 @@ services:
       - test-auth-net
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     ports:
       - "127.0.0.1:6380:6379"
     tmpfs:
@@ -32,7 +32,7 @@ services:
       - test-cache-net
 
   mailpit:
-    image: axllent/mailpit:v1.21
+    image: axllent/mailpit:v1.21@sha256:81370195cd4a0eab9604d17c2617a7525b0486f9365555253b6c5376c6350f1a
     ports:
       - "127.0.0.1:1026:1025"
       - "127.0.0.1:8026:8025"
@@ -45,7 +45,7 @@ services:
       - test-mail-net
 
   nats:
-    image: nats:2-alpine
+    image: nats:2-alpine@sha256:ad7a43eb7e3337c3c38ce5d784d1461791f95f730f252d2b25eee699752a0ca3
     # JetStream holds the durable user events (`user.deleted` is published with
     # an acknowledgement). Overriding the command drops the image's config file,
     # so monitoring (probed by the healthcheck) is re-enabled explicitly.

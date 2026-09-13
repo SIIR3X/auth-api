@@ -12,6 +12,8 @@ TEST_REDIS_URL := redis://127.0.0.1:6380
 TEST_NATS_URL  := nats://auth-api-test-token@127.0.0.1:4224
 IMAGE_LOCAL    := auth-api:local
 IMAGE_DEV      := auth-api:dev
+HADOLINT_IMAGE := hadolint/hadolint:v2.15.1
+TRIVY_IMAGE    := aquasec/trivy:0.74.0
 
 # =============================================================================
 # Help
@@ -200,41 +202,55 @@ docker-build-dev: ## Build the development Docker image
 	docker build -f Dockerfile.dev -t $(IMAGE_DEV) .
 
 .PHONY: release
-release: ## Build a release bundle in dist/ (VERSION=x.y.z): image, migrations, deployment files, checksums
-	@test -n "$(VERSION)" || { echo "usage: make release VERSION=x.y.z"; exit 1; }
-	@git diff --quiet && git diff --cached --quiet || { echo "commit or stash your changes first"; exit 1; }
-	docker build -t auth-api:$(VERSION) .
+release: ## Build a signed release bundle in dist/ (VERSION=x.y.z RELEASE_SIGNING_KEY=<ssh key>)
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=x.y.z RELEASE_SIGNING_KEY=~/.ssh/auth-api-release"; exit 1; }
+	@test -n "$(RELEASE_SIGNING_KEY)" || { echo "RELEASE_SIGNING_KEY must name the SSH private key that signs the bundle"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "commit or stash your changes first (untracked files included)"; exit 1; }
+	@test "$$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" = "$(VERSION)" || { echo "VERSION $(VERSION) differs from the version in Cargo.toml"; exit 1; }
+	@test "$(ALLOW_UNTAGGED)" = 1 || test "$$(git rev-parse -q --verify 'refs/tags/v$(VERSION)^{commit}')" = "$$(git rev-parse HEAD)" || { echo "tag v$(VERSION) must point at HEAD (ALLOW_UNTAGGED=1 for a test bundle)"; exit 1; }
+	git archive HEAD | docker build -t auth-api:$(VERSION) --build-arg VERSION=$(VERSION) --build-arg REVISION=$$(git rev-parse HEAD) -
+	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $(TRIVY_IMAGE) \
+		image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed auth-api:$(VERSION)
 	rm -rf dist/auth-api-$(VERSION) && mkdir -p dist/auth-api-$(VERSION)
 	docker save auth-api:$(VERSION) | gzip > dist/auth-api-$(VERSION)/auth-api-$(VERSION).image.tar.gz
-	git archive HEAD migrations docker-compose.api.yml config.prod.env nginx/nginx.conf scripts/backup-db.sh scripts/restore-db.sh | tar -x -C dist/auth-api-$(VERSION)
-	cd dist/auth-api-$(VERSION) && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
-	@echo "bundle ready: dist/auth-api-$(VERSION)"
+	docker image inspect --format '{{.Id}}' auth-api:$(VERSION) > dist/auth-api-$(VERSION)/IMAGE_ID
+	git archive HEAD migrations docker-compose.api.yml config.prod.env nginx/nginx.conf \
+		scripts/backup-db.sh scripts/restore-db.sh scripts/backup-drill.sh \
+		docs/deploy/guides/prometheus-alerts.yml | tar -x -C dist/auth-api-$(VERSION)
+	cd dist/auth-api-$(VERSION) && find . -type f ! -name 'SHA256SUMS*' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+	ssh-keygen -Y sign -q -f $(RELEASE_SIGNING_KEY) -n auth-api-release dist/auth-api-$(VERSION)/SHA256SUMS
+	@echo "bundle ready: dist/auth-api-$(VERSION) (signature: SHA256SUMS.sig)"
 
 # =============================================================================
 # Docker Security
 # =============================================================================
 
 .PHONY: docker-lint
-docker-lint: ## Lint the Dockerfile (hadolint)
-	docker run --rm -i hadolint/hadolint < Dockerfile
+docker-lint: ## Lint the Dockerfiles (hadolint)
+	docker run --rm -i $(HADOLINT_IMAGE) < Dockerfile
+	docker run --rm -i $(HADOLINT_IMAGE) < Dockerfile.dev
 
 .PHONY: docker-scan
 docker-scan: docker-build ## Scan the production image for vulnerabilities (Trivy)
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-		aquasec/trivy image --severity CRITICAL,HIGH --ignore-unfixed $(IMAGE_LOCAL)
+		$(TRIVY_IMAGE) image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed $(IMAGE_LOCAL)
 
 .PHONY: docker-scan-dev
 docker-scan-dev: docker-build-dev ## Scan the development image for vulnerabilities (Trivy)
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-		aquasec/trivy image --severity CRITICAL,HIGH --ignore-unfixed $(IMAGE_DEV)
+		$(TRIVY_IMAGE) image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed $(IMAGE_DEV)
 
 .PHONY: docker-scan-secrets
 docker-scan-secrets: docker-build ## Scan the production image for secrets (Trivy)
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-		aquasec/trivy image --scanners secret $(IMAGE_LOCAL)
+		$(TRIVY_IMAGE) image --exit-code 1 --scanners secret $(IMAGE_LOCAL)
 
 .PHONY: docker-check
 docker-check: docker-lint docker-scan docker-scan-secrets ## Run all Docker checks
+
+.PHONY: docker-refresh-pins
+docker-refresh-pins: ## Point every pinned image digest at its tag's current image (then rebuild, scan, commit)
+	scripts/refresh-image-pins.sh
 
 # =============================================================================
 # Utilities

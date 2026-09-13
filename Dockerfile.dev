@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-chef --locked
-RUN cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
+RUN cargo install cargo-chef --version 0.1.78 --locked \
+    && cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
 
 WORKDIR /app
 
@@ -59,8 +59,9 @@ COPY --from=builder /app/templates ./templates
 
 RUN chown -R appuser:appuser /app
 
-USER appuser
+USER 1001:1001
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "sqlx migrate run --database-url $DATABASE_URL && ./auth-api"]
+# `exec` makes the service PID 1, so `docker stop` reaches it as SIGTERM.
+CMD ["sh", "-c", "sqlx migrate run --database-url \"$DATABASE_URL\" && exec ./auth-api"]

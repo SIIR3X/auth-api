@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-chef --locked
+RUN cargo install cargo-chef --version 0.1.78 --locked
 
 WORKDIR /app
 
@@ -40,30 +40,32 @@ RUN cargo build --release --bin auth-api
 # =============================================================================
 # Stage 4: Runtime
 # =============================================================================
-FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
+# Distroless: glibc, CA certificates and nothing else - no shell, no package
+# manager, no setuid binary to exploit. TLS is rustls, so no OpenSSL either.
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
 
-# hadolint ignore=DL3008
-# TLS is rustls: only the CA bundle is needed, no OpenSSL runtime.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN useradd --uid 1001 --no-create-home --shell /bin/false appuser
+ARG VERSION=dev
+ARG REVISION=unknown
+LABEL org.opencontainers.image.title="auth-api" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.source="https://github.com/SIIR3X/auth-api"
 
 WORKDIR /app
 
+# Copied as root and left that way: the service account runs the binary and
+# reads the templates, and can change neither.
 COPY --from=builder /app/target/release/auth-api ./auth-api
 COPY --from=builder /app/templates ./templates
 
-RUN chown -R appuser:appuser /app
+# The distroless `nonroot` account, by number so the runtime never has to
+# resolve a name.
+USER 65532:65532
 
-USER appuser
+EXPOSE 3000 9464
 
-EXPOSE 3000
-
-# Self-healthcheck via the binary itself: avoids shipping curl/wget in the
-# slim runtime image (smaller attack surface) and keeps the check in-process
-# (no PATH lookups, no shell parsing).
+# Self-healthcheck via the binary itself: the image has no curl, wget or shell,
+# and the check runs in-process (no PATH lookups, no shell parsing).
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD ["./auth-api", "--healthcheck"]
 
