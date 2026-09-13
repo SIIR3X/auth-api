@@ -84,6 +84,11 @@ async fn main() -> anyhow::Result<()> {
 
     cleanup::spawn_cleanup_task(state.db.clone(), state.config.clone());
     let nats = state.nats.clone();
+    auth_api::utils::pool_metrics::spawn(
+        state.db.clone(),
+        state.config.database.max_connections,
+        state.redis.clone(),
+    );
 
     // Serve Prometheus metrics on a separate internal listener so the
     // exposition endpoint never sits behind the public reverse proxy.

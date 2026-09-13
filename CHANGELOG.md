@@ -188,6 +188,17 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   task). The SMTP relay is reached through a connection pool with a 10-second
   timeout instead of a new connection per message and lettre's one-minute
   default, and a temporary refusal is retried twice (after 2 and 8 seconds).
+- New metrics for the alerts: pool saturation (`auth_db_pool_connections`,
+  `auth_redis_pool_connections`, `auth_redis_pool_waiting`), Redis failures by
+  operation (`auth_redis_errors_total`) and cleanup results
+  (`auth_cleanup_deleted_rows_total`, `auth_cleanup_failures_total`).
+- Every log line of a request carries its `request_id` through a span. A
+  client-supplied `X-Request-Id` is kept only when it has at most 64 letters,
+  digits or `-_.:`; otherwise a new identifier replaces it.
+- The `Debug` output of the configuration masks connection URLs, the JWT
+  private key, the encryption keys and the SMTP and CAPTCHA secrets.
+- `DB_ACQUIRE_TIMEOUT_SECS` defaults to 5 seconds instead of 30: an exhausted
+  pool answers fast instead of waiting out the request timeout.
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

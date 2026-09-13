@@ -167,6 +167,7 @@ pub async fn layer_with_state(
         Ok(None) => LimiterAnswer::Clear,
         Ok(Some(ms)) => LimiterAnswer::Wait { ms },
         Err(e) => {
+            metrics::counter!("auth_redis_errors_total", "operation" => "rate_limit").increment(1);
             tracing::warn!(
                 client = %client,
                 error = %e,

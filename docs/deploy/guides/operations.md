@@ -178,6 +178,12 @@ nginx). Key series:
 - `auth_lockouts_total`, `auth_session_replays_total`, `auth_2fa_failures_total{method=...}`
 - `argon2_queue_available_permits` - **0 while login latency climbs = login storm**; capacity is `ARGON2_MAX_CONCURRENCY` (defaults to CPU cores)
 - `axum_http_requests_duration_seconds` - per-route latency histograms
+- `auth_db_pool_connections{state=max|open|idle|in_use}`, `auth_redis_pool_connections{state=max|open|available}`, `auth_redis_pool_waiting` - pool saturation, refreshed every 10 s; `in_use` at `max` with requests timing out = pool too small or a slow query
+- `auth_redis_errors_total{operation=budget|rate_limit|token_state}` - Redis failures, each refused with a 503 (fail closed)
+- `auth_events_publish_failures_total{reason=error|timeout}` - best-effort events dropped because NATS did not take them within 500 ms
+- `auth_notifications_pending`, `auth_notifications_failed_total{task}`, `auth_notifications_dropped_total{task}` - e-mails in flight, failed after retries, dropped past 1 000 pending
+- `auth_background_tasks` - notifications and cache invalidations still running (drained for 5 s at shutdown)
+- `auth_cleanup_deleted_rows_total{job}`, `auth_cleanup_failures_total{job}` - retention jobs
 
 Scrape config (host Prometheus): `static_configs: [{targets: ['127.0.0.1:9464']}]`.
 

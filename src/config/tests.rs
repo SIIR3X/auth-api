@@ -700,12 +700,39 @@ fn loading_applies_the_documented_defaults() {
     assert_eq!(config.captcha.secret, None);
     assert_eq!(config.mail.default_locale, "en");
     assert_eq!(config.device_auth.poll_interval_secs, 5);
+    assert_eq!(config.database.acquire_timeout_secs, 5);
     assert!(
         config.rate_limit.fail_open_on_redis_error,
         "development fails open"
     );
     assert!(config.rate_limit.allow_requests_without_ip);
     assert!(config.captcha.fail_open_on_error);
+}
+
+#[test]
+fn debug_output_never_prints_a_secret() {
+    let mut config = valid_config();
+    config.crypto.previous_encryption_key = Some(config.crypto.encryption_key.clone());
+    config.captcha.secret = Some("captcha-secret-value".into());
+    config.mail.smtp.password = "smtp-password-value".into();
+    let printed = format!("{config:?}");
+
+    for secret in [
+        config.database.url.as_str(),
+        config.redis.url.as_str(),
+        config.nats.url.as_str(),
+        config.jwt.private_key.as_str(),
+        config.crypto.encryption_key.as_str(),
+        "captcha-secret-value",
+        "smtp-password-value",
+    ] {
+        assert!(!printed.contains(secret), "Debug printed {secret:?}");
+    }
+    assert!(printed.contains("<redacted>"));
+    assert!(
+        printed.contains("acquire_timeout_secs"),
+        "non-secret settings stay visible"
+    );
 }
 
 #[test]

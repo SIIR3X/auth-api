@@ -9,6 +9,7 @@ pub mod crypto;
 pub mod jwt;
 pub mod nats;
 pub mod password;
+pub mod pool_metrics;
 pub mod redis_counter;
 pub mod redis_pool;
 pub mod time;

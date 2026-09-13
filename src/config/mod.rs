@@ -60,18 +60,20 @@ pub struct ServerConfig {
     pub trusted_proxy_cidrs: Vec<IpNetwork>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DatabaseConfig {
     pub url: String,
     /// Maximum number of connections in the pool.
     pub max_connections: u32,
     /// Minimum idle connections kept alive.
     pub min_connections: u32,
-    /// Seconds before a pending acquire is aborted.
+    /// Seconds before a pending acquire is aborted. Short (5 s by default):
+    /// an exhausted pool must answer fast and show in the metrics, not wait out
+    /// the 30-second request timeout.
     pub acquire_timeout_secs: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RedisConfig {
     pub url: String,
     pub pool_size: u32,
@@ -80,12 +82,12 @@ pub struct RedisConfig {
     pub wait_timeout_ms: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NatsConfig {
     pub url: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct JwtConfig {
     /// PEM-encoded ECDSA P-256 private key used to sign access tokens.
     pub private_key: String,
@@ -124,7 +126,7 @@ impl JwtConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CryptoConfig {
     // Argon2id parameters, tune for your hardware
     pub argon2_memory_kib: u32,
@@ -200,7 +202,7 @@ pub struct LogConfig {
     pub format: LogFormat,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SmtpConfig {
     pub host: String,
     pub port: u16,
@@ -244,7 +246,7 @@ pub struct AuditConfig {
     pub retention_months: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CaptchaConfig {
     /// hCaptcha secret key. If empty, captcha verification is skipped (development/test mode).
     pub secret: Option<String>,
@@ -351,7 +353,7 @@ impl Config {
                 url: vars.require("DATABASE_URL")?,
                 max_connections: vars.parse("DB_MAX_CONNECTIONS")?.unwrap_or(20),
                 min_connections: vars.parse("DB_MIN_CONNECTIONS")?.unwrap_or(2),
-                acquire_timeout_secs: vars.parse("DB_ACQUIRE_TIMEOUT_SECS")?.unwrap_or(30),
+                acquire_timeout_secs: vars.parse("DB_ACQUIRE_TIMEOUT_SECS")?.unwrap_or(5),
             },
             redis: RedisConfig {
                 url: vars.require("REDIS_URL")?,
@@ -508,3 +510,98 @@ impl Config {
 /// Unique fragment of the development JWT public key committed in `.env.dev`.
 /// Used to refuse that key in production (the pair is public by definition).
 const DEV_JWT_PUBLIC_KEY_MARKER: &str = "MEjIGO1563lSVOpDzgW6Y9aI20lH";
+
+// Debug output of the settings that hold secrets. `Config` derives `Debug`, and a
+// derived implementation would print URLs with their passwords, the signing key
+// and the encryption keys into any log or panic message that formats it.
+
+/// Printed in place of a secret.
+const REDACTED: &str = "<redacted>";
+
+impl std::fmt::Debug for DatabaseConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseConfig")
+            .field("url", &REDACTED)
+            .field("max_connections", &self.max_connections)
+            .field("min_connections", &self.min_connections)
+            .field("acquire_timeout_secs", &self.acquire_timeout_secs)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for RedisConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisConfig")
+            .field("url", &REDACTED)
+            .field("pool_size", &self.pool_size)
+            .field("wait_timeout_ms", &self.wait_timeout_ms)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for NatsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NatsConfig")
+            .field("url", &REDACTED)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for JwtConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JwtConfig")
+            .field("private_key", &REDACTED)
+            .field("public_key", &self.public_key)
+            .field("previous_public_key", &self.previous_public_key)
+            .field("access_expiry_secs", &self.access_expiry_secs)
+            .field("refresh_expiry_secs", &self.refresh_expiry_secs)
+            .field("short_session_expiry_secs", &self.short_session_expiry_secs)
+            .field("strict_session_binding", &self.strict_session_binding)
+            .field("max_session_lifetime_secs", &self.max_session_lifetime_secs)
+            .field("audience", &self.audience)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for CryptoConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CryptoConfig")
+            .field("argon2_memory_kib", &self.argon2_memory_kib)
+            .field("argon2_iterations", &self.argon2_iterations)
+            .field("argon2_parallelism", &self.argon2_parallelism)
+            .field("argon2_max_concurrency", &self.argon2_max_concurrency)
+            .field("totp_issuer", &self.totp_issuer)
+            .field("encryption_key", &REDACTED)
+            .field(
+                "previous_encryption_key",
+                &self.previous_encryption_key.as_ref().map(|_| REDACTED),
+            )
+            .field("totp_skew", &self.totp_skew)
+            .field("recovery_code_expiry_days", &self.recovery_code_expiry_days)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for SmtpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &REDACTED)
+            .field("from_name", &self.from_name)
+            .field("from_address", &self.from_address)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for CaptchaConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaptchaConfig")
+            .field("secret", &self.secret.as_ref().map(|_| REDACTED))
+            .field("verify_url", &self.verify_url)
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("fail_open_on_error", &self.fail_open_on_error)
+            .finish()
+    }
+}

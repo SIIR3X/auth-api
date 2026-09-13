@@ -83,7 +83,7 @@ pub async fn consume(redis: &RedisPool, budgets: &[Budget<'_>]) -> Result<Consum
     let mut conn = redis
         .get()
         .await
-        .map_err(|_| AppError::ServiceUnavailable("redis_unavailable"))?;
+        .map_err(|_| redis_failure("redis_unavailable"))?;
 
     let mut invocation = CONSUME.prepare_invoke();
     for budget in budgets {
@@ -96,7 +96,7 @@ pub async fn consume(redis: &RedisPool, budgets: &[Budget<'_>]) -> Result<Consum
     let raw: Vec<i64> = invocation
         .invoke_async(&mut *conn)
         .await
-        .map_err(|_| AppError::ServiceUnavailable("redis_query_failed"))?;
+        .map_err(|_| redis_failure("redis_query_failed"))?;
 
     let (exceeded, counts) = raw
         .split_first()
@@ -106,6 +106,12 @@ pub async fn consume(redis: &RedisPool, budgets: &[Budget<'_>]) -> Result<Consum
     Ok(Consumed { exceeded, counts })
 }
 
+/// A budget that cannot be read: counted in `auth_redis_errors_total`, refused.
+fn redis_failure(reason: &'static str) -> AppError {
+    metrics::counter!("auth_redis_errors_total", "operation" => "budget").increment(1);
+    AppError::ServiceUnavailable(reason)
+}
+
 /// Current attempt count of a budget, without consuming one.
 pub async fn peek(redis: &RedisPool, key: &str) -> Result<i64, AppError> {
     use deadpool_redis::redis::AsyncCommands;
@@ -113,11 +119,11 @@ pub async fn peek(redis: &RedisPool, key: &str) -> Result<i64, AppError> {
     let mut conn = redis
         .get()
         .await
-        .map_err(|_| AppError::ServiceUnavailable("redis_unavailable"))?;
+        .map_err(|_| redis_failure("redis_unavailable"))?;
     let count: Option<i64> = conn
         .get(key)
         .await
-        .map_err(|_| AppError::ServiceUnavailable("redis_query_failed"))?;
+        .map_err(|_| redis_failure("redis_query_failed"))?;
     Ok(count.unwrap_or(0))
 }
 

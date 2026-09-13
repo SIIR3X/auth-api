@@ -56,7 +56,7 @@ before `docker compose` runs (see [Secrets](../../deploy/api/secrets.md)).
 | `DATABASE_URL` | required | PostgreSQL connection string |
 | `DB_MAX_CONNECTIONS` | `20` | Pool size |
 | `DB_MIN_CONNECTIONS` | `2` | Connections kept open |
-| `DB_ACQUIRE_TIMEOUT_SECS` | `30` | Wait for a pooled connection |
+| `DB_ACQUIRE_TIMEOUT_SECS` | `5` | Wait for a pooled connection |
 
 ### Redis
 

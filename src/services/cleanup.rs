@@ -133,12 +133,16 @@ async fn sweep(conn: &mut PgConnection, name: &str, sql: &str, interval: &str) {
                 }
             }
             Err(e) => {
+                metrics::counter!("auth_cleanup_failures_total", "job" => name.to_owned())
+                    .increment(1);
                 tracing::warn!(job = name, error = ?e, "cleanup job failed");
                 break;
             }
         }
     }
     if deleted_total > 0 {
+        metrics::counter!("auth_cleanup_deleted_rows_total", "job" => name.to_owned())
+            .increment(u64::try_from(deleted_total).unwrap_or(0));
         tracing::info!(job = name, deleted = deleted_total, "cleanup deleted rows");
     }
 }

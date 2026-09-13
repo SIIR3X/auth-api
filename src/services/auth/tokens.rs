@@ -239,6 +239,7 @@ pub async fn verify_token_state(
     let cache_key = format!("{SESSION_CACHE_PREFIX}{session_id}");
 
     let mut conn = state.redis.get().await.map_err(|e| {
+        metrics::counter!("auth_redis_errors_total", "operation" => "token_state").increment(1);
         tracing::error!(%jti, error = %e, "token state check failed: Redis pool unavailable; failing closed");
         AppError::ServiceUnavailable("redis_unavailable")
     })?;
@@ -248,6 +249,7 @@ pub async fn verify_token_state(
         .query_async(&mut *conn)
         .await
         .map_err(|e| {
+            metrics::counter!("auth_redis_errors_total", "operation" => "token_state").increment(1);
             tracing::error!(%jti, error = %e, "token state pipeline failed; failing closed");
             AppError::ServiceUnavailable("redis_query_failed")
         })?;
