@@ -3,6 +3,7 @@
 //! Everything here is free of application state; only `redis_counter` performs
 //! I/O, against the Redis pool it is handed, and `redis_pool` builds that pool.
 
+pub mod background;
 pub mod backoff;
 pub mod crypto;
 pub mod jwt;

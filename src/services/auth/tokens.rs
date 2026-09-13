@@ -285,7 +285,7 @@ pub async fn verify_token_state(
 pub fn invalidate_session_cache(state: &AppState, session_id: Uuid) {
     let redis = state.redis.clone();
     let key = format!("{SESSION_CACHE_PREFIX}{session_id}");
-    tokio::spawn(async move {
+    crate::utils::background::spawn(async move {
         if let Ok(mut conn) = redis.get().await {
             let _: Result<(), _> = conn.del(&key).await;
         }

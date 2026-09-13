@@ -178,6 +178,16 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   the start (a refused token still does): the client reconnects in the
   background, the stream is declared before the first acknowledged event, and
   `/ready` reports NATS.
+- Stopping the service drains in bounded phases that fit a 40-second stop:
+  in-flight requests (32 s), then notifications and cache invalidations started
+  by requests (5 s, counted in `auth_background_tasks`), then events the NATS
+  client still buffers (2 s). Before, the drain had no deadline and background
+  tasks and buffered events were lost at every restart.
+- Notifications are capped at 1 000 pending (`auth_notifications_pending`;
+  `auth_notifications_failed_total` and `auth_notifications_dropped_total` by
+  task). The SMTP relay is reached through a connection pool with a 10-second
+  timeout instead of a new connection per message and lettre's one-minute
+  default, and a temporary refusal is retried twice (after 2 and 8 seconds).
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

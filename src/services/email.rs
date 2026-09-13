@@ -7,7 +7,10 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use std::future::Future;
+use std::{
+    future::Future,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use lettre::message::{Mailbox, Message, header::ContentType};
 use tera::{Context, Tera};
@@ -30,15 +33,47 @@ const TNAME_ACCOUNT_EXISTS: &str = "account_exists";
 const TNAME_EMAIL_CHANGED: &str = "email_changed";
 const TNAME_RECOVERY_CODE_USED: &str = "recovery_code_used";
 
+/// Notifications waiting or being sent, past which new ones are dropped: a slow
+/// or unreachable relay must not pile up tasks in step with traffic.
+const MAX_PENDING_NOTIFICATIONS: usize = 1_000;
+
+static PENDING_NOTIFICATIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// Send a notification in the background: counted for the shutdown drain,
+/// bounded, and measured (`auth_notifications_pending`,
+/// `auth_notifications_failed_total`, `auth_notifications_dropped_total`).
 pub fn dispatch_best_effort<F>(label: &'static str, future: F)
 where
     F: Future<Output = Result<(), AppError>> + Send + 'static,
 {
-    tokio::spawn(async move {
+    if PENDING_NOTIFICATIONS.fetch_add(1, Ordering::SeqCst) >= MAX_PENDING_NOTIFICATIONS {
+        PENDING_NOTIFICATIONS.fetch_sub(1, Ordering::SeqCst);
+        metrics::counter!("auth_notifications_dropped_total", "task" => label).increment(1);
+        tracing::warn!(
+            task = label,
+            "notification queue full; notification dropped"
+        );
+        return;
+    }
+    metrics::gauge!("auth_notifications_pending").increment(1.0);
+
+    crate::utils::background::spawn(async move {
+        let _pending = Pending;
         if let Err(error) = future.await {
+            metrics::counter!("auth_notifications_failed_total", "task" => label).increment(1);
             tracing::warn!(error = ?error, task = label, "background notification failed");
         }
     });
+}
+
+/// Releases a notification slot when its task ends, panic included.
+struct Pending;
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        PENDING_NOTIFICATIONS.fetch_sub(1, Ordering::SeqCst);
+        metrics::gauge!("auth_notifications_pending").decrement(1.0);
+    }
 }
 
 pub async fn send_verification_email(

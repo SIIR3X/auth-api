@@ -1,9 +1,18 @@
+use std::{future::IntoFuture, time::Duration};
+
 use auth_api::{
     config::{Config, LogFormat},
     handlers,
     services::{cleanup, key_rotation},
     state::AppState,
 };
+
+/// Shutdown budget, inside the container's 40-second stop grace period: requests
+/// get slightly more than the 30-second request timeout, then the background
+/// tasks (notifications, cache invalidations), then the buffered NATS events.
+const REQUEST_DRAIN_TIMEOUT: Duration = Duration::from_secs(32);
+const BACKGROUND_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const NATS_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -74,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     cleanup::spawn_cleanup_task(state.db.clone(), state.config.clone());
+    let nats = state.nats.clone();
 
     // Serve Prometheus metrics on a separate internal listener so the
     // exposition endpoint never sits behind the public reverse proxy.
@@ -98,12 +108,45 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("listening on {}", addr);
 
-    axum::serve(
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = stop_tx.send(true);
+    });
+    let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+        let _ = rx.wait_for(|stopped| *stopped).await;
+    };
+
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await?;
+    .with_graceful_shutdown(stopped(stop_rx.clone()));
+
+    // Phase 1: in-flight requests, bounded. Axum alone would wait forever.
+    let deadline_rx = stop_rx;
+    tokio::select! {
+        result = server.into_future() => result?,
+        () = async move {
+            stopped(deadline_rx).await;
+            tokio::time::sleep(REQUEST_DRAIN_TIMEOUT).await;
+        } => {
+            tracing::warn!(timeout = ?REQUEST_DRAIN_TIMEOUT, "requests still running at the shutdown deadline");
+        }
+    }
+
+    // Phase 2: notifications and cache invalidations started by requests.
+    let left = auth_api::utils::background::drain(BACKGROUND_DRAIN_TIMEOUT).await;
+    if left > 0 {
+        tracing::warn!(left, "background tasks cut off at shutdown");
+    }
+
+    // Phase 3: events the NATS client still buffers.
+    match tokio::time::timeout(NATS_FLUSH_TIMEOUT, nats.flush()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(error = %e, "NATS events not flushed at shutdown"),
+        Err(_) => tracing::warn!("flushing NATS events timed out at shutdown"),
+    }
 
     tracing::info!("shutdown complete");
     Ok(())
