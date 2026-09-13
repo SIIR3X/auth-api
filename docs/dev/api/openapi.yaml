@@ -1131,6 +1131,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /live:
+    get:
+      tags:
+      - discovery
+      summary: |-
+        Liveness: answers as long as the process serves HTTP. Restarting the
+        container cannot fix a dependency, so this never checks one.
+      operationId: live
+      responses:
+        '200':
+          description: The process serves requests; dependencies are not checked
+          content:
+            text/plain:
+              schema:
+                type: string
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /ready:
+    get:
+      tags:
+      - discovery
+      summary: |-
+        Readiness: whether this instance can serve traffic now. The reverse proxy
+        and the rolling update send traffic only to a ready instance.
+      operationId: ready
+      responses:
+        '200':
+          description: Every dependency answered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency did not answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
   /users/me:
     get:
       tags:
@@ -3024,6 +3078,25 @@ components:
             description: '"totp" or "email"'
           two_factor_required:
             type: boolean
+    ReadyResponse:
+      type: object
+      description: What `/ready` found for each dependency.
+      required:
+      - status
+      - database
+      - redis
+      - nats
+      properties:
+        database:
+          type: string
+          description: '`up` or `down`.'
+        nats:
+          type: string
+        redis:
+          type: string
+        status:
+          type: string
+          description: '`ready` when every dependency answered, `unavailable` otherwise.'
     ReauthenticateRequest:
       type: object
       required:

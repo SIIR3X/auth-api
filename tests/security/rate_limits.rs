@@ -156,7 +156,7 @@ async fn an_auth_route_also_counts_against_the_general_bucket() {
     // The general bucket is spent: a general route is refused too.
     let res = app
         .client
-        .get(format!("{}/health", app.base_url))
+        .get(format!("{}/.well-known/jwks.json", app.base_url))
         .send()
         .await
         .unwrap();

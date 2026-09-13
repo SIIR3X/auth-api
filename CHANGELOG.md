@@ -165,6 +165,19 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   identifier and signs the checksums with an SSH key. `make docker-refresh-pins`
   moves every pinned base image to its current digest; the development and test
   compose files are pinned too.
+- `GET /live` (liveness, dependencies unchecked) and `GET /ready` (database,
+  Redis and NATS, one second each, 503 when one is down) sit outside the rate
+  limiter; `/health` stays as an alias of `/live`. The image health check calls
+  `/live`: a rate-limited `/health` turned every instance unhealthy during a
+  Redis outage.
+- A database failure while checking a token answers 503 instead of 401, which
+  signed users out during an outage and hid it from the server-error alerts.
+- Best-effort events wait at most 500 ms for NATS and are counted in
+  `auth_events_publish_failures_total` when dropped; the acknowledged
+  `user.deleted` waits at most 5 seconds. An unreachable broker no longer stops
+  the start (a refused token still does): the client reconnects in the
+  background, the stream is declared before the first acknowledged event, and
+  `/ready` reports NATS.
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

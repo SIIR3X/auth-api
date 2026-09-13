@@ -105,21 +105,19 @@ impl AppState {
     /// Connect every remaining dependency around a prepared, validated config.
     async fn assemble(config: Config, db: PgPool) -> Result<Self, AppStateError> {
         let redis = redis_pool::build(&config.redis).map_err(AppStateError::Redis)?;
-        // async-nats ignores credentials inside the URL: they are given apart.
-        let (nats_address, nats_credentials) =
-            crate::utils::nats::split_credentials(&config.nats.url).map_err(|reason| {
-                AppStateError::Config(ConfigError::Invalid {
-                    key: "NATS_URL".into(),
-                    reason,
-                })
-            })?;
-        let nats = crate::utils::nats::connect_options(nats_credentials)
-            .connect(nats_address)
-            .await?;
-        // The stream must exist before any durable publish (account deletion).
-        crate::services::events::ensure_user_stream(&nats)
-            .await
-            .map_err(AppStateError::NatsStream)?;
+        let nats = connect_nats(&config.nats.url).await?;
+        // Declared now when the broker is up; otherwise before the first
+        // durable publish (account deletion).
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            crate::services::events::ensure_user_stream_once(&nats),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, "user event stream not declared at startup"),
+            Err(_) => tracing::warn!("user event stream declaration timed out at startup"),
+        }
         let mailer = Mailer::new(SmtpMailer::from_config(&config.mail.smtp)?);
         let http_client = build_http_client(&config.captcha)?;
         let templates = Arc::new(build_templates(&config.mail)?);
@@ -152,6 +150,47 @@ impl AppState {
             jwt_jwks: jwt_keys.jwks,
             config: Arc::new(config),
         })
+    }
+}
+
+/// Connect to NATS.
+///
+/// A broker that refuses the credentials stops the start: that is a
+/// configuration error. A broker that cannot be reached does not: only account
+/// deletion needs it, so the client keeps connecting in the background and
+/// `/ready` reports it. async-nats ignores credentials inside the URL, so they
+/// are given apart.
+async fn connect_nats(url: &str) -> Result<async_nats::Client, AppStateError> {
+    use crate::utils::nats;
+
+    let (address, credentials) = nats::split_credentials(url).map_err(|reason| {
+        AppStateError::Config(ConfigError::Invalid {
+            key: "NATS_URL".into(),
+            reason,
+        })
+    })?;
+
+    match nats::connect_options(credentials.clone())
+        .connect(address.as_str())
+        .await
+    {
+        Ok(client) => Ok(client),
+        Err(e)
+            if matches!(
+                e.kind(),
+                async_nats::ConnectErrorKind::Authentication
+                    | async_nats::ConnectErrorKind::AuthorizationViolation
+            ) =>
+        {
+            Err(AppStateError::Nats(e))
+        }
+        Err(e) => {
+            tracing::warn!(address, error = %e, "NATS unreachable at startup; connecting in the background");
+            Ok(nats::connect_options(credentials)
+                .retry_on_initial_connect()
+                .connect(address.as_str())
+                .await?)
+        }
     }
 }
 

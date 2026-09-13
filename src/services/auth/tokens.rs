@@ -257,9 +257,12 @@ pub async fn verify_token_state(
         TokenState::Active => true,
         TokenState::Ended => false,
         TokenState::Unknown => {
+            // A database failure is an outage (503), not a revoked session: a
+            // 401 would sign the user out and hide the incident from the
+            // alerts on server errors.
             let session = session_repo::find_validation_by_id(&state.db, session_id)
                 .await
-                .map_err(|_| AppError::Unauthorized)?
+                .map_err(|e| AppError::Internal(e.into()))?
                 .ok_or(AppError::Unauthorized)?;
             let active = session.is_active(state.clock.now());
             let _: Result<(), _> = conn

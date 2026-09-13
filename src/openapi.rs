@@ -22,6 +22,8 @@ use utoipa::{
     servers((url = "http://localhost:3000", description = "Local development")),
     paths(
         crate::handlers::health,
+        crate::handlers::live,
+        crate::handlers::ready,
         crate::handlers::jwks,
         crate::handlers::auth::register,
         crate::handlers::auth::login,

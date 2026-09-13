@@ -46,7 +46,7 @@ services:
           memory: 768M
     healthcheck:
       # Use the binary's built-in --healthcheck flag (added to avoid bundling
-      # curl/wget in the slim runtime image). It hits 127.0.0.1:$SERVER_PORT/health
+      # curl/wget in the slim runtime image). It hits 127.0.0.1:$SERVER_PORT/live
       # and exits 0 on 2xx, 1 otherwise.
       test: ["CMD", "./auth-api", "--healthcheck"]
       interval: 30s

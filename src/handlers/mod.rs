@@ -49,6 +49,91 @@ pub async fn health() -> &'static str {
 
 #[utoipa::path(
     get,
+    path = "/live",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "The process serves requests; dependencies are not checked", body = String, content_type = "text/plain"),
+    ),
+)]
+/// Liveness: answers as long as the process serves HTTP. Restarting the
+/// container cannot fix a dependency, so this never checks one.
+pub async fn live() -> &'static str {
+    "ok"
+}
+
+/// What `/ready` found for each dependency.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ReadyResponse {
+    /// `ready` when every dependency answered, `unavailable` otherwise.
+    pub status: &'static str,
+    /// `up` or `down`.
+    pub database: &'static str,
+    pub redis: &'static str,
+    pub nats: &'static str,
+}
+
+/// How long a readiness check waits for one dependency.
+const READY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[utoipa::path(
+    get,
+    path = "/ready",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "Every dependency answered", body = ReadyResponse),
+        (status = 503, description = "A dependency did not answer", body = ReadyResponse),
+    ),
+)]
+/// Readiness: whether this instance can serve traffic now. The reverse proxy
+/// and the rolling update send traffic only to a ready instance.
+pub async fn ready(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, axum::Json<ReadyResponse>) {
+    let database = async {
+        matches!(
+            tokio::time::timeout(
+                READY_PROBE_TIMEOUT,
+                sqlx::query("SELECT 1").execute(&state.db)
+            )
+            .await,
+            Ok(Ok(_))
+        )
+    };
+    let redis = async {
+        let ping = async {
+            let mut conn = state.redis.get().await.ok()?;
+            deadpool_redis::redis::cmd("PING")
+                .query_async::<String>(&mut *conn)
+                .await
+                .ok()
+        };
+        matches!(
+            tokio::time::timeout(READY_PROBE_TIMEOUT, ping).await,
+            Ok(Some(_))
+        )
+    };
+    let (database, redis) = tokio::join!(database, redis);
+    let nats = state.nats.connection_state() == async_nats::connection::State::Connected;
+
+    let up = |ok: bool| if ok { "up" } else { "down" };
+    let all = database && redis && nats;
+    (
+        if all {
+            axum::http::StatusCode::OK
+        } else {
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        },
+        axum::Json(ReadyResponse {
+            status: if all { "ready" } else { "unavailable" },
+            database: up(database),
+            redis: up(redis),
+            nats: up(nats),
+        }),
+    )
+}
+
+#[utoipa::path(
+    get,
     path = "/.well-known/jwks.json",
     tag = "discovery",
     responses(
@@ -141,8 +226,14 @@ fn build_router(
             rate_limit::layer_with_state,
         )));
 
-    let public = Router::new()
+    // Probes skip the rate limiter: an orchestrator or the reverse proxy polls
+    // them, and a Redis outage must not turn every instance unhealthy at once.
+    let probes = Router::new()
         .route("/health", get(health))
+        .route("/live", get(live))
+        .route("/ready", get(ready));
+
+    let public = Router::new()
         .route("/.well-known/jwks.json", get(jwks))
         // Logout is authenticated (requires a valid JWT via AuthUser) but intentionally
         // placed outside the auth rate-limit bucket. Exhausting that bucket during a
@@ -153,7 +244,8 @@ fn build_router(
             rate_limit::layer_with_state,
         ));
 
-    let router = public
+    let router = probes
+        .merge(public)
         .nest(
             "/auth",
             auth_router().layer(middleware::from_fn_with_state(

@@ -21,6 +21,8 @@ use crate::common::{app::TestApp, fixtures};
 const PUBLIC: &[&str] = &[
     "GET /.well-known/jwks.json",
     "GET /health",
+    "GET /live",
+    "GET /ready",
     "POST /auth/authorize/token",
     "POST /auth/device",
     "POST /auth/device/token",

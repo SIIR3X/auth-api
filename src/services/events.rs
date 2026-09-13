@@ -13,6 +13,7 @@
 //!
 //! JetStream delivers at least once: consumers must process idempotently.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_nats::jetstream;
@@ -35,6 +36,15 @@ const EVENT_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Disk ceiling of last resort; retention bites first by orders of magnitude.
 const EVENT_MAX_BYTES: i64 = 256 * 1024 * 1024;
+
+/// How long a best-effort publication may hold its request.
+const PUBLISH_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// How long an acknowledged publication (account deletion) may take in all.
+const ACKED_PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Whether this process already declared the stream.
+static STREAM_READY: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Serialize)]
 pub struct UserCreated {
@@ -86,8 +96,29 @@ pub async fn publish(state: &AppState, event_name: &str, payload: &impl Serializ
         }
     };
 
-    if let Err(e) = state.nats.publish(subject.clone(), bytes.into()).await {
-        tracing::error!(subject, error = %e, "failed to publish event to NATS");
+    // The client queues the message while the broker is reachable, but its
+    // queue is bounded: once full, a publication waits. Past the timeout the
+    // event is dropped and counted rather than holding the request.
+    match tokio::time::timeout(
+        PUBLISH_TIMEOUT,
+        state.nats.publish(subject.clone(), bytes.into()),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            metrics::counter!("auth_events_publish_failures_total", "reason" => "error")
+                .increment(1);
+            tracing::error!(subject, error = %e, "failed to publish event to NATS");
+        }
+        Err(_) => {
+            metrics::counter!("auth_events_publish_failures_total", "reason" => "timeout")
+                .increment(1);
+            tracing::error!(
+                subject,
+                "publishing an event to NATS timed out; event dropped"
+            );
+        }
     }
 }
 
@@ -97,6 +128,16 @@ pub async fn publish(state: &AppState, event_name: &str, payload: &impl Serializ
 /// Refuses new events rather than dropping old ones when the ceiling is hit: a
 /// dropped `user.deleted` loses an erasure obligation in silence, a refused one
 /// fails the deletion with a 503 the caller can retry.
+pub async fn ensure_user_stream_once(nats: &async_nats::Client) -> Result<(), String> {
+    if STREAM_READY.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    ensure_user_stream(nats).await?;
+    STREAM_READY.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Declare (or update) the stream unconditionally.
 pub async fn ensure_user_stream(nats: &async_nats::Client) -> Result<(), String> {
     jetstream::new(nats.clone())
         .create_or_update_stream(jetstream::stream::Config {
@@ -122,21 +163,35 @@ pub async fn publish_acked(
     let subject = format!("{SUBJECT_PREFIX}.{event_name}");
     let bytes = serde_json::to_vec(payload).map_err(|e| AppError::Internal(e.into()))?;
 
+    // The stream may not exist yet when the broker was unreachable at startup.
+    ensure_user_stream_once(&state.nats).await.map_err(|e| {
+        tracing::error!(error = %e, "the user event stream is not available");
+        AppError::ServiceUnavailable("nats")
+    })?;
+
     // Two awaits: the first hands the message to the server, the second waits
     // for the acknowledgement that it is stored. Dropping the second would keep
     // the signature and lose the guarantee.
-    jetstream::new(state.nats.clone())
-        .publish(subject.clone(), bytes.into())
+    let stored = async {
+        jetstream::new(state.nats.clone())
+            .publish(subject.clone(), bytes.into())
+            .await
+            .map_err(|e| {
+                tracing::error!(subject, error = %e, "failed to publish durable event");
+                AppError::ServiceUnavailable("nats")
+            })?
+            .await
+            .map_err(|e| {
+                tracing::error!(subject, error = %e, "durable event was not acknowledged");
+                AppError::ServiceUnavailable("nats")
+            })
+    };
+    tokio::time::timeout(ACKED_PUBLISH_TIMEOUT, stored)
         .await
-        .map_err(|e| {
-            tracing::error!(subject, error = %e, "failed to publish durable event");
+        .map_err(|_| {
+            tracing::error!(subject, "durable event was not stored in time");
             AppError::ServiceUnavailable("nats")
-        })?
-        .await
-        .map_err(|e| {
-            tracing::error!(subject, error = %e, "durable event was not acknowledged");
-            AppError::ServiceUnavailable("nats")
-        })?;
+        })??;
 
     Ok(())
 }

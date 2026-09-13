@@ -34,7 +34,7 @@ pub async fn layer(req: Request, next: Next) -> Response {
     let route = route.as_deref().unwrap_or("<unmatched>");
     let request_id = request_id.as_deref().unwrap_or("-");
 
-    if route == "/health" {
+    if matches!(route, "/health" | "/live" | "/ready") {
         tracing::debug!(target: "access", %method, route, status, latency_ms, request_id);
     } else if status >= 500 {
         tracing::warn!(target: "access", %method, route, status, latency_ms, request_id);

@@ -87,7 +87,7 @@ server. In production, run them in a one-off container:
 
 | Command | Description |
 |---------|-------------|
-| `--healthcheck` | Call the local `/health` and exit 0 or 1 (the image's health check) |
+| `--healthcheck` | Call the local `/live` and exit 0 or 1 (the image's health check) |
 | `--register-client <id> --name <name> [options]` | Create or update a registered client (needs only `DATABASE_URL`) |
 | `--rotate-totp-keys` | Re-encrypt TOTP secrets under `ENCRYPTION_KEY` (see the [operations runbook](../../deploy/guides/operations.md)) |
 

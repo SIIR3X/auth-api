@@ -40,9 +40,19 @@ async fn an_invalid_configuration_is_refused_before_connecting() {
 }
 
 #[tokio::test]
-async fn an_unreachable_nats_server_stops_the_start() {
-    let error = refusal(|config| config.nats.url = "nats://127.0.0.1:1".into()).await;
-    assert!(matches!(error, AppStateError::Nats(_)), "{error}");
+async fn an_unreachable_nats_server_does_not_stop_the_start() {
+    let state = match build(|config| {
+        config.nats.url = "nats://auth-api-test-token@127.0.0.1:1".into();
+    })
+    .await
+    {
+        Ok(state) => state,
+        Err(error) => panic!("only account deletion needs NATS, the start must go on: {error}"),
+    };
+    assert_ne!(
+        state.nats.connection_state(),
+        async_nats::connection::State::Connected
+    );
 }
 
 #[tokio::test]

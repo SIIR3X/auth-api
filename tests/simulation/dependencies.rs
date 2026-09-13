@@ -193,3 +193,94 @@ async fn a_refresh_goes_through_without_redis() {
         "the database is the authority on revocation; Redis only speeds it up"
     );
 }
+
+async fn ready(app: &TestApp) -> (u16, serde_json::Value) {
+    let res = app.get("/ready").await;
+    let status = res.status().as_u16();
+    (status, res.json().await.unwrap_or_default())
+}
+
+/// Poll `/ready` until `check` holds, for up to ten seconds.
+async fn ready_until(
+    app: &TestApp,
+    check: impl Fn(u16, &serde_json::Value) -> bool,
+) -> (u16, serde_json::Value) {
+    let mut last = ready(app).await;
+    for _ in 0..50 {
+        if check(last.0, &last.1) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        last = ready(app).await;
+    }
+    last
+}
+
+#[tokio::test]
+async fn readiness_follows_each_dependency() {
+    let app = app_with_fault_proxies().await;
+    assert_eq!(ready(&app).await.0, 200);
+
+    for name in ["redis", "database", "nats"] {
+        let proxy = match name {
+            "redis" => &dependencies(&app).redis,
+            "database" => &dependencies(&app).postgres,
+            _ => &dependencies(&app).nats,
+        };
+        proxy.set(Fault::Refuse);
+        let (status, body) = ready_until(&app, |_, body| body[name] == "down").await;
+        assert_eq!(
+            (status, body[name].as_str()),
+            (503, Some("down")),
+            "{name}: {body}"
+        );
+
+        proxy.set(Fault::None);
+        let (status, body) = ready_until(&app, |status, _| status == 200).await;
+        assert_eq!(status, 200, "{name} did not recover: {body}");
+    }
+}
+
+#[tokio::test]
+async fn a_token_check_during_a_database_outage_is_an_outage_not_a_sign_out() {
+    use deadpool_redis::redis::AsyncCommands;
+
+    let app = app_with_fault_proxies().await;
+    let user = fixtures::authenticated_user(&app, 1).await;
+    let claims = app.decode_access_token(&user.access_token);
+    // Without the cached validity, the check reaches the database.
+    let mut conn = app.redis.get().await.unwrap();
+    let _: () = conn
+        .del(format!("sess_valid:{}", claims.sid))
+        .await
+        .unwrap();
+
+    dependencies(&app).postgres.set(Fault::Refuse);
+    let error = auth_api::services::auth::verify_token_state(&app.state, claims.jti, claims.sid)
+        .await
+        .expect_err("the session cannot be checked");
+    let status = axum::response::IntoResponse::into_response(error).status();
+    assert_eq!(status.as_u16(), 503);
+}
+
+#[tokio::test]
+async fn a_hung_broker_does_not_hold_ordinary_requests() {
+    let app = app_with_fault_proxies().await;
+    let user = fixtures::authenticated_user(&app, 1).await;
+
+    dependencies(&app).nats.set(Fault::Blackhole);
+    let started = Instant::now();
+    let res = app
+        .patch_auth(
+            "/users/me/password",
+            &user.access_token,
+            &json!({ "current_password": user.password, "new_password": "Another-Pass-2026!" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the password change waited {:?} on the broker",
+        started.elapsed()
+    );
+}

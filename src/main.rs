@@ -7,7 +7,7 @@ use auth_api::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Healthcheck mode: hit the local /health endpoint and exit 0/1.
+    // Healthcheck mode: hit the local /live endpoint and exit 0/1.
     // Designed for `HEALTHCHECK CMD ["./auth-api", "--healthcheck"]` in the
     // runtime image so we don't have to ship `curl`/`wget` in the slim base.
     // Handled BEFORE Config::from_env so a misconfigured env doesn't make the
@@ -133,7 +133,7 @@ async fn shutdown_signal() {
     }
 }
 
-/// Hit the local `/health` endpoint and return a process exit code.
+/// Hit the local `/live` endpoint and return a process exit code.
 /// Reads `SERVER_PORT` (defaults to 3000) so the healthcheck honours
 /// custom port overrides without requiring a full Config load.
 /// Returns 0 on a 2xx response, 1 otherwise (including timeouts and
@@ -143,7 +143,7 @@ async fn run_healthcheck() -> i32 {
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(3000);
-    let url = format!("http://127.0.0.1:{port}/health");
+    let url = format!("http://127.0.0.1:{port}/live");
 
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))

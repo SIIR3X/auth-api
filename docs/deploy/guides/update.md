@@ -67,7 +67,7 @@ export NATS_URL=$(pass prod/auth-api/nats-url)
 export NATS_AUTH_TOKEN=$(pass prod/auth-api/nats-auth-token)
 
 docker compose -f docker-compose.api.yml up -d
-curl -fsS http://127.0.0.1:3000/health
+curl -fsS http://127.0.0.1:3000/ready
 ```
 
 The container is recreated because the image tag changed; downtime is a few

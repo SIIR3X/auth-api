@@ -139,7 +139,7 @@ deliberate.
 | Pre-auth (2FA challenge) tokens | Stored in Redis: in-flight 2FA logins fail; users retry after recovery |
 | CAPTCHA / lockout counters | Various counters degrade fail-open; account lockout (DB-based) still works |
 
-**Response:** restart/restore Redis, then verify `curl -f localhost:3000/health`
+**Response:** restart/restore Redis, then verify `curl -f localhost:3000/ready`
 and watch `auth_logins_total` on the metrics endpoint resume. No application
 restart is needed - pools reconnect automatically.
 
