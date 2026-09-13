@@ -81,7 +81,9 @@ pass insert prod/auth-api/encryption-key
 
 ### SMTP Username
 
-Authentication username for the SMTP server.
+Authentication username for the SMTP server. Required in production: the API
+refuses to start without it, because an empty username would send mail without
+STARTTLS or authentication.
 
 ```bash
 pass insert prod/auth-api/smtp-username
@@ -91,7 +93,7 @@ pass insert prod/auth-api/smtp-username
 
 ### SMTP Password
 
-Authentication password for the SMTP server.
+Authentication password for the SMTP server. Required in production.
 
 ```bash
 pass insert prod/auth-api/smtp-password
@@ -101,7 +103,10 @@ pass insert prod/auth-api/smtp-password
 
 ### CAPTCHA Secret
 
-hCaptcha secret key. Leave unset to disable CAPTCHA entirely.
+hCaptcha secret key. Required in production: the API refuses to start without
+it, since registration, sign-in and forgotten-password requests would lose their
+bot protection. `CAPTCHA_VERIFY_URL` must be HTTPS there too. Outside production,
+leaving it unset disables the check.
 
 ```bash
 pass insert prod/auth-api/captcha-secret

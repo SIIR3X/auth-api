@@ -20,6 +20,14 @@ impl Config {
 
         validate_jwt_audience(&self.jwt.audience, self.is_production())?;
 
+        let (_, nats_credentials) =
+            crate::utils::nats::split_credentials(&self.nats.url).map_err(|reason| {
+                ConfigError::Invalid {
+                    key: "NATS_URL".into(),
+                    reason,
+                }
+            })?;
+
         if self.is_production() {
             // The development key pair is committed in `.env.dev` and therefore
             // public: anyone can mint valid tokens for a deployment that uses
@@ -67,6 +75,17 @@ impl Config {
                 return Err(ConfigError::Invalid {
                     key: "SMTP_USERNAME".into(),
                     reason: "must not be empty in production (unauthenticated/unencrypted SMTP is not allowed)".into(),
+                });
+            }
+
+            // The broker carries the erasure events: anything that reaches it
+            // must not be able to publish or read them.
+            if nats_credentials == crate::utils::nats::NatsCredentials::None {
+                return Err(ConfigError::Invalid {
+                    key: "NATS_URL".into(),
+                    reason:
+                        "must carry the broker credentials in production (nats://<token>@host:port)"
+                            .into(),
                 });
             }
 

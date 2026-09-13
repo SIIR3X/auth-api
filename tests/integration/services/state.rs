@@ -46,6 +46,17 @@ async fn an_unreachable_nats_server_stops_the_start() {
 }
 
 #[tokio::test]
+async fn a_broker_refusing_the_credentials_stops_the_start() {
+    let error = refusal(|config| {
+        let mut url = reqwest::Url::parse(&config.nats.url).unwrap();
+        url.set_username("not-the-broker-token").unwrap();
+        config.nats.url = url.to_string();
+    })
+    .await;
+    assert!(matches!(error, AppStateError::Nats(_)), "{error}");
+}
+
+#[tokio::test]
 async fn an_unusable_redis_url_stops_the_start() {
     let error = refusal(|config| config.redis.url = "not a url".into()).await;
     assert!(matches!(error, AppStateError::Redis(_)), "{error}");

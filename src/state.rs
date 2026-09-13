@@ -105,7 +105,17 @@ impl AppState {
     /// Connect every remaining dependency around a prepared, validated config.
     async fn assemble(config: Config, db: PgPool) -> Result<Self, AppStateError> {
         let redis = redis_pool::build(&config.redis).map_err(AppStateError::Redis)?;
-        let nats = async_nats::connect(&config.nats.url).await?;
+        // async-nats ignores credentials inside the URL: they are given apart.
+        let (nats_address, nats_credentials) =
+            crate::utils::nats::split_credentials(&config.nats.url).map_err(|reason| {
+                AppStateError::Config(ConfigError::Invalid {
+                    key: "NATS_URL".into(),
+                    reason,
+                })
+            })?;
+        let nats = crate::utils::nats::connect_options(nats_credentials)
+            .connect(nats_address)
+            .await?;
         // The stream must exist before any durable publish (account deletion).
         crate::services::events::ensure_user_stream(&nats)
             .await

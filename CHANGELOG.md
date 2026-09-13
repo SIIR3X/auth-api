@@ -146,6 +146,15 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   `email_not_verified` like the password sign-in, instead of
   `account_suspended` for every status other than active.
 - An authorization code redirect keeps the query of its registered URI.
+- The API never authenticated to NATS: async-nats ignores the credentials of
+  a URL, so the documented `NATS_URL=nats://<token>@nats:4222` against the
+  token-protected broker of `docker-compose.api.yml` was refused and the service
+  could not start. The credentials are now read from `NATS_URL` and presented
+  to the broker, production refuses a `NATS_URL` without them, and the test
+  broker requires a token so every suite exercises it.
+- The deployment docs said `CAPTCHA_SECRET` could be left unset and redeployed
+  a TOTP key rotation before storing the new key; production requires the
+  secret, and the rotation now stores both keys first.
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

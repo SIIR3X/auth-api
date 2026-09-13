@@ -59,10 +59,17 @@ and resumed.
 
 **On the API VPS:**
 
-1. Generate the new key: `openssl rand -base64 32`.
-2. Redeploy with the new key as `ENCRYPTION_KEY` and the old one as
-   `PREVIOUS_ENCRYPTION_KEY`. Existing secrets stay readable; new ones are
-   written under the new key.
+1. Store both keys before anything else, so no key ever lives only in a shell:
+
+   ```bash
+   pass show prod/auth-api/encryption-key | pass insert -m prod/auth-api/previous-encryption-key
+   openssl rand -base64 32 | pass insert -m -f prod/auth-api/encryption-key
+   ```
+
+2. Redeploy with the exports of the [update guide](update.md#4-start-the-new-version):
+   they read `ENCRYPTION_KEY` (the new key) and `PREVIOUS_ENCRYPTION_KEY` (the
+   old one) from `pass`. Existing secrets stay readable; new ones are written
+   under the new key.
 3. Re-encrypt the stored secrets:
 
    ```bash
@@ -74,7 +81,9 @@ and resumed.
    Run it until it reports `rotated=0 failed=0`: secrets already under the new
    key are skipped, and a secret changed during the run is left as the service
    wrote it.
-4. Store the new key in `pass`, remove `PREVIOUS_ENCRYPTION_KEY`, redeploy.
+4. Remove the previous key and redeploy:
+   `pass rm prod/auth-api/previous-encryption-key`, then the update guide's
+   exports again (the previous key is now unset).
 
 Keep the old key in `pass` history until the run reported no failures.
 

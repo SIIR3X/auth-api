@@ -6,6 +6,7 @@
 pub mod backoff;
 pub mod crypto;
 pub mod jwt;
+pub mod nats;
 pub mod password;
 pub mod redis_counter;
 pub mod redis_pool;

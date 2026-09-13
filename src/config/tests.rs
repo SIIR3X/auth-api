@@ -31,7 +31,7 @@ fn valid_config() -> Config {
             wait_timeout_ms: 2000,
         },
         nats: NatsConfig {
-            url: "nats://127.0.0.1:4222".into(),
+            url: "nats://broker-token@127.0.0.1:4222".into(),
         },
         jwt: JwtConfig {
             private_key: TEST_PRIVATE_KEY_PEM.into(),
@@ -117,6 +117,35 @@ fn valid_config() -> Config {
 #[test]
 fn validate_accepts_hardened_production_config() {
     assert!(valid_config().validate().is_ok());
+}
+
+#[test]
+fn validate_rejects_a_production_broker_without_credentials() {
+    let mut config = valid_config();
+    config.nats.url = "nats://127.0.0.1:4222".into();
+
+    let err = config
+        .validate()
+        .expect_err("an unauthenticated broker must be refused in production");
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "NATS_URL"));
+
+    config.env = Environment::Development;
+    assert!(
+        config.validate().is_ok(),
+        "development may use an open broker"
+    );
+}
+
+#[test]
+fn validate_rejects_an_unreadable_broker_url() {
+    let mut config = valid_config();
+    config.env = Environment::Development;
+    config.nats.url = "nats://:password-without-user@127.0.0.1:4222".into();
+
+    let err = config
+        .validate()
+        .expect_err("an unreadable NATS_URL must be refused");
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "NATS_URL"));
 }
 
 #[test]

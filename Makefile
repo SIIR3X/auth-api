@@ -9,7 +9,7 @@ TEST_COMPOSE   := docker-compose.test.yml
 TEST_PROJECT   := auth-api-test
 TEST_DB_URL    := postgres://postgres:postgres@localhost:5433/postgres
 TEST_REDIS_URL := redis://127.0.0.1:6380
-TEST_NATS_URL  := nats://127.0.0.1:4224
+TEST_NATS_URL  := nats://auth-api-test-token@127.0.0.1:4224
 IMAGE_LOCAL    := auth-api:local
 IMAGE_DEV      := auth-api:dev
 

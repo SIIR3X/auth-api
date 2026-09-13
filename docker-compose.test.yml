@@ -49,7 +49,9 @@ services:
     # JetStream holds the durable user events (`user.deleted` is published with
     # an acknowledgement). Overriding the command drops the image's config file,
     # so monitoring (probed by the healthcheck) is re-enabled explicitly.
-    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+    # Authenticated like production: every suite connects with the token of
+    # TEST_NATS_URL, so a client that drops it fails the whole gate.
+    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222", "--auth", "auth-api-test-token"]
     ports:
       - "127.0.0.1:4224:4222"
       - "127.0.0.1:8224:8222"

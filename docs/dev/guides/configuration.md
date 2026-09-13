@@ -114,7 +114,7 @@ are published to NATS JetStream. The broker ships in the compose files.
 | `LOCKOUT_THRESHOLD` | `10` | Consecutive wrong passwords before a lockout |
 | `LOCKOUT_DURATION_SECS` | `1800` | Lockout duration |
 | `SENSITIVE_ACTION_REAUTH_SECS` | `600` | How long a re-authentication (`POST /users/me/reauth`) covers sensitive actions |
-| `CAPTCHA_SECRET` | unset | hCaptcha secret; unset disables the check |
+| `CAPTCHA_SECRET` | unset | hCaptcha secret; unset disables the check, which production refuses |
 | `CAPTCHA_VERIFY_URL` | `https://hcaptcha.com/siteverify` | Verification endpoint |
 | `CAPTCHA_TIMEOUT_SECS` | `5` | Verification timeout |
 | `CAPTCHA_FAIL_OPEN` | `true` outside production | Accept the request when the provider cannot be reached |
@@ -127,7 +127,7 @@ IPv6 clients are limited per `/64`, the prefix a subscriber is usually given.
 |----------|---------|-------------|
 | `SMTP_HOST` | required | SMTP server; empty skips sending (tests) |
 | `SMTP_PORT` | `587` | STARTTLS port |
-| `SMTP_USERNAME`, `SMTP_PASSWORD` | required | Credentials; an empty username sends without TLS or authentication (Mailpit) |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | required | Credentials; an empty username sends without TLS or authentication (Mailpit), which production refuses |
 | `SMTP_FROM_NAME` | `auth-api` | Sender name |
 | `SMTP_FROM_ADDRESS` | required | Sender address |
 | `MAIL_TEMPLATES_DIR` | `templates` | Holds `emails/{locale}/{name}.html` and `{name}.subject` |

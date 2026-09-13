@@ -49,6 +49,10 @@ export REDIS_URL=$(pass prod/auth-api/redis-url)
 export JWT_PRIVATE_KEY=$(pass prod/auth-api/jwt-private-key)
 export JWT_PUBLIC_KEY=$(pass prod/auth-api/jwt-public-key)
 export ENCRYPTION_KEY=$(pass prod/auth-api/encryption-key)
+# Only while a key rotation is in progress (see the operations runbook); unset
+# otherwise. An empty value is treated as unset.
+export JWT_PREVIOUS_PUBLIC_KEY=$(pass prod/auth-api/jwt-previous-public-key 2>/dev/null)
+export PREVIOUS_ENCRYPTION_KEY=$(pass prod/auth-api/previous-encryption-key 2>/dev/null)
 export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
 export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
 export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
