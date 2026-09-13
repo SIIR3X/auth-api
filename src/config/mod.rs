@@ -95,6 +95,10 @@ pub struct JwtConfig {
     pub public_key: String,
     /// Previous public key, accepted for verification during key rotation.
     pub previous_public_key: Option<String>,
+    /// Public key of the next signing key, published in the JWKS and accepted
+    /// ahead of a rotation, so resource servers know it before any token is
+    /// signed with it.
+    pub next_public_key: Option<String>,
     /// Short-lived access token lifetime (default: 15 min).
     pub access_expiry_secs: u64,
     /// Long-lived refresh token lifetime used when remember_me is true (default: 30 days).
@@ -371,6 +375,9 @@ impl Config {
                 previous_public_key: vars
                     .string("JWT_PREVIOUS_PUBLIC_KEY")
                     .map(|s| s.replace("\\n", "\n")),
+                next_public_key: vars
+                    .string("JWT_NEXT_PUBLIC_KEY")
+                    .map(|s| s.replace("\\n", "\n")),
                 access_expiry_secs: vars.parse("JWT_ACCESS_EXPIRY_SECS")?.unwrap_or(900),
                 refresh_expiry_secs: vars
                     .parse("JWT_REFRESH_EXPIRY_SECS")?
@@ -553,6 +560,7 @@ impl std::fmt::Debug for JwtConfig {
             .field("private_key", &REDACTED)
             .field("public_key", &self.public_key)
             .field("previous_public_key", &self.previous_public_key)
+            .field("next_public_key", &self.next_public_key)
             .field("access_expiry_secs", &self.access_expiry_secs)
             .field("refresh_expiry_secs", &self.refresh_expiry_secs)
             .field("short_session_expiry_secs", &self.short_session_expiry_secs)

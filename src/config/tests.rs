@@ -37,6 +37,7 @@ fn valid_config() -> Config {
             private_key: TEST_PRIVATE_KEY_PEM.into(),
             public_key: TEST_PUBLIC_KEY_PEM.into(),
             previous_public_key: None,
+            next_public_key: None,
             access_expiry_secs: 900,
             refresh_expiry_secs: 3600,
             short_session_expiry_secs: 3600,
@@ -359,6 +360,17 @@ fn validate_accepts_valid_previous_public_key() {
         config.validate().is_ok(),
         "valid previous public key must be accepted"
     );
+}
+
+#[test]
+fn validate_rejects_invalid_next_public_key() {
+    let mut config = valid_config();
+    config.jwt.next_public_key = Some("not-a-valid-pem".into());
+
+    let err = config
+        .validate()
+        .expect_err("an unreadable next key must be refused");
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "JWT_NEXT_PUBLIC_KEY"));
 }
 
 #[test]
@@ -701,6 +713,7 @@ fn loading_applies_the_documented_defaults() {
     assert_eq!(config.mail.default_locale, "en");
     assert_eq!(config.device_auth.poll_interval_secs, 5);
     assert_eq!(config.database.acquire_timeout_secs, 5);
+    assert_eq!(config.jwt.next_public_key, None);
     assert!(
         config.rate_limit.fail_open_on_redis_error,
         "development fails open"

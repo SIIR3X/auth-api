@@ -160,6 +160,52 @@ pub fn decode_token_with_fallback(
     }
 }
 
+/// The keys an access token may be verified with, by `kid`: the signing key's,
+/// the next key published ahead of a rotation, and the previous key after one.
+pub struct VerifyingKeys {
+    keys: Vec<(String, DecodingKey)>,
+}
+
+impl VerifyingKeys {
+    pub fn new(keys: Vec<(String, DecodingKey)>) -> Self {
+        Self { keys }
+    }
+
+    /// The `kid`s held, in the order given.
+    pub fn kids(&self) -> impl Iterator<Item = &str> {
+        self.keys.iter().map(|(kid, _)| kid.as_str())
+    }
+}
+
+/// Decode a token with the key its `kid` names, and check its time claims
+/// against `now`.
+///
+/// A token without a `kid`, or naming none of the keys, is tried against every
+/// key: tokens signed before the header carried a `kid` keep verifying until
+/// they expire, and a made-up `kid` gains nothing since the signature must
+/// still match one of the keys.
+pub fn decode_token_with_keys(
+    token: &str,
+    keys: &VerifyingKeys,
+    now: i64,
+) -> Result<Claims, JwtError> {
+    let header = jsonwebtoken::decode_header(token).map_err(|e| JwtError::Decode(e.to_string()))?;
+    if let Some(kid) = header.kid.as_deref()
+        && let Some((_, key)) = keys.keys.iter().find(|(held, _)| held == kid)
+    {
+        return decode_token_inner(token, key, now);
+    }
+
+    let mut last = JwtError::Decode("no verification key".into());
+    for (_, key) in &keys.keys {
+        match decode_token_inner(token, key, now) {
+            Ok(claims) => return Ok(claims),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
 fn decode_token_inner(token: &str, key: &DecodingKey, now: i64) -> Result<Claims, JwtError> {
     let mut validation = Validation::new(Algorithm::ES256);
     // The signature and the algorithm are checked by `jsonwebtoken`; the time
@@ -632,5 +678,88 @@ mod tests {
         assert_eq!(compute_kid(&key), kid);
         let (_, other) = test_key_pems();
         assert_ne!(compute_kid(&parse_p256_verifying_key(&other).unwrap()), kid);
+    }
+}
+
+#[cfg(test)]
+mod key_selection {
+    use p256::{
+        ecdsa::SigningKey,
+        pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding},
+    };
+
+    use super::*;
+
+    struct Pair {
+        encoding: jsonwebtoken::EncodingKey,
+        decoding: DecodingKey,
+        kid: String,
+    }
+
+    fn pair() -> Pair {
+        let signing = SigningKey::random(&mut rand_core::OsRng);
+        let private = signing.to_pkcs8_pem(LineEnding::LF).unwrap();
+        let public = signing
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .unwrap();
+        Pair {
+            encoding: parse_encoding_key(&private).unwrap(),
+            decoding: parse_verifying_key(&public).unwrap(),
+            kid: compute_kid(&parse_p256_verifying_key(&public).unwrap()),
+        }
+    }
+
+    fn keys(pairs: &[&Pair]) -> VerifyingKeys {
+        VerifyingKeys::new(
+            pairs
+                .iter()
+                .map(|pair| (pair.kid.clone(), pair.decoding.clone()))
+                .collect(),
+        )
+    }
+
+    fn claims() -> Claims {
+        Claims::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), 1_000, 2_000)
+    }
+
+    #[test]
+    fn the_kid_selects_the_key() {
+        let (current, next) = (pair(), pair());
+        let held = keys(&[&current, &next]);
+        assert_eq!(
+            held.kids().collect::<Vec<_>>(),
+            [current.kid.as_str(), next.kid.as_str()]
+        );
+        for signer in [&current, &next] {
+            let token = encode_token(&claims(), &signer.encoding, Some(&signer.kid)).unwrap();
+            assert!(decode_token_with_keys(&token, &held, 1_500).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_token_without_a_known_kid_is_tried_against_every_key() {
+        let (current, previous) = (pair(), pair());
+        let held = keys(&[&current, &previous]);
+        let untagged = encode_token(&claims(), &previous.encoding, None).unwrap();
+        assert!(decode_token_with_keys(&untagged, &held, 1_500).is_ok());
+        let mislabelled = encode_token(&claims(), &previous.encoding, Some("unknown")).unwrap();
+        assert!(decode_token_with_keys(&mislabelled, &held, 1_500).is_ok());
+    }
+
+    #[test]
+    fn a_kid_does_not_lend_its_key_to_another_signature() {
+        let (current, foreign) = (pair(), pair());
+        let held = keys(&[&current]);
+        let forged = encode_token(&claims(), &foreign.encoding, Some(&current.kid)).unwrap();
+        assert!(decode_token_with_keys(&forged, &held, 1_500).is_err());
+        let untagged_foreign = encode_token(&claims(), &foreign.encoding, None).unwrap();
+        assert!(decode_token_with_keys(&untagged_foreign, &held, 1_500).is_err());
+        let genuine = encode_token(&claims(), &current.encoding, Some(&current.kid)).unwrap();
+        assert!(
+            decode_token_with_keys(&genuine, &held, 2_000).is_err(),
+            "time claims still apply"
+        );
+        assert!(decode_token_with_keys("not.a.token", &held, 1_500).is_err());
     }
 }

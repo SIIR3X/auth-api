@@ -11,6 +11,7 @@ mod authorization;
 mod catalog;
 mod edge;
 mod headers;
+mod jwt_rotation;
 mod logs;
 mod rate_limits;
 mod regressions;

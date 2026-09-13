@@ -27,6 +27,7 @@ before `docker compose` runs (see [Secrets](../../deploy/api/secrets.md)).
 | `JWT_PRIVATE_KEY` | EC P-256 private key, PEM (signs access tokens) | `openssl ecparam -genkey -name prime256v1 -noout \| openssl pkcs8 -topk8 -nocrypt` |
 | `JWT_PUBLIC_KEY` | Matching public key, PEM | `openssl ec -pubout < private.pem` |
 | `JWT_PREVIOUS_PUBLIC_KEY` | Previous public key, only during a signing key rotation | - |
+| `JWT_NEXT_PUBLIC_KEY` | Next public key, only while a signing key rotation is being announced | - |
 | `ENCRYPTION_KEY` | AES-256-GCM key for TOTP secrets at rest, base64 of 32 bytes | `openssl rand -base64 32` |
 | `PREVIOUS_ENCRYPTION_KEY` | Previous encryption key, only during a rotation | - |
 | `SMTP_USERNAME`, `SMTP_PASSWORD` | SMTP credentials | - |
@@ -82,6 +83,7 @@ are published to NATS JetStream. The broker ships in the compose files.
 | `JWT_PRIVATE_KEY` | required | Signing key, PEM (`\n` escapes accepted) |
 | `JWT_PUBLIC_KEY` | required | Verification key, PEM |
 | `JWT_PREVIOUS_PUBLIC_KEY` | unset | Still accepted and published in the JWKS during a rotation |
+| `JWT_NEXT_PUBLIC_KEY` | unset | Published in the JWKS and accepted before the signing key switches to it |
 | `JWT_AUDIENCE` | empty | Comma-separated audiences stamped in `aud`; `APP_PUBLIC_URL` is always added |
 | `JWT_ACCESS_EXPIRY_SECS` | `900` | Access token lifetime |
 | `JWT_REFRESH_EXPIRY_SECS` | `2592000` | Refresh token lifetime with "remember me" (30 days) |

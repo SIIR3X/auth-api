@@ -67,7 +67,9 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub jwt_signing_key: EncodingKey,
     pub jwt_verifying_key: DecodingKey,
-    pub jwt_previous_verifying_key: Option<DecodingKey>,
+    /// Every key an access token may be verified with, by `kid`: current, next
+    /// (published ahead of a rotation) and previous.
+    pub jwt_verifying_keys: Arc<jwt::VerifyingKeys>,
     pub jwt_kid: String,
     /// JWKS document served at /.well-known/jwks.json, precomputed at startup
     /// (current key first, previous key appended during rotation windows).
@@ -78,7 +80,7 @@ pub struct AppState {
 struct JwtKeys {
     signing_key: EncodingKey,
     verifying_key: DecodingKey,
-    previous_verifying_key: Option<DecodingKey>,
+    verifying_keys: jwt::VerifyingKeys,
     kid: String,
     jwks: Arc<serde_json::Value>,
 }
@@ -145,7 +147,7 @@ impl AppState {
             keyring,
             jwt_signing_key: jwt_keys.signing_key,
             jwt_verifying_key: jwt_keys.verifying_key,
-            jwt_previous_verifying_key: jwt_keys.previous_verifying_key,
+            jwt_verifying_keys: Arc::new(jwt_keys.verifying_keys),
             jwt_kid: jwt_keys.kid,
             jwt_jwks: jwt_keys.jwks,
             config: Arc::new(config),
@@ -223,26 +225,33 @@ fn parse_jwt_keys(config: &Config) -> Result<JwtKeys, AppStateError> {
     let p256_key = jwt::parse_p256_verifying_key(&config.jwt.public_key)
         .map_err(|e| invalid("JWT_PUBLIC_KEY", e))?;
     let kid = jwt::compute_kid(&p256_key);
+    // The JWKS lists the current key, then the next one (published ahead of a
+    // rotation, before anything is signed with it), then the previous one
+    // (until the tokens it signed have expired).
     let mut jwks_keys = vec![jwt::public_key_to_jwk(&p256_key, &kid)];
-
-    let previous_verifying_key = if let Some(ref prev_pem) = config.jwt.previous_public_key {
-        let prev_key = jwt::parse_verifying_key(prev_pem)
-            .map_err(|e| invalid("JWT_PREVIOUS_PUBLIC_KEY", e))?;
-        let prev_p256 = jwt::parse_p256_verifying_key(prev_pem)
-            .map_err(|e| invalid("JWT_PREVIOUS_PUBLIC_KEY", e))?;
-        jwks_keys.push(jwt::public_key_to_jwk(
-            &prev_p256,
-            &jwt::compute_kid(&prev_p256),
-        ));
-        Some(prev_key)
-    } else {
-        None
-    };
+    let mut verifying = vec![(kid.clone(), verifying_key.clone())];
+    for (variable, pem) in [
+        ("JWT_NEXT_PUBLIC_KEY", config.jwt.next_public_key.as_deref()),
+        (
+            "JWT_PREVIOUS_PUBLIC_KEY",
+            config.jwt.previous_public_key.as_deref(),
+        ),
+    ] {
+        let Some(pem) = pem else { continue };
+        let key = jwt::parse_verifying_key(pem).map_err(|e| invalid(variable, e))?;
+        let p256 = jwt::parse_p256_verifying_key(pem).map_err(|e| invalid(variable, e))?;
+        let extra_kid = jwt::compute_kid(&p256);
+        if verifying.iter().any(|(held, _)| *held == extra_kid) {
+            continue;
+        }
+        jwks_keys.push(jwt::public_key_to_jwk(&p256, &extra_kid));
+        verifying.push((extra_kid, key));
+    }
 
     Ok(JwtKeys {
         signing_key,
         verifying_key,
-        previous_verifying_key,
+        verifying_keys: jwt::VerifyingKeys::new(verifying),
         kid,
         jwks: Arc::new(serde_json::json!({ "keys": jwks_keys })),
     })

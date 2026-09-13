@@ -457,6 +457,7 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             private_key: keys::PRIVATE_KEY_PEM.into(),
             public_key: keys::PUBLIC_KEY_PEM.into(),
             previous_public_key: None,
+            next_public_key: None,
             access_expiry_secs: 900,
             refresh_expiry_secs: 86400,
             short_session_expiry_secs: 3600,

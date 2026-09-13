@@ -163,6 +163,13 @@ pub(super) fn validate_jwt_keys(jwt: &JwtConfig) -> Result<(), ConfigError> {
         })?;
     }
 
+    if let Some(ref next_pub) = jwt.next_public_key {
+        jwt_util::parse_p256_verifying_key(next_pub).map_err(|e| ConfigError::Invalid {
+            key: "JWT_NEXT_PUBLIC_KEY".into(),
+            reason: e.to_string(),
+        })?;
+    }
+
     Ok(())
 }
 

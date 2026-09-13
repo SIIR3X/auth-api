@@ -9,9 +9,12 @@ where it runs (API VPS or DB VPS).
 ## 1. JWT Signing Key Rotation (ES256)
 
 Access tokens are signed with the private key and verified against the JWKS
-served at `/.well-known/jwks.json`. Rotation is zero-downtime because the API
-accepts tokens signed with the previous key for as long as
-`JWT_PREVIOUS_PUBLIC_KEY` is set.
+served at `/.well-known/jwks.json`, which resource servers may cache for 5
+minutes (`Cache-Control: max-age=300`). The rotation takes three redeploys so
+that no valid token is ever refused, by the API or by a resource server: a key
+is published before anything is signed with it, and kept until every token it
+signed has expired. The API picks the verification key named by a token's
+`kid`.
 
 **On a secure machine** - generate the new key pair:
 
@@ -23,26 +26,34 @@ openssl ec -in jwt-private-new.pem -pubout -out jwt-public-new.pem
 
 **On the API VPS:**
 
-1. Store the new keys and keep the old public key as "previous":
+1. **Publish the next key.**
 
    ```bash
-   pass show prod/auth-api/jwt-public-key > /dev/shm/jwt-public-old.pem
-   pass insert -m prod/auth-api/jwt-private-key      < jwt-private-new.pem
-   pass insert -m prod/auth-api/jwt-public-key       < jwt-public-new.pem
-   pass insert -m prod/auth-api/jwt-previous-public-key < /dev/shm/jwt-public-old.pem
-   rm /dev/shm/jwt-public-old.pem
+   pass insert -m prod/auth-api/jwt-next-private-key < jwt-private-new.pem
+   pass insert -m prod/auth-api/jwt-next-public-key  < jwt-public-new.pem
+   export JWT_NEXT_PUBLIC_KEY=$(pass show prod/auth-api/jwt-next-public-key)
    ```
 
-2. Redeploy with `JWT_PREVIOUS_PUBLIC_KEY` exported (see
-   [Deploying a New Release](update.md)). The JWKS now lists both `kid`s;
-   tokens signed with either key are accepted.
+   Redeploy ([Deploying a New Release](update.md#4-start-the-new-version)).
+   The JWKS lists both `kid`s; nothing is signed with the new key yet. **Wait at
+   least 5 minutes**, or the longest JWKS cache of your resource servers.
 
-3. **Wait at least `JWT_ACCESS_EXPIRY_SECS` (default 15 min) plus the JWKS
-   cache window (5 min)** so every token signed with the old key has expired
-   and downstream resource servers have refreshed their JWKS.
+2. **Sign with the next key.**
 
-4. Remove `prod/auth-api/jwt-previous-public-key` from `pass`, unset the
-   variable, and redeploy. Verify the JWKS lists a single key:
+   ```bash
+   pass show prod/auth-api/jwt-public-key      | pass insert -m -f prod/auth-api/jwt-previous-public-key
+   pass show prod/auth-api/jwt-next-private-key | pass insert -m -f prod/auth-api/jwt-private-key
+   pass show prod/auth-api/jwt-next-public-key  | pass insert -m -f prod/auth-api/jwt-public-key
+   pass rm prod/auth-api/jwt-next-private-key prod/auth-api/jwt-next-public-key
+   unset JWT_NEXT_PUBLIC_KEY
+   ```
+
+   Redeploy. New tokens carry the new `kid`; tokens signed with the old key
+   still verify through `JWT_PREVIOUS_PUBLIC_KEY`. **Wait at least
+   `JWT_ACCESS_EXPIRY_SECS`** (15 minutes by default).
+
+3. **Retire the old key.** `pass rm prod/auth-api/jwt-previous-public-key`,
+   then redeploy. Verify that the JWKS lists a single key:
 
    ```bash
    curl -s https://api.example.com/.well-known/jwks.json | jq '.keys | length'

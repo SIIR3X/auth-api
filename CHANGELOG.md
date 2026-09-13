@@ -199,6 +199,11 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   private key, the encryption keys and the SMTP and CAPTCHA secrets.
 - `DB_ACQUIRE_TIMEOUT_SECS` defaults to 5 seconds instead of 30: an exhausted
   pool answers fast instead of waiting out the request timeout.
+- A signing key rotation no longer makes resource servers refuse new tokens
+  for up to 5 minutes. `JWT_NEXT_PUBLIC_KEY` publishes the next key in the JWKS
+  and has it accepted before the signing key switches to it, and the API
+  verifies a token with the key its `kid` names (a token without a known `kid`
+  is tried against every key). The runbook rotation now runs in three phases.
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

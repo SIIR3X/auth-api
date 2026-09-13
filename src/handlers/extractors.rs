@@ -49,10 +49,9 @@ impl FromRequestParts<AppState> for AuthUser {
             .strip_prefix("Bearer ")
             .ok_or(AppError::Unauthorized)?;
 
-        let claims = jwt::decode_token_with_fallback(
+        let claims = jwt::decode_token_with_keys(
             token,
-            &state.jwt_verifying_key,
-            state.jwt_previous_verifying_key.as_ref(),
+            &state.jwt_verifying_keys,
             state.clock.now().unix_timestamp(),
         )
         .map_err(|_| AppError::TokenInvalid)?;
