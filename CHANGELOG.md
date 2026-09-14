@@ -214,6 +214,13 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   service. The NATS token moves to `nats-auth.conf`, mounted as a secret instead
   of a command-line argument, and JetStream storage is capped in `nats.conf`.
   Pool sizes and Argon2 concurrency leave `config.prod.env` for the profiles.
+- nginx balances the API instances: an instance that refuses or fails is
+  skipped for 10 seconds and the request goes to the other one, while a
+  request an instance already received is never resent. Proxy timeouts are 35
+  seconds (credential routes cut at 10 while a sign-in queued behind Argon2 may
+  take up to 30), HEAD is allowed for uptime probes, every request is logged as
+  one JSON line with the `request_id` passed on to the API, and the nginx rate
+  limits sit at twice the API's so clients see the API's 429 and `Retry-After`.
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.
