@@ -1,0 +1,12 @@
+# Transparent huge pages cause latency spikes in Redis and PostgreSQL.
+# Copy to /etc/systemd/system/, then `sudo systemctl enable --now disable-thp`.
+[Unit]
+Description=Disable transparent huge pages (Redis, PostgreSQL)
+Before=redis-server.service postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled && echo never > /sys/kernel/mm/transparent_hugepage/defrag'
+
+[Install]
+WantedBy=multi-user.target

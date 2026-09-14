@@ -221,6 +221,17 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   take up to 30), HEAD is allowed for uptime probes, every request is logged as
   one JSON line with the `request_id` passed on to the API, and the nginx rate
   limits sit at twice the API's so clients see the API's 429 and `Retry-After`.
+- The DB VPS ships its settings in `deploy/db/`: PostgreSQL sized per profile
+  (memory, connections, WAL, `pg_stat_statements`, slow statement logs) with
+  session limits for the `auth_api` role (25-second statements, 10-second lock
+  waits, 60 seconds idle in a transaction); Redis with `maxmemory` and
+  `noeviction`, append-only persistence, the default user disabled and an
+  `auth_api` ACL user without administrative or dangerous commands
+  (`REDIS_URL` becomes `redis://auth_api:<password>@10.0.0.2:6379`); kernel
+  settings (overcommit, swappiness, no transparent huge pages). Migration 0027
+  vacuums `sessions` and `login_attempts` once 2 % of their rows changed
+  instead of 20 %. The API VPS no longer opens a WireGuard port it never
+  listened on.
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

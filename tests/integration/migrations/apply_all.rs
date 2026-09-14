@@ -42,3 +42,39 @@ async fn security_support_tables_exist_after_migrations() {
         ]
     );
 }
+
+#[tokio::test]
+async fn hot_tables_are_vacuumed_before_they_bloat() {
+    let db = testkit::TestDb::new().await;
+    for (table, expected) in [
+        (
+            "sessions",
+            &[
+                "autovacuum_vacuum_scale_factor=0.02",
+                "autovacuum_analyze_scale_factor=0.01",
+            ][..],
+        ),
+        (
+            "login_attempts",
+            &[
+                "autovacuum_vacuum_scale_factor=0.02",
+                "autovacuum_vacuum_insert_scale_factor=0.02",
+                "autovacuum_analyze_scale_factor=0.01",
+            ][..],
+        ),
+    ] {
+        let options: Vec<String> = sqlx::query_scalar(
+            "SELECT unnest(reloptions) FROM pg_class WHERE relname = $1 AND relkind = 'r'",
+        )
+        .bind(table)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        for option in expected {
+            assert!(
+                options.iter().any(|o| o == option),
+                "{table} lacks {option}: {options:?}"
+            );
+        }
+    }
+}

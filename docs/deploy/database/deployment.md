@@ -138,24 +138,31 @@ GRANT ALL PRIVILEGES ON DATABASE auth_api TO auth_api;
 
 ---
 
-### 2.2 Allow connections on the VPN interface
+### 2.2 Configure PostgreSQL
 
-**On the DB VPS** - edit `/etc/postgresql/<version>/main/postgresql.conf`:
+**On the DB VPS** - install the settings shipped in the release bundle
+(`deploy/db/`). They listen on the VPN address only and size PostgreSQL for
+profile M; the comments give the values of the other profiles (see
+[capacity planning](../guides/operations.md#9-capacity-planning)):
 
-```conf
-listen_addresses = '10.0.0.2'
+```bash
+sudo cp deploy/db/postgresql.auth-api.conf /etc/postgresql/17/main/conf.d/auth-api.conf
 ```
 
-Edit `/etc/postgresql/<version>/main/pg_hba.conf` - allow the API VPS via its VPN IP only:
+Edit `/etc/postgresql/17/main/pg_hba.conf` - allow the API VPS via its VPN IP only:
 
 ```conf
 host    auth_api    auth_api    10.0.0.1/32    scram-sha-256
 ```
 
-Restart PostgreSQL:
+Restart PostgreSQL, then give the role its session limits (statements and lock
+waits stop before the API's 30-second request timeout; a connection idle inside
+a transaction is closed):
 
 ```bash
 sudo systemctl restart postgresql
+sudo -u postgres psql -d auth_api -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements'
+sudo -u postgres psql -d auth_api -f deploy/db/auth-api-role.sql
 ```
 
 ---
@@ -186,9 +193,12 @@ Migrations ship in every release bundle (see [Deploying a New Release](../guides
 **On the API VPS**, with `sqlx-cli` installed (see [API Deployment](../api/deployment.md#12-install-docker-and-sqlx-cli)):
 
 ```bash
-DATABASE_URL=$(pass prod/auth-api/database-url) \
+DATABASE_URL="$(pass prod/auth-api/database-url)?options=-c%20statement_timeout%3D0" \
   sqlx migrate run --source /srv/auth-api/releases/auth-api-X.Y.Z/migrations
 ```
+
+The `options` parameter lifts the role's 25-second statement timeout for the
+migration session only: a migration on a large table may run longer.
 
 ---
 
@@ -237,21 +247,32 @@ sudo apt install -y redis-server
 
 ---
 
-### 3.1 Configure authentication and binding
+### 3.1 Configure Redis
 
-**On the DB VPS** - inject the password from `pass` and bind to the VPN interface:
-
-```bash
-REDIS_PASSWORD=$(pass prod/auth-api/redis-password)
-sudo sed -i "s/^# requirepass .*/requirepass ${REDIS_PASSWORD}/" /etc/redis/redis.conf
-sudo sed -i "s/^bind .*/bind 10.0.0.2/" /etc/redis/redis.conf
-```
-
-Restart Redis:
+The settings shipped in `deploy/db/redis.auth-api.conf` bind Redis to the VPN
+address, never evict a key (evicting an attempt budget would reset it), persist
+to an append-only file so revocations survive a restart, and read the users
+from an ACL file. Size `maxmemory` for the profile.
 
 ```bash
-sudo systemctl restart redis
+sudo cp deploy/db/redis.auth-api.conf /etc/redis/auth-api.conf
+echo 'include /etc/redis/auth-api.conf' | sudo tee -a /etc/redis/redis.conf
 ```
+
+Create the ACL file. The default user is disabled; the API's user can run
+every command but the administrative and dangerous ones (`FLUSHALL`, `CONFIG`,
+`KEYS`, `DEBUG`...), and only the SHA-256 of its password is stored:
+
+```bash
+REDIS_PASSWORD_SHA=$(pass prod/auth-api/redis-password | tr -d '\n' | sha256sum | cut -d' ' -f1)
+printf 'user default off\nuser auth_api on #%s ~* &* +@all -@dangerous -@admin\n' "$REDIS_PASSWORD_SHA" \
+  | sudo tee /etc/redis/users.acl > /dev/null
+sudo chown redis:redis /etc/redis/users.acl && sudo chmod 600 /etc/redis/users.acl
+sudo systemctl restart redis-server
+```
+
+The API connects as that user: store `redis://auth_api:<password>@10.0.0.2:6379`
+as `prod/auth-api/redis-url`.
 
 ---
 
@@ -270,7 +291,22 @@ sudo ufw allow from 10.0.0.1 to any port 6379
 **On the API VPS:**
 
 ```bash
-redis-cli -h 10.0.0.2 ping
+redis-cli -u "$(pass prod/auth-api/redis-url)" ping
+redis-cli -u "$(pass prod/auth-api/redis-url)" flushall   # must fail: NOPERM
+```
+
+---
+
+### 3.4 Kernel settings
+
+**On the DB VPS** - overcommit for Redis's background rewrites, minimal
+swapping, and no transparent huge pages (latency spikes in both databases):
+
+```bash
+sudo cp deploy/db/sysctl-auth-api.conf /etc/sysctl.d/90-auth-api.conf
+sudo sysctl --system
+sudo cp deploy/db/disable-thp.service /etc/systemd/system/
+sudo systemctl enable --now disable-thp
 ```
 
 ## 4. Backups

@@ -24,10 +24,10 @@ API and its metrics listener are published on loopback only.
 
 ### 1.1 Open the firewall
 
-**On the API VPS** - WireGuard (database tunnel) and HTTP/HTTPS for Nginx:
+**On the API VPS** - HTTP and HTTPS for nginx. The WireGuard tunnel to the DB
+VPS is opened from this side, so no WireGuard port is needed here:
 
 ```bash
-sudo ufw allow 51820/udp
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 ```
