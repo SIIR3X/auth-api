@@ -204,6 +204,16 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   and has it accepted before the signing key switches to it, and the API
   verifies a token with the key its `kid` names (a token without a known `kid`
   is tried against every key). The runbook rotation now runs in three phases.
+- The API VPS runs two API instances (`api-a` and `api-b`, on loopback ports
+  3001 and 3002) sized by a profile: `deploy/profiles/s.env`, `m.env` or
+  `l.env`, passed with `--env-file` (`docker-compose.api.l.yml` adds two
+  instances for profile L). Each instance has CPU, memory and process limits, a
+  40-second stop grace period and rotated logs, and its health check calls
+  `/live` every 10 seconds. `scripts/rolling-update.sh` replaces the instances
+  one at a time and waits for `/ready`, so an update no longer stops the
+  service. The NATS token moves to `nats-auth.conf`, mounted as a secret instead
+  of a command-line argument, and JetStream storage is capped in `nats.conf`.
+  Pool sizes and Argon2 concurrency leave `config.prod.env` for the profiles.
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

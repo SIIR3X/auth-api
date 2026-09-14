@@ -81,7 +81,10 @@ values:
 
 ```bash
 mkdir -p /srv/auth-api && cd /srv/auth-api
-cp releases/auth-api-X.Y.Z/docker-compose.api.yml releases/auth-api-X.Y.Z/config.prod.env .
+cp releases/auth-api-X.Y.Z/docker-compose.api.yml releases/auth-api-X.Y.Z/config.prod.env \
+   releases/auth-api-X.Y.Z/nats.conf releases/auth-api-X.Y.Z/scripts/rolling-update.sh .
+cp releases/auth-api-X.Y.Z/deploy/profiles/m.env profile.env   # s.env, m.env or l.env
+# Profile L: also copy docker-compose.api.l.yml
 nano config.prod.env
 ```
 
@@ -92,6 +95,11 @@ Values to set:
 - `SMTP_HOST`, `SMTP_FROM_ADDRESS`, `TOTP_ISSUER`
 - `ARGON2_*` for the server's memory and cores
 - `TRUSTED_PROXY_CIDRS` stays `172.30.0.1/32` (the compose network gateway, see [Nginx](nginx.md#trusted-proxy))
+
+The instance sizes (CPU, memory, Argon2 concurrency, pool sizes, broker limits)
+live in `profile.env`: pick the profile of the expected load from the
+[capacity planning](../guides/operations.md#9-capacity-planning), and adjust
+the copy rather than `config.prod.env`.
 
 ---
 
@@ -118,10 +126,16 @@ export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
 export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
 export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
 export NATS_URL=$(pass prod/auth-api/nats-url)
-export NATS_AUTH_TOKEN=$(pass prod/auth-api/nats-auth-token)
+# Owned by root: the broker runs without capabilities (see Secrets)
+sudo install -m 600 -o root -g root /dev/null nats-auth.conf
+printf 'authorization { token: "%s" }\n' "$(pass prod/auth-api/nats-auth-token)" \
+  | sudo tee nats-auth.conf > /dev/null
 
-docker compose -f docker-compose.api.yml up -d
+docker compose --env-file profile.env -f docker-compose.api.yml up -d --wait
+curl -fsS http://127.0.0.1:3001/ready && curl -fsS http://127.0.0.1:3002/ready
 ```
+
+Both instances must answer `/ready` before nginx is pointed at them.
 
 ---
 
@@ -131,7 +145,7 @@ Device and authorization code flows only serve registered clients. Register the
 application this instance owns as primary, then any other client:
 
 ```bash
-docker compose -f docker-compose.api.yml run --rm api \
+docker compose --env-file profile.env -f docker-compose.api.yml run --rm --no-deps api-a \
   ./auth-api --register-client web-app --name "Web app" --primary \
   --redirect-uri https://app.example.com/callback
 ```

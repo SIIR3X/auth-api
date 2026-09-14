@@ -214,8 +214,9 @@ release: ## Build a signed release bundle in dist/ (VERSION=x.y.z RELEASE_SIGNIN
 	rm -rf dist/auth-api-$(VERSION) && mkdir -p dist/auth-api-$(VERSION)
 	docker save auth-api:$(VERSION) | gzip > dist/auth-api-$(VERSION)/auth-api-$(VERSION).image.tar.gz
 	docker image inspect --format '{{.Id}}' auth-api:$(VERSION) > dist/auth-api-$(VERSION)/IMAGE_ID
-	git archive HEAD migrations docker-compose.api.yml config.prod.env nginx/nginx.conf \
-		scripts/backup-db.sh scripts/restore-db.sh scripts/backup-drill.sh \
+	git archive HEAD migrations docker-compose.api.yml docker-compose.api.l.yml config.prod.env \
+		nats.conf deploy/profiles nginx/nginx.conf \
+		scripts/backup-db.sh scripts/restore-db.sh scripts/backup-drill.sh scripts/rolling-update.sh \
 		docs/deploy/guides/prometheus-alerts.yml | tar -x -C dist/auth-api-$(VERSION)
 	cd dist/auth-api-$(VERSION) && find . -type f ! -name 'SHA256SUMS*' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 	ssh-keygen -Y sign -q -f $(RELEASE_SIGNING_KEY) -n auth-api-release dist/auth-api-$(VERSION)/SHA256SUMS

@@ -1,88 +1,130 @@
-services:
-  api:
-    # Built by `make release` and loaded on the server (see docs/deploy/guides/update.md).
-    image: auth-api:${AUTH_API_VERSION:?set AUTH_API_VERSION to the release being deployed}
-    env_file: config.prod.env
-    environment:
-      # Secrets - exported from pass before running
-      - DATABASE_URL
-      - REDIS_URL
-      - JWT_PRIVATE_KEY
-      - JWT_PUBLIC_KEY
-      - JWT_PREVIOUS_PUBLIC_KEY
-      - ENCRYPTION_KEY
-      - PREVIOUS_ENCRYPTION_KEY
-      - SMTP_USERNAME
-      - SMTP_PASSWORD
-      - CAPTCHA_SECRET
-      # NATS URL embedding the auth token (nats://<token>@nats:4222); the
-      # broker below requires the same token.
-      - NATS_URL
-    ports:
-      # Bind to loopback only: the API must be reached through the reverse
-      # proxy (which sets X-Forwarded-For from a trusted CIDR), never directly.
-      - "127.0.0.1:3000:3000"
-      # Prometheus metrics: loopback only, scraped by the host's Prometheus.
-      # Never route this through nginx.
-      - "127.0.0.1:9464:9464"
-    restart: unless-stopped
-    # Container hardening: the app writes nothing to disk (logs go to stdout,
-    # templates are read-only), needs no Linux capabilities, and must not
-    # gain privileges via setuid binaries.
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    # Resource ceilings so a leak or a flood cannot take the whole VPS down
-    # with it. Memory is sized for Argon2's worst case: ARGON2_MAX_CONCURRENCY
-    # x ARGON2_MEMORY_KIB (4 x 64 MiB = 256 MiB) plus the app's baseline.
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 768M
-    healthcheck:
-      # Use the binary's built-in --healthcheck flag (added to avoid bundling
-      # curl/wget in the slim runtime image). It hits 127.0.0.1:$SERVER_PORT/live
-      # and exits 0 on 2xx, 1 otherwise.
-      test: ["CMD", "./auth-api", "--healthcheck"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    depends_on:
-      nats:
-        condition: service_healthy
-    networks:
-      - auth-api
+# Production stack of the API VPS: two API instances behind the host's nginx
+# (upstream 127.0.0.1:3001 and 127.0.0.1:3002) and the NATS event broker.
+#
+# Sizing comes from a profile passed with --env-file (deploy/profiles/s.env,
+# m.env or l.env): CPU and memory per instance, Argon2 concurrency, pool sizes,
+# broker limits. Secrets are exported from pass before running (see
+# docs/deploy/guides/update.md). scripts/rolling-update.sh replaces the
+# instances one at a time, so an update never stops the service.
 
-  # Domain-event broker. The API connects to it at startup (fail-fast), so it
-  # ships in the same compose file. No host ports: only the api container
-  # needs to reach it, over the internal compose network. Token auth is
-  # defence in depth on top of the network isolation; the API embeds the same
-  # token in NATS_URL.
+x-api: &api
+  # Built by `make release` and loaded on the server.
+  image: auth-api:${AUTH_API_VERSION:?set AUTH_API_VERSION to the release being deployed}
+  env_file: config.prod.env
+  environment:
+    # Secrets, exported from pass. `:?` stops compose when one is missing.
+    DATABASE_URL: ${DATABASE_URL:?export DATABASE_URL}
+    REDIS_URL: ${REDIS_URL:?export REDIS_URL}
+    JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?export JWT_PRIVATE_KEY}
+    JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?export JWT_PUBLIC_KEY}
+    # Only during a key rotation; empty means unset.
+    JWT_PREVIOUS_PUBLIC_KEY: ${JWT_PREVIOUS_PUBLIC_KEY:-}
+    JWT_NEXT_PUBLIC_KEY: ${JWT_NEXT_PUBLIC_KEY:-}
+    ENCRYPTION_KEY: ${ENCRYPTION_KEY:?export ENCRYPTION_KEY}
+    PREVIOUS_ENCRYPTION_KEY: ${PREVIOUS_ENCRYPTION_KEY:-}
+    SMTP_USERNAME: ${SMTP_USERNAME:?export SMTP_USERNAME}
+    SMTP_PASSWORD: ${SMTP_PASSWORD:?export SMTP_PASSWORD}
+    CAPTCHA_SECRET: ${CAPTCHA_SECRET:?export CAPTCHA_SECRET}
+    # nats://<token>@nats:4222, the token of nats-auth.conf.
+    NATS_URL: ${NATS_URL:?export NATS_URL}
+    # Sizing, from the profile.
+    ARGON2_MAX_CONCURRENCY: ${ARGON2_MAX_CONCURRENCY:?pass a profile with --env-file}
+    DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:?pass a profile with --env-file}
+    REDIS_POOL_SIZE: ${REDIS_POOL_SIZE:?pass a profile with --env-file}
+  restart: unless-stopped
+  # The app writes nothing to disk (logs go to stdout, templates are read-only),
+  # needs no Linux capability and must not gain privileges.
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+  # Longer than the shutdown drain (32 s of requests, 5 s of background tasks,
+  # 2 s of NATS flush): Docker never kills a draining instance.
+  stop_grace_period: 40s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+  deploy:
+    resources:
+      # Memory: 64 MiB per concurrent Argon2 hash plus 256 MiB for the rest
+      # (docs/deploy/guides/operations.md, section 9).
+      limits:
+        cpus: "${API_CPUS:?pass a profile with --env-file}"
+        memory: ${API_MEMORY:?pass a profile with --env-file}
+        pids: 256
+      reservations:
+        memory: ${API_MEMORY_RESERVATION:?pass a profile with --env-file}
+  healthcheck:
+    # The binary calls its own /live: the distroless image has no curl.
+    test: ["CMD", "./auth-api", "--healthcheck"]
+    interval: 10s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
+  depends_on:
+    nats:
+      condition: service_healthy
+  networks:
+    - auth-api
+
+services:
+  api-a:
+    <<: *api
+    ports:
+      # Loopback only: reached through nginx (which sets X-Forwarded-For),
+      # and scraped by Prometheus through the VPN, never exposed publicly.
+      - "127.0.0.1:3001:3000"
+      - "127.0.0.1:9465:9464"
+
+  api-b:
+    <<: *api
+    ports:
+      - "127.0.0.1:3002:3000"
+      - "127.0.0.1:9466:9464"
+
+  # Domain-event broker. No host port: only the API instances reach it, over the
+  # compose network, and the token is required on top of that isolation.
   nats:
     image: nats:2-alpine@sha256:ad7a43eb7e3337c3c38ce5d784d1461791f95f730f252d2b25eee699752a0ca3
     restart: unless-stopped
-    # Overriding the command bypasses the image's config file, so monitoring
-    # (which the healthcheck probes) must be re-enabled explicitly. JetStream
-    # stores the durable user events (`user.deleted`) on a named volume: a
-    # tmpfs would lose unconsumed erasure events on every restart.
-    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222", "--auth", "${NATS_AUTH_TOKEN:?set from pass}"]
+    # Limits and JetStream live in nats.conf; the token in a file mounted as a
+    # secret, so it appears neither in the process arguments nor in
+    # `docker inspect`.
+    command: ["--config", "/etc/nats/nats.conf"]
+    environment:
+      GOMEMLIMIT: ${NATS_GOMEMLIMIT:?pass a profile with --env-file}
     volumes:
+      # JetStream keeps the durable user events (`user.deleted`) on a named
+      # volume: a tmpfs would lose unconsumed erasure events on restart.
       - nats_data:/data
+      - ./nats.conf:/etc/nats/nats.conf:ro
+    secrets:
+      - source: nats_auth
+        target: /etc/nats/auth.conf
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 256M
+          cpus: "${NATS_CPUS:?pass a profile with --env-file}"
+          memory: ${NATS_MEMORY:?pass a profile with --env-file}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
       interval: 5s
@@ -91,14 +133,22 @@ services:
     networks:
       - auth-api
 
+secrets:
+  nats_auth:
+    # authorization { token: "..." }, written from pass, mode 0600
+    # (docs/deploy/api/secrets.md).
+    file: ./nats-auth.conf
+
 volumes:
   nats_data:
 
 # A fixed subnet makes the trusted proxy address predictable. The host's nginx
-# reaches the published loopback port through Docker's port proxy, so the
+# reaches the published loopback ports through Docker's port proxy, so the
 # application sees the bridge gateway (172.30.0.1) as its peer - not
 # 127.0.0.1. TRUSTED_PROXY_CIDRS in config.prod.env must name that gateway,
 # or X-Forwarded-For is ignored and every client shares one rate-limit bucket.
+# Any process on the host can send a forged X-Forwarded-For through those ports:
+# keep shell access to the API VPS to the operators.
 networks:
   auth-api:
     driver: bridge

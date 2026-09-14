@@ -244,7 +244,8 @@ capacity planning._
 ## 9. Capacity Planning
 
 Measured in [the performance campaign](../../perf/performance-report.md)
-(3 API cores, PostgreSQL on 3 cores, 1 million accounts):
+(3 API cores, PostgreSQL on 3 cores, 1 million accounts) and a one-hour soak
+test (213 MiB of resident memory per instance, stable):
 
 | Traffic | Measured capacity | Limiting factor |
 |---------|------------------:|-----------------|
@@ -253,28 +254,45 @@ Measured in [the performance campaign](../../perf/performance-report.md)
 | Authenticated reads | 11 000 to 12 600 per second | API CPU |
 
 **Size the API on sign-ins**: they saturate first, by two orders of magnitude.
-For a peak of N sign-ins per second:
 
-- API cores: N / 11, rounded up, plus one of headroom. Each core adds 11 to 13
-  sign-ins per second with the production Argon2 parameters.
-- `ARGON2_MAX_CONCURRENCY`: the cores of the instance (the default when unset;
-  it follows the container CPU limit).
-- Memory per instance: `ARGON2_MEMORY_KIB` x concurrency + 256 MiB. The API logs
-  its Argon2 budget at startup (`argon2: at most N concurrent hashes`) and warns
-  when the container memory limit is below it.
+| Setting | Rule |
+|---------|------|
+| API cores | Peak sign-ins per second / 11, rounded up, plus one of headroom, spread over at least two instances |
+| `ARGON2_MAX_CONCURRENCY` | The CPU limit of the instance |
+| Memory per instance | 64 MiB x Argon2 concurrency + 256 MiB, rounded up to a multiple of 128 MiB; reservation half of it |
+| `DB_MAX_CONNECTIONS`, `REDIS_POOL_SIZE` | 4 x the cores of the instance, at least 8. The sum over every instance, plus 10, stays under PostgreSQL's `max_connections` |
+| PostgreSQL memory | Twice the indexes that sign-ins and refreshes update, about 4 KB per account (see [Database Deployment](../database/deployment.md#26-size-postgresqls-memory)) |
 
-The API keeps no state: add instances behind Nginx rather than growing one.
-`docker-compose.api.yml` gives an instance 2 CPUs (about 22 sign-ins per second)
-and 768 MiB (128 MiB of Argon2 budget).
+These rules give the three profiles shipped in `deploy/profiles/`, passed to
+compose with `--env-file`:
 
-Example: 1 million accounts with 20 % signing in during the peak hour is
-56 sign-ins per second: 6 cores, two 3-CPU instances of 450 MiB each.
+| | S | M | L |
+|---|---|---|---|
+| Accounts | up to 100 000 | up to 1 million | up to 5 million |
+| Peak sign-ins per second | 10 | 56 | 150 |
+| API instances x CPU | 2 x 1 | 2 x 3 | 4 x 4 (`docker-compose.api.l.yml`) |
+| Memory per instance (limit / reservation) | 384 / 192 MiB | 512 / 256 MiB | 512 / 256 MiB |
+| `DB_MAX_CONNECTIONS` per instance | 8 | 12 | 16 |
+| NATS (CPU / memory) | 0.25 / 128 MiB | 0.5 / 192 MiB | 1 / 256 MiB |
+| API VPS (vCPU / RAM) | 3 / 2 GB | 8 / 4 GB | 20 / 8 GB |
+| DB VPS (vCPU / RAM), PostgreSQL memory | 2 / 4 GB, 2 GB | 4 / 16 GB, 8 GB | 8 / 48 GB, 32 GB |
+
+The API VPS keeps about 600 MiB beside the containers for nginx and the
+system. Beyond profile L, PostgreSQL writes become the limit (connection
+pooling, read replicas, shorter retention), which these profiles do not cover.
+
+The figures come from dedicated, pinned cores; a container CPU limit is a quota
+that behaves differently under bursts. Before relying on a profile, run
+`make soak` on the target machine and watch the capacity alerts.
+
+Each instance logs its Argon2 budget at startup (`argon2: at most N concurrent
+hashes`) and warns when its memory limit is below it.
 
 **Alerts**: `AuthApiArgon2Saturated` fires when no Argon2 slot was free for
 5 minutes, `AuthApiArgon2SaturatedLong` after 15 (see
 [`prometheus-alerts.yml`](prometheus-alerts.yml)). Either means sign-ins are
 queueing: each waits for the ones ahead of it (8 seconds at 256 concurrent
-sign-ins on 3 cores). Add an instance.
+sign-ins on 3 cores). Move to the next profile, or add an instance.
 
 ## 10. Bulk Imports
 

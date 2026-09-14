@@ -128,6 +128,18 @@ pass insert prod/auth-api/nats-url
 # nats://<token>@nats:4222
 ```
 
+The broker reads the same token from `/srv/auth-api/nats-auth.conf`, mounted
+as a compose secret so it shows neither in the broker's command line nor in
+`docker inspect`. Write it on the API VPS, owned by root and readable by root
+only, and again after every token change. Root must own it: the broker runs
+without Linux capabilities, so it cannot read a file owned by another user.
+
+```bash
+sudo install -m 600 -o root -g root /dev/null /srv/auth-api/nats-auth.conf
+printf 'authorization { token: "%s" }\n' "$(pass prod/auth-api/nats-auth-token)" \
+  | sudo tee /srv/auth-api/nats-auth.conf > /dev/null
+```
+
 ## Verify
 
 List all inserted secrets:

@@ -59,23 +59,26 @@ export ENCRYPTION_KEY=$(pass prod/auth-api/encryption-key)
 # Only while a key rotation is in progress (see the operations runbook); unset
 # otherwise. An empty value is treated as unset.
 export JWT_PREVIOUS_PUBLIC_KEY=$(pass prod/auth-api/jwt-previous-public-key 2>/dev/null)
+export JWT_NEXT_PUBLIC_KEY=$(pass prod/auth-api/jwt-next-public-key 2>/dev/null)
 export PREVIOUS_ENCRYPTION_KEY=$(pass prod/auth-api/previous-encryption-key 2>/dev/null)
 export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
 export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
 export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
 export NATS_URL=$(pass prod/auth-api/nats-url)
-export NATS_AUTH_TOKEN=$(pass prod/auth-api/nats-auth-token)
 
-docker compose -f docker-compose.api.yml up -d
-curl -fsS http://127.0.0.1:3000/ready
+./rolling-update.sh
 ```
 
-The container is recreated because the image tag changed; downtime is a few
-seconds.
+`rolling-update.sh` recreates the instances one at a time and moves on only
+once the new one is healthy and answers `/ready`. The instance being replaced
+finishes its requests (up to 32 seconds) while nginx sends new ones to the
+other: the update causes no downtime. If the new version does not become
+ready, the script stops and the remaining instances keep serving the previous
+version; roll back as below.
 
 ## Rolling back
 
-Start the previous tag again (`AUTH_API_VERSION=<previous>`, `up -d`). Migrations
+Run the rolling update again with the previous tag (`AUTH_API_VERSION=<previous> ./rolling-update.sh`). Migrations
 are not rolled back: each one is written so the previous version keeps working
 with the new schema. The changelog calls out a release after which rolling back
 is not possible.
