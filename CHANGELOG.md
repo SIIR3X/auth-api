@@ -232,6 +232,19 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   vacuums `sessions` and `login_attempts` once 2 % of their rows changed
   instead of 20 %. The API VPS no longer opens a WireGuard port it never
   listened on.
+- Backups fail loudly and restore safely. `backup-db.sh` reads
+  `/etc/auth-api/backup.env` instead of being edited, refuses the placeholder
+  key, writes through a temporary file so a failed run leaves nothing that looks
+  like a backup, fails when the offsite copy fails, and writes
+  `auth_backup_last_success_timestamp`, the size and the duration for
+  node_exporter after a complete run only: `AuthBackupMissing` could never fire
+  before, since nothing wrote its metric, and it now also fires when the metric
+  is absent. `AuthBackupShrunk` warns of a backup half the size of the previous
+  ones. `restore-db.sh` restores in a single transaction and `--force` empties
+  the target first. The drill restores as the non-superuser owner, checks that a
+  failed backup leaves nothing, that an overwrite without `--force` is refused,
+  and compares every table. Profiles M and L get point-in-time recovery with
+  pgBackRest (`deploy/db/pgbackrest.conf`, `postgresql.pitr.conf`).
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

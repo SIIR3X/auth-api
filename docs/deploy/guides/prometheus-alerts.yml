@@ -81,16 +81,35 @@ groups:
             WireGuard link to the DB VPS.
 
       - alert: AuthBackupMissing
-        # Requires node_exporter with the textfile collector on the DB VPS;
-        # backup-db.sh's cron wrapper should write the completion timestamp:
-        #   echo "auth_backup_last_success_timestamp $(date +%s)" \
-        #     > /var/lib/node_exporter/textfile/auth_backup.prom
-        expr: time() - auth_backup_last_success_timestamp > 86400 * 2
+        # node_exporter's textfile collector on the DB VPS reads the metrics that
+        # backup-db.sh writes after a complete backup only, offsite copy
+        # included (--collector.textfile.directory=/var/lib/node_exporter/textfile).
+        # absent(): a backup that never reported is as missing as a stale one.
+        expr: >-
+          (time() - auth_backup_last_success_timestamp > 86400 * 2)
+            or absent(auth_backup_last_success_timestamp)
         for: 1h
         labels:
           severity: critical
         annotations:
           summary: "no successful auth DB backup for 48h"
           description: >-
-            The nightly encrypted backup has not completed for two days.
-            Check cron and /var/log/auth-api-backup.log on the DB VPS.
+            The nightly encrypted backup, offsite copy included, has not
+            completed for two days or has never reported. Check cron and
+            /var/log/auth-api-backup.log on the DB VPS, and that node_exporter
+            reads /var/lib/node_exporter/textfile.
+
+      - alert: AuthBackupShrunk
+        # A backup far smaller than those of the previous week usually means
+        # a dump of the wrong database or a truncated one.
+        expr: >-
+          auth_backup_last_size_bytes
+            < 0.5 * max_over_time(auth_backup_last_size_bytes[8d] offset 1d)
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "the last auth DB backup is less than half the size of the previous ones"
+          description: >-
+            Compare the last files in /var/backups/auth-api on the DB VPS and
+            restore the last one into a scratch database before trusting it.

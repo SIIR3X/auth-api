@@ -311,8 +311,18 @@ sudo systemctl enable --now disable-thp
 
 ## 4. Backups
 
-Backups are encrypted with [age](https://github.com/FiloSottile/age) before touching disk.
-The private key never lives on the DB VPS - only the public key is needed to encrypt.
+Two mechanisms, complementary:
+
+| | Nightly encrypted dump (`backup-db.sh`) | pgBackRest with WAL archiving |
+|---|---|---|
+| Profiles | Every profile | M and L |
+| Recovery point | The last night: up to 24 hours lost | Any moment of the last two weeks |
+| Restore | `restore-db.sh`, into a fresh database | `pgbackrest restore --type=time` |
+
+Keep the nightly dump even with pgBackRest: it is an independent copy, readable
+with standard tools. Dumps are encrypted with
+[age](https://github.com/FiloSottile/age) before touching disk, and the private
+key never lives on the DB VPS - only the public key is needed to encrypt.
 
 ---
 
@@ -363,24 +373,25 @@ sudo apt install -y age
 
 ### 4.3 Deploy the backup script
 
-**On the DB VPS** - install the script from the release bundle, then set the public key:
+**On the DB VPS** - install the script from the release bundle and its
+configuration (the public key of step 4.1, and optionally an rclone remote for
+the offsite copy):
 
 ```bash
-# From the trusted machine
-scp dist/auth-api-X.Y.Z/scripts/backup-db.sh db-vps:/tmp/backup-db.sh
-
-# On the DB VPS
 sudo mkdir -p /opt/auth-api
-sudo install -m 700 -o root -g root /tmp/backup-db.sh /opt/auth-api/backup-db.sh
-rm /tmp/backup-db.sh
+sudo install -m 700 -o root -g root scripts/backup-db.sh /opt/auth-api/backup-db.sh
+
+sudo install -d -m 700 /etc/auth-api
+printf 'AGE_PUBLIC_KEY=%s\nOFFSITE_REMOTE=%s\n' 'age1...' 'b2:auth-backups' \
+  | sudo tee /etc/auth-api/backup.env > /dev/null
+sudo chmod 600 /etc/auth-api/backup.env
+
+# Read by node_exporter (see the monitoring guide)
+sudo install -d -m 755 /var/lib/node_exporter/textfile
 ```
 
-Edit the script and replace `AGE_PUBLIC_KEY` with the public key from step 4.1:
-
-```bash
-sudo nano /opt/auth-api/backup-db.sh
-# AGE_PUBLIC_KEY="age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-```
+The script refuses to run with the placeholder key. Without `OFFSITE_REMOTE`,
+backups live on this VPS only and die with it.
 
 ---
 
@@ -389,7 +400,14 @@ sudo nano /opt/auth-api/backup-db.sh
 ```bash
 sudo /opt/auth-api/backup-db.sh
 ls -lh /var/backups/auth-api/
+cat /var/lib/node_exporter/textfile/auth_backup.prom
 ```
+
+The metrics file is written only after a complete run, offsite copy included.
+A failed run exits with an error, leaves no partial file and keeps the previous
+metrics: after 48 hours without a complete backup, `AuthBackupMissing` fires.
+`AuthBackupShrunk` warns when a backup is less than half the size of those of
+the previous week.
 
 ---
 
@@ -405,17 +423,74 @@ Add:
 0 2 * * * /opt/auth-api/backup-db.sh >> /var/log/auth-api-backup.log 2>&1
 ```
 
-Backups run nightly at 2:00 AM and are retained for 7 days.
+Backups run nightly at 2:00 AM and are retained for 7 days (`RETAIN_DAYS`).
 
 ---
 
 ### 4.6 Restore a backup
 
-On any machine that has the private key and `psql` available:
+Always through `restore-db.sh`, connected as `auth_api`, into a **fresh**
+database: a bare `| psql` does not stop at the first error. The script restores
+in a single transaction, so a failure leaves the target untouched.
 
 ```bash
-age --decrypt -i backup.key auth_api_YYYYMMDD_HHMMSS.sql.gz.age \
-    | gunzip \
-    | psql "postgres://auth_api:<password>@<host>/auth_api"
+sudo -u postgres psql -c "CREATE DATABASE auth_api_restore OWNER auth_api"
+scripts/restore-db.sh -i backup.key -f auth_api_YYYYMMDD_HHMMSS.sql.gz.age \
+  -d "postgres://auth_api:<password>@10.0.0.2/auth_api_restore"
 ```
 
+Check the restored data, then point `DATABASE_URL` at it (or rename the
+databases while the API is stopped). `--force` restores over an existing
+database after emptying it.
+
+Every quarter, prove the backups themselves: restore last night's backup with
+the offline key into a scratch database and compare it with production.
+`scripts/backup-drill.sh` proves the mechanism on throwaway containers
+(non-superuser restore, refused overwrite, `--force`, every table compared).
+
+---
+
+### 4.7 Point-in-time recovery with pgBackRest (profiles M and L)
+
+WAL is archived continuously to an encrypted pgBackRest repository, with a full
+backup every week and a differential one every day; two full backups are kept,
+so any moment of about the last two weeks can be restored.
+
+**On the DB VPS** - install and configure:
+
+```bash
+sudo apt install -y pgbackrest
+sudo install -d -o postgres -g postgres -m 750 /var/lib/pgbackrest /var/spool/pgbackrest /var/log/pgbackrest
+sudo install -o postgres -g postgres -m 640 deploy/db/pgbackrest.conf /etc/pgbackrest/pgbackrest.conf
+sudo sed -i "s|^repo1-cipher-pass=.*|repo1-cipher-pass=$(pass prod/auth-api/pgbackrest-cipher-pass)|" \
+  /etc/pgbackrest/pgbackrest.conf
+sudo cp deploy/db/postgresql.pitr.conf /etc/postgresql/17/main/conf.d/auth-api-pitr.conf
+sudo systemctl restart postgresql
+
+sudo -u postgres pgbackrest --stanza=auth_api stanza-create
+sudo -u postgres pgbackrest --stanza=auth_api check
+sudo -u postgres pgbackrest --stanza=auth_api --type=full backup
+```
+
+The repository is unreadable without the cipher passphrase: keep it in `pass`
+(`prod/auth-api/pgbackrest-cipher-pass`) and offline. For an offsite copy, add a
+second repository as the comment in `pgbackrest.conf` shows.
+
+Schedule the backups (`sudo crontab -u postgres -e`):
+
+```
+0 1 * * 0   pgbackrest --stanza=auth_api --type=full backup
+0 1 * * 1-6 pgbackrest --stanza=auth_api --type=diff backup
+```
+
+**Restore to a point in time** - first into another directory, to inspect the
+result without touching production:
+
+```bash
+sudo -u postgres install -d -m 700 /var/lib/postgresql/17/restore
+sudo -u postgres pgbackrest --stanza=auth_api --pg1-path=/var/lib/postgresql/17/restore \
+  --type=time "--target=2026-09-15 14:30:00+02" --target-action=promote restore
+```
+
+Once satisfied, stop PostgreSQL and restore in place with `--delta` (only the
+files that differ are rewritten), then start it again.
