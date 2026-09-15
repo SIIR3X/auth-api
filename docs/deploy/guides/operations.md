@@ -195,13 +195,15 @@ nginx). Key series:
 - `auth_notifications_pending`, `auth_notifications_failed_total{task}`, `auth_notifications_dropped_total{task}` - e-mails in flight, failed after retries, dropped past 1 000 pending
 - `auth_background_tasks` - notifications and cache invalidations still running (drained for 5 s at shutdown)
 - `auth_cleanup_deleted_rows_total{job}`, `auth_cleanup_failures_total{job}` - retention jobs
+- `auth_container_memory_working_set_bytes`, `auth_container_memory_limit_bytes` (0 without a limit), `auth_container_cpu_periods_total`, `auth_container_cpu_throttled_periods_total`, `auth_process_start_time_seconds` - the instance's own container, read from its cgroup every 10 s; the container alerts of the [monitoring guide](monitoring.md) use them
 
-Scrape config (host Prometheus): `static_configs: [{targets: ['127.0.0.1:9464']}]`.
+Prometheus runs on a separate monitoring host and scrapes each instance over
+WireGuard (`10.0.0.1:9465` and `9466`).
 
-**Alert rules:** [`prometheus-alerts.yml`](prometheus-alerts.yml) ships ready
-to install (API down, 5xx ratio, Argon2 saturation, p95 latency, missing
-backups). Copy it into `/etc/prometheus/rules/` on the API VPS - installation
-notes are in the file header.
+**Alert rules:** [`prometheus-alerts.yml`](prometheus-alerts.yml) (API down, 5xx
+ratio, Argon2 saturation, p95 latency, missing backups) and
+`deploy/monitoring/rules/infrastructure.yml` (probe, hosts, containers,
+dependencies, pools); installation in the [monitoring guide](monitoring.md).
 
 ## 7. Release Bundle Verification
 

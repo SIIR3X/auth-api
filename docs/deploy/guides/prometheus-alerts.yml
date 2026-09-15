@@ -1,12 +1,9 @@
 # Prometheus alerting rules for the auth API.
 #
-# Install on the API VPS host Prometheus:
-#   sudo cp prometheus-alerts.yml /etc/prometheus/rules/auth-api.yml
-#   # then in prometheus.yml:  rule_files: ["/etc/prometheus/rules/*.yml"]
-#   sudo systemctl reload prometheus
+# Installed on the monitoring host as rules/auth-api.yml, next to
+# deploy/monitoring/rules/infrastructure.yml: see docs/deploy/guides/monitoring.md.
 #
-# Thresholds are starting points for a single-instance deployment; tune them
-# against real traffic.
+# Thresholds are starting points; tune them against real traffic.
 
 groups:
   - name: auth-api
@@ -19,7 +16,7 @@ groups:
         annotations:
           summary: "auth-api metrics endpoint is unreachable"
           description: >-
-            Prometheus cannot scrape 127.0.0.1:9464 for 2 minutes. Check
+            Prometheus cannot scrape {{ $labels.instance }} for 2 minutes. Check
             `docker compose -f docker-compose.api.yml ps` and container logs.
             Every downstream service depends on this API for JWT verification.
 

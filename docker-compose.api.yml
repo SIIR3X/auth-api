@@ -80,16 +80,17 @@ services:
   api-a:
     <<: *api
     ports:
-      # Loopback only: reached through nginx (which sets X-Forwarded-For),
-      # and scraped by Prometheus through the VPN, never exposed publicly.
+      # The API on loopback, reached through nginx (which sets
+      # X-Forwarded-For). Metrics on the WireGuard address, scraped by the
+      # monitoring host (METRICS_BIND_ADDRESS, 10.0.0.1 by default).
       - "127.0.0.1:3001:3000"
-      - "127.0.0.1:9465:9464"
+      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:9465:9464"
 
   api-b:
     <<: *api
     ports:
       - "127.0.0.1:3002:3000"
-      - "127.0.0.1:9466:9464"
+      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:9466:9464"
 
   # Domain-event broker. No host port: only the API instances reach it, over the
   # compose network, and the token is required on top of that isolation.
@@ -130,6 +131,34 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - auth-api
+
+  # NATS metrics for the monitoring host: connections, JetStream storage.
+  nats-exporter:
+    image: natsio/prometheus-nats-exporter:0.17.3@sha256:26c826662ac8424597cc9bdf89ea5b606eb66e3c11db9b1215c27d2076bbb01b
+    restart: unless-stopped
+    command: ["-varz", "-jsz=all", "http://nats:8222"]
+    ports:
+      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:7777:7777"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 32M
+    depends_on:
+      nats:
+        condition: service_healthy
     networks:
       - auth-api
 

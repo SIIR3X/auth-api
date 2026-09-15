@@ -84,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
 
     cleanup::spawn_cleanup_task(state.db.clone(), state.config.clone());
     let nats = state.nats.clone();
+    auth_api::utils::container_metrics::spawn();
     auth_api::utils::pool_metrics::spawn(
         state.db.clone(),
         state.config.database.max_connections,

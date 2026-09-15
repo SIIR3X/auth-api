@@ -1,0 +1,73 @@
+# Monitoring host: Prometheus, Alertmanager and the external blackbox probe.
+#
+# Runs on a host other than the API and DB VPS (a monitoring stack on the API VPS
+# goes down with what it watches). The host joins the WireGuard network as
+# 10.0.0.3 and scrapes the exporters there; the blackbox exporter probes the
+# public HTTPS endpoint from outside. See docs/deploy/guides/monitoring.md.
+#
+#   docker compose -f docker-compose.monitoring.yml up -d
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.listen-address=127.0.0.1:9090
+    network_mode: host
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging: &logging
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=127.0.0.1:9093
+      - --cluster.listen-address=
+    network_mode: host
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging: *logging
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 128M }
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.27.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+      - --web.listen-address=127.0.0.1:9115
+    network_mode: host
+    volumes:
+      - ./blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging: *logging
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 64M }
+
+volumes:
+  prometheus_data:
+  alertmanager_data:

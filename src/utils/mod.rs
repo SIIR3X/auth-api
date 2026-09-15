@@ -5,6 +5,7 @@
 
 pub mod background;
 pub mod backoff;
+pub mod container_metrics;
 pub mod crypto;
 pub mod jwt;
 pub mod nats;

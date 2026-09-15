@@ -9,7 +9,7 @@ services:
       service: api-a
     ports: !override
       - "127.0.0.1:3003:3000"
-      - "127.0.0.1:9467:9464"
+      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:9467:9464"
 
   api-d:
     extends:
@@ -17,4 +17,4 @@ services:
       service: api-a
     ports: !override
       - "127.0.0.1:3004:3000"
-      - "127.0.0.1:9468:9464"
+      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:9468:9464"

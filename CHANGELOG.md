@@ -245,6 +245,17 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   failed backup leaves nothing, that an overwrite without `--force` is refused,
   and compares every table. Profiles M and L get point-in-time recovery with
   pgBackRest (`deploy/db/pgbackrest.conf`, `postgresql.pitr.conf`).
+- Monitoring moves to its own host (`deploy/monitoring/`): Prometheus,
+  Alertmanager with a dead man's switch, and a blackbox probe of the public
+  `/ready` and its certificate. Exporters listen on WireGuard addresses only;
+  the API compose adds a NATS exporter and publishes the metrics listeners on
+  `METRICS_BIND_ADDRESS`. `rules/infrastructure.yml` alerts on hosts, disks,
+  PostgreSQL, Redis (including refused writes under `noeviction`), NATS, pool
+  saturation, dropped events and e-mails and failing retention jobs, each with
+  a promtool test. Each API instance publishes its container's memory against
+  its limit, CPU throttling and start time from its cgroup
+  (`auth_container_*`, `auth_process_start_time_seconds`), so the container
+  alerts need no host exporter.
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

@@ -15,4 +15,5 @@ Follow the steps in this order for a complete deployment.
 
 ## Operations
 
+- [Monitoring](guides/monitoring.md) - Prometheus, Alertmanager and the external probe on a separate host, exporters and alerts
 - [Operations Runbook](guides/operations.md) - Key rotations, backup/restore, Redis outage response, manual interventions, metrics

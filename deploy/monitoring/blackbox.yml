@@ -1,0 +1,14 @@
+# Blackbox exporter modules of the monitoring host.
+modules:
+  # GET /ready over HTTPS: a valid certificate, TLS 1.2 or later, a 200.
+  https_ready:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      fail_if_not_ssl: true
+      preferred_ip_protocol: ip4
+      tls_config:
+        insecure_skip_verify: false
+        min_version: TLS12

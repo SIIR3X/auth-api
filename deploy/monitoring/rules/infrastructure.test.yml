@@ -1,0 +1,191 @@
+# promtool test rules infrastructure.test.yml
+rule_files:
+  - infrastructure.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{job="blackbox-https",instance="https://api.example.com/ready"}'
+        values: "1 1 0 0 0 0"
+      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-https",instance="https://api.example.com/ready"}'
+        values: "86400x90"
+      - series: 'up{job="node",vps="db",instance="10.0.0.2:9100"}'
+        values: "1 0 0 0 0"
+      - series: 'node_filesystem_avail_bytes{fstype="ext4",mountpoint="/",vps="api",instance="10.0.0.1:9100"}'
+        values: "10x20"
+      - series: 'node_filesystem_size_bytes{fstype="ext4",mountpoint="/",vps="api",instance="10.0.0.1:9100"}'
+        values: "100x20"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: AuthApiPublicProbeFailing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: AuthApiPublicProbeFailing
+        exp_alerts:
+          - exp_labels: { severity: critical, job: blackbox-https, instance: "https://api.example.com/ready" }
+            exp_annotations:
+              summary: "https /ready fails from outside"
+              description: "DNS, the certificate, nginx or every API instance: check `curl -v https://<host>/ready`, then nginx and `docker compose ps` on the API VPS."
+      - eval_time: 70m
+        alertname: TlsCertificateExpiresSoon
+        exp_alerts:
+          - exp_labels: { severity: warning, job: blackbox-https, instance: "https://api.example.com/ready" }
+            exp_annotations:
+              summary: "the public certificate expires in less than 14 days"
+              description: "certbot renewal is failing: `sudo certbot renew --dry-run` on the API VPS."
+      - eval_time: 4m
+        alertname: HostDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: node, vps: db, instance: "10.0.0.2:9100" }
+            exp_annotations: { summary: "db VPS unreachable over WireGuard" }
+      - eval_time: 15m
+        alertname: DiskSpaceLow
+        exp_alerts:
+          - exp_labels: { severity: warning, fstype: ext4, mountpoint: /, vps: api, instance: "10.0.0.1:9100" }
+            exp_annotations: { summary: "less than 15% free on / (api VPS)" }
+
+  - interval: 1m
+    input_series:
+      - series: 'auth_process_start_time_seconds{instance="10.0.0.1:9465"}'
+        values: "1 2 3 4 5 6"
+      - series: 'auth_container_memory_working_set_bytes{instance="10.0.0.1:9466"}'
+        values: "500000000x15"
+      - series: 'auth_container_memory_limit_bytes{instance="10.0.0.1:9466"}'
+        values: "536870912x15"
+      - series: 'auth_container_cpu_periods_total{instance="10.0.0.1:9465"}'
+        values: "0+100x25"
+      - series: 'auth_container_cpu_throttled_periods_total{instance="10.0.0.1:9465"}'
+        values: "0+50x25"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ContainerRestarting
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "10.0.0.1:9465" }
+            exp_annotations:
+              summary: "10.0.0.1:9465 restarted more than 3 times in 15 minutes"
+              description: "Check `docker compose logs` on the API VPS: a crash loop, or an out-of-memory kill."
+      - eval_time: 12m
+        alertname: ContainerMemoryNearLimit
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "10.0.0.1:9466" }
+            exp_annotations:
+              summary: "10.0.0.1:9466 uses more than 90% of its memory limit"
+              description: "An out-of-memory kill is close: move to the next profile or look for a leak."
+      - eval_time: 22m
+        alertname: ContainerCpuThrottled
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "10.0.0.1:9465" }
+            exp_annotations:
+              summary: "10.0.0.1:9465 is throttled in more than 25% of CPU periods"
+              description: "The instance needs more CPU than its profile gives it."
+
+  - interval: 1m
+    input_series:
+      - series: 'pg_up{job="postgres"}'
+        values: "1 0 0 0"
+      - series: 'pg_stat_activity_count{state="active"}'
+        values: "50x10"
+      - series: 'pg_settings_max_connections'
+        values: "60x10"
+      - series: 'auth_db_pool_connections{state="in_use",instance="10.0.0.1:9465"}'
+        values: "12x10"
+      - series: 'auth_db_pool_connections{state="max",instance="10.0.0.1:9465"}'
+        values: "12x10"
+      - series: 'redis_up{job="redis"}'
+        values: "0x5"
+      - series: 'redis_memory_used_bytes{job="redis"}'
+        values: "900x10"
+      - series: 'redis_memory_max_bytes{job="redis"}'
+        values: "1000x10"
+      - series: 'redis_errors_total{job="redis",err="OOM"}'
+        values: "0 0 3 3"
+      - series: 'auth_redis_errors_total{instance="10.0.0.1:9465",operation="budget"}'
+        values: "0+60x10"
+      - series: 'auth_redis_pool_waiting{instance="10.0.0.1:9466"}'
+        values: "2x10"
+      - series: 'up{job="nats",instance="10.0.0.1:7777"}'
+        values: "0x5"
+      - series: 'auth_events_publish_failures_total{instance="10.0.0.1:9465",reason="timeout"}'
+        values: "0 1 1"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PostgresDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: postgres }
+            exp_annotations: { summary: "PostgreSQL does not answer its exporter" }
+      - eval_time: 6m
+        alertname: PostgresConnectionsHigh
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "PostgreSQL uses more than 80% of max_connections" }
+      - eval_time: 6m
+        alertname: AuthApiDbPoolSaturated
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "10.0.0.1:9465" }
+            exp_annotations: { summary: "10.0.0.1:9465 uses every database connection of its pool" }
+      - eval_time: 2m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: redis }
+            exp_annotations: { summary: "Redis does not answer its exporter; the API answers 503" }
+      - eval_time: 6m
+        alertname: RedisMemoryHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, job: redis }
+            exp_annotations:
+              summary: "Redis uses more than 80% of maxmemory"
+              description: "With noeviction, writes fail once it is full: raise maxmemory (profile) now."
+      - eval_time: 3m
+        alertname: RedisRejectingWrites
+        exp_alerts:
+          - exp_labels: { severity: critical, job: redis, err: OOM }
+            exp_annotations: { summary: "Redis refuses writes: maxmemory reached" }
+      - eval_time: 8m
+        alertname: AuthApiRedisErrors
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "10.0.0.1:9465" }
+            exp_annotations: { summary: "10.0.0.1:9465 fails Redis operations" }
+      - eval_time: 6m
+        alertname: AuthApiRedisPoolWaiting
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "10.0.0.1:9466" }
+            exp_annotations: { summary: "10.0.0.1:9466 waits for Redis connections" }
+      - eval_time: 3m
+        alertname: NatsDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: nats, instance: "10.0.0.1:7777" }
+            exp_annotations: { summary: "the NATS broker or its exporter is down; account deletions answer 503" }
+      - eval_time: 2m
+        alertname: AuthApiEventsDropped
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "10.0.0.1:9465" }
+            exp_annotations: { summary: "10.0.0.1:9465 dropped events NATS did not take in time" }
+
+  - interval: 1m
+    input_series:
+      - series: 'auth_notifications_failed_total{instance="10.0.0.1:9465",task="verification_email"}'
+        values: "0+1x20"
+      - series: 'auth_notifications_dropped_total{instance="10.0.0.1:9466",task="password_reset_email"}'
+        values: "0 0 4 4"
+      - series: 'auth_cleanup_failures_total{job="auth-api",instance="10.0.0.1:9465"}'
+        values: "0 1 1"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AuthApiNotificationsFailing
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: "10.0.0.1:9465" }
+            exp_annotations:
+              summary: "10.0.0.1:9465 fails to send e-mails"
+              description: "Check the SMTP relay and credentials; verification and reset e-mails are not reaching users."
+      - eval_time: 3m
+        alertname: AuthApiNotificationsDropped
+        exp_alerts:
+          - exp_labels: { severity: critical, instance: "10.0.0.1:9466" }
+            exp_annotations: { summary: "10.0.0.1:9466 dropped e-mails: 1 000 were already pending" }
+      - eval_time: 2m
+        alertname: AuthApiCleanupFailing
+        exp_alerts:
+          - exp_labels: { severity: warning, job: auth-api, instance: "10.0.0.1:9465" }
+            exp_annotations: { summary: "a retention job failed on 10.0.0.1:9465" }
