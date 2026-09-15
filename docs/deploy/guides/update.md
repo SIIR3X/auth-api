@@ -30,14 +30,24 @@ that was scanned. Stop at the first command that fails.
 
 ## 2. Update the deployment files
 
-Compare the bundle's `docker-compose.api.yml` and `config.prod.env` with the
-ones in `/srv/auth-api` and carry over new or changed settings:
+Compare the bundle's deployment files with the ones in `/srv/auth-api`, carry
+over new or changed settings into `config.prod.env` and `profile.env`, and
+install the files you do not edit:
 
 ```bash
 cd /srv/auth-api
-diff docker-compose.api.yml releases/auth-api-X.Y.Z/docker-compose.api.yml
-diff config.prod.env releases/auth-api-X.Y.Z/config.prod.env
+R=releases/auth-api-X.Y.Z
+diff config.prod.env $R/config.prod.env
+diff profile.env $R/deploy/profiles/m.env           # the profile this server uses
+for f in docker-compose.api.yml nats.conf; do diff "$f" "$R/$f"; done
+cp $R/docker-compose.api.yml $R/nats.conf $R/scripts/rolling-update.sh .
+# Profile L only:
+cp $R/docker-compose.api.l.yml .
 ```
+
+A change to `nats.conf` or to the broker's service restarts the broker during
+the update; the instances reconnect, and events published meanwhile are dropped
+(see [the operations runbook](operations.md#11-nats-and-smtp-outages)).
 
 ## 3. Run the migrations
 

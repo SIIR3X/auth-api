@@ -256,6 +256,10 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   its limit, CPU throttling and start time from its cgroup
   (`auth_container_*`, `auth_process_start_time_seconds`), so the container
   alerts need no host exporter.
+- The operations runbook covers a full Redis, NATS and SMTP outages and adding
+  an instance; its addresses match the two-instance deployment. The
+  `config.prod.env` comment no longer calls `JWT_AUDIENCE` required:
+  `APP_PUBLIC_URL` is always part of the audience.
 - `make stack-test` (`scripts/stack-smoke.sh`) runs the production compose
   with profile M behind the repository's nginx configuration and checks the
   container limits, balancing, a sign-in flow, failover, a rolling update under

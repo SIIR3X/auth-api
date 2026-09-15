@@ -150,9 +150,17 @@ deliberate.
 | Pre-auth (2FA challenge) tokens | Stored in Redis: in-flight 2FA logins fail; users retry after recovery |
 | CAPTCHA / lockout counters | Various counters degrade fail-open; account lockout (DB-based) still works |
 
-**Response:** restart/restore Redis, then verify `curl -f localhost:3000/ready`
-and watch `auth_logins_total` on the metrics endpoint resume. No application
+**Response:** restart/restore Redis, then verify `curl -f 127.0.0.1:3001/ready`
+and `curl -f 127.0.0.1:3002/ready` on the API VPS and watch `auth_logins_total` on the metrics endpoint resume. No application
 restart is needed - pools reconnect automatically.
+
+**Redis full.** Redis runs with `maxmemory-policy noeviction`: evicting a
+budget or blocklist key would silently reset an attempt budget or forget a
+revoked token. When `maxmemory` is reached, Redis refuses writes and the API
+answers 503 as during an outage (`RedisRejectingWrites`, `AuthApiRedisErrors`,
+warned earlier by `RedisMemoryHigh`). Raise the limit on the DB VPS
+(`CONFIG SET maxmemory 2gb`, then the same value in the Redis configuration);
+never switch to an evicting policy. The measured footprint is in section 9.
 
 ## 5. Manual Interventions
 
@@ -182,8 +190,8 @@ UPDATE users SET status = 'suspended' WHERE email = 'user@example.com';
 ## 6. Metrics
 
 Prometheus metrics are exposed on an internal listener
-(`127.0.0.1:9464/metrics` on the API VPS - loopback only, never behind
-nginx). Key series:
+(`10.0.0.1:9465/metrics` and `10.0.0.1:9466/metrics` on the API VPS - WireGuard
+only, never behind nginx). Key series:
 
 - `auth_logins_total{outcome=...}` - success / invalid_credentials / locked / two_factor_required
 - `auth_lockouts_total`, `auth_session_replays_total`, `auth_2fa_failures_total{method=...}`
@@ -318,3 +326,47 @@ CLUSTER login_attempts USING tmp_login_attempts_order;
 DROP INDEX tmp_login_attempts_order;
 ANALYZE login_attempts;
 ```
+
+## 11. NATS and SMTP Outages
+
+Neither stops the service. Docker checks `/live`, which does not depend on
+them, so it never restarts the instances because of them.
+
+| Path | Without NATS |
+|------|--------------|
+| Every event except `user.deleted` | Published with a 500 ms timeout, then dropped and counted in `auth_events_publish_failures_total{reason}` (`AuthApiEventsDropped`); the request succeeds |
+| Account deletion | Waits up to 5 seconds for JetStream to store `user.deleted`, then answers 503 without deleting the account; the user retries later |
+| `/ready` | 503 with `"nats": "down"` (`NatsDown` alerts) |
+| Instance start | Starts and connects in the background; only a wrong token stops the start |
+
+**Response:** restart the broker (`docker compose -f docker-compose.api.yml
+restart nats`); the instances reconnect by themselves. Dropped events are not
+replayed: a downstream service that missed one reconciles from the API.
+
+**SMTP relay down.** E-mails are sent in the background, never inside the
+request: each attempt has a 10-second timeout and is retried after 2 then
+8 seconds, unless the relay refused it permanently. A notification that still
+fails is counted in `auth_notifications_failed_total{task}`
+(`AuthApiNotificationsFailing`). Past 1 000 notifications in flight, new ones
+are dropped and counted in `auth_notifications_dropped_total{task}`
+(`AuthApiNotificationsDropped`). Verification, password reset and e-mail codes
+sent meanwhile are lost: users request a new reset or code once the relay is
+back. There is no route to resend a verification e-mail yet.
+
+## 12. Adding an Instance
+
+Profile L shows the pattern (`docker-compose.api.l.yml`). For each new instance:
+
+1. A service extending `x-api` in an overlay file, with the next loopback port
+   (`127.0.0.1:3003:3000`) and metrics port (`${METRICS_BIND_ADDRESS:-10.0.0.1}:9467:9464`).
+2. Its port in the nginx upstream (`server 127.0.0.1:3003 max_fails=3 fail_timeout=10s;`),
+   then `sudo nginx -t && sudo systemctl reload nginx`.
+3. Its metrics target in `prometheus.yml` on the monitoring host, and the port
+   in the API VPS firewall rule for `10.0.0.3`.
+4. Check the connection budget: `DB_MAX_CONNECTIONS` times the instances, plus
+   10, stays under PostgreSQL's `max_connections` (section 9).
+5. Its `service:port` in the `INSTANCES` list of `rolling-update.sh`, which
+   otherwise replaces only `api-a` and `api-b`, plus `api-c` and `api-d` when
+   `docker-compose.api.l.yml` is present.
+6. Start it with `docker compose ... up -d --wait <service>`; it takes traffic
+   as soon as nginx is reloaded.
