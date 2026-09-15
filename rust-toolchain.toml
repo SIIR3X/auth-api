@@ -1,0 +1,8 @@
+# The toolchain of local builds and of the CI. Bump it deliberately: a new
+# clippy brings new lints. `rust-version` in Cargo.toml stays the supported
+# minimum. The Docker images keep their own pinned Rust image (this file is in
+# .dockerignore, so the build does not download another toolchain).
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

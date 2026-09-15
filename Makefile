@@ -145,7 +145,10 @@ test-verbose: test-infra-up ## Run every suite with detailed output
 	EXIT=$$?; $(MAKE) test-infra-down; exit $$EXIT
 
 .PHONY: ci
-ci: quality ## Full local CI gate: formatting, lints, dependency policy, every suite
+ci: quality ci-test ## Full local CI gate: formatting, lints, dependency policy, every suite
+
+.PHONY: ci-test
+ci-test: ## Every suite with the CI profile and the fuzz corpus, against running test infrastructure
 	$(TEST_ENV) cargo nextest run --workspace --profile ci
 	cargo nextest run --profile ci --test fuzz_corpus --features fuzzing
 

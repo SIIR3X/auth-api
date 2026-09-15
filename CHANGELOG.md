@@ -263,6 +263,16 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   an instance; its addresses match the two-instance deployment. The
   `config.prod.env` comment no longer calls `JWT_AUDIENCE` required:
   `APP_PUBLIC_URL` is always part of the audience.
+- GitHub Actions: `ci.yml` checks pull requests to `main` with one required
+  check, `ci-ok`, and runs only the jobs a change concerns (formatting, clippy,
+  dependency policy and every suite; deployment files; the image and Trivy);
+  `scheduled.yml` runs advisories, the image scan, coverage and the long
+  simulations weekly, the backup drill and fuzzing monthly, and tracks failures
+  in an issue; `backmerge.yml` fast-forwards `staging` after a merge; Dependabot
+  opens grouped pull requests monthly. Actions are pinned by commit, the token is
+  read-only by default, and the toolchain is pinned in `rust-toolchain.toml`.
+  `scripts/infra-check.sh` gains check families (`CHECKS=hygiene|static|image`),
+  actionlint, a repository secret scan and an image size limit.
 - `make stack-test` (`scripts/stack-smoke.sh`) runs the production compose
   with profile M behind the repository's nginx configuration and checks the
   container limits, balancing, a sign-in flow, failover, a rolling update under

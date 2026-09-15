@@ -1,7 +1,8 @@
 # Quality Gate
 
-There is no hosted CI: the gate runs locally, and nothing is merged or released
-without it passing.
+The gate runs on every pull request to `main` in GitHub Actions and locally
+with the same Makefile targets: nothing is merged or released without it
+passing.
 
 ```bash
 make test-infra-up   # once: PostgreSQL, Redis, NATS, Mailpit on loopback ports
@@ -25,6 +26,51 @@ of the [security model](../security-model.md) loses its tests. The
 [testing guide](testing.md) describes the suites and the harness.
 
 JUnit results are written to `target/nextest/ci/junit.xml`.
+
+## Hosted CI
+
+`staging` is the draft branch: pushes to it run nothing. Pushes to `main` are
+refused; every change reaches it through a pull request, merged with a merge
+commit (not squash or rebase) so the back-merge can fast-forward `staging`.
+
+`.github/workflows/ci.yml` runs on pull requests to `main` and on `main` after a
+merge. Branch protection requires a single check, `ci-ok`: a job the change does
+not concern is skipped without blocking. A draft pull request fails `ci-ok`
+until it is marked ready for review.
+
+| Job | Runs when | Runs | Time |
+|-----|-----------|------|------|
+| `changes` | always | classifies the changed files | seconds |
+| `hygiene` | always | `CHECKS=hygiene scripts/infra-check.sh`: actionlint, repository secret scan | ~1 min |
+| `rust` | Rust, migrations, templates, `Cargo.*`, `openapi.yaml` or the test compose changed | `make fmt-check`, `make clippy`, `make deny`, `make test-infra-up`, `make ci-test` | ~10 min with the cache |
+| `infra` | Dockerfiles, compose, nginx, `deploy/`, scripts changed | `CHECKS=static scripts/infra-check.sh` | ~2 min |
+| `image` | a Dockerfile, `.dockerignore`, `Cargo.lock` or the toolchain changed | `CHECKS=image scripts/infra-check.sh`: build, size under 100 MiB, Trivy | ~15 min |
+| `ci-ok` | always | fails if a job failed or was cancelled | seconds |
+
+Only `main` writes the Rust cache; pull requests read it. A documentation-only
+pull request runs `changes` and `hygiene`. The repository-wide English guard is
+a Rust test: a documentation change that breaks it is caught by the next Rust
+pull request or the weekly run.
+
+`.github/workflows/scheduled.yml` opens an issue when a task fails and closes it
+when every task passes again; run any task by hand from the Actions tab.
+
+| When | Task |
+|------|------|
+| Mondays | `cargo deny check advisories`, image build and Trivy, `make coverage`, `make test-sim` |
+| The first of the month | `scripts/backup-drill.sh`, `make fuzz FUZZ_SECS=60` |
+
+`.github/workflows/backmerge.yml` fast-forwards `staging` to `main` after a
+merge, and leaves it alone when draft commits were pushed meanwhile.
+Dependabot opens grouped pull requests to `staging` once a month (Cargo,
+actions, Dockerfile and compose images).
+
+The toolchain is pinned in `rust-toolchain.toml`, locally and in the CI: bump it
+deliberately, since a new clippy brings new lints. The CI never builds, signs or
+publishes a release ([release guide](release.md)).
+
+To reproduce a job locally, run its command from the table; `make ci` is the
+`rust` job and `make infra-check` covers `hygiene`, `infra` and `image`.
 
 ## Before a release
 

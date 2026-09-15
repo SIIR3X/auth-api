@@ -1,0 +1,212 @@
+name: Scheduled
+
+# What is too slow for every pull request, or finds problems without any
+# commit: new advisories against the dependencies, vulnerabilities in the base
+# images, coverage, the long simulations, the backup chain and fuzzing.
+#
+# A failure opens an issue (or comments the open one); the next run where
+# everything passes closes it. Every task can also be run by hand.
+
+on:
+  schedule:
+    # Mondays, 04:17 UTC.
+    - cron: "17 4 * * 1"
+    # The first of the month, 04:43 UTC.
+    - cron: "43 4 1 * *"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Task to run
+        type: choice
+        default: weekly
+        options: [weekly, monthly, advisories, image, coverage, simulation, backup-drill, fuzz]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-${{ github.event.schedule || inputs.task }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  WEEKLY: ${{ github.event.schedule == '17 4 * * 1' || inputs.task == 'weekly' }}
+  MONTHLY: ${{ github.event.schedule == '43 4 1 * *' || inputs.task == 'monthly' }}
+
+jobs:
+  advisories:
+    name: Dependency advisories
+    if: github.event.schedule == '17 4 * * 1' || inputs.task == 'weekly' || inputs.task == 'advisories'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-deny
+
+      - name: Advisories
+        run: cargo deny check advisories
+
+  image:
+    name: Image
+    if: github.event.schedule == '17 4 * * 1' || inputs.task == 'weekly' || inputs.task == 'image'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build, size and Trivy scan
+        run: CHECKS=image scripts/infra-check.sh
+
+  coverage:
+    name: Coverage
+    if: github.event.schedule == '17 4 * * 1' || inputs.task == 'weekly' || inputs.task == 'coverage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain (rust-toolchain.toml) and LLVM tools
+        run: |
+          rustup toolchain install
+          rustup component add llvm-tools-preview
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: coverage
+
+      - name: Install nextest and cargo-llvm-cov
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+
+      - name: Test infrastructure
+        run: make test-infra-up
+
+      - name: Coverage with floors
+        run: make coverage
+
+  simulation:
+    name: Long simulations
+    if: github.event.schedule == '17 4 * * 1' || inputs.task == 'weekly' || inputs.task == 'simulation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+
+      - name: Install nextest
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-nextest
+
+      - name: Test infrastructure
+        run: make test-infra-up
+
+      - name: Simulation suite, long scenarios included
+        run: make test-sim
+
+  backup-drill:
+    name: Backup drill
+    if: github.event.schedule == '43 4 1 * *' || inputs.task == 'monthly' || inputs.task == 'backup-drill'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install age and the PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends age postgresql-client
+
+      - name: Backup and restore drill
+        run: scripts/backup-drill.sh
+
+  fuzz:
+    name: Fuzzing
+    if: github.event.schedule == '43 4 1 * *' || inputs.task == 'monthly' || inputs.task == 'fuzz'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-fuzz
+
+      - name: One minute per target
+        run: make fuzz FUZZ_SECS=60
+
+      - name: Crash inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          retention-days: 30
+          if-no-files-found: ignore
+
+  report:
+    name: Report
+    needs: [advisories, image, coverage, simulation, backup-drill, fuzz]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open, comment or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULTS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Scheduled checks are failing"
+          failed=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key' <<< "$RESULTS" | paste -sd, -)
+          open=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$failed" ]; then
+            body="Failed: $failed. Run: $RUN_URL"
+            if [ -n "$open" ]; then
+              gh issue comment "$open" --body "$body"
+            else
+              gh issue create --title "$title" --body "$body"
+            fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" --comment "Every scheduled check passed again: $RUN_URL"
+          fi

@@ -1,10 +1,12 @@
 # Git
 .git
 .gitignore
-.gitleaks.toml
+trivy-secret.yaml
 
 # Rust build artifacts
 target/
+# The image builds with the toolchain of its pinned Rust base image.
+rust-toolchain.toml
 
 # Environment files
 .env

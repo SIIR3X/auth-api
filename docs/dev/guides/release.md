@@ -1,7 +1,8 @@
 # Creating a Release
 
 A release is a bundle built on a trusted machine and copied to the server: no
-registry, no hosted CI.
+registry. The hosted CI checks every change but never builds, signs or
+publishes a release: the release key stays on the trusted machine.
 
 ## 0. Create the release key (once)
 
