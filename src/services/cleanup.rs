@@ -1,7 +1,7 @@
 //! Background retention: expired operational rows and audit log partitions.
 //!
-//! This task is the only scheduler. The pg_cron jobs were removed (migration
-//! 0024): they ran with the SQL defaults instead of the configured retention.
+//! This task is the only scheduler: there is no pg_cron job, which would run the
+//! retention functions with their SQL defaults instead of the configured retention.
 //!
 //! Every instance runs the task; a session advisory lock lets one of them sweep
 //! at a time. Each job deletes in bounded batches, so a large backlog is cleared

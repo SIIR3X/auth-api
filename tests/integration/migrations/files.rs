@@ -40,17 +40,17 @@ fn migrations_are_sorted_and_contiguous() {
 #[test]
 fn critical_migrations_contain_expected_objects() {
     let users_sql = migration_sql("0002_users.sql");
-    let sessions_sql = migration_sql("0007_sessions.sql");
-    let audit_sql = migration_sql("0014_audit_log.sql");
-    let login_attempts_sql = migration_sql("0013_login_attempts.sql");
-    let recovery_sql = migration_sql("0012_recovery_codes.sql");
+    let sessions_sql = migration_sql("0005_sessions.sql");
+    let audit_sql = migration_sql("0010_audit_log.sql");
+    let login_attempts_sql = migration_sql("0009_login_attempts.sql");
+    let recovery_sql = migration_sql("0007_two_factor.sql");
 
     assert!(users_sql.contains("CREATE TABLE users"));
     assert!(sessions_sql.contains("CREATE TABLE sessions"));
     assert!(sessions_sql.contains("session_family_id"));
     assert!(sessions_sql.contains("revoke_session_family"));
     assert!(audit_sql.contains("PARTITION BY RANGE (created_at)"));
-    assert!(audit_sql.contains("idx_audit_log_request"));
+    assert!(audit_sql.contains("idx_audit_log_user"));
     assert!(login_attempts_sql.contains("CREATE TABLE login_attempts"));
     assert!(recovery_sql.contains("CREATE TABLE recovery_codes"));
 }

@@ -400,7 +400,7 @@ In order of impact:
 
 ## 6. Follow-up on the recommendations
 
-All recommendations were applied (migration `0026_bounded_cleanups`, code,
+All recommendations were applied (retention functions and indexes in the migrations, code,
 monitoring and documentation), then measured on the same database of
 1 million accounts, before and after, under the same conditions. Writes were
 measured twice on each side: the ranges show the spread between the two

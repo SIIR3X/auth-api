@@ -1,15 +1,5 @@
--- 0002_users.sql
--- Creates the core users table used by the API for authentication and profile data.
--- Stores account identity, lifecycle status, locale preference, verification state,
--- and password hash metadata. Also defines the generic updated_at trigger reused later.
-CREATE OR REPLACE FUNCTION set_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
+-- User accounts: identity, lifecycle status, locale, verification state and
+-- password hash.
 CREATE TYPE user_status AS ENUM (
     'active',
     'inactive',
@@ -29,6 +19,7 @@ CREATE TABLE users (
     username VARCHAR(50) NOT NULL,
     email CITEXT NOT NULL,
     password_hash TEXT NOT NULL,
+
     CONSTRAINT users_username_key UNIQUE (username),
     CONSTRAINT users_email_key UNIQUE (email),
     CONSTRAINT users_username_format CHECK (username ~ '^[a-zA-Z0-9_]{3,50}$'),
@@ -45,6 +36,5 @@ CREATE TRIGGER users_set_updated_at
     BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
-CREATE INDEX idx_users_status ON users (status);
-CREATE INDEX idx_users_last_login ON users (last_login_at);
+-- Only locked accounts are looked up by lockout expiry.
 CREATE INDEX idx_users_locked_until ON users (locked_until) WHERE locked_until IS NOT NULL;

@@ -52,8 +52,11 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 - New TOTP secrets are written in a versioned format (`v1:{key id}:...`) that
   earlier versions cannot read: once this version has written secrets, rolling
   back breaks TOTP for those accounts.
-- The pg_cron jobs are unscheduled (migration 0024); the application is the
-  only retention scheduler.
+- Retention runs only in the application: the migrations install no pg_cron
+  job, which ran with the SQL defaults instead of the configured retention.
+- The migrations are consolidated into one file per domain, each creating its
+  tables in their final form. A database created by an earlier development
+  version is created again rather than upgraded.
 
 ### Added
 
@@ -292,7 +295,7 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 ### Performance
 
 - Indexes matched to the queries: unused ones dropped, expiry and referencing
-  columns indexed (migration 0024).
+  columns indexed.
 - A sign-in writes its session, account stamp, ledger entry and audit record in
   one transaction; roles and permissions load in one query.
 - Cleanups run in bounded batches under an advisory lock.
@@ -300,7 +303,7 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   limiter is O(1) and checks every bucket in one script; token checks read the
   blocklist and session cache in one pipeline. Profile reads went from 1.05 ms to
   0.71 ms at p50 in the HTTP benchmark.
-- Retention batches select their rows through a TID scan (migration 0026):
+- Retention batches select their rows through a TID scan:
   a session purge batch at 1 million accounts went from 950 ms (the old query
   gathered the whole backlog) to about 20 ms.
 - Indexes no query uses are dropped: `idx_sessions_family_active` and the
@@ -314,9 +317,7 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 ### Upgrading
 
 1. Back up the database.
-2. Run migrations 0020 to 0026. Migration 0024 builds indexes in a transaction:
-   on large tables, create them `CONCURRENTLY` by hand first (the migration then
-   skips them).
+2. Create the database from the migrations (see the note under **Data**).
 3. Set `APP_ENV`, `FRONTEND_URL`, `DEVICE_AUTH_VERIFICATION_URI` and
    `TRUSTED_PROXY_CIDRS=172.30.0.1/32`; remove `GEOIP_*` and `RISK_*`.
 4. Register the primary client, and any device or authorization code client,

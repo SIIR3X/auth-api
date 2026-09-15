@@ -78,17 +78,28 @@ async fn audit_log_current_month_partition_exists() {
 
 #[tokio::test]
 async fn retention_is_not_left_to_pg_cron() {
-    // pg_cron ran the retention functions with their SQL defaults, ignoring the
-    // configured retention; migration 0024 unschedules those jobs so the
-    // application task is the only scheduler.
-    let db = TestDb::new().await;
+    // pg_cron would run the retention functions with their SQL defaults,
+    // ignoring the configured retention: the application's cleanup task is the
+    // only scheduler, and no migration installs or schedules a pg_cron job.
+    let dir = testkit::workspace_path("migrations");
+    for entry in std::fs::read_dir(&dir).expect("failed to list the migrations") {
+        let path = entry.expect("failed to read a migration entry").path();
+        if path.extension().is_some_and(|ext| ext == "sql") {
+            let sql = std::fs::read_to_string(&path).expect("failed to read a migration");
+            assert!(
+                !sql.contains("cron"),
+                "{} refers to pg_cron",
+                path.display()
+            );
+        }
+    }
 
+    let db = TestDb::new().await;
     let cron_available =
         sqlx::query_scalar::<_, bool>("SELECT to_regclass('cron.job') IS NOT NULL")
             .fetch_one(&db.pool)
             .await
             .expect("failed to detect cron.job");
-
     if cron_available {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM cron.job
@@ -98,45 +109,7 @@ async fn retention_is_not_left_to_pg_cron() {
         .await
         .expect("failed to inspect cron jobs");
         assert_eq!(count, 0);
-        return;
     }
-
-    // Without pg_cron, a stand-in `cron` schema records what the migration asks
-    // of it, and the unscheduling block of 0024 runs against it.
-    sqlx::raw_sql(
-        "CREATE SCHEMA cron;
-         CREATE TABLE cron.job (jobname TEXT PRIMARY KEY);
-         CREATE FUNCTION cron.unschedule(job_name TEXT) RETURNS BOOLEAN
-             LANGUAGE sql AS $$ DELETE FROM cron.job WHERE jobname = job_name RETURNING TRUE $$;
-         INSERT INTO cron.job VALUES
-             ('audit_log_partition_rotation'), ('cleanup_expired_sessions'),
-             ('cleanup_old_login_attempts'), ('cleanup_used_totp_codes'), ('nightly_vacuum');",
-    )
-    .execute(&db.pool)
-    .await
-    .expect("failed to install a stand-in pg_cron");
-
-    let migration = std::fs::read_to_string(testkit::workspace_path(
-        "migrations/0024_query_performance.sql",
-    ))
-    .expect("failed to read migration 0024");
-    let start = migration
-        .find("-- One scheduler.")
-        .expect("migration 0024 unschedules the pg_cron jobs");
-    sqlx::raw_sql(&migration[start..])
-        .execute(&db.pool)
-        .await
-        .expect("failed to run the unscheduling block");
-
-    let left: Vec<String> = sqlx::query_scalar("SELECT jobname FROM cron.job ORDER BY jobname")
-        .fetch_all(&db.pool)
-        .await
-        .expect("failed to read the remaining jobs");
-    assert_eq!(
-        left,
-        ["nightly_vacuum"],
-        "only retention jobs are unscheduled"
-    );
 }
 
 #[tokio::test]
@@ -200,8 +173,8 @@ async fn audit_log_rotation_can_drop_old_partition() {
     assert!(!exists_after);
 }
 
-/// No route searches the audit log by request id: the index cost every insert
-/// 755 MB at 1 million accounts for nothing (migration 0026).
+/// No route searches the audit log by request id: such an index would cost
+/// every insert and weighed 755 MB at 1 million accounts for nothing.
 #[tokio::test]
 async fn audit_log_request_index_is_dropped() {
     let db = TestDb::new().await;

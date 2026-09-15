@@ -1,8 +1,8 @@
--- 0014_audit_log.sql
--- Creates the append-only audit log for security-relevant events.
--- This table is partitioned by month, optimized for long-term retention and
--- forensic analysis, and records actions like logins, role changes, 2FA events,
--- and session compromise handling.
+-- Append-only audit log of security events, partitioned by month.
+--
+-- Partitions are created and dropped by rotate_audit_log_partitions(), which the
+-- application calls at startup and from its cleanup task with the configured
+-- retention; the application is the only scheduler.
 CREATE TYPE audit_action AS ENUM (
     'login',
     'login_failed',
@@ -31,9 +31,9 @@ CREATE TYPE audit_action AS ENUM (
     'reauthenticated',
     'username_changed',
     'recovery_code_used',
-    'email_changed'
+    'email_changed',
+    'encryption_key_rotated'
 );
-
 
 CREATE TABLE audit_log (
     id UUID NOT NULL DEFAULT gen_random_uuid(),
@@ -56,6 +56,10 @@ WITH (
     autovacuum_analyze_threshold = 1000
 );
 
+-- Creates the monthly partitions from last month to lookahead_months ahead (at
+-- least one), and drops those older than retention_months; retention_months <= 0
+-- keeps every partition. Concurrent callers (instances starting together) are
+-- serialized.
 CREATE OR REPLACE FUNCTION rotate_audit_log_partitions(
     retention_months INTEGER DEFAULT 6,
     lookahead_months INTEGER DEFAULT 12
@@ -63,13 +67,15 @@ CREATE OR REPLACE FUNCTION rotate_audit_log_partitions(
 RETURNS VOID AS $$
 DECLARE
     create_start DATE := (date_trunc('month', NOW()) - INTERVAL '1 month')::DATE;
-    create_end DATE := (date_trunc('month', NOW()) + make_interval(months => lookahead_months))::DATE;
-    keep_from DATE := (date_trunc('month', NOW()) - make_interval(months => retention_months))::DATE;
+    create_end DATE := (date_trunc('month', NOW()) + make_interval(months => GREATEST(lookahead_months, 1)))::DATE;
+    keep_from DATE := (date_trunc('month', NOW()) - make_interval(months => GREATEST(retention_months, 0)))::DATE;
     month_start DATE;
     part_name TEXT;
     rel_name TEXT;
     rel_month DATE;
 BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended('rotate_audit_log_partitions', 0));
+
     FOR month_start IN
         SELECT generate_series(create_start, create_end, INTERVAL '1 month')::DATE
     LOOP
@@ -80,6 +86,10 @@ BEGIN
             (month_start + INTERVAL '1 month')::DATE
         );
     END LOOP;
+
+    IF retention_months <= 0 THEN
+        RETURN;
+    END IF;
 
     FOR rel_name IN
         SELECT c.relname
@@ -100,39 +110,8 @@ $$ LANGUAGE plpgsql;
 
 SELECT rotate_audit_log_partitions();
 
-DO $$
-BEGIN
-    BEGIN
-        CREATE EXTENSION IF NOT EXISTS pg_cron;
-    EXCEPTION
-        WHEN insufficient_privilege THEN
-            RAISE NOTICE 'pg_cron extension not installed (insufficient privilege); schedule rotate_audit_log_partitions() externally.';
-            RETURN;
-        WHEN undefined_file THEN
-            RAISE NOTICE 'pg_cron extension is not available on this PostgreSQL instance; schedule rotate_audit_log_partitions() externally.';
-            RETURN;
-        WHEN feature_not_supported THEN
-            RAISE NOTICE 'pg_cron extension is not supported on this PostgreSQL instance; schedule rotate_audit_log_partitions() externally.';
-            RETURN;
-        WHEN others THEN
-            RAISE NOTICE 'pg_cron extension could not be loaded (%), schedule rotate_audit_log_partitions() externally.', SQLERRM;
-            RETURN;
-    END;
-
-    IF NOT EXISTS (
-        SELECT 1
-        FROM cron.job
-        WHERE jobname = 'audit_log_partition_rotation'
-    ) THEN
-        PERFORM cron.schedule(
-            'audit_log_partition_rotation',
-            '15 2 * * *',
-            'SELECT rotate_audit_log_partitions();'
-        );
-    END IF;
-END;
-$$;
-
+-- Rows are never updated or deleted, except to detach a deleted user
+-- (user_id set to NULL by the foreign key, every other column unchanged).
 CREATE OR REPLACE FUNCTION prevent_audit_log_modification()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -157,6 +136,4 @@ CREATE TRIGGER audit_log_append_only
     FOR EACH ROW EXECUTE FUNCTION prevent_audit_log_modification();
 
 CREATE INDEX idx_audit_log_user ON audit_log (user_id, created_at DESC) WHERE user_id IS NOT NULL;
-CREATE INDEX idx_audit_log_request ON audit_log (request_id, created_at DESC) WHERE request_id IS NOT NULL;
-CREATE INDEX idx_audit_log_action ON audit_log (action, created_at DESC);
 CREATE INDEX idx_audit_log_created_brin ON audit_log USING BRIN (created_at);

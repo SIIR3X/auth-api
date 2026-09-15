@@ -1,4 +1,4 @@
-//! Repository for `authorization_codes` (migration 0023).
+//! Repository for `authorization_codes`.
 //!
 //! Redemption is one statement that consumes and returns the code, so two
 //! concurrent redemptions cannot both succeed.
