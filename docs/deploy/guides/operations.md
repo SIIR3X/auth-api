@@ -254,8 +254,7 @@ capacity planning._
 ## 9. Capacity Planning
 
 Measured in [the performance campaign](../../perf/performance-report.md)
-(3 API cores, PostgreSQL on 3 cores, 1 million accounts) and a one-hour soak
-test (213 MiB of resident memory per instance, stable):
+(3 API cores, PostgreSQL on 3 cores, 1 million accounts):
 
 | Traffic | Measured capacity | Limiting factor |
 |---------|------------------:|-----------------|
@@ -272,6 +271,36 @@ test (213 MiB of resident memory per instance, stable):
 | Memory per instance | 64 MiB x Argon2 concurrency + 256 MiB, rounded up to a multiple of 128 MiB; reservation half of it |
 | `DB_MAX_CONNECTIONS`, `REDIS_POOL_SIZE` | 4 x the cores of the instance, at least 8. The sum over every instance, plus 10, stays under PostgreSQL's `max_connections` |
 | PostgreSQL memory | Twice the indexes that sign-ins and refreshes update, about 4 KB per account (see [Database Deployment](../database/deployment.md#26-size-postgresqls-memory)) |
+
+Validated with `make sizing` ([perf/README.md](../../../perf/README.md#sizing-validation))
+on 2026-09-15: the production image under each profile's CPU quota and memory
+limit, PostgreSQL and Redis with the settings of `deploy/db/`, 1 million
+accounts.
+
+| Sign-ins under the CPU quota | 1 CPU (S) | 2 CPUs | 3 CPUs (M) | 4 CPUs (L) |
+|---|---:|---:|---:|---:|
+| Sign-ins per second | 13.7 | 25.0 | 36.1 | 45.0 |
+| Per CPU | 13.7 | 12.5 | 12.0 | 11.2 |
+| Peak memory with 64 sign-ins at once | 78 / 384 MiB | 141 / 512 MiB | 209 / 512 MiB | 274 / 512 MiB |
+
+No error and no out-of-memory kill, including with 64 sign-ins at once. With the
+mixed traffic of profile M at 1 million accounts (291 requests per second):
+
+- **Redis** used 9 MiB for 50 000 keys, almost all of them rate-limit buckets,
+  one per client address for two minutes: Redis grows with distinct client
+  addresses, not with accounts. At about 190 bytes a key, `maxmemory 1gb`
+  holds some 5 million addresses within two minutes.
+- **NATS** used 11 of its 192 MiB.
+- **PostgreSQL** (3 CPUs, 8 GB, the settings of `deploy/db/`): at most 4 of the
+  12 connections of an instance in use, no wait for a Redis connection. The
+  9.5 GB database does not fit in memory: the buffer hit ratio stayed between
+  0.94 (cold) and 0.98 (warm), with 300 to 1 100 disk reads a second, since the
+  test reads accounts uniformly across the whole database. With 14 GB the
+  throughput and latency were the same: 8 GB is enough for this traffic.
+- **One-hour soak**: 326 requests per second, no error, no restart, working set
+  202 MiB at the start and at the end.
+- **Restore** of the 8.8 GiB database (2.4 GiB compressed dump): 134 s to dump,
+  131 s to restore in one transaction.
 
 These rules give the three profiles shipped in `deploy/profiles/`, passed to
 compose with `--env-file`:
@@ -291,9 +320,8 @@ The API VPS keeps about 600 MiB beside the containers for nginx and the
 system. Beyond profile L, PostgreSQL writes become the limit (connection
 pooling, read replicas, shorter retention), which these profiles do not cover.
 
-The figures come from dedicated, pinned cores; a container CPU limit is a quota
-that behaves differently under bursts. Before relying on a profile, run
-`make soak` on the target machine and watch the capacity alerts.
+Run `make sizing` again after changing the Argon2 parameters, the profiles or
+a hot path, and watch the capacity alerts on the target machine.
 
 Each instance logs its Argon2 budget at startup (`argon2: at most N concurrent
 hashes`) and warns when its memory limit is below it.

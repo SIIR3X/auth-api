@@ -207,12 +207,15 @@ migration session only: a migration on a large table may run longer.
 Reads barely notice the number of accounts. Writes do, once the indexes they
 update no longer fit in memory: at 1 million accounts the sign-in transaction
 lost 25 to 35 % of its throughput in the performance campaign. Give PostgreSQL
-enough memory to keep those indexes cached:
+enough memory to keep those indexes cached. 8 GB at 1 million accounts was
+validated under the load of profile M (`make sizing`, see section 9 of the
+[operations runbook](../guides/operations.md#9-capacity-planning)); 14 GB changed
+neither throughput nor latency:
 
 | Accounts | Database | Indexes updated by sign-ins and refreshes | RAM for PostgreSQL |
 |---------:|---------:|------------------------------------------:|-------------------:|
 | 100 000 | 1.3 GB | 0.6 GB | 2 GB |
-| 1 000 000 | 10.5 GB | 4 GB | 8 GB |
+| 1 000 000 | 9.5 GB | 4 GB | 8 GB |
 | more | ~10 KB per account | ~4 KB per account | index size x 2 |
 
 **On the DB VPS**, in `postgresql.conf`, for R GB of RAM dedicated to PostgreSQL:
@@ -229,10 +232,17 @@ The two largest tables grow with retention, not with accounts alone:
 audit log `AUDIT_LOG_RETENTION_MONTHS` months (12). Shortening them shrinks
 the tables and their indexes in proportion.
 
-Check whether reads are served from memory (above 0.99 is healthy):
+Check whether reads are served from memory. `blks_hit` counts only PostgreSQL's
+own buffers: a page served by the kernel's page cache still counts as a read,
+so a database larger than `shared_buffers` keeps a hit ratio below 1 without
+touching the disk. The time of a read tells the two apart (`track_io_timing` is
+on in `postgresql.auth-api.conf`): a few microseconds from the page cache,
+around 100 microseconds or more from an SSD. Reads that take that long, many
+per second, mean PostgreSQL needs more memory:
 
 ```sql
-SELECT round(blks_hit::numeric / nullif(blks_hit + blks_read, 0), 4) AS cache_hit_ratio
+SELECT round(blks_hit::numeric / nullif(blks_hit + blks_read, 0), 4) AS buffer_hit_ratio,
+       round((blk_read_time * 1000 / nullif(blks_read, 0))::numeric, 1) AS microseconds_per_read
 FROM pg_stat_database WHERE datname = 'auth_api';
 ```
 

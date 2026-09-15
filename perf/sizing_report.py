@@ -3,8 +3,10 @@
 Criteria (docs/deploy/guides/operations.md, section 9):
 - sign-ins: 11 per second per CPU within 15 %, no error, peak memory under 90 %
   of the limit, the instance survives an overload without being killed;
-- footprint: no error, NATS under 70 % of its memory limit, PostgreSQL cache
-  ratio above 0.99, no Redis pool wait;
+- footprint: no error, NATS under 70 % of its memory limit, database pool
+  never full, no Redis pool wait. PostgreSQL's buffer hit ratio is shown, not
+  judged: it counts only shared_buffers, and the load reads accounts uniformly
+  across the whole database (below 0.99 at 1 million accounts with 8 or 14 GB);
 - soak: no error, no restart, working set growth under the tolerance.
 
 Usage: python3 perf/sizing_report.py <results.jsonl>
@@ -79,7 +81,7 @@ def main(path):
             ok = (
                 r["errors"] == 0
                 and r["nats_peak_bytes"] < 0.7 * r["nats_limit_bytes"]
-                and r["pg_cache_ratio"] > 0.99
+                and r["db_pool_in_use_max"] < r["db_pool_max"]
                 and r["redis_pool_waiting_max"] == 0
                 and r["api_working_set_max_bytes"] < 0.9 * r["api_limit_bytes"]
             )

@@ -430,4 +430,7 @@ if has_phase restore; then phase_restore "$largest"; fi
 if has_phase soak; then phase_soak "$largest"; fi
 docker rm -f auth-sizing-api >/dev/null 2>&1 || true
 
+# The report exits non-zero when a verdict fails: that is the result, not an
+# error of this script.
+trap - ERR
 python3 perf/sizing_report.py "$RESULTS" | tee "$OUT/summary.md"
