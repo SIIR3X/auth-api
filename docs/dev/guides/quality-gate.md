@@ -28,7 +28,8 @@ JUnit results are written to `target/nextest/ci/junit.xml`.
 
 ## Before a release
 
-In addition to `make ci`:
+In addition to `make ci`. `make release` runs `infra-check` and `stack-test`
+itself and stops if either fails.
 
 | Command | Checks |
 |---------|--------|
@@ -38,6 +39,9 @@ In addition to `make ci`:
 | `make coverage` | Coverage of every suite; fails under 93 % of lines, 89 % of regions or 83 % of functions |
 | `make soak` | An hour of mixed traffic against one API process: no failed request, and resident memory growing less than 20 % between the first and last tenth of the run |
 | `make docker-check` | Hadolint on the Dockerfile, Trivy CVE and secret scans of the image |
+| `make infra-check` | The deployment files: `docker compose config` for every compose file and profile, Hadolint, `nginx -t`, promtool on the Prometheus configuration, alert rules and their unit tests, amtool, shellcheck on every script, Trivy on the image |
+| `make stack-test` | The production compose with profile M behind nginx in TLS: container limits, balancing, sign-in flow, failover, a rolling update under load with no failed request, the deletion event through the authenticated broker, a clean stop. Needs ports 80 and 443 free and outbound HTTPS to hcaptcha.com |
+| `make sizing` | After a change to the profiles, the Argon2 parameters or the hot paths: the profiles under real container quotas at 100 000 and 1 million accounts (hours, see [perf/README.md](../../../perf/README.md#sizing-validation)) |
 | `make bench-http` | Latency of every scenario; compare with the figures in the [operations runbook](../../deploy/guides/operations.md#8-measured-capacity) |
 
 ## Regenerating the OpenAPI document

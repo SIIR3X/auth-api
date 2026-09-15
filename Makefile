@@ -185,6 +185,10 @@ perf-report: ## Tables and charts of a campaign into docs/perf (RUN=reports/perf
 soak: ## One hour of mixed traffic on one API process: no error, stable memory (perf/soak.sh)
 	perf/soak.sh
 
+.PHONY: sizing
+sizing: ## Validate the sizing profiles under real container limits (hours, see perf/README.md)
+	perf/sizing.sh
+
 # =============================================================================
 # Build
 # =============================================================================
@@ -202,7 +206,7 @@ docker-build-dev: ## Build the development Docker image
 	docker build -f Dockerfile.dev -t $(IMAGE_DEV) .
 
 .PHONY: release
-release: ## Build a signed release bundle in dist/ (VERSION=x.y.z RELEASE_SIGNING_KEY=<ssh key>)
+release: infra-check stack-test ## Build a signed release bundle in dist/ (VERSION=x.y.z RELEASE_SIGNING_KEY=<ssh key>)
 	@test -n "$(VERSION)" || { echo "usage: make release VERSION=x.y.z RELEASE_SIGNING_KEY=~/.ssh/auth-api-release"; exit 1; }
 	@test -n "$(RELEASE_SIGNING_KEY)" || { echo "RELEASE_SIGNING_KEY must name the SSH private key that signs the bundle"; exit 1; }
 	@test -z "$$(git status --porcelain)" || { echo "commit or stash your changes first (untracked files included)"; exit 1; }
@@ -248,6 +252,14 @@ docker-scan-secrets: docker-build ## Scan the production image for secrets (Triv
 
 .PHONY: docker-check
 docker-check: docker-lint docker-scan docker-scan-secrets ## Run all Docker checks
+
+.PHONY: infra-check
+infra-check: ## Check the deployment files: compose, Dockerfiles, nginx, Prometheus, shell scripts, image scan (scripts/infra-check.sh)
+	HADOLINT_IMAGE=$(HADOLINT_IMAGE) TRIVY_IMAGE=$(TRIVY_IMAGE) scripts/infra-check.sh
+
+.PHONY: stack-test
+stack-test: ## Production stack end to end: two instances behind nginx, failover, rolling update (scripts/stack-smoke.sh)
+	scripts/stack-smoke.sh
 
 .PHONY: docker-refresh-pins
 docker-refresh-pins: ## Point every pinned image digest at its tag's current image (then rebuild, scan, commit)

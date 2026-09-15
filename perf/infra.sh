@@ -69,7 +69,9 @@ start() {
 stop() {
   "$PG_BIN/pg_ctl" -D "$PERF_HOME/pgdata" -m fast stop >/dev/null 2>&1 || true
   "$REDIS_CLI" -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true
-  [ -f "$PERF_HOME/run/nats.pid" ] && kill "$(cat "$PERF_HOME/run/nats.pid")" 2>/dev/null || true
+  if [ -f "$PERF_HOME/run/nats.pid" ]; then
+    kill "$(cat "$PERF_HOME/run/nats.pid")" 2>/dev/null || true
+  fi
   status
 }
 

@@ -256,6 +256,14 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   its limit, CPU throttling and start time from its cgroup
   (`auth_container_*`, `auth_process_start_time_seconds`), so the container
   alerts need no host exporter.
+- `make stack-test` (`scripts/stack-smoke.sh`) runs the production compose
+  with profile M behind the repository's nginx configuration and checks the
+  container limits, balancing, a sign-in flow, failover, a rolling update under
+  load with no failed request, the deletion event through the authenticated
+  broker and a clean stop. `make sizing` (`perf/sizing.sh`) checks the profiles
+  under real container quotas: sign-ins per CPU, peak memory and overload,
+  Redis, NATS and PostgreSQL footprint at 100 000 and 1 million accounts, the
+  restore time, and a soak at a chosen profile.
 - The OpenAPI document said a password change and `DELETE /users/me/sessions`
   revoke the other sessions; both revoke every session, the current one
   included.

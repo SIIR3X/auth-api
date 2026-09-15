@@ -24,7 +24,6 @@ skip = [
   { crate = "cpufeatures" },
   { crate = "getrandom" },
   { crate = "hashbrown" },
-  { crate = "ipnetwork" },
   { crate = "r-efi" },
   { crate = "rand" },
   { crate = "rand_chacha" },

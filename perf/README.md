@@ -67,6 +67,35 @@ VOLUMES="2000 4000" CONCURRENCY="1 8" DB_CONCURRENCY=2 DURATION=3 WARMUP=1 \
   core group from `/proc/stat`, and `pg_stat_database` counters over the
   measurement window.
 
+## Sizing validation
+
+`make sizing` (`perf/sizing.sh`) checks the profiles of `deploy/profiles/` the
+way production runs them: the production image in a container with the
+profile's CPU quota and memory limit, PostgreSQL and Redis started with the
+settings of `deploy/db/`, NATS with `nats.conf` and the profile's limits, each
+on its own cores. It needs only Docker and the release build of `perf_load`.
+
+| Phase | Measures | Criterion |
+|-------|----------|-----------|
+| `signin` | Sign-ins per second with 1 to 4 CPUs, p95, CPU throttling, peak memory; then 64 clients at once | 11 per CPU or more (within 15 %), no error, peak under 90 % of the limit, the instance survives the overload |
+| `footprint` | Mixed scenario at profile M on each volume: Redis memory and key families, NATS memory and CPU, PostgreSQL cache ratio, pool saturation | No error, NATS under 70 % of its limit, cache ratio above 0.99, no Redis pool wait |
+| `restore` | `pg_dump \| gzip` then `psql --single-transaction` of the largest volume, as `backup-db.sh` and `restore-db.sh` | Every account restored; the times are the RTO |
+| `soak` | `SOAK_SECS` of mixed traffic at `SOAK_PROFILE` | No error, no restart, working set growth under `SOAK_MAX_GROWTH_PCT` |
+
+| Variable | Default | |
+|----------|---------|-|
+| `PHASES` | `signin footprint restore soak` | Phases to run |
+| `VOLUMES` | `100000 1000000` | Accounts, cumulative; sign-ins run on the first |
+| `SIGNIN_CPUS` | `1 2 3 4` | CPU quotas tried |
+| `SIGNIN_SECS` / `OVERLOAD_SECS` | `60` / `30` | |
+| `FOOTPRINT_SECS` / `FOOTPRINT_CONCURRENCY` | `180` / `64` | |
+| `SOAK_PROFILE` / `SOAK_SECS` / `SOAK_CONCURRENCY` | `m` / `3600` / `32` | |
+| `PG_CPUS`, `PG_MEMORY`, `CACHE_CPUS`, `LOAD_CPUS` | `0-2`, `8g`, `3`, `7` | The API gets CPUs 4-6 (4-7 with 4 CPUs) |
+| `KEEP_DATA` | `0` | `1` keeps the seeded database volume for the next run |
+
+The verdicts are written to `summary.md` next to `results.jsonl`, and the script
+fails when one fails.
+
 ## Soak test
 
 `make soak` (`perf/soak.sh`) runs the mixed scenario for an hour against one API
