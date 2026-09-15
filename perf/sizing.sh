@@ -19,7 +19,7 @@
 # $OUT/results.jsonl, the verdicts to $OUT/summary.md.
 #
 # Usage: perf/sizing.sh   (make sizing). Hours with the default volumes.
-set -euo pipefail
+set -Eeuo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
@@ -118,6 +118,7 @@ teardown() {
   fi
 }
 trap teardown EXIT
+trap 'log "failed at line $LINENO: $BASH_COMMAND"' ERR
 
 # --- Dependencies -------------------------------------------------------------
 
@@ -266,7 +267,8 @@ seed_to() {
 phase_signin() {
   local volume=$1 cpus profile memory reservation pool cg periods throttled rps p95 errors
   for cpus in $SIGNIN_CPUS; do
-    profile=$(grep -l "^API_CPUS=$cpus\$" deploy/profiles/*.env | head -1 | xargs -r basename | cut -d. -f1)
+    # The profile with this CPU limit, if one has it (none has 2 CPUs).
+    profile=$({ grep -l "^API_CPUS=$cpus\$" deploy/profiles/*.env || true; } | head -1 | xargs -r basename | cut -d. -f1)
     memory=$( [ -n "$profile" ] && profile_value "$profile" API_MEMORY || echo 512M)
     reservation=$( [ -n "$profile" ] && profile_value "$profile" API_MEMORY_RESERVATION || echo 256M)
     pool=$( [ -n "$profile" ] && profile_value "$profile" DB_MAX_CONNECTIONS || echo $((4 * cpus)))
