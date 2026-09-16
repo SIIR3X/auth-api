@@ -187,6 +187,16 @@ pub async fn find_by_identifier(
     }
 }
 
+/// Forget what the account leaves outside its own rows: client addresses in its
+/// audit entries and its sign-in attempts. Call it in the deletion's transaction.
+pub async fn forget_traces<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT forget_account_traces($1)")
+        .bind(id)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
 /// Permanently deletes a user and all associated data via CASCADE.
 /// This is irreversible and fulfills GDPR right-to-erasure requests.
 pub async fn delete<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), sqlx::Error> {

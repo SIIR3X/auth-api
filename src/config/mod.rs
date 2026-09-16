@@ -251,6 +251,9 @@ pub struct AuditConfig {
     /// The database function rotate_audit_log_partitions() enforces this at startup and
     /// on every cleanup run. 0 = keep forever.
     pub retention_months: u32,
+    /// Age in days after which the client address of an audit entry keeps only
+    /// its network (/24, /48). 0 keeps full addresses. Default: 90.
+    pub ip_retention_days: u32,
 }
 
 #[derive(Clone)]
@@ -477,6 +480,7 @@ impl Config {
             },
             audit: AuditConfig {
                 retention_months: vars.parse("AUDIT_LOG_RETENTION_MONTHS")?.unwrap_or(12),
+                ip_retention_days: vars.parse("AUDIT_IP_RETENTION_DAYS")?.unwrap_or(90),
             },
             log: LogConfig {
                 level: vars.string("LOG_LEVEL").unwrap_or_else(|| "info".into()),

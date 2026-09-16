@@ -118,6 +118,16 @@ async fn run_all(conn: &mut PgConnection, config: &Config) {
         sweep(conn, name, sql, interval).await;
     }
 
+    if config.audit.ip_retention_days > 0 {
+        sweep(
+            conn,
+            "coarsen_audit_addresses",
+            "SELECT coarsen_audit_addresses($1::interval, $2)",
+            &format!("{} days", config.audit.ip_retention_days),
+        )
+        .await;
+    }
+
     if c.unverified_accounts_retention_days > 0 {
         sweep(
             conn,

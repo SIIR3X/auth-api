@@ -94,8 +94,10 @@ the database together, is out of scope.
 
 - Every token, code and refresh token is stored as a digest.
 - The audit log is append-only (enforced by a trigger) and holds no personal
-  data such as addresses in its metadata. Users read their own history through
-  `GET /users/me/audit`.
+  data such as addresses in its metadata. Its client addresses keep only their
+  network after 90 days and are removed when the account is deleted, with its
+  sign-in attempts ([personal data](privacy.md)). Users read their own history
+  through `GET /users/me/audit`.
 - An email change is confirmed on both addresses, revokes the other sessions,
   and notifies the previous address.
 - Account deletion records `user.deleted` in the event outbox in the same
@@ -161,7 +163,7 @@ when a cited test no longer exists.
 | SEC-16 | Authorization code: S256 only, exact or loopback redirects, single use, replay revokes, third-party consent re-authenticates | `only_s256_challenges_are_accepted`, `only_registered_or_loopback_redirects_are_accepted`, `loopback_redirects_accept_any_port_on_a_registered_path`, `a_replayed_code_is_refused_and_revokes_its_session`, `a_wrong_verifier_burns_the_code`, `a_code_is_bound_to_its_client_and_redirect`, `a_third_party_client_requires_a_fresh_reauthentication`, `challenges_and_verifiers_follow_rfc_7636` |
 | SEC-17 | Client tokens carry only consented permissions, re-derived on refresh | `tokens_carry_only_the_consented_scopes_even_after_refresh`, `granted_is_an_intersection_unless_unrestricted` |
 | SEC-18 | Tokens and codes are stored as digests | `sessions_require_32_byte_hashes`, `email_verification_tokens_are_fixed_length` |
-| SEC-19 | The audit log is append-only and holds no personal data | `audit_log_is_append_only`, `audit_log_delete_blocked_by_trigger`, `account_deletion_leaves_no_identity_in_the_audit_log`, `an_email_change_keeps_the_status_and_audits_no_address`, `a_forged_cursor_is_refused_and_the_history_needs_a_session` |
+| SEC-19 | The audit log is append-only and holds no personal data | `audit_log_is_append_only`, `audit_log_delete_blocked_by_trigger`, `account_deletion_leaves_no_identity_in_the_audit_log`, `an_email_change_keeps_the_status_and_audits_no_address`, `a_forged_cursor_is_refused_and_the_history_needs_a_session`, `audit_addresses_can_only_be_forgotten_or_coarsened`, `a_deleted_account_leaves_no_address_or_sign_in_attempt_behind`, `old_audit_addresses_keep_only_their_network` |
 | SEC-20 | An email change is confirmed on both addresses by the user who started it | `email_change_full_flow_success`, `email_change_steps_cannot_be_skipped`, `email_change_token_bound_to_initiating_user` |
 | SEC-21 | Account deletion is acknowledged downstream before the row goes | `account_deletion_publishes_user_deleted_through_jetstream` |
 | SEC-22 | Forwarding headers count only from trusted proxies; IPv6 clients share their /64 | `direct_peer_ignores_forwarded_headers`, `trusted_proxy_uses_forwarded_client_ip`, `ipv6_addresses_share_their_64`, `every_forwarded_line_counts_as_one_list`, `an_unreadable_hop_stops_the_walk_at_the_proxy`, `sql_budgets_group_addresses_like_redis_budgets` |

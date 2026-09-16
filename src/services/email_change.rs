@@ -292,7 +292,6 @@ pub async fn confirm_new(
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
-    let old_email = previous.email.clone();
 
     let other_session_ids = session_repo::find_active_by_user(&state.db, user_id)
         .await
@@ -303,11 +302,7 @@ pub async fn confirm_new(
         .collect::<Vec<_>>();
 
     {
-        let mut tx = state
-            .db
-            .begin()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let mut tx = state.db.begin().await?;
 
         // Re-check uniqueness inside the transaction.
         if user_repo::email_taken(&mut *tx, new_email, user_id)
@@ -317,18 +312,12 @@ pub async fn confirm_new(
             return Err(AppError::Conflict("email_taken"));
         }
 
-        token_repo::revoke_active_verification_by_user(&mut *tx, user_id)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        token_repo::revoke_active_verification_by_user(&mut *tx, user_id).await?;
 
         // Ownership of the new address is proven via OTP, so it is verified at once.
-        user_repo::change_email(&mut *tx, user_id, new_email)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        user_repo::change_email(&mut *tx, user_id, new_email).await?;
 
-        session_repo::revoke_others(&mut *tx, user_id, current_session_id)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        session_repo::revoke_others(&mut *tx, user_id, current_session_id).await?;
 
         audit::append(
             &mut *tx,
@@ -352,17 +341,11 @@ pub async fn confirm_new(
         events::enqueue(
             &mut *tx,
             "user.email_changed",
-            &events::UserEmailChanged {
-                user_id,
-                old_email: old_email.clone(),
-                new_email: new_email.to_string(),
-            },
+            &events::UserEmailChanged { user_id },
         )
         .await?;
 
-        tx.commit()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        tx.commit().await?;
     }
     events::wake();
 

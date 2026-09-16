@@ -411,6 +411,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
         },
         audit: AuditConfig {
             retention_months: 6,
+            ip_retention_days: 90,
         },
         log: LogConfig {
             level: "error".into(),

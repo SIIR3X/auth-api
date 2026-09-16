@@ -72,7 +72,8 @@ before `docker compose` runs (see [Secrets](../../deploy/api/secrets.md)).
 Domain events (`user.created`, `user.email_verified`, `user.email_changed`,
 `user.password_changed`, `user.sessions_revoked`, `user.deleted`) are recorded in
 the `event_outbox` table with the change they announce, then published to NATS
-JetStream by a background relay. The broker ships in the compose files.
+JetStream by a background relay. They carry the user id only, with `event_id`
+and `occurred_at`. The broker ships in the compose files.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -165,6 +166,7 @@ the audit log partitions.
 | `CLEANUP_RECOVERY_CODES_GRACE_DAYS` | `7` | Kept after expiry |
 | `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` | `7` | Accounts whose address was never verified are deleted after this many days (audited, `user.deleted` published); `0` keeps them |
 | `AUDIT_LOG_RETENTION_MONTHS` | `12` | Monthly audit partitions kept; `0` keeps every partition |
+| `AUDIT_IP_RETENTION_DAYS` | `90` | Client addresses of older audit entries keep only their network (/24, /48); `0` keeps full addresses |
 
 Authorization codes are kept one hour past expiry (so a replay still finds the
 session it produced) and TOTP replay records 90 seconds; neither is configurable.

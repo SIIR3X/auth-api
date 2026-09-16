@@ -183,20 +183,12 @@ pub async fn change_password(
 
     // The new hash, the revocation of every session, the audit entry and the
     // events commit together.
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut tx = state.db.begin().await?;
 
-    user_repo::update_password_hash(&mut *tx, user_id, &new_hash)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    user_repo::update_password_hash(&mut *tx, user_id, &new_hash).await?;
 
     // Revoke all sessions so other devices must re-authenticate
-    session_repo::revoke_all_by_user(&mut *tx, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
 
     audit::append(
         &mut *tx,
@@ -224,9 +216,7 @@ pub async fn change_password(
     )
     .await?;
 
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
     events::wake();
 
     auth_svc::invalidate_session_caches(state, &revoked_session_ids).await;
@@ -294,11 +284,7 @@ pub async fn delete_account(
     // together: the account is never gone without its event, and the event
     // never announces a deletion that failed. The event waits in the outbox
     // while NATS is down.
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut tx = state.db.begin().await?;
 
     // Appended before the deletion: the foreign key then sets its user_id to NULL.
     audit::append(
@@ -318,13 +304,10 @@ pub async fn delete_account(
 
     events::enqueue(&mut *tx, "user.deleted", &events::UserDeleted { user_id }).await?;
 
-    user_repo::delete(&mut *tx, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    user_repo::forget_traces(&mut *tx, user_id).await?;
+    user_repo::delete(&mut *tx, user_id).await?;
 
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
     events::wake();
 
     auth_svc::invalidate_session_caches(state, &session_ids).await;

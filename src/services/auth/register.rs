@@ -48,11 +48,7 @@ pub async fn register(
 
     // The account, its role, its verification token, the audit entry and the
     // `user.created` event are committed together.
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut tx = state.db.begin().await?;
 
     let created = user_repo::create(
         &mut *tx,
@@ -83,9 +79,7 @@ pub async fn register(
     };
 
     if let Some(role) = default_role {
-        role::assign_to_user(&mut *tx, user.id, role.id, None)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        role::assign_to_user(&mut *tx, user.id, role.id, None).await?;
     }
 
     token::create_verification(
@@ -118,17 +112,11 @@ pub async fn register(
     events::enqueue(
         &mut *tx,
         "user.created",
-        &events::UserCreated {
-            user_id: user.id,
-            email: user.email.clone(),
-            username: user.username.clone(),
-        },
+        &events::UserCreated { user_id: user.id },
     )
     .await?;
 
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
     events::wake();
 
     let mailer = state.mailer.clone();
@@ -218,14 +206,8 @@ async fn issue_verification(
     let hash_bytes = crypto::sha256(raw_token.as_bytes());
 
     // The previous link stops working when the new one is issued.
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    token::revoke_active_verification_by_user(&mut *tx, user.id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut tx = state.db.begin().await?;
+    token::revoke_active_verification_by_user(&mut *tx, user.id).await?;
     token::create_verification(
         &mut *tx,
         &NewEmailVerificationToken {
@@ -251,9 +233,7 @@ async fn issue_verification(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
 
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();
@@ -291,22 +271,14 @@ pub async fn verify_email(
         check_one_time_token(state, token::find_verification_by_hash(&state.db, &hash)).await?;
 
     // Consuming the token, verifying the address and announcing it commit together.
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut tx = state.db.begin().await?;
 
-    let consumed = token::consume_verification(&mut *tx, record.id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let consumed = token::consume_verification(&mut *tx, record.id).await?;
     if !consumed {
         return Err(AppError::TokenInvalid);
     }
 
-    user_repo::mark_email_verified(&mut *tx, record.user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    user_repo::mark_email_verified(&mut *tx, record.user_id).await?;
 
     audit::append(
         &mut *tx,
@@ -326,14 +298,11 @@ pub async fn verify_email(
         "user.email_verified",
         &events::UserEmailVerified {
             user_id: record.user_id,
-            email: record.target_email.clone(),
         },
     )
     .await?;
 
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
     events::wake();
 
     Ok(())

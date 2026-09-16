@@ -182,7 +182,18 @@ async fn registration_announces_the_new_account() {
         .await
         .expect("user.created must be published");
     let payload: Value = serde_json::from_slice(&message.payload).unwrap();
-    assert_eq!(payload["username"], user.username.as_str());
+    let mut fields: Vec<&str> = payload
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(
+        fields,
+        ["event_id", "occurred_at", "user_id"],
+        "events carry no address or username"
+    );
 }
 
 #[tokio::test]
@@ -295,4 +306,151 @@ async fn published_events_are_swept_after_a_week() {
     .await
     .unwrap();
     assert_eq!(left, ["events.auth.user.recent"]);
+}
+
+#[tokio::test]
+async fn old_audit_addresses_keep_only_their_network() {
+    let app = TestApp::spawn().await;
+    for (ip, age) in [
+        ("10.1.2.3", "100 days"),
+        ("2001:db8:1:2::7", "100 days"),
+        ("10.9.9.9", "1 day"),
+    ] {
+        sqlx::query(&format!(
+            "INSERT INTO audit_log (action, ip_address, created_at)
+             VALUES ('login', $1::inet, NOW() - INTERVAL '{age}')"
+        ))
+        .bind(ip)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    }
+
+    auth_api::services::cleanup::run_once(&app.db, &app.state.config)
+        .await
+        .unwrap();
+
+    let addresses: Vec<String> = sqlx::query_scalar(
+        "SELECT ip_address::text FROM audit_log WHERE action = 'login' ORDER BY created_at",
+    )
+    .fetch_all(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(addresses, ["10.1.2.0/24", "2001:db8:1::/48", "10.9.9.9/32"]);
+}
+
+#[tokio::test]
+async fn a_failed_publication_holds_the_queue_until_it_is_due_again() {
+    let app = TestApp::builder()
+        .fault_proxies()
+        .without_event_relay()
+        .spawn()
+        .await;
+    let nats = &app.dependencies.as_ref().unwrap().nats;
+    let (first, second) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    let state_of = || async {
+        sqlx::query_as::<_, (String, i32, bool, bool)>(
+            "SELECT payload->>'user_id', attempts, last_error IS NOT NULL, published_at IS NOT NULL
+             FROM event_outbox WHERE payload->>'user_id' = ANY($1) ORDER BY seq",
+        )
+        .bind(vec![first.to_string(), second.to_string()])
+        .fetch_all(&app.db)
+        .await
+        .unwrap()
+    };
+
+    nats.set(testkit::Fault::Refuse);
+    for user_id in [first, second] {
+        auth_api::services::events::enqueue(
+            &app.db,
+            "user.sessions_revoked",
+            &auth_api::services::events::UserSessionsRevoked { user_id },
+        )
+        .await
+        .unwrap();
+    }
+
+    let relayed = auth_api::services::events::relay_once(&app.db, &app.state.nats)
+        .await
+        .unwrap();
+    assert_eq!(relayed, 0);
+    assert_eq!(
+        state_of().await,
+        [
+            (first.to_string(), 1, true, false),
+            (second.to_string(), 0, false, false)
+        ],
+        "the failed event is scheduled for a retry and holds the one behind it"
+    );
+
+    // Not due yet: nothing is attempted.
+    auth_api::services::events::relay_once(&app.db, &app.state.nats)
+        .await
+        .unwrap();
+    assert_eq!(state_of().await[0].1, 1);
+
+    nats.set(testkit::Fault::None);
+    sqlx::query("UPDATE event_outbox SET next_attempt_at = NOW() WHERE payload->>'user_id' = $1")
+        .bind(first.to_string())
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let delivered = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let _ = auth_api::services::events::relay_once(&app.db, &app.state.nats).await;
+            let rows = state_of().await;
+            if rows.iter().all(|row| row.3) {
+                return rows;
+            }
+            sqlx::query(
+                "UPDATE event_outbox SET next_attempt_at = NOW() WHERE published_at IS NULL",
+            )
+            .execute(&app.db)
+            .await
+            .unwrap();
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("both events are published once the broker is back");
+    assert!(delivered.iter().all(|row| row.3));
+}
+
+#[tokio::test]
+async fn retention_settings_at_zero_purge_and_coarsen_nothing() {
+    let app = TestApp::spawn_with_config(|config| {
+        config.cleanup.unverified_accounts_retention_days = 0;
+        config.audit.ip_retention_days = 0;
+    })
+    .await;
+    let pending = fixtures::register_user(&app, 690).await;
+    sqlx::query("UPDATE users SET created_at = NOW() - INTERVAL '400 days' WHERE id = $1")
+        .bind(pending.id)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO audit_log (action, ip_address, created_at)
+         VALUES ('login', '10.4.4.4', NOW() - INTERVAL '200 days')",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    auth_api::services::cleanup::run_once(&app.db, &app.state.config)
+        .await
+        .unwrap();
+
+    let kept: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
+        .bind(pending.id)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert!(kept, "0 keeps never-verified accounts");
+    let address: String =
+        sqlx::query_scalar("SELECT ip_address::text FROM audit_log WHERE ip_address = '10.4.4.4'")
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert_eq!(address, "10.4.4.4/32", "0 keeps full addresses");
 }

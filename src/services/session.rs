@@ -108,15 +108,9 @@ pub async fn revoke_all(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     // The revocation, its audit entry and its event commit together.
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut tx = state.db.begin().await?;
 
-    let count = session_repo::revoke_all_by_user(&mut *tx, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let count = session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
 
     audit::append(
         &mut *tx,
@@ -138,9 +132,7 @@ pub async fn revoke_all(
     )
     .await?;
 
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
     events::wake();
 
     let session_ids = active.iter().map(|s| s.id).collect::<Vec<_>>();

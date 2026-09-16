@@ -146,7 +146,9 @@ Ledger feeding brute-force limits and lockout.
 
 ### audit_log
 
-Append-only (a trigger refuses updates and deletes), partitioned by month.
+Append-only, partitioned by month: a trigger refuses deletes and every update
+except detaching a deleted user (`user_id` to NULL) and forgetting or coarsening
+a client address.
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
@@ -155,7 +157,7 @@ Append-only (a trigger refuses updates and deletes), partitioned by month.
 | `user_id` | UUID | Yes | FK -> users |
 | `request_id` | UUID | Yes | `x-request-id` of the request |
 | `action` | audit_action | No | `login`, `password_changed`, `session_replay_detected`, `encryption_key_rotated`, ... |
-| `ip_address` | INET | Yes | |
+| `ip_address` | INET | Yes | Only the network (/24, /48) after `AUDIT_IP_RETENTION_DAYS`; removed when the account is deleted |
 | `metadata` | JSONB | No | Action details, without personal data such as addresses |
 
 ## Events

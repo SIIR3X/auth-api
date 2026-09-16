@@ -557,3 +557,19 @@ async fn accounts_never_verified_are_purged_and_announced() {
     .unwrap();
     assert_eq!(audited, 1);
 }
+
+#[tokio::test]
+async fn verification_resends_are_capped_per_client_address() {
+    let app = TestApp::spawn().await;
+    let mut statuses = Vec::new();
+    for index in 0..6 {
+        let res = app
+            .post(
+                "/auth/verify-email/resend",
+                &serde_json::json!({ "email": format!("nobody-{index}@example.com") }),
+            )
+            .await;
+        statuses.push(res.status().as_u16());
+    }
+    assert_eq!(statuses, [200, 200, 200, 200, 200, 429]);
+}

@@ -20,3 +20,4 @@
 ## Security
 
 - [Security model](security-model.md) - What is protected, against whom, and how
+- [Personal data](privacy.md) - What is stored about people, for how long, and what deletion removes

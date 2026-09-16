@@ -148,32 +148,20 @@ pub async fn reset_password(
 
     // Consuming the token, the new hash, the revocations, the audit entry and
     // the events commit together.
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut tx = state.db.begin().await?;
 
-    let consumed = token::consume_password_reset(&mut *tx, record.id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let consumed = token::consume_password_reset(&mut *tx, record.id).await?;
     if !consumed {
         return Err(AppError::TokenInvalid);
     }
 
-    user_repo::update_password_hash(&mut *tx, record.user_id, &new_hash)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    user_repo::update_password_hash(&mut *tx, record.user_id, &new_hash).await?;
 
     // Invalidate all active sessions to force re-login with the new password
-    session_repo::revoke_all_by_user(&mut *tx, record.user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    session_repo::revoke_all_by_user(&mut *tx, record.user_id).await?;
 
     // Also purge pending reset tokens
-    token::revoke_active_password_reset_by_user(&mut *tx, record.user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    token::revoke_active_password_reset_by_user(&mut *tx, record.user_id).await?;
 
     // The reset link went to the account's address: whoever used it owns the
     // address. A pending account is verified with the password its owner just
@@ -182,9 +170,7 @@ pub async fn reset_password(
         .await
         .map_err(|e| AppError::Internal(e.into()))?
     {
-        token::revoke_active_verification_by_user(&mut *tx, record.user_id)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        token::revoke_active_verification_by_user(&mut *tx, record.user_id).await?;
     }
 
     audit::append(
@@ -217,9 +203,7 @@ pub async fn reset_password(
     )
     .await?;
 
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
     events::wake();
 
     invalidate_session_caches(state, &revoked_session_ids).await;

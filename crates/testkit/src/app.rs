@@ -42,6 +42,7 @@ pub struct TestAppBuilder {
     configure: Vec<Configure>,
     mailpit: bool,
     fault_proxies: bool,
+    no_event_relay: bool,
 }
 
 impl TestAppBuilder {
@@ -63,13 +64,20 @@ impl TestAppBuilder {
         self
     }
 
+    /// Leave the event relay off, for tests that drive `relay_once` themselves.
+    pub fn without_event_relay(mut self) -> Self {
+        self.no_event_relay = true;
+        self
+    }
+
     pub async fn spawn(self) -> TestApp {
         let Self {
             configure,
             mailpit,
             fault_proxies,
+            no_event_relay,
         } = self;
-        TestApp::spawn_inner(mailpit, fault_proxies, move |config| {
+        TestApp::spawn_inner(mailpit, fault_proxies, !no_event_relay, move |config| {
             for configure in configure {
                 configure(config);
             }
@@ -105,7 +113,7 @@ pub struct TestApp {
     /// The event relay: stopped before the database is dropped, or a connection
     /// it opens while `DROP DATABASE ... WITH (FORCE)` runs holds the drop until
     /// PostgreSQL's 60-second authentication timeout.
-    relay: JoinHandle<()>,
+    relay: Option<JoinHandle<()>>,
     mailpit_api_port: Option<u16>,
     // Declared last: dropped after everything holding a connection to it.
     _database: TestDb,
@@ -117,30 +125,35 @@ impl TestApp {
     }
 
     pub async fn spawn() -> Self {
-        Self::spawn_inner(false, false, |_| {}).await
+        Self::spawn_inner(false, false, true, |_| {}).await
     }
 
     pub async fn spawn_with_config<F>(configure: F) -> Self
     where
         F: FnOnce(&mut Config),
     {
-        Self::spawn_inner(false, false, configure).await
+        Self::spawn_inner(false, false, true, configure).await
     }
 
     /// Spawn the app with SMTP wired to the shared Mailpit instance, for the
     /// few tests covering the SMTP transport itself.
     pub async fn spawn_with_mailpit() -> Self {
-        Self::spawn_inner(true, false, |_| {}).await
+        Self::spawn_inner(true, false, true, |_| {}).await
     }
 
     pub async fn spawn_with_mailpit_and_config<F>(configure: F) -> Self
     where
         F: FnOnce(&mut Config),
     {
-        Self::spawn_inner(true, false, configure).await
+        Self::spawn_inner(true, false, true, configure).await
     }
 
-    async fn spawn_inner<F>(mailpit: bool, fault_proxies: bool, configure: F) -> Self
+    async fn spawn_inner<F>(
+        mailpit: bool,
+        fault_proxies: bool,
+        event_relay: bool,
+        configure: F,
+    ) -> Self
     where
         F: FnOnce(&mut Config),
     {
@@ -203,7 +216,8 @@ impl TestApp {
         }
 
         // Events recorded by the requests reach NATS as in production.
-        let relay = auth_api::services::events::spawn_relay(state.db.clone(), state.nats.clone());
+        let relay = event_relay
+            .then(|| auth_api::services::events::spawn_relay(state.db.clone(), state.nats.clone()));
 
         let contract = contract::Recorder::default();
         let router = handlers::router(state.clone()).layer(axum::middleware::from_fn_with_state(
@@ -426,7 +440,9 @@ impl TestApp {
 
 impl Drop for TestApp {
     fn drop(&mut self) {
-        self.relay.abort();
+        if let Some(relay) = &self.relay {
+            relay.abort();
+        }
         self.server.abort();
         contract::settle(&self.contract);
     }
@@ -530,6 +546,7 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
         },
         audit: AuditConfig {
             retention_months: 6,
+            ip_retention_days: 90,
         },
         log: LogConfig {
             level: "error".into(),

@@ -69,11 +69,13 @@ static WAKE: Notify = Notify::const_new();
 /// Whether this process already declared the stream.
 static STREAM_READY: AtomicBool = AtomicBool::new(false);
 
+// Events carry the user id only: they are stored by JetStream for 30 days and
+// read by every consumer, and a service that needs an address or a username
+// reads it from the API.
+
 #[derive(Debug, Serialize)]
 pub struct UserCreated {
     pub user_id: Uuid,
-    pub email: String,
-    pub username: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,14 +86,11 @@ pub struct UserDeleted {
 #[derive(Debug, Serialize)]
 pub struct UserEmailVerified {
     pub user_id: Uuid,
-    pub email: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct UserEmailChanged {
     pub user_id: Uuid,
-    pub old_email: String,
-    pub new_email: String,
 }
 
 /// The password changed (by the user or through a reset).

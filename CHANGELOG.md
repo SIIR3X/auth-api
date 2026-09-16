@@ -67,6 +67,12 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   `POST /auth/authorize`, `POST /auth/authorize/token`.
 - Client registry: scopes, redirect URIs, loopback redirects, default session
   limit; `auth-api --register-client`.
+- Personal data: deleting an account (or purging a never-verified one) also
+  deletes its sign-in attempts, including failures typed with its address before
+  it existed, and removes the client addresses of its audit entries; audit
+  addresses keep only their network after `AUDIT_IP_RETENTION_DAYS` (90); domain
+  events carry the user id only. `docs/dev/privacy.md` records what is stored,
+  why, for how long and what deletion removes.
 - `POST /auth/verify-email/resend`: a new verification link for a pending
   account, answering alike for every address and capped per account and per
   address; registering again on a pending address sends the verification again.

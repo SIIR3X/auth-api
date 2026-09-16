@@ -199,3 +199,46 @@ async fn account_deletion_leaves_no_identity_in_the_audit_log() {
         "deletion audit leaks identity: {text}"
     );
 }
+
+#[tokio::test]
+async fn a_deleted_account_leaves_no_address_or_sign_in_attempt_behind() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 666).await;
+    // A failed attempt typed before the account existed carries no account id.
+    sqlx::query(
+        "INSERT INTO login_attempts (attempted_identifier, was_successful, failure_reason, request_ip)
+         VALUES ($1, FALSE, 'unknown_identifier', '10.6.6.6')",
+    )
+    .bind(&user.email)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let res = app
+        .delete_auth_json("/users/me", &user.access_token, &json!({}))
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+
+    let attempts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM login_attempts WHERE user_id = $1 OR attempted_identifier IN ($2, $3)",
+    )
+    .bind(user.id)
+    .bind(&user.email)
+    .bind(&user.username)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(attempts, 0, "sign-in attempts outlive the account");
+
+    let addresses: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log WHERE user_id IS NULL AND ip_address IS NOT NULL
+         AND action IN ('login', 'account_deleted', 'register')",
+    )
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        addresses, 0,
+        "audit entries of the account keep its addresses"
+    );
+}
