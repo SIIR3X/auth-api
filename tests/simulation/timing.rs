@@ -7,6 +7,11 @@
 //! budget or backoff singles one side out, and the per-address budgets are
 //! reset between batches.
 //!
+//! Sign-ins hash with the production Argon2 parameters, so skipping the hash
+//! for an unknown account would stand out well past the tolerance, and the
+//! server hashes a whole batch at once: queued behind the Argon2 limit, a
+//! request's latency followed its place in the queue rather than its account.
+//!
 //! Long, and sensitive to a busy machine: `make test-sim` runs it, `make ci`
 //! does not.
 
@@ -18,9 +23,8 @@ use serde_json::json;
 
 use crate::common::{app::TestApp, fixtures};
 
-/// Sign-in batches, each with this many existing and as many unknown accounts.
-const SIGN_IN_BATCHES: usize = 6;
-const SIGN_IN_BATCH: usize = 10;
+/// Sign-ins timed per side, at least.
+const SIGN_IN_SAMPLES: usize = 60;
 /// Password recovery requests per batch, per side: the per-address budget
 /// allows five requests before it answers every request alike.
 const RECOVERY_BATCH: usize = 2;
@@ -30,8 +34,17 @@ const MAX_MEDIAN_GAP: Duration = Duration::from_millis(25);
 #[tokio::test]
 #[ignore = "long: timed sign-ins and password recoveries for existing and unknown accounts"]
 async fn response_times_do_not_reveal_which_accounts_exist() {
-    let app = TestApp::spawn().await;
-    let accounts = SIGN_IN_BATCHES * SIGN_IN_BATCH;
+    // One existing and one unknown account per pair, half as many pairs per
+    // batch as cores: each request hashes on a core of its own.
+    let pairs = std::thread::available_parallelism().map_or(1, |cores| (cores.get() / 2).max(1));
+    let app = TestApp::spawn_with_config(move |config| {
+        config.crypto.argon2_memory_kib = 65_536;
+        config.crypto.argon2_iterations = 3;
+        config.crypto.argon2_parallelism = 4;
+        config.crypto.argon2_max_concurrency = (2 * pairs).try_into().expect("a small concurrency");
+    })
+    .await;
+    let accounts = SIGN_IN_SAMPLES.div_ceil(pairs) * pairs;
     let mut existing = Vec::with_capacity(accounts);
     for index in 0..accounts {
         let user = fixtures::register_user(&app, index + 1).await;
@@ -40,7 +53,7 @@ async fn response_times_do_not_reveal_which_accounts_exist() {
     }
 
     let mut sign_in = Samples::default();
-    for (batch, emails) in existing.chunks(SIGN_IN_BATCH).enumerate() {
+    for (batch, emails) in existing.chunks(pairs).enumerate() {
         reset_address_budgets(&app).await;
         let timed = join_all(sides(emails, batch).map(|(exists, identifier)| {
             let app = &app;
@@ -107,13 +120,17 @@ impl Samples {
     }
 }
 
-/// Each existing address, followed by an address matching no account.
+/// Each existing address paired with an address matching no account. The order
+/// within a pair alternates, so neither side is always sent first.
 fn sides(emails: &[String], batch: usize) -> impl Iterator<Item = (bool, String)> + '_ {
     emails.iter().enumerate().flat_map(move |(i, email)| {
-        [
-            (true, email.clone()),
-            (false, format!("nobody-{batch}-{i}@example.com")),
-        ]
+        let existing = (true, email.clone());
+        let unknown = (false, format!("nobody-{batch}-{i}@example.com"));
+        if (batch + i).is_multiple_of(2) {
+            [existing, unknown]
+        } else {
+            [unknown, existing]
+        }
     })
 }
 

@@ -61,6 +61,15 @@ proptest = "1.9.0"
 tokio = { version = "1.50.0", features = ["full", "test-util"] }
 tower = { version = "0.5.3", features = ["util"] }
 
+# Argon2 optimized even in dev and test builds: unoptimized, a hash at the
+# production parameters takes several times longer, which slowed every test that
+# signs in and made the timing simulation measure the build instead of the code.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
