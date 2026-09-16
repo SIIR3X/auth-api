@@ -67,6 +67,10 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   `POST /auth/authorize`, `POST /auth/authorize/token`.
 - Client registry: scopes, redirect URIs, loopback redirects, default session
   limit; `auth-api --register-client`.
+- A sign-in from a browser and system family the account never used e-mails
+  its owner (English and French) and is audited as `new_device_login`
+  (`NEW_DEVICE_ALERTS_ENABLED`); devices unused for `CLEANUP_KNOWN_DEVICE_DAYS`
+  (90) are forgotten.
 - `PATCH /users/me/password` and `DELETE /users/me/sessions` accept
   `keep_current_session`: every other session is revoked and the one making the
   request stays signed in.

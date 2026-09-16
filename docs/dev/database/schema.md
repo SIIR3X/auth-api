@@ -54,6 +54,13 @@ marks the old one rotated.
 | `ip_address`, `user_agent`, `device_name` | | Yes | |
 | `remember_me` | BOOLEAN | No | |
 
+### known_devices
+
+Devices an account signed in from, for new-device alerts: `user_id`, a SHA-256
+`fingerprint` of the browser and operating system families (no version, no
+address), `first_seen_at`, `last_seen_at`. Forgotten after
+`CLEANUP_KNOWN_DEVICE_DAYS` unused.
+
 ### email_verification_tokens, password_reset_tokens
 
 Single-use tokens (`token_hash`, `expires_at`, `used_at`). At most one active

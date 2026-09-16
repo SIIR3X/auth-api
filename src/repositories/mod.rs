@@ -9,6 +9,7 @@ pub mod authorization_code;
 pub mod client_quota;
 pub mod email_2fa;
 pub mod event_outbox;
+pub mod known_device;
 pub mod login_attempt;
 pub mod recovery_code;
 pub mod registered_client;

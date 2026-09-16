@@ -32,6 +32,7 @@ const TNAME_TWO_FACTOR_ENABLED: &str = "two_factor_enabled";
 const TNAME_ACCOUNT_EXISTS: &str = "account_exists";
 const TNAME_EMAIL_CHANGED: &str = "email_changed";
 const TNAME_RECOVERY_CODE_USED: &str = "recovery_code_used";
+const TNAME_NEW_DEVICE_LOGIN: &str = "new_device_login";
 
 /// Notifications waiting or being sent, past which new ones are dropped: a slow
 /// or unreachable relay must not pile up tasks in step with traffic.
@@ -342,6 +343,43 @@ pub async fn send_two_factor_enabled(
     let subject = render_subject(
         templates,
         TNAME_TWO_FACTOR_ENABLED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
+/// Tell the owner of an account about a sign-in from a device it never used.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_new_device_login(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    device: &str,
+    ip: Option<&str>,
+    time: &str,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+    ctx.insert("device", device);
+    ctx.insert("ip", &ip);
+    ctx.insert("time", time);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_NEW_DEVICE_LOGIN,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_NEW_DEVICE_LOGIN,
         locale,
         &mail_cfg.default_locale,
         &ctx,

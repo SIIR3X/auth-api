@@ -177,6 +177,9 @@ pub struct SecurityConfig {
     pub lockout_duration_secs: u64,
     /// TTL of the "recent re-authentication" window for sensitive actions.
     pub sensitive_action_reauth_secs: u64,
+    /// E-mail the owner when an account signs in from a device it never used.
+    /// Default: true.
+    pub new_device_alerts: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -243,6 +246,9 @@ pub struct CleanupConfig {
     /// Age in days after which an account whose address was never verified is
     /// deleted; 0 keeps them. Default: 7.
     pub unverified_accounts_retention_days: u32,
+    /// Days after which a device unseen is forgotten (a sign-in from it alerts
+    /// again). Default: 90.
+    pub known_devices_retention_days: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -441,6 +447,7 @@ impl Config {
                 sensitive_action_reauth_secs: vars
                     .parse("SENSITIVE_ACTION_REAUTH_SECS")?
                     .unwrap_or(600),
+                new_device_alerts: vars.parse("NEW_DEVICE_ALERTS_ENABLED")?.unwrap_or(true),
             },
             mail: MailConfig {
                 smtp: SmtpConfig {
@@ -498,6 +505,9 @@ impl Config {
                 unverified_accounts_retention_days: vars
                     .parse("CLEANUP_UNVERIFIED_ACCOUNT_DAYS")?
                     .unwrap_or(7),
+                known_devices_retention_days: vars
+                    .parse("CLEANUP_KNOWN_DEVICE_DAYS")?
+                    .unwrap_or(90),
             },
             audit: AuditConfig {
                 retention_months: vars.parse("AUDIT_LOG_RETENTION_MONTHS")?.unwrap_or(12),

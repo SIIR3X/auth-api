@@ -47,6 +47,10 @@ the database together, is out of scope.
 
 ## Sessions and tokens
 
+- **New devices** are announced: a sign-in from a browser and operating system
+  family the account never used e-mails its owner and is audited as
+  `new_device_login`. The first sign-in of an account and browser updates do not
+  alert.
 - **Access tokens** are ES256 JWTs (15 minutes) carrying `iss`, `aud`, `sid` and
   `jti`. Every authenticated request checks, in one Redis round trip, that the
   `jti` was not revoked by a logout and that the session is still active. A
@@ -178,3 +182,4 @@ when a cited test no longer exists.
 | SEC-27 | Code hygiene: bound SQL parameters, no unsafe code, no panics on request paths, released migrations frozen | `sql_is_never_assembled_from_strings`, `there_is_no_unsafe_code`, `request_paths_never_unwrap`, `released_migrations_are_never_edited` |
 | SEC-28 | Every response matches the published OpenAPI contract | `schemas_are_enforced_through_references`, `undocumented_statuses_and_bodies_are_violations` |
 | SEC-29 | Passwords found in known data breaches are refused, and only a hash prefix leaves the service | `registration_refuses_a_breached_password`, `only_the_hash_prefix_leaves_the_service_with_padding_asked`, `a_breached_password_is_refused_on_change_and_on_reset`, `the_range_key_splits_the_uppercase_sha1` |
+| SEC-30 | A sign-in from a new device is announced to the owner | `a_sign_in_from_a_new_device_alerts_the_owner`, `the_first_sign_in_and_a_browser_update_raise_no_alert`, `versions_do_not_make_a_new_device` |

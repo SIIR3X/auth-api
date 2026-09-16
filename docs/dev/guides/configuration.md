@@ -119,6 +119,7 @@ and `occurred_at`. The broker ships in the compose files.
 | `LOCKOUT_THRESHOLD` | `10` | Consecutive wrong passwords before a lockout |
 | `LOCKOUT_DURATION_SECS` | `1800` | Lockout duration |
 | `SENSITIVE_ACTION_REAUTH_SECS` | `600` | How long a re-authentication (`POST /users/me/reauth`) covers sensitive actions |
+| `NEW_DEVICE_ALERTS_ENABLED` | `true` | E-mail the owner when an account signs in from a browser and system family it never used (devices are recorded either way) |
 | `CAPTCHA_SECRET` | unset | hCaptcha secret; unset disables the check, which production refuses |
 | `CAPTCHA_VERIFY_URL` | `https://hcaptcha.com/siteverify` | Verification endpoint |
 | `CAPTCHA_TIMEOUT_SECS` | `5` | Verification timeout |
@@ -169,6 +170,7 @@ the audit log partitions.
 | `CLEANUP_TOKENS_GRACE_DAYS` | `1` | Kept after expiry: email codes, verification and reset tokens |
 | `CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS` | `90` | Login attempt ledger retention |
 | `CLEANUP_RECOVERY_CODES_GRACE_DAYS` | `7` | Kept after expiry |
+| `CLEANUP_KNOWN_DEVICE_DAYS` | `90` | Devices unused for this many days are forgotten; a later sign-in from one alerts again |
 | `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` | `7` | Accounts whose address was never verified are deleted after this many days (audited, `user.deleted` published); `0` keeps them |
 | `AUDIT_LOG_RETENTION_MONTHS` | `12` | Monthly audit partitions kept; `0` keeps every partition |
 | `AUDIT_IP_RETENTION_DAYS` | `90` | Client addresses of older audit entries keep only their network (/24, /48); `0` keeps full addresses |

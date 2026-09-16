@@ -378,6 +378,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             lockout_threshold: 10_000,
             lockout_duration_secs: 1800,
             sensitive_action_reauth_secs: 600,
+            new_device_alerts: true,
         },
         captcha: CaptchaConfig {
             secret: None,
@@ -414,6 +415,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             login_attempts_retention_days: 90,
             recovery_codes_grace_days: 7,
             unverified_accounts_retention_days: 7,
+            known_devices_retention_days: 90,
         },
         audit: AuditConfig {
             retention_months: 6,

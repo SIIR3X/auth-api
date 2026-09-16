@@ -99,6 +99,11 @@ async fn run_all(conn: &mut PgConnection, config: &Config) {
             "SELECT cleanup_expired_authorization_codes($1::interval, $2)",
             "1 hour".to_owned(),
         ),
+        (
+            "cleanup_stale_known_devices",
+            "SELECT cleanup_stale_known_devices($1::interval, $2)",
+            format!("{} days", c.known_devices_retention_days),
+        ),
         // Published events stay a week for investigation.
         (
             "cleanup_published_events",

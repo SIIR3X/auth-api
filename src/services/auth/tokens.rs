@@ -65,7 +65,32 @@ pub(crate) async fn issue_tokens(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
+    let mut new_device = None;
     if let Some(sign_in) = sign_in {
+        // Recorded whether alerts are on or not, so turning them on does not
+        // flag every device already in use.
+        let family = crate::domain::known_device::device_family(user_agent);
+        let unknown = crate::repositories::known_device::record_sign_in(
+            &mut *tx,
+            user_id,
+            &family.fingerprint(),
+        )
+        .await?;
+        if unknown && state.config.security.new_device_alerts {
+            audit::append(
+                &mut *tx,
+                &NewAuditEntry {
+                    user_id: Some(user_id),
+                    request_id: sign_in.request_id,
+                    action: AuditAction::NewDeviceLogin,
+                    ip_address: ip,
+                    metadata: json!({ "device": family.describe() }),
+                },
+            )
+            .await?;
+            new_device = Some(family);
+        }
+
         user_repo::record_sign_in(&mut *tx, user_id)
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
@@ -104,6 +129,10 @@ pub(crate) async fn issue_tokens(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
+    if let Some(family) = new_device {
+        alert_new_device(state, user_id, &family, ip).await;
+    }
+
     // No re-authentication marker here: a session that was just created (by a
     // password login, an approved device, a 2FA challenge) has not re-proven
     // knowledge of the password for sensitive actions. Only an explicit
@@ -115,6 +144,46 @@ pub(crate) async fn issue_tokens(
         refresh_token: raw_token,
         session,
     })
+}
+
+/// E-mail the owner about a sign-in from a new device, best effort.
+async fn alert_new_device(
+    state: &AppState,
+    user_id: Uuid,
+    family: &crate::domain::known_device::DeviceFamily,
+    ip: Option<IpNetwork>,
+) {
+    let Ok(Some(user)) = user_repo::find_by_id(&state.db, user_id).await else {
+        return;
+    };
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let device = family.describe();
+    let ip = ip.map(|network| network.ip().to_string());
+    let now = state.clock.now();
+    let time = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute()
+    );
+    email::dispatch_best_effort("new_device_login_email", async move {
+        email::send_new_device_login(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &user.email,
+            &user.username,
+            &user.preferred_locale,
+            &device,
+            ip.as_deref(),
+            &time,
+        )
+        .await
+    });
 }
 
 pub(super) async fn build_access_token(
