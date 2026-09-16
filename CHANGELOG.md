@@ -80,6 +80,10 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   removing one revokes its sessions. `/admin/audit`: the audit log of every
   account, filtered by account and action, paged newest first.
 - CORS allows `PUT`.
+- Sign-in links by email (`MAGIC_LINK_ENABLED`, off by default):
+  `POST /auth/magic-link` and `POST /auth/magic-link/complete`. A link stands
+  for the password only: accounts with a second factor still answer their
+  challenge. English and French emails.
 - `GET /users/me/export`: everything stored about the account as a JSON
   download, after a recent re-authentication, audited as `data_exported`.
 - Simulations of random account lifecycles checked against a model, a timing

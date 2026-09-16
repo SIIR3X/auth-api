@@ -50,6 +50,7 @@ pub enum AuditAction {
     ClientUpdated,
     ClientDeleted,
     DataExported,
+    MagicLinkSent,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

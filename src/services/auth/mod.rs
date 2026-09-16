@@ -13,6 +13,7 @@
 //! - `second_factor`: completing a paused sign-in (TOTP, email code, recovery code);
 //! - `session`: refresh token rotation and logout;
 //! - `password_reset`: forgotten password;
+//! - `magic_link`: signing in with a link sent by email, instead of the password;
 //! - `tokens`: issuing sessions and access tokens, revocation, token state checks;
 //! - `guards`: attempt budgets, failure records, backoff;
 //! - `pre_auth`: the short-lived state between a password and its second factor.
@@ -55,6 +56,7 @@ use crate::utils::{
 
 mod guards;
 mod login;
+mod magic_link;
 mod password_reset;
 mod pre_auth;
 mod register;
@@ -65,6 +67,7 @@ mod tokens;
 use guards::*;
 pub(crate) use guards::{ensure_account_usable, ensure_status_allows_sign_in};
 pub use login::*;
+pub use magic_link::*;
 pub use password_reset::*;
 pub use pre_auth::*;
 pub use register::*;
@@ -199,6 +202,17 @@ const VERIFICATION_RESEND_IP_WINDOW_SECS: u64 = 900;
 /// registrations on the same pending address count too.
 const MAX_VERIFICATION_RESENDS_BY_ACCOUNT: i64 = 3;
 const VERIFICATION_RESEND_ACCOUNT_WINDOW_SECS: u64 = 3600;
+
+/// Sign-in link lifetime.
+const MAGIC_LINK_EXPIRY_SECS: u64 = 60 * 15;
+
+/// Sign-in link requests per client address (IPv6 /64) per window.
+const MAX_MAGIC_LINKS_BY_IP: i64 = 5;
+const MAGIC_LINK_IP_WINDOW_SECS: u64 = 900;
+
+/// Sign-in links per account per window, across every address.
+const MAX_MAGIC_LINKS_BY_ACCOUNT: i64 = 3;
+const MAGIC_LINK_ACCOUNT_WINDOW_SECS: u64 = 3600;
 
 /// Every forgot-password response takes at least this long, known address or not.
 const FORGOT_PASSWORD_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(250);

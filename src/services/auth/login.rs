@@ -192,6 +192,34 @@ pub async fn login(
     // Account status checks
     ensure_status_allows_sign_in(&user)?;
 
+    first_factor_proven(
+        state,
+        &user,
+        Some(identifier),
+        ip,
+        user_agent,
+        device_name,
+        remember_me,
+        request_id,
+        json!({}),
+    )
+    .await
+}
+
+/// The account proved its first factor (password, sign-in link): pause for the
+/// second factor when one is enrolled, sign in otherwise.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn first_factor_proven(
+    state: &AppState,
+    user: &User,
+    identifier: Option<&str>,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+    device_name: Option<&str>,
+    remember_me: bool,
+    request_id: Option<Uuid>,
+    audit_metadata: serde_json::Value,
+) -> Result<LoginResult, AppError> {
     let primary_method = tf_repo::find_primary_by_user(&state.db, user.id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -257,9 +285,9 @@ pub async fn login(
         None,
         None,
         Some(SignIn {
-            identifier: Some(identifier),
+            identifier,
             request_id,
-            audit_metadata: json!({}),
+            audit_metadata,
         }),
     )
     .await?;

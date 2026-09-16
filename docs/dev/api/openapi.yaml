@@ -1854,6 +1854,134 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
       security:
       - bearer: []
+  /auth/magic-link:
+    post:
+      tags:
+      - auth
+      operationId: request_magic_link
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MagicLinkRequest'
+        required: true
+      responses:
+        '200':
+          description: Accepted; identical whether or not an account can sign in with this address
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: Sign-in links are not enabled on this deployment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /auth/magic-link/complete:
+    post:
+      tags:
+      - auth
+      operationId: complete_magic_link
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteMagicLinkRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens, or the account's two-factor challenge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Invalid, used or expired link
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Account locked, suspended or inactive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: Sign-in links are not enabled on this deployment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /auth/refresh:
     post:
       tags:
@@ -4275,6 +4403,23 @@ components:
           type: string
         pre_auth_token:
           type: string
+    CompleteMagicLinkRequest:
+      type: object
+      required:
+      - token
+      properties:
+        device_name:
+          type:
+          - string
+          - 'null'
+        remember_me:
+          type:
+          - boolean
+          - 'null'
+          description: When true, issues a long-lived refresh token.
+        token:
+          type: string
+          description: The token from the link's fragment.
     CompleteTwoFactorRequest:
       type: object
       required:
@@ -4566,6 +4711,17 @@ components:
             description: '"totp" or "email"'
           two_factor_required:
             type: boolean
+    MagicLinkRequest:
+      type: object
+      required:
+      - email
+      properties:
+        captcha_token:
+          type:
+          - string
+          - 'null'
+        email:
+          type: string
     PermissionResponse:
       type: object
       required:

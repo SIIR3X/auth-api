@@ -51,6 +51,8 @@ loopback only.
 | POST | `/auth/two-factor/recovery` | pre-auth token | Strict |
 | POST | `/auth/refresh` | refresh token | Strict |
 | POST | `/auth/logout` | JWT | General |
+| POST | `/auth/magic-link` | - | Strict |
+| POST | `/auth/magic-link/complete` | sign-in link | Strict |
 | POST | `/auth/forgot-password` | - | Strict |
 | POST | `/auth/reset-password` | - | Strict |
 
@@ -63,6 +65,10 @@ loopback only.
   a retried request).
 - Logout stays outside the strict bucket so an exhausted budget never prevents
   ending a session.
+- `magic-link` (when `MAGIC_LINK_ENABLED`) mails a sign-in link valid 15 minutes
+  and once, answering alike for every address; `magic-link/complete` answers
+  like `login`, including the two-factor challenge. A new link replaces the
+  previous one.
 
 ## Client applications
 

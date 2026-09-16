@@ -28,6 +28,8 @@ const PUBLIC: &[&str] = &[
     "POST /auth/device/token",
     "POST /auth/forgot-password",
     "POST /auth/login",
+    "POST /auth/magic-link",
+    "POST /auth/magic-link/complete",
     "POST /auth/refresh",
     "POST /auth/register",
     "POST /auth/reset-password",

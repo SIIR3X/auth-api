@@ -67,6 +67,7 @@ fn valid_config() -> Config {
             lockout_duration_secs: 1800,
             sensitive_action_reauth_secs: 600,
             new_device_alerts: true,
+            magic_links: false,
         },
         mail: MailConfig {
             smtp: SmtpConfig {

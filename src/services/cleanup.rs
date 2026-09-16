@@ -84,6 +84,11 @@ async fn run_all(conn: &mut PgConnection, config: &Config) {
             format!("{} days", c.tokens_grace_days),
         ),
         (
+            "cleanup_expired_magic_link_tokens",
+            "SELECT cleanup_expired_magic_link_tokens($1::interval, $2)",
+            format!("{} days", c.tokens_grace_days),
+        ),
+        (
             "cleanup_expired_recovery_codes",
             "SELECT cleanup_expired_recovery_codes($1::interval, $2)",
             format!("{} days", c.recovery_codes_grace_days),

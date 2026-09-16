@@ -31,6 +31,8 @@ use utoipa::{
         crate::handlers::auth::refresh,
         crate::handlers::auth::verify_email,
         crate::handlers::auth::resend_verification,
+        crate::handlers::auth::request_magic_link,
+        crate::handlers::auth::complete_magic_link,
         crate::handlers::auth::forgot_password,
         crate::handlers::auth::reset_password,
         crate::handlers::auth::complete_two_factor,

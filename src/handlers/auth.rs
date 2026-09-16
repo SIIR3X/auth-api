@@ -61,6 +61,21 @@ pub struct ForgotPasswordRequest {
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
+pub struct MagicLinkRequest {
+    pub email: String,
+    pub captcha_token: Option<String>,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct CompleteMagicLinkRequest {
+    /// The token from the link's fragment.
+    pub token: String,
+    pub device_name: Option<String>,
+    /// When true, issues a long-lived refresh token.
+    pub remember_me: Option<bool>,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ResetPasswordRequest {
     pub token: String,
     pub new_password: String,
@@ -218,7 +233,11 @@ pub async fn login(
     )
     .await?;
 
-    let response = match result {
+    Ok(Json(login_response(result)))
+}
+
+fn login_response(result: auth_svc::LoginResult) -> LoginResponse {
+    match result {
         auth_svc::LoginResult::Complete(tokens) => LoginResponse::Complete {
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token,
@@ -231,9 +250,7 @@ pub async fn login(
             two_factor_method: method,
             pre_auth_token,
         },
-    };
-
-    Ok(Json(response))
+    }
 }
 
 #[utoipa::path(
@@ -336,6 +353,64 @@ pub async fn resend_verification(
 
     auth_svc::resend_verification(&state, &body.email, ip, ua.as_deref(), rid).await?;
     Ok(StatusCode::OK)
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/magic-link",
+    tag = "auth",
+    request_body = MagicLinkRequest,
+    responses(
+        (status = 200, description = "Accepted; identical whether or not an account can sign in with this address"),
+        (status = 404, description = "Sign-in links are not enabled on this deployment", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
+pub async fn request_magic_link(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    UserAgent(ua): UserAgent,
+    RequestId(rid): RequestId,
+    Json(body): Json<MagicLinkRequest>,
+) -> Result<StatusCode, AppError> {
+    let captcha_token = body.captcha_token.as_deref().unwrap_or("");
+    captcha_svc::verify(&state, captcha_token).await?;
+
+    auth_svc::request_magic_link(&state, &body.email, ip, ua.as_deref(), rid).await?;
+    Ok(StatusCode::OK)
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/magic-link/complete",
+    tag = "auth",
+    request_body = CompleteMagicLinkRequest,
+    responses(
+        (status = 200, description = "Tokens, or the account's two-factor challenge", body = LoginResponse),
+        (status = 401, description = "Invalid, used or expired link", body = crate::error::ErrorBody),
+        (status = 403, description = "Account locked, suspended or inactive", body = crate::error::ErrorBody),
+        (status = 404, description = "Sign-in links are not enabled on this deployment", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
+pub async fn complete_magic_link(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    UserAgent(ua): UserAgent,
+    RequestId(rid): RequestId,
+    Json(body): Json<CompleteMagicLinkRequest>,
+) -> Result<Json<LoginResponse>, AppError> {
+    let result = auth_svc::complete_magic_link(
+        &state,
+        &body.token,
+        ip,
+        ua.as_deref(),
+        body.device_name.as_deref(),
+        body.remember_me.unwrap_or(false),
+        rid,
+    )
+    .await?;
+    Ok(Json(login_response(result)))
 }
 
 #[utoipa::path(

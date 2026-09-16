@@ -64,10 +64,10 @@ Devices an account signed in from, for new-device alerts: `user_id`, a SHA-256
 address), `first_seen_at`, `last_seen_at`. Forgotten after
 `CLEANUP_KNOWN_DEVICE_DAYS` unused.
 
-### email_verification_tokens, password_reset_tokens
+### email_verification_tokens, password_reset_tokens, magic_link_tokens
 
 Single-use tokens (`token_hash`, `expires_at`, `used_at`). At most one active
-token per user.
+token per user. `magic_link_tokens` hold sign-in links (15 minutes).
 
 ### authorization_codes
 

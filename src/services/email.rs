@@ -33,6 +33,7 @@ const TNAME_ACCOUNT_EXISTS: &str = "account_exists";
 const TNAME_EMAIL_CHANGED: &str = "email_changed";
 const TNAME_RECOVERY_CODE_USED: &str = "recovery_code_used";
 const TNAME_NEW_DEVICE_LOGIN: &str = "new_device_login";
+const TNAME_MAGIC_LINK: &str = "magic_link";
 
 /// Notifications waiting or being sent, past which new ones are dropped: a slow
 /// or unreachable relay must not pile up tasks in step with traffic.
@@ -380,6 +381,45 @@ pub async fn send_new_device_login(
     let subject = render_subject(
         templates,
         TNAME_NEW_DEVICE_LOGIN,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn send_magic_link(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    token: &str,
+    frontend_url: &str,
+    expires_in_minutes: u64,
+) -> Result<(), AppError> {
+    // In the fragment, like the other links: it never reaches a server log or
+    // a Referer header.
+    let link_url = format!("{frontend_url}/magic-link#token={token}");
+
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("link_url", &link_url);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+    ctx.insert("expires_in_minutes", &expires_in_minutes);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_MAGIC_LINK,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_MAGIC_LINK,
         locale,
         &mail_cfg.default_locale,
         &ctx,

@@ -2,6 +2,7 @@ mod captcha;
 mod events;
 mod lockout;
 mod login;
+mod magic_link;
 mod new_device;
 mod password_reset;
 mod properties;

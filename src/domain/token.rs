@@ -33,7 +33,20 @@ pub struct PasswordResetToken {
     pub request_user_agent: Option<String>,
 }
 
-// Shared helpers for both token types
+/// A sign-in link sent by email.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MagicLinkToken {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub token_hash: Vec<u8>,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
+    pub used_at: Option<OffsetDateTime>,
+    pub request_ip: Option<IpNetwork>,
+    pub request_user_agent: Option<String>,
+}
+
+// Shared helpers for every token type
 
 /// What a submitted one-time token turned out to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +95,16 @@ impl OneTimeToken for EmailVerificationToken {
 }
 
 impl OneTimeToken for PasswordResetToken {
+    fn used_at(&self) -> Option<OffsetDateTime> {
+        self.used_at
+    }
+
+    fn expires_at(&self) -> OffsetDateTime {
+        self.expires_at
+    }
+}
+
+impl OneTimeToken for MagicLinkToken {
     fn used_at(&self) -> Option<OffsetDateTime> {
         self.used_at
     }

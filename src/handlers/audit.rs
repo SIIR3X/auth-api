@@ -182,6 +182,7 @@ pub(crate) fn action_name(action: &AuditAction) -> &'static str {
         A::ClientUpdated => "client_updated",
         A::ClientDeleted => "client_deleted",
         A::DataExported => "data_exported",
+        A::MagicLinkSent => "magic_link_sent",
     }
 }
 

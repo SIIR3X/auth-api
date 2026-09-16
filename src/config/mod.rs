@@ -180,6 +180,9 @@ pub struct SecurityConfig {
     /// E-mail the owner when an account signs in from a device it never used.
     /// Default: true.
     pub new_device_alerts: bool,
+    /// Offer sign-in links by email (`/auth/magic-link`). Whoever reads the
+    /// mailbox can then sign in without the password, so it is off by default.
+    pub magic_links: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -448,6 +451,7 @@ impl Config {
                     .parse("SENSITIVE_ACTION_REAUTH_SECS")?
                     .unwrap_or(600),
                 new_device_alerts: vars.parse("NEW_DEVICE_ALERTS_ENABLED")?.unwrap_or(true),
+                magic_links: vars.parse("MAGIC_LINK_ENABLED")?.unwrap_or(false),
             },
             mail: MailConfig {
                 smtp: SmtpConfig {

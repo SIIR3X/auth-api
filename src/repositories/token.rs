@@ -1,4 +1,5 @@
-//! Repository for `email_verification_tokens` and `password_reset_tokens`.
+//! Repository for `email_verification_tokens`, `password_reset_tokens` and
+//! `magic_link_tokens`.
 //!
 //! Token hashes are 32-byte SHA-256 digests. Plaintext tokens are generated
 //! at the service layer and never persisted.
@@ -9,7 +10,7 @@ use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::domain::token::{EmailVerificationToken, PasswordResetToken};
+use crate::domain::token::{EmailVerificationToken, MagicLinkToken, PasswordResetToken};
 
 // Input types
 
@@ -159,4 +160,58 @@ pub async fn revoke_active_password_reset_by_user<'e>(
     .execute(executor)
     .await?;
     Ok(())
+}
+
+// Magic links
+
+/// Replace the pending links of the account with a new one.
+pub async fn replace_magic_link(
+    pool: &PgPool,
+    user_id: Uuid,
+    token_hash: &[u8],
+    expires_at: OffsetDateTime,
+    request_ip: Option<IpNetwork>,
+    request_user_agent: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "UPDATE magic_link_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO magic_link_tokens
+             (user_id, token_hash, expires_at, request_ip, request_user_agent)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(user_id)
+    .bind(token_hash)
+    .bind(expires_at)
+    .bind(request_ip)
+    .bind(request_user_agent)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
+}
+
+pub async fn find_magic_link_by_hash(
+    pool: &PgPool,
+    token_hash: &[u8],
+) -> Result<Option<MagicLinkToken>, sqlx::Error> {
+    sqlx::query_as::<_, MagicLinkToken>("SELECT * FROM magic_link_tokens WHERE token_hash = $1")
+        .bind(token_hash)
+        .fetch_optional(pool)
+        .await
+}
+
+/// Marks the link as used. Returns false if it was already consumed.
+pub async fn consume_magic_link(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE magic_link_tokens SET used_at = NOW() WHERE id = $1 AND used_at IS NULL",
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }

@@ -120,6 +120,7 @@ and `occurred_at`. The broker ships in the compose files.
 | `LOCKOUT_THRESHOLD` | `10` | Consecutive wrong passwords before a lockout |
 | `LOCKOUT_DURATION_SECS` | `1800` | Lockout duration |
 | `SENSITIVE_ACTION_REAUTH_SECS` | `600` | How long a re-authentication (`POST /users/me/reauth`) covers sensitive actions |
+| `MAGIC_LINK_ENABLED` | `false` | Offer sign-in links by email (`/auth/magic-link`): whoever reads the mailbox can sign in without the password, the second factor still applies. Off, the routes answer `404` |
 | `NEW_DEVICE_ALERTS_ENABLED` | `true` | E-mail the owner when an account signs in from a browser and system family it never used (devices are recorded either way) |
 | `CAPTCHA_SECRET` | unset | hCaptcha secret; unset disables the check, which production refuses |
 | `CAPTCHA_VERIFY_URL` | `https://hcaptcha.com/siteverify` | Verification endpoint |

@@ -338,6 +338,8 @@ fn auth_router() -> Router<AppState> {
         .route("/verify-email", post(auth::verify_email))
         .route("/verify-email/resend", post(auth::resend_verification))
         .route("/forgot-password", post(auth::forgot_password))
+        .route("/magic-link", post(auth::request_magic_link))
+        .route("/magic-link/complete", post(auth::complete_magic_link))
         .route("/reset-password", post(auth::reset_password))
         .route("/two-factor/complete", post(auth::complete_two_factor))
         .route("/two-factor/recovery", post(auth::recovery_login))
