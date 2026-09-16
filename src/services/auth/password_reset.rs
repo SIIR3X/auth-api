@@ -63,6 +63,32 @@ pub(super) async fn issue_password_reset(
         return Ok(());
     }
 
+    send_reset_link(state, &user, ip, user_agent).await?;
+
+    audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(user.id),
+            request_id,
+            action: AuditAction::PasswordResetRequested,
+            ip_address: ip,
+            metadata: json!({}),
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+
+    Ok(())
+}
+
+/// Issue a reset link for `user`, replacing any pending one, and mail it. No
+/// budget: callers apply their own.
+pub(crate) async fn send_reset_link(
+    state: &AppState,
+    user: &User,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+) -> Result<(), AppError> {
     // Revoke any previous pending reset before issuing a new one
     token::revoke_active_password_reset_by_user(&state.db, user.id)
         .await
@@ -87,7 +113,7 @@ pub(super) async fn issue_password_reset(
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();
     let mail_cfg = state.config.mail.clone();
-    let email_to = email.to_string();
+    let email_to = user.email.clone();
     let username = user.username.clone();
     let locale = user.preferred_locale.clone();
     let raw_token = raw_token.clone();
@@ -105,19 +131,6 @@ pub(super) async fn issue_password_reset(
         )
         .await
     });
-
-    audit::append(
-        &state.db,
-        &NewAuditEntry {
-            user_id: Some(user.id),
-            request_id,
-            action: AuditAction::PasswordResetRequested,
-            ip_address: ip,
-            metadata: json!({}),
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(())
 }

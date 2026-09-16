@@ -55,13 +55,16 @@ erase their own data about that user id.
 |-------|-----|
 | Access | `GET /users/me`, `GET /users/me/sessions`, `GET /users/me/audit`, `GET /users/me/two-factor` |
 | Rectification | `PATCH /users/me/username`, `PATCH /users/me/locale`, the email change flow (`/users/me/email/*`) |
-| Erasure | `DELETE /users/me`; for an account the user cannot reach, an operator deletes it (see the [operations runbook](../deploy/guides/operations.md#5-manual-interventions)) |
-| Restriction | An operator suspends the account (`status = 'suspended'`) |
+| Erasure | `DELETE /users/me`; for an account the user cannot reach, an administrator deletes it (`DELETE /admin/users/{id}`) |
+| Restriction | An administrator suspends the account (`POST /admin/users/{id}/suspend`) |
 
 ## Minimization choices
 
 - Events carry the user id only: an address or a username stored 30 days in a
   broker every consumer reads would outlive changes and deletions.
 - The audit log never holds an address, a username or a token in its metadata.
+  Entries of administrative changes hold the administrator's id, which stays
+  after that administrator's account is deleted: it identifies no one once the
+  account is gone.
 - Client addresses of the audit log lose their host part after 90 days.
 - Failed sign-ins keep the user agent, successful ones do not.

@@ -1,4 +1,5 @@
 mod account;
+mod admin;
 mod auth;
 mod clients;
 mod mail;

@@ -36,9 +36,10 @@ pub const COUNT_CONSECUTIVE_FAILURES_BY_USER_SQL: &str = "SELECT COUNT(*) FROM (
          WHERE user_id = $1
            AND was_successful = FALSE
            AND failure_reason = 'invalid_password'
-           AND attempted_at > COALESCE(
+           AND attempted_at > GREATEST(
                (SELECT MAX(attempted_at) FROM login_attempts
                 WHERE user_id = $1 AND was_successful = TRUE),
+               (SELECT lockout_cleared_at FROM users WHERE id = $1),
                '1970-01-01'::TIMESTAMPTZ
            )
          LIMIT $2

@@ -33,6 +33,528 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /admin/users:
+    get:
+      tags:
+      - admin
+      operationId: search
+      parameters:
+      - name: query
+        in: query
+        description: Start of the address or username
+        required: false
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: active, inactive, suspended or pending_verification
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Accounts per page, 1-200 (default 50)
+        required: false
+        schema:
+          type: integer
+          format: int64
+      - name: cursor
+        in: query
+        description: next_cursor of the previous page
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Accounts, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserPage'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `users:read`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid status or cursor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/users/{id}:
+    get:
+      tags:
+      - admin
+      operationId: detail
+      parameters:
+      - name: id
+        in: path
+        description: Account id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetail'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `users:read`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+    delete:
+      tags:
+      - admin
+      operationId: delete
+      parameters:
+      - name: id
+        in: path
+        description: Account id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/CurrentPasswordRequest'
+      responses:
+        '204':
+          description: Account deleted and `user.deleted` announced
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token, or wrong password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `users:manage`, no second factor, the administrator's own account, or re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/users/{id}/password-reset:
+    post:
+      tags:
+      - admin
+      operationId: force_password_reset
+      parameters:
+      - name: id
+        in: path
+        description: Account id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Signed out everywhere and a reset link mailed to the owner
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `users:manage`, no second factor enrolled, or the administrator's own account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/users/{id}/reactivate:
+    post:
+      tags:
+      - admin
+      operationId: reactivate
+      parameters:
+      - name: id
+        in: path
+        description: Account id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Active again, or already active
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `users:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/users/{id}/sessions:
+    delete:
+      tags:
+      - admin
+      operationId: revoke_sessions
+      parameters:
+      - name: id
+        in: path
+        description: Account id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Signed out everywhere
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokedSessionsResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `users:manage`, no second factor enrolled, or the administrator's own account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/users/{id}/suspend:
+    post:
+      tags:
+      - admin
+      operationId: suspend
+      parameters:
+      - name: id
+        in: path
+        description: Account id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Suspended and signed out everywhere, or already suspended
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `users:manage`, no second factor enrolled, or the administrator's own account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: The account was never verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/users/{id}/unlock:
+    post:
+      tags:
+      - admin
+      operationId: unlock
+      parameters:
+      - name: id
+        in: path
+        description: Account id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Lockouts ended and past failures forgiven
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `users:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
   /auth/authorize:
     post:
       tags:
@@ -2737,6 +3259,80 @@ paths:
       - bearer: []
 components:
   schemas:
+    AdminUserDetail:
+      allOf:
+      - $ref: '#/components/schemas/AdminUserSummary'
+      - type: object
+        required:
+        - roles
+        - two_factor_methods
+        - active_sessions
+        properties:
+          active_sessions:
+            type: integer
+            minimum: 0
+          roles:
+            type: array
+            items:
+              type: string
+          two_factor_methods:
+            type: integer
+            description: Verified second factors.
+            minimum: 0
+    AdminUserPage:
+      type: object
+      required:
+      - users
+      properties:
+        next_cursor:
+          type:
+          - string
+          - 'null'
+          description: Pass back as `cursor` to read the next page; absent on the last one.
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminUserSummary'
+    AdminUserSummary:
+      type: object
+      required:
+      - id
+      - username
+      - email
+      - status
+      - preferred_locale
+      - created_at
+      properties:
+        created_at:
+          type: integer
+          format: int64
+        email:
+          type: string
+        email_verified_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        id:
+          type: string
+          format: uuid
+        last_login_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        locked_until:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: Present while a sign-in lockout lasts.
+        preferred_locale:
+          type: string
+        status:
+          type: string
+        username:
+          type: string
     ApproveRequest:
       type: object
       required:
@@ -3286,6 +3882,15 @@ components:
         keep_current_session:
           type: boolean
           description: 'Keep the session making the request signed in. Default: false.'
+    RevokedSessionsResponse:
+      type: object
+      required:
+      - revoked
+      properties:
+        revoked:
+          type: integer
+          format: int64
+          minimum: 0
     SessionResponse:
       type: object
       required:
@@ -3526,3 +4131,5 @@ tags:
   description: Active sessions
 - name: two-factor
   description: Second factors and recovery codes
+- name: admin
+  description: 'Administration: accounts, roles, client applications and the audit log. Requires the permission of each operation and a second factor'

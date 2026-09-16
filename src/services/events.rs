@@ -106,6 +106,19 @@ pub struct UserSessionsRevoked {
     pub user_id: Uuid,
 }
 
+/// An administrator suspended the account: its sessions are revoked and it can
+/// no longer sign in.
+#[derive(Debug, Serialize)]
+pub struct UserSuspended {
+    pub user_id: Uuid,
+}
+
+/// An administrator lifted a suspension.
+#[derive(Debug, Serialize)]
+pub struct UserReactivated {
+    pub user_id: Uuid,
+}
+
 /// Record `payload` as the event `events.auth.{event_name}`. Call it with the
 /// transaction of the change the event announces, then [`wake`] after the
 /// commit.

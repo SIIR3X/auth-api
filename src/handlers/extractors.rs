@@ -90,6 +90,57 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
+/// An administrator: a valid access token carrying at least one administrative
+/// permission, from an account with a second factor enrolled. Each handler then
+/// requires the permission of its action with [`AdminUser::require`].
+pub struct AdminUser {
+    pub auth: AuthUser,
+}
+
+impl FromRequestParts<AppState> for AdminUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = AuthUser::from_request_parts(parts, state).await?;
+        if !auth
+            .permissions
+            .iter()
+            .any(|permission| crate::domain::role::is_admin_permission(permission))
+        {
+            return Err(AppError::Forbidden);
+        }
+        // An administrator's password alone must not open the administration.
+        if crate::repositories::two_factor::find_primary_by_user(&state.db, auth.user_id)
+            .await?
+            .is_none()
+        {
+            return Err(AppError::TwoFactorRequired);
+        }
+        Ok(Self { auth })
+    }
+}
+
+impl AdminUser {
+    /// Require `permission`, in the token and still in the database: a role
+    /// revoked a minute ago stops working now, not when the token expires.
+    pub async fn require(&self, state: &AppState, permission: &str) -> Result<(), AppError> {
+        if !self.auth.permissions.iter().any(|p| p == permission)
+            || !crate::repositories::role::user_has_permission(
+                &state.db,
+                self.auth.user_id,
+                permission,
+            )
+            .await?
+        {
+            return Err(AppError::Forbidden);
+        }
+        Ok(())
+    }
+}
+
 // Request ID injected by the request_id middleware.
 
 pub struct RequestId(pub Option<uuid::Uuid>);

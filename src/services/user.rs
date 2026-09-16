@@ -31,7 +31,7 @@ const REAUTH_FAIL_PREFIX: &str = "reauth_failures:";
 /// legitimate user mistyping yesterday is not blocked today.
 const REAUTH_FAIL_TTL_SECS: u64 = 3600;
 
-fn reauth_fail_key(user_id: Uuid) -> String {
+pub(crate) fn reauth_fail_key(user_id: Uuid) -> String {
     format!("{}{}", REAUTH_FAIL_PREFIX, user_id)
 }
 
@@ -279,6 +279,19 @@ pub async fn delete_account(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
+    erase_account(state, user_id, json!({}), ip, request_id).await
+}
+
+/// Delete the account and everything linked to it, announce it, and forget its
+/// traces. `metadata` goes to the `account_deleted` audit entry and must not
+/// identify the account.
+pub(crate) async fn erase_account(
+    state: &AppState,
+    user_id: Uuid,
+    metadata: serde_json::Value,
+    ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
+) -> Result<(), AppError> {
     // Collect active session IDs before deletion so we can invalidate their
     // Redis cache entries - otherwise the session validity cache would stay
     // warm for up to SESSION_CACHE_TTL_SECS after the account is gone.
@@ -306,7 +319,7 @@ pub async fn delete_account(
             ip_address: ip,
             // No identity in the metadata: the audit log outlives the account,
             // and an erased user must not remain readable in it.
-            metadata: serde_json::json!({}),
+            metadata,
         },
     )
     .await

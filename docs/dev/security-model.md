@@ -98,6 +98,17 @@ the database together, is out of scope.
 - **Scopes:** a client's tokens carry only the consented permissions, re-derived
   from the user's current permissions on every refresh, and no roles.
 
+## Administration
+
+- `/admin` routes require an administrative permission in the token, a second
+  factor enrolled on the administrator's account, and the permission of the
+  action still granted in the database: revoking a role takes effect on the
+  next request, not when the token expires.
+- Administrators cannot suspend, sign out, reset or delete their own account
+  from `/admin`, and deleting an account needs their recent re-authentication.
+- Every change is audited on the account it changed, with the administrator's
+  id, so owners see it in their own history.
+
 ## Data
 
 - Every token, code and refresh token is stored as a digest.
@@ -183,3 +194,4 @@ when a cited test no longer exists.
 | SEC-28 | Every response matches the published OpenAPI contract | `schemas_are_enforced_through_references`, `undocumented_statuses_and_bodies_are_violations` |
 | SEC-29 | Passwords found in known data breaches are refused, and only a hash prefix leaves the service | `registration_refuses_a_breached_password`, `only_the_hash_prefix_leaves_the_service_with_padding_asked`, `a_breached_password_is_refused_on_change_and_on_reset`, `the_range_key_splits_the_uppercase_sha1` |
 | SEC-30 | A sign-in from a new device is announced to the owner | `a_sign_in_from_a_new_device_alerts_the_owner`, `the_first_sign_in_and_a_browser_update_raise_no_alert`, `versions_do_not_make_a_new_device` |
+| SEC-31 | Administration needs the permission in the token and in the database, and a second factor | `an_account_without_administrative_permission_is_refused`, `an_administrator_without_a_second_factor_is_refused`, `a_permission_revoked_in_the_database_stops_working_before_the_token_expires`, `each_action_requires_its_own_permission`, `an_administrator_cannot_suspend_their_own_account_or_a_pending_one`, `deleting_an_account_needs_a_recent_reauthentication_and_announces_it` |

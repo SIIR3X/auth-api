@@ -4,7 +4,7 @@ use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::domain::user::User;
+use crate::domain::user::{User, UserStatus};
 
 pub const FIND_BY_EMAIL_SQL: &str = "SELECT * FROM users WHERE email = $1::citext";
 pub const FIND_BY_USERNAME_SQL: &str = "SELECT * FROM users WHERE username = $1::citext";
@@ -212,4 +212,69 @@ pub async fn find_by_username(pool: &PgPool, username: &str) -> Result<Option<Us
         .bind(username)
         .fetch_optional(pool)
         .await
+}
+
+// Administration
+
+/// One page of accounts, newest first, strictly older than `before` when given.
+/// `pattern` is a `LIKE` pattern matched against the lower-cased address and
+/// username (see `domain::user::prefix_pattern`).
+pub async fn search(
+    pool: &PgPool,
+    pattern: Option<&str>,
+    status: Option<&UserStatus>,
+    before: Option<(OffsetDateTime, Uuid)>,
+    limit: i64,
+) -> Result<Vec<User>, sqlx::Error> {
+    let (before_at, before_id) = before.unzip();
+    sqlx::query_as::<_, User>(
+        "SELECT * FROM users
+         WHERE ($1::text IS NULL
+                OR lower(email::text) LIKE $1
+                OR lower(username::text) LIKE $1)
+           AND ($2::user_status IS NULL OR status = $2)
+           AND ($3::timestamptz IS NULL OR (created_at, id) < ($3, $4))
+         ORDER BY created_at DESC, id DESC
+         LIMIT $5",
+    )
+    .bind(pattern)
+    .bind(status)
+    .bind(before_at)
+    .bind(before_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+/// Suspend an active or inactive account. Returns whether it changed.
+pub async fn suspend<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE users SET status = 'suspended'
+         WHERE id = $1 AND status IN ('active', 'inactive')",
+    )
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Reactivate a suspended or inactive account. Returns whether it changed.
+pub async fn reactivate<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE users SET status = 'active'
+         WHERE id = $1 AND status IN ('suspended', 'inactive')",
+    )
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// End a lockout and forgive the failed sign-ins that caused it.
+pub async fn clear_lockout(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET locked_until = NULL, lockout_cleared_at = NOW() WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }

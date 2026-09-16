@@ -106,17 +106,17 @@ pub async fn list(
 }
 
 /// Entries per page: the requested count, bounded to 1..=MAX_LIMIT.
-fn page_limit(requested: Option<i64>) -> i64 {
+pub(crate) fn page_limit(requested: Option<i64>) -> i64 {
     requested.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
 /// One row beyond the page tells whether another page follows.
-fn rows_to_fetch(limit: i64) -> i64 {
+pub(crate) fn rows_to_fetch(limit: i64) -> i64 {
     limit + 1
 }
 
 /// The page itself, and whether another page follows it.
-fn split_page<T>(mut rows: Vec<T>, limit: i64) -> (Vec<T>, bool) {
+pub(crate) fn split_page<T>(mut rows: Vec<T>, limit: i64) -> (Vec<T>, bool) {
     let limit = usize::try_from(limit).unwrap_or(0);
     let more = rows.len() > limit;
     rows.truncate(limit);
@@ -173,6 +173,14 @@ fn action_name(action: &AuditAction) -> &'static str {
         A::RecoveryCodeUsed => "recovery_code_used",
         A::EmailChanged => "email_changed",
         A::EncryptionKeyRotated => "encryption_key_rotated",
+        A::AccountUnlocked => "account_unlocked",
+        A::PasswordResetForced => "password_reset_forced",
+        A::RoleCreated => "role_created",
+        A::RoleDeleted => "role_deleted",
+        A::RolePermissionsChanged => "role_permissions_changed",
+        A::ClientRegistered => "client_registered",
+        A::ClientUpdated => "client_updated",
+        A::ClientDeleted => "client_deleted",
     }
 }
 

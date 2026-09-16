@@ -68,6 +68,14 @@ use utoipa::{
         crate::handlers::two_factor::send_email_otp_code,
         crate::handlers::two_factor::verify_email_otp_setup,
         crate::handlers::two_factor::disable_email_otp,
+        crate::handlers::admin::users::search,
+        crate::handlers::admin::users::detail,
+        crate::handlers::admin::users::suspend,
+        crate::handlers::admin::users::reactivate,
+        crate::handlers::admin::users::unlock,
+        crate::handlers::admin::users::revoke_sessions,
+        crate::handlers::admin::users::force_password_reset,
+        crate::handlers::admin::users::delete,
     ),
     modifiers(&SecurityAddon, &CommonResponses),
     tags(
@@ -79,6 +87,7 @@ use utoipa::{
         (name = "email-change", description = "Changing the account's email address"),
         (name = "sessions", description = "Active sessions"),
         (name = "two-factor", description = "Second factors and recovery codes"),
+        (name = "admin", description = "Administration: accounts, roles, client applications and the audit log. Requires the permission of each operation and a second factor"),
     )
 )]
 pub struct ApiDoc;
@@ -247,6 +256,7 @@ mod tests {
             let prefix = match enclosing {
                 "auth_router" => "/auth",
                 "me_router" | "me_strict_router" => "/users/me",
+                "admin_router" => "/admin",
                 _ => "",
             };
             let full = match route {

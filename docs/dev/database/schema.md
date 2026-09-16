@@ -16,6 +16,7 @@ digests (32 bytes), never in clear.
 | `email_verified_at` | TIMESTAMPTZ | Yes | |
 | `last_login_at` | TIMESTAMPTZ | Yes | Last completed sign-in |
 | `locked_until` | TIMESTAMPTZ | Yes | Lockout expiry after repeated wrong passwords |
+| `lockout_cleared_at` | TIMESTAMPTZ | Yes | Last unlock by an administrator; earlier failures no longer count toward a lockout |
 | `status` | user_status | No | `pending_verification`, `active`, `inactive`, `suspended` |
 | `preferred_locale` | VARCHAR(10) | No | `en`, `fr`, ... |
 | `username` | VARCHAR(50) | No | Unique, case-insensitive |
@@ -27,7 +28,9 @@ digests (32 bytes), never in clear.
 Role-based access control. A token carries the names of the user's roles and of
 the permissions those roles grant (`permissions.name` is generated as
 `resource:action`). Exactly one role is `is_default` and is assigned at
-registration. `user_roles.granted_by` records who granted a role.
+registration. `user_roles.granted_by` records who granted a role. The `admin`
+role grants the administrative permissions (`users:read`, `users:manage`,
+`roles:manage`, `clients:manage`, `audit:read`, `webhooks:manage`).
 
 ## Sessions and tokens
 

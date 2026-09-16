@@ -34,3 +34,18 @@ pub struct UserRole {
     pub granted_by: Option<Uuid>,
     pub granted_at: OffsetDateTime,
 }
+
+/// Permissions of the administration routes. A token carrying none of them
+/// cannot reach `/admin`.
+pub const ADMIN_PERMISSIONS: [&str; 6] = [
+    "users:read",
+    "users:manage",
+    "roles:manage",
+    "clients:manage",
+    "audit:read",
+    "webhooks:manage",
+];
+
+pub fn is_admin_permission(permission: &str) -> bool {
+    ADMIN_PERMISSIONS.contains(&permission)
+}

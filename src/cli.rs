@@ -1,6 +1,16 @@
 //! Operational commands handled by the binary instead of starting the server.
 
-use crate::repositories::registered_client::NewRegisteredClient;
+use serde_json::json;
+use sqlx::PgPool;
+
+use crate::{
+    domain::audit::AuditAction,
+    repositories::{
+        audit::{self, NewAuditEntry},
+        registered_client::NewRegisteredClient,
+        role, user,
+    },
+};
 
 /// A client registration requested on the command line:
 ///
@@ -116,6 +126,76 @@ pub fn parse_client_registration(args: &[String]) -> Result<Option<ClientRegistr
     Ok(Some(registration))
 }
 
+/// A role granted on the command line, typically the first administrator:
+///
+/// ```text
+/// auth-api --grant-role <role> --user <email>
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleGrant {
+    pub role: String,
+    pub email: String,
+}
+
+/// Parse `--grant-role` and `--user`. `Ok(None)` when `--grant-role` is absent.
+pub fn parse_role_grant(args: &[String]) -> Result<Option<RoleGrant>, String> {
+    let Some(position) = args.iter().position(|a| a == "--grant-role") else {
+        return Ok(None);
+    };
+    let value_of = |flag: &str| -> Result<String, String> {
+        let index = args
+            .iter()
+            .position(|a| a == flag)
+            .ok_or_else(|| format!("{flag} is required"))?;
+        args.get(index + 1)
+            .filter(|v| !v.starts_with("--") && !v.is_empty())
+            .cloned()
+            .ok_or_else(|| format!("{flag} needs a value"))
+    };
+    let role = args
+        .get(position + 1)
+        .filter(|v| !v.starts_with("--") && !v.is_empty())
+        .cloned()
+        .ok_or("--grant-role needs a role name")?;
+    Ok(Some(RoleGrant {
+        role,
+        email: value_of("--user")?,
+    }))
+}
+
+/// Grant the role to the account, audited. Granting a role the account already
+/// holds changes nothing.
+pub async fn grant_role(pool: &PgPool, grant: &RoleGrant) -> Result<(), String> {
+    let account = user::find_by_email(pool, &grant.email)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no account with the address {}", grant.email))?;
+    let granted = role::find_by_name(pool, &grant.role)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no role named {}", grant.role))?;
+
+    match role::assign_to_user(pool, account.id, granted.id, None).await {
+        Ok(_) => {}
+        // ON CONFLICT DO NOTHING returns no row: the role was already held.
+        Err(sqlx::Error::RowNotFound) => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    }
+    audit::append(
+        pool,
+        &NewAuditEntry {
+            user_id: Some(account.id),
+            request_id: None,
+            action: AuditAction::RoleAssigned,
+            ip_address: None,
+            metadata: json!({ "role": granted.name, "by": "command_line" }),
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +238,20 @@ mod tests {
         ] {
             assert!(parse_client_registration(&args(line)).is_err(), "{line}");
         }
+    }
+
+    #[test]
+    fn a_role_grant_names_the_role_and_the_account() {
+        assert_eq!(
+            parse_role_grant(&args("auth-api --grant-role admin --user a@example.com")),
+            Ok(Some(RoleGrant {
+                role: "admin".into(),
+                email: "a@example.com".into()
+            }))
+        );
+        assert_eq!(parse_role_grant(&args("auth-api")), Ok(None));
+        assert!(parse_role_grant(&args("auth-api --grant-role --user a@example.com")).is_err());
+        assert!(parse_role_grant(&args("auth-api --grant-role admin")).is_err());
+        assert!(parse_role_grant(&args("auth-api --grant-role admin --user")).is_err());
     }
 }

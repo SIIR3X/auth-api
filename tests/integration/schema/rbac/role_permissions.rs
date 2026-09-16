@@ -11,7 +11,7 @@ async fn role_permissions_enforce_unique_pairs() {
     .fetch_one(&db.pool)
     .await
     .expect("failed to insert test role");
-    let permission_id = insert_permission(&db.pool, "audit", "read").await;
+    let permission_id = insert_permission(&db.pool, "exports", "read").await;
 
     sqlx::query("INSERT INTO role_permissions (role_id, permission_id) VALUES ($1, $2)")
         .bind(role_id)

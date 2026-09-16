@@ -23,7 +23,7 @@ async fn roles_seed_contains_expected_names() {
         .await
         .expect("failed to load seeded roles");
 
-    assert_eq!(names, vec!["user".to_owned()]);
+    assert_eq!(names, ["admin", "user"]);
 }
 
 #[tokio::test]

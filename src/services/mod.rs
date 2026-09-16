@@ -4,6 +4,7 @@
 //! They take an AppState reference and return AppError on failure.
 //! No HTTP types belong here; only domain types and errors.
 
+pub mod admin;
 pub mod auth;
 pub mod authorize;
 pub mod captcha;

@@ -51,6 +51,24 @@ async fn main() -> anyhow::Result<()> {
     // authorization code flows refuse unregistered clients). Needs only the
     // database, not Redis, NATS or SMTP.
     let args: Vec<String> = std::env::args().collect();
+
+    // One-off command: grant a role, such as the first administrator.
+    match auth_api::cli::parse_role_grant(&args) {
+        Ok(Some(grant)) => {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&config.database.url)
+                .await?;
+            auth_api::cli::grant_role(&pool, &grant)
+                .await
+                .map_err(|message| anyhow::anyhow!("--grant-role: {message}"))?;
+            tracing::info!(role = grant.role, "role granted");
+            return Ok(());
+        }
+        Ok(None) => {}
+        Err(message) => anyhow::bail!("--grant-role: {message}"),
+    }
+
     match auth_api::cli::parse_client_registration(&args) {
         Ok(Some(registration)) => {
             let pool = sqlx::postgres::PgPoolOptions::new()

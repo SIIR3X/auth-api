@@ -9,7 +9,29 @@ async fn all_migrations_apply_to_a_fresh_database() {
         .await
         .expect("failed to count seeded roles");
 
-    assert_eq!(count, 1);
+    assert_eq!(count, 2, "the default user role and the admin role");
+}
+
+#[tokio::test]
+async fn the_admin_role_grants_every_administrative_permission() {
+    let db = TestDb::new().await;
+
+    let mut granted: Vec<String> = sqlx::query_scalar(
+        "SELECT p.name FROM permissions p
+         JOIN role_permissions rp ON rp.permission_id = p.id
+         JOIN roles r ON r.id = rp.role_id
+         WHERE r.name = 'admin'",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    granted.sort();
+    let mut expected: Vec<String> = auth_api::domain::role::ADMIN_PERMISSIONS
+        .iter()
+        .map(|p| (*p).to_owned())
+        .collect();
+    expected.sort();
+    assert_eq!(granted, expected);
 }
 
 #[tokio::test]

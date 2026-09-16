@@ -5,7 +5,7 @@ use testkit::sql::{insert_permission, insert_user};
 async fn permissions_generate_name_from_resource_and_action() {
     let db = TestDb::new().await;
 
-    let permission_id = insert_permission(&db.pool, "users", "read").await;
+    let permission_id = insert_permission(&db.pool, "invoices", "read").await;
     let name: String =
         sqlx::query_scalar::<_, String>("SELECT name FROM permissions WHERE id = $1")
             .bind(permission_id)
@@ -13,7 +13,7 @@ async fn permissions_generate_name_from_resource_and_action() {
             .await
             .expect("failed to load generated permission name");
 
-    assert_eq!(name, "users:read");
+    assert_eq!(name, "invoices:read");
 }
 
 #[tokio::test]

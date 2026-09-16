@@ -81,9 +81,30 @@ pub fn is_storable_email(email: &str) -> bool {
         && tld.bytes().all(|b| b.is_ascii_alphabetic())
 }
 
+/// The `LIKE` pattern matching values that start with `query`, compared in
+/// lower case. `%`, `_` and the escape character itself match literally.
+pub fn prefix_pattern(query: &str) -> String {
+    let mut pattern = String::with_capacity(query.len() + 1);
+    for c in query.trim().to_lowercase().chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    pattern.push('%');
+    pattern
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_search_prefix_matches_wildcards_literally() {
+        assert_eq!(prefix_pattern(" Alice "), "alice%");
+        assert_eq!(prefix_pattern("a_b%c\\"), "a\\_b\\%c\\\\%");
+        assert_eq!(prefix_pattern(""), "%");
+    }
 
     fn now() -> OffsetDateTime {
         OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000)

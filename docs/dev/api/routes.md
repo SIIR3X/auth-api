@@ -9,6 +9,7 @@ the overview.
 |------|---------|
 | - | No authentication |
 | JWT | Access token in `Authorization: Bearer` |
+| Admin | Access token carrying the named permission, still granted in the database, from an account with a second factor |
 | JWT + reauth | Access token, and a recent re-authentication: `POST /users/me/reauth` within `SENSITIVE_ACTION_REAUTH_SECS`, or `current_password` in the body. A fresh sign-in does not count |
 
 | Rate limit | Meaning |
@@ -152,3 +153,20 @@ every other session and notifies the previous address.
 routes need) and `recovery_codes_remaining`, the unused and unexpired codes.
 Recovery codes are shown once, when a method is first verified or when they
 are regenerated.
+
+## Administration
+
+| Method | Route | Auth | Rate limit |
+|--------|-------|------|------------|
+| GET | `/admin/users` | Admin `users:read` | General |
+| GET | `/admin/users/{id}` | Admin `users:read` | General |
+| POST | `/admin/users/{id}/suspend` | Admin `users:manage` | General |
+| POST | `/admin/users/{id}/reactivate` | Admin `users:manage` | General |
+| POST | `/admin/users/{id}/unlock` | Admin `users:manage` | General |
+| DELETE | `/admin/users/{id}/sessions` | Admin `users:manage` | General |
+| POST | `/admin/users/{id}/password-reset` | Admin `users:manage` | General |
+| DELETE | `/admin/users/{id}` | Admin `users:manage` + reauth | General |
+
+`GET /admin/users` takes `query` (start of the address or username), `status`,
+`limit` and `cursor`, and pages newest first. Administrators cannot suspend,
+sign out, reset or delete their own account here; they use `/users/me`.

@@ -60,6 +60,18 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 
 ### Added
 
+- Administration API under `/admin`, open to accounts holding the new `admin`
+  role (or any role granted `users:read`, `users:manage`, `roles:manage`,
+  `clients:manage`, `audit:read`, `webhooks:manage`) with a second factor
+  enrolled. Permissions are checked in the token and again in the database, so
+  a revoked role stops working at once. `auth-api --grant-role admin --user
+  <email>` appoints the first administrator.
+- `/admin/users`: search by address or username prefix and status, account
+  detail (roles, second factors, sessions), suspend, reactivate, unlock (the
+  failed sign-ins that caused the lockout are forgiven), sign out everywhere,
+  forced password reset, and deletion after a re-authentication. Each change is
+  audited on the account with the administrator's id; suspensions and
+  reactivations publish `user.suspended` and `user.reactivated`.
 - Simulations of random account lifecycles checked against a model, a timing
   test comparing existing and unknown accounts, and `make soak`: an hour of
   mixed traffic that fails on any error or on growing memory.

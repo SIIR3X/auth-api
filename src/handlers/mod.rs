@@ -26,6 +26,7 @@ use crate::{
     state::AppState,
 };
 
+pub mod admin;
 pub mod audit;
 pub mod auth;
 pub mod authorize;
@@ -233,6 +234,11 @@ fn build_router(
         .route("/live", get(live))
         .route("/ready", get(ready));
 
+    let admin = admin_router().layer(middleware::from_fn_with_state(
+        rl_general.clone(),
+        rate_limit::layer_with_state,
+    ));
+
     let public = Router::new()
         .route("/.well-known/jwks.json", get(jwks))
         // Logout is authenticated (requires a valid JWT via AuthUser) but intentionally
@@ -254,6 +260,7 @@ fn build_router(
             )),
         )
         .nest("/users/me", me_with_strict_reauth)
+        .nest("/admin", admin)
         .layer(cors)
         .layer(middleware::from_fn(access_log::layer))
         // 64 KB is more than sufficient for any JSON payload this API accepts.
@@ -350,6 +357,26 @@ fn auth_router() -> Router<AppState> {
         .route("/authorize", post(authorize::approve))
         .route("/authorize/describe", post(authorize::describe))
         .route("/authorize/token", post(authorize::token))
+}
+
+// Administration: every route checks its own permission.
+
+fn admin_router() -> Router<AppState> {
+    Router::new()
+        .route("/users", get(admin::users::search))
+        .route("/users/{id}", get(admin::users::detail))
+        .route("/users/{id}", delete(admin::users::delete))
+        .route("/users/{id}/suspend", post(admin::users::suspend))
+        .route("/users/{id}/reactivate", post(admin::users::reactivate))
+        .route("/users/{id}/unlock", post(admin::users::unlock))
+        .route(
+            "/users/{id}/sessions",
+            delete(admin::users::revoke_sessions),
+        )
+        .route(
+            "/users/{id}/password-reset",
+            post(admin::users::force_password_reset),
+        )
 }
 
 // Sensitive authenticated routes placed under the strict auth rate-limit bucket.

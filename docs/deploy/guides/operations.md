@@ -164,6 +164,17 @@ never switch to an evicting policy. The measured footprint is in section 9.
 
 ## 5. Manual Interventions
 
+Day-to-day interventions go through the administration API (`/admin/users`:
+unlock, suspend, sign out everywhere, forced reset, deletion; see
+[routes](../../dev/api/routes.md#administration)). Appoint the first
+administrator on the API VPS, then have them enroll a second factor:
+
+```bash
+docker compose -f docker-compose.api.yml run --rm api ./auth-api --grant-role admin --user admin@example.com
+```
+
+The SQL below remains for when the API itself is unavailable.
+
 **On the DB VPS** (`sudo -u postgres psql auth_api`):
 
 Unlock an account locked out by failed logins:

@@ -41,6 +41,14 @@ pub enum AuditAction {
     RecoveryCodeUsed,
     EmailChanged,
     EncryptionKeyRotated,
+    AccountUnlocked,
+    PasswordResetForced,
+    RoleCreated,
+    RoleDeleted,
+    RolePermissionsChanged,
+    ClientRegistered,
+    ClientUpdated,
+    ClientDeleted,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
