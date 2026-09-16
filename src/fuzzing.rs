@@ -345,6 +345,24 @@ pub fn totp_code(data: &[u8]) {
     }
 }
 
+/// Pwned Passwords range answers: never a panic, and a password counts as
+/// breached only when a line carries its exact suffix with a positive count.
+pub fn pwned_range(data: &[u8]) {
+    let Some(text) = text(data) else { return };
+    let (suffix, range) = text.split_once('\n').unwrap_or((text, ""));
+    let count = crate::domain::pwned::breach_count(range, suffix);
+    if count > 0 {
+        assert!(
+            range.lines().any(|line| line
+                .trim()
+                .split_once(':')
+                .is_some_and(|(candidate, n)| candidate.eq_ignore_ascii_case(suffix)
+                    && n.trim().parse::<u64>() == Ok(count))),
+            "{suffix:?} counted {count} without a matching line"
+        );
+    }
+}
+
 /// Input validators: they never panic, and what they accept fits the database.
 pub fn validators(data: &[u8]) {
     let Some(input) = text(data) else { return };
@@ -430,6 +448,7 @@ pub const TARGETS: &[Target] = &[
     ("keyring", keyring),
     ("pkce", pkce),
     ("pre_auth_state", pre_auth_state),
+    ("pwned_range", pwned_range),
     ("redirect_uri", redirect_uri),
     ("totp_code", totp_code),
     ("validators", validators),

@@ -135,6 +135,9 @@ pub async fn reset_password(
     let record =
         check_one_time_token(state, token::find_password_reset_by_hash(&state.db, &hash)).await?;
 
+    // Before the token is consumed: a refused password leaves the link usable.
+    crate::services::pwned::ensure_not_breached(state, new_password).await?;
+
     let new_hash = password::hash_async(new_password, &state.config.crypto)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;

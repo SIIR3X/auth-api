@@ -69,6 +69,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "pwned_range"
+path = "fuzz_targets/pwned_range.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "redirect_uri"
 path = "fuzz_targets/redirect_uri.rs"
 test = false

@@ -89,6 +89,12 @@ fn valid_config() -> Config {
             request_timeout_secs: 5,
             fail_open_on_error: false,
         },
+        pwned_passwords: PwnedPasswordsConfig {
+            enabled: true,
+            api_url: "https://api.pwnedpasswords.com".into(),
+            timeout_ms: 1500,
+            fail_open: true,
+        },
         cleanup: CleanupConfig {
             interval_secs: 3600,
             sessions_grace_days: 7,

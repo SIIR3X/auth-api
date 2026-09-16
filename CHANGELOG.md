@@ -67,6 +67,10 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   `POST /auth/authorize`, `POST /auth/authorize/token`.
 - Client registry: scopes, redirect URIs, loopback redirects, default session
   limit; `auth-api --register-client`.
+- Passwords found in known data breaches are refused at registration, change
+  and reset (`422 password_compromised`), through the Pwned Passwords range API
+  with k-anonymity: only five characters of the SHA-1 leave the service
+  (`PWNED_PASSWORDS_*`, fail-open by default).
 - Personal data: deleting an account (or purging a never-verified one) also
   deletes its sign-in attempts, including failures typed with its address before
   it existed, and removes the client addresses of its audit entries; audit

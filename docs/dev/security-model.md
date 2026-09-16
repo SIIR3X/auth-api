@@ -33,6 +33,10 @@ the database together, is out of scope.
   address: it verifies a pending account with the password its owner chose, so
   an account someone else registered with the address is taken back. Accounts
   never verified are deleted after `CLEANUP_UNVERIFIED_ACCOUNT_DAYS`.
+- **Breached passwords are refused** at registration, change and reset, through
+  the Pwned Passwords range API: only the first five characters of the SHA-1
+  leave the service, answers are padded, and the check runs before the address
+  is looked up so it costs the same whether the address is taken.
 - **Lockout** after `LOCKOUT_THRESHOLD` consecutive wrong passwords. Failed
   second factors never count: whoever fails a second factor already holds the
   password, and letting them lock the account would let them shut the owner out.
@@ -173,3 +177,4 @@ when a cited test no longer exists.
 | SEC-26 | Production refuses a configuration that disables a control | `validate_accepts_hardened_production_config`, `validate_rejects_committed_dev_key_in_production`, `validate_rejects_wildcard_cors_in_production`, `validate_rejects_non_https_public_url_in_production`, `validate_rejects_zero_device_poll_interval`, `validate_rejects_poll_interval_not_below_device_ttl`, `validate_rejects_zero_session_lifetime` |
 | SEC-27 | Code hygiene: bound SQL parameters, no unsafe code, no panics on request paths, released migrations frozen | `sql_is_never_assembled_from_strings`, `there_is_no_unsafe_code`, `request_paths_never_unwrap`, `released_migrations_are_never_edited` |
 | SEC-28 | Every response matches the published OpenAPI contract | `schemas_are_enforced_through_references`, `undocumented_statuses_and_bodies_are_violations` |
+| SEC-29 | Passwords found in known data breaches are refused, and only a hash prefix leaves the service | `registration_refuses_a_breached_password`, `only_the_hash_prefix_leaves_the_service_with_padding_asked`, `a_breached_password_is_refused_on_change_and_on_reset`, `the_range_key_splits_the_uppercase_sha1` |

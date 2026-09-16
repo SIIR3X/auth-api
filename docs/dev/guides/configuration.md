@@ -123,8 +123,13 @@ and `occurred_at`. The broker ships in the compose files.
 | `CAPTCHA_VERIFY_URL` | `https://hcaptcha.com/siteverify` | Verification endpoint |
 | `CAPTCHA_TIMEOUT_SECS` | `5` | Verification timeout |
 | `CAPTCHA_FAIL_OPEN` | `true` outside production | Accept the request when the provider cannot be reached |
+| `PWNED_PASSWORDS_ENABLED` | `true` | Refuse passwords found in known data breaches, at registration, change and reset (`422 password_compromised`) |
+| `PWNED_PASSWORDS_URL` | `https://api.pwnedpasswords.com` | Range API; production requires HTTPS. Only the first five characters of the password's SHA-1 are sent |
+| `PWNED_PASSWORDS_TIMEOUT_MS` | `1500` | Range query timeout |
+| `PWNED_PASSWORDS_FAIL_OPEN` | `true` | Accept the password when the range API cannot be reached; `false` answers 503 instead |
 
 IPv6 clients are limited per `/64`, the prefix a subscriber is usually given.
+The breached-password check needs outbound HTTPS to the range API.
 
 ### Mail
 

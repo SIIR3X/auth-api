@@ -203,6 +203,7 @@ only, never behind nginx). Key series:
 - `auth_notifications_pending`, `auth_notifications_failed_total{task}`, `auth_notifications_dropped_total{task}` - e-mails in flight, failed after retries, dropped past 1 000 pending
 - `auth_background_tasks` - notifications and cache invalidations still running (drained for 5 s at shutdown)
 - `auth_cleanup_deleted_rows_total{job}`, `auth_cleanup_failures_total{job}` - retention jobs
+- `auth_pwned_password_checks_total{outcome=clean|compromised|unavailable}` - breached-password checks; a rise of `unavailable` means the range API is unreachable (passwords are then accepted unless `PWNED_PASSWORDS_FAIL_OPEN=false`)
 - `auth_container_memory_working_set_bytes`, `auth_container_memory_limit_bytes` (0 without a limit), `auth_container_cpu_periods_total`, `auth_container_cpu_throttled_periods_total`, `auth_process_start_time_seconds` - the instance's own container, read from its cgroup every 10 s; the container alerts of the [monitoring guide](monitoring.md) use them
 
 Prometheus runs on a separate monitoring host and scrapes each instance over

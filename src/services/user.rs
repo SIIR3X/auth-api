@@ -170,6 +170,8 @@ pub async fn change_password(
         return Err(AppError::EmailNotVerified);
     }
 
+    crate::services::pwned::ensure_not_breached(state, new_password).await?;
+
     let new_hash = password::hash_async(new_password, &state.config.crypto)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;

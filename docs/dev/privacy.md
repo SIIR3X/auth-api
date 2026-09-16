@@ -23,6 +23,7 @@ processing, not a legal notice.
 | Domain events: the user id only | `event_outbox`, then NATS JetStream | Letting other services follow account changes, erasure included | Outbox: 7 days after delivery; JetStream: 30 days | `user.deleted` tells every consumer to erase its own data |
 | Counters and short-lived state: budgets per client address (/64 in IPv6) or per account, pre-authentication and email-change flows | Redis | Rate limiting, abuse budgets, multi-step flows | Minutes to hours (key expiry) | Expire on their own |
 | Emails sent (address, content) | The SMTP relay | Verification, reset, security notices | The relay's own retention | Outside auth-api |
+| First five characters of a new password's SHA-1 | Pwned Passwords range API | Refusing breached passwords (k-anonymity: the password and its full hash never leave) | Not stored by auth-api | - |
 
 The application logs record the route, status, latency and request id of each
 request, not the client address. nginx records client addresses in its access

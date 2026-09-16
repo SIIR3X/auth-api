@@ -256,6 +256,18 @@ pub struct AuditConfig {
     pub ip_retention_days: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct PwnedPasswordsConfig {
+    /// Refuse passwords found in known breaches. Default: true.
+    pub enabled: bool,
+    /// Base URL of the Pwned Passwords range API.
+    pub api_url: String,
+    /// Timeout of the range query, in milliseconds. Default: 1500.
+    pub timeout_ms: u64,
+    /// Accept the password when the API gives no answer. Default: true.
+    pub fail_open: bool,
+}
+
 #[derive(Clone)]
 pub struct CaptchaConfig {
     /// hCaptcha secret key. If empty, captcha verification is skipped (development/test mode).
@@ -311,6 +323,7 @@ pub struct Config {
     pub mail: MailConfig,
     pub cors: CorsConfig,
     pub captcha: CaptchaConfig,
+    pub pwned_passwords: PwnedPasswordsConfig,
     pub cleanup: CleanupConfig,
     pub audit: AuditConfig,
     pub log: LogConfig,
@@ -454,6 +467,14 @@ impl Config {
                     .unwrap_or_else(|| "https://hcaptcha.com/siteverify".into()),
                 request_timeout_secs: vars.parse("CAPTCHA_TIMEOUT_SECS")?.unwrap_or(5),
                 fail_open_on_error: vars.parse("CAPTCHA_FAIL_OPEN")?.unwrap_or(!is_production),
+            },
+            pwned_passwords: PwnedPasswordsConfig {
+                enabled: vars.parse("PWNED_PASSWORDS_ENABLED")?.unwrap_or(true),
+                api_url: vars
+                    .string("PWNED_PASSWORDS_URL")
+                    .unwrap_or_else(|| "https://api.pwnedpasswords.com".into()),
+                timeout_ms: vars.parse("PWNED_PASSWORDS_TIMEOUT_MS")?.unwrap_or(1500),
+                fail_open: vars.parse("PWNED_PASSWORDS_FAIL_OPEN")?.unwrap_or(true),
             },
             cors: CorsConfig {
                 allowed_origins: vars

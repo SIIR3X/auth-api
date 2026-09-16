@@ -86,6 +86,10 @@ pub enum AppError {
     #[error("captcha verification failed")]
     CaptchaFailed,
 
+    // 422 - the password appears in a known data breach
+    #[error("password found in a data breach")]
+    PasswordCompromised,
+
     // 400 - Device authorization flow (RFC 8628)
     #[error("device authorization pending")]
     DeviceAuthPending,
@@ -248,6 +252,13 @@ impl IntoResponse for AppError {
                 ErrorBody::new(
                     "captcha_failed",
                     "CAPTCHA verification failed. Please try again.",
+                ),
+            ),
+            Self::PasswordCompromised => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorBody::new(
+                    "password_compromised",
+                    "This password appears in a known data breach. Choose another one.",
                 ),
             ),
 

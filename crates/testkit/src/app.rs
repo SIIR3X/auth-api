@@ -536,6 +536,12 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
                 .into_owned(),
             default_locale: "en".into(),
         },
+        pwned_passwords: PwnedPasswordsConfig {
+            enabled: false,
+            api_url: "https://api.pwnedpasswords.com".into(),
+            timeout_ms: 1500,
+            fail_open: true,
+        },
         cleanup: CleanupConfig {
             interval_secs: 3600,
             sessions_grace_days: 7,

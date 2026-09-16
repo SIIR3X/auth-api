@@ -24,6 +24,10 @@ pub async fn register(
         return Err(AppError::Conflict("username_taken"));
     }
 
+    // Checked before the address is looked up: the check costs the same
+    // whether the address is taken or not.
+    crate::services::pwned::ensure_not_breached(state, password_plaintext).await?;
+
     // Hash on every path so a registered address costs the same as a new one.
     let hash = password::hash_async(password_plaintext, &state.config.crypto)
         .await

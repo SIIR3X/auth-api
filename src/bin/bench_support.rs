@@ -18,8 +18,8 @@ use auth_api::{
     config::{
         AuditConfig, CaptchaConfig, CleanupConfig, Config, CorsConfig, CryptoConfig,
         DatabaseConfig, DeviceAuthConfig, Environment, JwtConfig, LogConfig, LogFormat, MailConfig,
-        MetricsConfig, NatsConfig, RateLimitConfig, RedisConfig, SecurityConfig, ServerConfig,
-        SmtpConfig,
+        MetricsConfig, NatsConfig, PwnedPasswordsConfig, RateLimitConfig, RedisConfig,
+        SecurityConfig, ServerConfig, SmtpConfig,
     },
     handlers,
     state::AppState,
@@ -400,6 +400,12 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             },
             templates_dir: "templates".into(),
             default_locale: "en".into(),
+        },
+        pwned_passwords: PwnedPasswordsConfig {
+            enabled: false,
+            api_url: "https://api.pwnedpasswords.com".into(),
+            timeout_ms: 1500,
+            fail_open: true,
         },
         cleanup: CleanupConfig {
             interval_secs: 3600,

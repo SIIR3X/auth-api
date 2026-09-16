@@ -62,6 +62,10 @@ impl Config {
                 validate_production_encryption_key("PREVIOUS_ENCRYPTION_KEY", previous)?;
             }
 
+            if self.pwned_passwords.enabled {
+                validate_https_url("PWNED_PASSWORDS_URL", &self.pwned_passwords.api_url)?;
+            }
+
             if self.captcha.secret.is_some() {
                 validate_https_url("CAPTCHA_VERIFY_URL", &self.captcha.verify_url)?;
             } else {

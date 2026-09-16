@@ -14,6 +14,7 @@ pub mod device;
 pub mod email_change;
 pub mod login_attempt;
 pub mod outbox;
+pub mod pwned;
 pub mod rate_limit;
 pub mod registered_client;
 pub mod role;

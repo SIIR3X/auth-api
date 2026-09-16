@@ -4,6 +4,7 @@ mod lockout;
 mod login;
 mod password_reset;
 mod properties;
+mod pwned;
 mod refresh;
 mod register;
 mod sign_in_records;
