@@ -232,11 +232,15 @@ impl IntoResponse for AppError {
             Self::Conflict(code) => {
                 // `code` is a static, stable identifier such as "email_taken":
                 // clients branch on it, and it is safe to log.
-                tracing::warn!(code, "conflict on unique field");
-                (
-                    StatusCode::CONFLICT,
-                    ErrorBody::new(code, "A resource with this value already exists."),
-                )
+                tracing::warn!(code, "conflict");
+                let message = match code {
+                    "last_administrator" => {
+                        "At least one account must keep the permission to manage roles."
+                    }
+                    "default_role" => "The role given to every new account cannot be deleted.",
+                    _ => "A resource with this value already exists.",
+                };
+                (StatusCode::CONFLICT, ErrorBody::new(code, message))
             }
 
             // 422

@@ -58,12 +58,7 @@ pub fn parse_client_registration(args: &[String]) -> Result<Option<ClientRegistr
     };
 
     let client_id = value(position + 1, "--register-client")?;
-    if client_id.is_empty()
-        || client_id.len() > 100
-        || !client_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-    {
+    if !crate::domain::registered_client::is_valid_client_id(&client_id) {
         return Err("client id must be 1 to 100 of [A-Za-z0-9._-]".into());
     }
 

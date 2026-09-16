@@ -166,7 +166,24 @@ are regenerated.
 | DELETE | `/admin/users/{id}/sessions` | Admin `users:manage` | General |
 | POST | `/admin/users/{id}/password-reset` | Admin `users:manage` | General |
 | DELETE | `/admin/users/{id}` | Admin `users:manage` + reauth | General |
+| POST | `/admin/users/{id}/roles` | Admin `roles:manage` + reauth | General |
+| DELETE | `/admin/users/{id}/roles/{name}` | Admin `roles:manage` | General |
+| GET | `/admin/permissions` | Admin `roles:manage` | General |
+| GET | `/admin/roles` | Admin `roles:manage` | General |
+| POST | `/admin/roles` | Admin `roles:manage` + reauth | General |
+| PUT | `/admin/roles/{name}/permissions` | Admin `roles:manage` + reauth | General |
+| DELETE | `/admin/roles/{name}` | Admin `roles:manage` | General |
+| GET | `/admin/clients` | Admin `clients:manage` | General |
+| PUT | `/admin/clients/{client_id}` | Admin `clients:manage` + reauth | General |
+| DELETE | `/admin/clients/{client_id}` | Admin `clients:manage` | General |
+| GET | `/admin/audit` | Admin `audit:read` | General |
 
 `GET /admin/users` takes `query` (start of the address or username), `status`,
 `limit` and `cursor`, and pages newest first. Administrators cannot suspend,
 sign out, reset or delete their own account here; they use `/users/me`.
+
+A change to roles that would leave no account with `roles:manage` answers
+`409 last_administrator`; the default role cannot be deleted
+(`409 default_role`). Access tokens carry the permissions of their issuance
+until refreshed; `/admin` routes read them from the database on every request.
+`GET /admin/audit` takes `user_id`, `action`, `limit` and `cursor`.

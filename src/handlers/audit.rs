@@ -141,7 +141,7 @@ pub(crate) fn decode_cursor(cursor: &str) -> Result<(OffsetDateTime, Uuid), AppE
 
 /// Wire name of an action. Written out rather than derived: these strings are
 /// an API, and renaming a Rust variant must not rename them silently.
-fn action_name(action: &AuditAction) -> &'static str {
+pub(crate) fn action_name(action: &AuditAction) -> &'static str {
     use AuditAction as A;
     match action {
         A::Login => "login",

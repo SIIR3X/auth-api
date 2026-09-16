@@ -33,6 +33,573 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /admin/audit:
+    get:
+      tags:
+      - admin
+      operationId: list
+      parameters:
+      - name: user_id
+        in: query
+        description: Only this account's entries
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: action
+        in: query
+        description: Only this action
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Entries per page, 1-200 (default 50)
+        required: false
+        schema:
+          type: integer
+          format: int64
+      - name: cursor
+        in: query
+        description: next_cursor of the previous page
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Audit entries, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAuditPage'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `audit:read`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid cursor or account id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/clients:
+    get:
+      tags:
+      - admin
+      operationId: list
+      responses:
+        '200':
+          description: Every registered client
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ClientResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `clients:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/clients/{client_id}:
+    put:
+      tags:
+      - admin
+      operationId: save
+      parameters:
+      - name: client_id
+        in: path
+        description: Client id, 1 to 100 of [A-Za-z0-9._-]
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveClientRequest'
+        required: true
+      responses:
+        '200':
+          description: Client updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+        '201':
+          description: Client registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `clients:manage`, no second factor, or re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`primary_client_exists`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid settings or unknown scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+    delete:
+      tags:
+      - admin
+      operationId: delete
+      parameters:
+      - name: client_id
+        in: path
+        description: Client id
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Client removed and its sessions revoked
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `clients:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/permissions:
+    get:
+      tags:
+      - admin
+      operationId: permissions
+      responses:
+        '200':
+          description: Every permission a role can grant
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PermissionResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `roles:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/roles:
+    get:
+      tags:
+      - admin
+      operationId: list
+      responses:
+        '200':
+          description: Every role with its permissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoleResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `roles:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+    post:
+      tags:
+      - admin
+      operationId: create
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleRequest'
+        required: true
+      responses:
+        '201':
+          description: Role created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `roles:manage`, no second factor, or re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`role_exists`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid name or unknown permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/roles/{name}:
+    delete:
+      tags:
+      - admin
+      operationId: delete
+      parameters:
+      - name: name
+        in: path
+        description: Role name
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Role deleted and taken back from every account
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `roles:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`default_role`, or `last_administrator`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/roles/{name}/permissions:
+    put:
+      tags:
+      - admin
+      operationId: set_permissions
+      parameters:
+      - name: name
+        in: path
+        description: Role name
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RolePermissionsRequest'
+        required: true
+      responses:
+        '200':
+          description: The role now grants exactly these permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `roles:manage`, no second factor, or re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`last_administrator`: nobody would keep `roles:manage`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Unknown permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
   /admin/users:
     get:
       tags:
@@ -347,6 +914,156 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '404':
           description: No such account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/users/{id}/roles:
+    post:
+      tags:
+      - admin
+      operationId: assign
+      parameters:
+      - name: id
+        in: path
+        description: Account id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignRoleRequest'
+        required: true
+      responses:
+        '204':
+          description: Role granted, or already held
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `roles:manage`, no second factor, or re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such account or role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/users/{id}/roles/{name}:
+    delete:
+      tags:
+      - admin
+      operationId: unassign
+      parameters:
+      - name: id
+        in: path
+        description: Account id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: name
+        in: path
+        description: Role name
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Role taken back, or not held
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `roles:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`last_administrator`: nobody would keep `roles:manage`'
           content:
             application/json:
               schema:
@@ -3259,6 +3976,31 @@ paths:
       - bearer: []
 components:
   schemas:
+    AdminAuditEntry:
+      allOf:
+      - $ref: '#/components/schemas/AuditEntryResponse'
+      - type: object
+        properties:
+          user_id:
+            type:
+            - string
+            - 'null'
+            format: uuid
+            description: Absent once the account is deleted.
+    AdminAuditPage:
+      type: object
+      required:
+      - entries
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminAuditEntry'
+        next_cursor:
+          type:
+          - string
+          - 'null'
+          description: Pass back as `cursor` to read the next page; absent on the last one.
     AdminUserDetail:
       allOf:
       - $ref: '#/components/schemas/AdminUserSummary'
@@ -3366,6 +4108,13 @@ components:
         redirect_to:
           type: string
           description: 'Where to send the browser: the redirect URI carrying `code` (and `state`).'
+    AssignRoleRequest:
+      type: object
+      required:
+      - role
+      properties:
+        role:
+          type: string
     AuditEntryResponse:
       type: object
       required:
@@ -3443,6 +4192,41 @@ components:
           - 'null'
         username:
           type: string
+    ClientResponse:
+      type: object
+      required:
+      - client_id
+      - display_name
+      - is_primary
+      - scopes
+      - redirect_uris
+      - allows_loopback_redirect
+      - default_max_sessions
+      - created_at
+      properties:
+        allows_loopback_redirect:
+          type: boolean
+        client_id:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        default_max_sessions:
+          type: integer
+          format: int32
+        display_name:
+          type: string
+        is_primary:
+          type: boolean
+        redirect_uris:
+          type: array
+          items:
+            type: string
+        scopes:
+          type: array
+          items:
+            type: string
+          description: Permissions its tokens may carry; empty means every permission of the user.
     CompleteEmailTwoFactorRequest:
       type: object
       required:
@@ -3473,6 +4257,21 @@ components:
           type: string
         flow_token:
           type: string
+    CreateRoleRequest:
+      type: object
+      required:
+      - name
+      properties:
+        description:
+          type:
+          - string
+          - 'null'
+        name:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
     CurrentPasswordRequest:
       type: object
       description: |-
@@ -3729,6 +4528,18 @@ components:
             description: '"totp" or "email"'
           two_factor_required:
             type: boolean
+    PermissionResponse:
+      type: object
+      required:
+      - name
+      properties:
+        description:
+          type:
+          - string
+          - 'null'
+        name:
+          type: string
+          description: '`resource:action`.'
     ReadyResponse:
       type: object
       description: What `/ready` found for each dependency.
@@ -3891,6 +4702,64 @@ components:
           type: integer
           format: int64
           minimum: 0
+    RolePermissionsRequest:
+      type: object
+      required:
+      - permissions
+      properties:
+        permissions:
+          type: array
+          items:
+            type: string
+    RoleResponse:
+      type: object
+      required:
+      - name
+      - is_default
+      - permissions
+      - created_at
+      properties:
+        created_at:
+          type: integer
+          format: int64
+        description:
+          type:
+          - string
+          - 'null'
+        is_default:
+          type: boolean
+          description: Given to every new account.
+        name:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+    SaveClientRequest:
+      type: object
+      required:
+      - display_name
+      properties:
+        allows_loopback_redirect:
+          type: boolean
+        default_max_sessions:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: 'Default: 5.'
+        display_name:
+          type: string
+        is_primary:
+          type: boolean
+        redirect_uris:
+          type: array
+          items:
+            type: string
+        scopes:
+          type: array
+          items:
+            type: string
     SessionResponse:
       type: object
       required:

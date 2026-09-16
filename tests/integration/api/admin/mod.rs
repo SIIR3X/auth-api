@@ -1,5 +1,8 @@
 //! `/admin`: administrators acting on other accounts.
 
+mod audit;
+mod clients;
+mod roles;
 mod users;
 
 use auth_api::{domain::role::ADMIN_PERMISSIONS, repositories::role as role_repo};

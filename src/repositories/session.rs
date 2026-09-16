@@ -284,3 +284,18 @@ pub async fn find_active_summary_by_user(
         .fetch_all(pool)
         .await
 }
+
+/// Revoke every active session of a client application, returning them.
+pub async fn revoke_by_client<'e>(
+    executor: impl PgExecutor<'e>,
+    client_id: &str,
+) -> Result<Vec<Session>, sqlx::Error> {
+    sqlx::query_as::<_, Session>(
+        "UPDATE sessions SET revoked_at = NOW()
+         WHERE client_id = $1 AND revoked_at IS NULL
+         RETURNING *",
+    )
+    .bind(client_id)
+    .fetch_all(executor)
+    .await
+}

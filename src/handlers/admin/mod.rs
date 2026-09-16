@@ -2,6 +2,9 @@
 //! carrying the permission of its action, a second factor enrolled on the
 //! administrator's account, and the permission still granted in the database.
 
+pub mod audit;
+pub mod clients;
+pub mod roles;
 pub mod users;
 
 use crate::services::admin::Actor;

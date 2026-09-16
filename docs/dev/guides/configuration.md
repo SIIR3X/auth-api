@@ -156,7 +156,8 @@ The breached-password check needs outbound HTTPS to the range API.
 | `CORS_ALLOW_CREDENTIALS` | `true` | Allow credentialed cross-origin requests |
 
 Registered clients (device and authorization code flows) live in the database
-and are managed with `auth-api --register-client` (see [Commands](commands.md)).
+and are managed with `auth-api --register-client` (see [Commands](commands.md))
+or `PUT /admin/clients/{client_id}`.
 
 ### Retention
 

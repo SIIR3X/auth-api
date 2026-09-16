@@ -72,6 +72,14 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   forced password reset, and deletion after a re-authentication. Each change is
   audited on the account with the administrator's id; suspensions and
   reactivations publish `user.suspended` and `user.reactivated`.
+- `/admin/roles`, `/admin/permissions` and `/admin/users/{id}/roles`: create
+  roles, set the permissions they grant, grant and take them back (granting
+  needs a re-authentication). A change that would leave nobody with
+  `roles:manage` is refused with `409 last_administrator`.
+- `/admin/clients`: register, update (`PUT`) and remove client applications;
+  removing one revokes its sessions. `/admin/audit`: the audit log of every
+  account, filtered by account and action, paged newest first.
+- CORS allows `PUT`.
 - Simulations of random account lifecycles checked against a model, a timing
   test comparing existing and unknown accounts, and `make soak`: an hour of
   mixed traffic that fails on any error or on growing memory.

@@ -10,7 +10,7 @@ use axum::{
     extract::DefaultBodyLimit,
     http::{Method, header},
     middleware,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
 };
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -311,6 +311,7 @@ fn build_cors(cfg: &crate::config::CorsConfig) -> CorsLayer {
         .allow_methods([
             Method::GET,
             Method::POST,
+            Method::PUT,
             Method::PATCH,
             Method::DELETE,
             Method::OPTIONS,
@@ -377,6 +378,20 @@ fn admin_router() -> Router<AppState> {
             "/users/{id}/password-reset",
             post(admin::users::force_password_reset),
         )
+        .route("/users/{id}/roles", post(admin::roles::assign))
+        .route("/users/{id}/roles/{name}", delete(admin::roles::unassign))
+        .route("/permissions", get(admin::roles::permissions))
+        .route("/roles", get(admin::roles::list))
+        .route("/roles", post(admin::roles::create))
+        .route("/roles/{name}", delete(admin::roles::delete))
+        .route(
+            "/roles/{name}/permissions",
+            put(admin::roles::set_permissions),
+        )
+        .route("/clients", get(admin::clients::list))
+        .route("/clients/{client_id}", put(admin::clients::save))
+        .route("/clients/{client_id}", delete(admin::clients::delete))
+        .route("/audit", get(admin::audit::list))
 }
 
 // Sensitive authenticated routes placed under the strict auth rate-limit bucket.

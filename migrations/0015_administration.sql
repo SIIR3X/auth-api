@@ -41,3 +41,9 @@ CREATE INDEX idx_users_email_prefix ON users ((lower(email::text)) text_pattern_
 CREATE INDEX idx_users_username_prefix ON users ((lower(username::text)) text_pattern_ops);
 -- Listing pages newest first.
 CREATE INDEX idx_users_created ON users (created_at DESC, id DESC);
+
+-- The global audit log, newest first.
+CREATE INDEX idx_audit_log_created ON audit_log (created_at DESC, id DESC);
+-- Sessions of a client application, revoked when the client is removed.
+CREATE INDEX idx_sessions_client_active ON sessions (client_id)
+    WHERE client_id IS NOT NULL AND revoked_at IS NULL;

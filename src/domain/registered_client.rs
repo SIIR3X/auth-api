@@ -80,6 +80,36 @@ pub fn restrict_to_consent(
     }
 }
 
+/// Whether `client_id` has the shape the `registered_clients` table accepts.
+pub fn is_valid_client_id(client_id: &str) -> bool {
+    (1..=100).contains(&client_id.len())
+        && client_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
+/// Check client settings before they are stored, with a message for the caller.
+pub fn check_settings(
+    client_id: &str,
+    display_name: &str,
+    redirect_uris: &[String],
+    default_max_sessions: i16,
+) -> Result<(), String> {
+    if !is_valid_client_id(client_id) {
+        return Err("client id must be 1 to 100 of [A-Za-z0-9._-]".into());
+    }
+    if display_name.trim().is_empty() || display_name.chars().count() > 200 {
+        return Err("name must be 1 to 200 characters".into());
+    }
+    for uri in redirect_uris {
+        reqwest::Url::parse(uri).map_err(|e| format!("invalid redirect uri {uri}: {e}"))?;
+    }
+    if default_max_sessions <= 0 {
+        return Err("max sessions must be a positive number".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

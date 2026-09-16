@@ -1,6 +1,6 @@
 //! Repository for `roles`, `permissions`, `role_permissions`, and `user_roles`.
 
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -162,4 +162,125 @@ pub async fn find_granted_at(
             .fetch_optional(pool)
             .await?;
     Ok(row.map(|r| r.0))
+}
+
+// Administration
+
+/// Every role with the names of the permissions it grants.
+pub async fn find_all_with_permissions(
+    pool: &PgPool,
+) -> Result<Vec<(Role, Vec<String>)>, sqlx::Error> {
+    let roles = find_all(pool).await?;
+    let grants: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT rp.role_id, p.name FROM role_permissions rp
+         JOIN permissions p ON p.id = rp.permission_id
+         ORDER BY p.name",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(roles
+        .into_iter()
+        .map(|role| {
+            let names = grants
+                .iter()
+                .filter(|(role_id, _)| *role_id == role.id)
+                .map(|(_, name)| name.clone())
+                .collect();
+            (role, names)
+        })
+        .collect())
+}
+
+pub async fn find_all_permissions(pool: &PgPool) -> Result<Vec<Permission>, sqlx::Error> {
+    sqlx::query_as::<_, Permission>("SELECT * FROM permissions ORDER BY name")
+        .fetch_all(pool)
+        .await
+}
+
+/// The names among `names` that are not permissions.
+pub async fn unknown_permissions(
+    pool: &PgPool,
+    names: &[String],
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT requested.name FROM UNNEST($1::text[]) AS requested (name)
+         WHERE NOT EXISTS (SELECT 1 FROM permissions p WHERE p.name = requested.name)
+         ORDER BY requested.name",
+    )
+    .bind(names)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn create<'e>(
+    executor: impl PgExecutor<'e>,
+    name: &str,
+    description: Option<&str>,
+) -> Result<Role, sqlx::Error> {
+    sqlx::query_as::<_, Role>("INSERT INTO roles (name, description) VALUES ($1, $2) RETURNING *")
+        .bind(name)
+        .bind(description)
+        .fetch_one(executor)
+        .await
+}
+
+/// Make the role grant exactly `names`.
+pub async fn set_permissions(
+    tx: &mut sqlx::PgConnection,
+    role_id: Uuid,
+    names: &[String],
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM role_permissions WHERE role_id = $1")
+        .bind(role_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO role_permissions (role_id, permission_id)
+         SELECT $1, id FROM permissions WHERE name = ANY($2)",
+    )
+    .bind(role_id)
+    .bind(names)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+pub async fn delete<'e>(executor: impl PgExecutor<'e>, role_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM roles WHERE id = $1")
+        .bind(role_id)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// Remove the role from the user. Returns whether the user held it.
+pub async fn unassign<'e>(
+    executor: impl PgExecutor<'e>,
+    user_id: Uuid,
+    role_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2")
+        .bind(user_id)
+        .bind(role_id)
+        .execute(executor)
+        .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Whether any account holds `permission`.
+pub async fn permission_held<'e>(
+    executor: impl PgExecutor<'e>,
+    permission: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM user_roles ur
+             JOIN role_permissions rp ON rp.role_id = ur.role_id
+             JOIN permissions p ON p.id = rp.permission_id
+             WHERE p.name = $1
+         )",
+    )
+    .bind(permission)
+    .fetch_one(executor)
+    .await
 }

@@ -5,6 +5,8 @@
 //! changed, with the administrator's id in its metadata: the owner sees it in
 //! their history, and investigators see who acted.
 
+pub mod clients;
+pub mod roles;
 pub mod users;
 
 use ipnetwork::IpNetwork;

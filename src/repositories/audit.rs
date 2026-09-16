@@ -87,6 +87,34 @@ pub async fn find_page_by_user(
     }
 }
 
+/// One page of the whole audit log, newest first, optionally for one account
+/// or one action (its snake_case name).
+pub async fn find_page(
+    pool: &PgPool,
+    user_id: Option<Uuid>,
+    action: Option<&str>,
+    before: Option<(OffsetDateTime, Uuid)>,
+    limit: i64,
+) -> Result<Vec<AuditLog>, sqlx::Error> {
+    let (before_at, before_id) = before.unzip();
+    sqlx::query_as::<_, AuditLog>(
+        "SELECT * FROM audit_log
+         WHERE created_at <= NOW()
+           AND ($1::uuid IS NULL OR user_id = $1)
+           AND ($2::text IS NULL OR action::text = $2)
+           AND ($3::timestamptz IS NULL OR (created_at, id) < ($3, $4))
+         ORDER BY created_at DESC, id DESC
+         LIMIT $5",
+    )
+    .bind(user_id)
+    .bind(action)
+    .bind(before_at)
+    .bind(before_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn find_by_user(
     pool: &PgPool,
     user_id: Uuid,

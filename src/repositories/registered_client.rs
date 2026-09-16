@@ -1,6 +1,6 @@
 //! Repository for the `registered_clients` table.
 
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 
 use crate::domain::registered_client::RegisteredClient;
 
@@ -36,8 +36,8 @@ pub async fn find_primary(pool: &PgPool) -> Result<Option<RegisteredClient>, sql
 }
 
 /// Create a client, or update every setting of an existing one.
-pub async fn upsert(
-    pool: &PgPool,
+pub async fn upsert<'e>(
+    executor: impl PgExecutor<'e>,
     client: &NewRegisteredClient<'_>,
 ) -> Result<RegisteredClient, sqlx::Error> {
     sqlx::query_as::<_, RegisteredClient>(
@@ -61,6 +61,38 @@ pub async fn upsert(
     .bind(client.redirect_uris)
     .bind(client.allows_loopback_redirect)
     .bind(client.default_max_sessions)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
+}
+
+pub async fn find_all(pool: &PgPool) -> Result<Vec<RegisteredClient>, sqlx::Error> {
+    sqlx::query_as::<_, RegisteredClient>("SELECT * FROM registered_clients ORDER BY client_id")
+        .fetch_all(pool)
+        .await
+}
+
+/// Remove a client; its consents and authorization codes go with it. Returns
+/// whether it existed.
+pub async fn delete<'e>(
+    executor: impl PgExecutor<'e>,
+    client_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM registered_clients WHERE client_id = $1")
+        .bind(client_id)
+        .execute(executor)
+        .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Whether the client exists, locking its row until the transaction ends.
+pub async fn lock_existing<'e>(
+    executor: impl PgExecutor<'e>,
+    client_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT client_id FROM registered_clients WHERE client_id = $1 FOR UPDATE")
+            .bind(client_id)
+            .fetch_optional(executor)
+            .await?;
+    Ok(row.is_some())
 }
