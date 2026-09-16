@@ -106,7 +106,9 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 - IPv6 clients are rate limited per `/64`.
 - Device flow: user codes reserved atomically, approvals collected once, polling
   paced, account status and session limits checked at issue.
-- `user.deleted` is acknowledged by JetStream before the account is deleted.
+- `user.deleted` is recorded in the same transaction as the account deletion:
+  the account is never gone without its event, and the event never announces a
+  deletion that failed.
 - Nginx served `403` for `/.well-known/jwks.json` (hidden-file rule), appended
   client-supplied `X-Forwarded-For` hops, and duplicated security headers.
 - Behind Docker's port proxy the trusted proxy never matched, so every client
@@ -182,8 +184,8 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   NATS is down, requests never wait for the broker, and a rolled-back change
   announces nothing. Registration, email verification, password changes and
   resets, session revocation and email changes now commit their writes in one
-  transaction. `AuthApiEventsStalled` replaces `AuthApiEventsDropped`. The
-  acknowledged `user.deleted` waits at most 5 seconds. An unreachable broker no longer stops
+  transaction. `AuthApiEventsStalled` replaces `AuthApiEventsDropped`. Account
+  deletion no longer answers 503 while NATS is down. An unreachable broker no longer stops
   the start (a refused token still does): the client reconnects in the
   background, the stream is declared before the first acknowledged event, and
   `/ready` reports NATS.

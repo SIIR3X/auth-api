@@ -69,8 +69,10 @@ before `docker compose` runs (see [Secrets](../../deploy/api/secrets.md)).
 
 ### NATS
 
-Domain events (`user.deleted`, `user.password_changed`, `user.sessions_revoked`)
-are published to NATS JetStream. The broker ships in the compose files.
+Domain events (`user.created`, `user.email_verified`, `user.email_changed`,
+`user.password_changed`, `user.sessions_revoked`, `user.deleted`) are recorded in
+the `event_outbox` table with the change they announce, then published to NATS
+JetStream by a background relay. The broker ships in the compose files.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

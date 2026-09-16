@@ -163,7 +163,7 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "the NATS broker or its exporter is down; account deletions answer 503"
+          summary: "the NATS broker or its exporter is down; domain events wait in the outbox"
 
       - alert: AuthApiEventsStalled
         expr: max(auth_outbox_oldest_pending_age_seconds) > 300

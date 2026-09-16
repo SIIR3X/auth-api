@@ -29,7 +29,6 @@ use crate::{
     domain::outbox,
     error::AppError,
     repositories::event_outbox::{self, PendingEvent},
-    state::AppState,
 };
 
 /// Subject prefix for all auth-api domain events.
@@ -267,12 +266,13 @@ async fn publish_one(
     }
 }
 
-/// Declare (or update) the user-event stream. Called once while the
-/// application state is built, before any request can publish durably.
+/// Declare (or update) the user-event stream. Called while the application
+/// state is built, and by the relay before it publishes.
 ///
 /// Refuses new events rather than dropping old ones when the ceiling is hit: a
-/// dropped `user.deleted` loses an erasure obligation in silence, a refused one
-/// fails the deletion with a 503 the caller can retry.
+/// dropped `user.deleted` would lose an erasure obligation in silence, while a
+/// refused one stays in the outbox, holds the queue and raises
+/// `AuthApiEventsStalled`.
 pub async fn ensure_user_stream_once(nats: &async_nats::Client) -> Result<(), String> {
     if STREAM_READY.load(Ordering::Relaxed) {
         return Ok(());
@@ -297,48 +297,4 @@ pub async fn ensure_user_stream(nats: &async_nats::Client) -> Result<(), String>
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())
-}
-
-/// Publish and wait for JetStream to persist the event; fails the caller with
-/// `ServiceUnavailable` when it could not be stored. Only account deletion
-/// still uses it: its event cannot wait in the outbox of a row it deletes.
-pub async fn publish_acked(
-    state: &AppState,
-    event_name: &str,
-    payload: &impl Serialize,
-) -> Result<(), AppError> {
-    let subject = format!("{SUBJECT_PREFIX}.{event_name}");
-    let bytes = serde_json::to_vec(payload).map_err(|e| AppError::Internal(e.into()))?;
-
-    // The stream may not exist yet when the broker was unreachable at startup.
-    ensure_user_stream_once(&state.nats).await.map_err(|e| {
-        tracing::error!(error = %e, "the user event stream is not available");
-        AppError::ServiceUnavailable("nats")
-    })?;
-
-    // Two awaits: the first hands the message to the server, the second waits
-    // for the acknowledgement that it is stored. Dropping the second would keep
-    // the signature and lose the guarantee.
-    let stored = async {
-        jetstream::new(state.nats.clone())
-            .publish(subject.clone(), bytes.into())
-            .await
-            .map_err(|e| {
-                tracing::error!(subject, error = %e, "failed to publish durable event");
-                AppError::ServiceUnavailable("nats")
-            })?
-            .await
-            .map_err(|e| {
-                tracing::error!(subject, error = %e, "durable event was not acknowledged");
-                AppError::ServiceUnavailable("nats")
-            })
-    };
-    tokio::time::timeout(ACKED_PUBLISH_TIMEOUT, stored)
-        .await
-        .map_err(|_| {
-            tracing::error!(subject, "durable event was not stored in time");
-            AppError::ServiceUnavailable("nats")
-        })??;
-
-    Ok(())
 }

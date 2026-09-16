@@ -362,8 +362,7 @@ them, so it never restarts the instances because of them.
 
 | Path | Without NATS |
 |------|--------------|
-| Every event except `user.deleted` | Recorded with its change in `event_outbox`; the relay publishes it once the broker is back, in order. The request succeeds; the backlog shows in `auth_outbox_pending` (`AuthApiEventsStalled` past 5 minutes) |
-| Account deletion | Waits up to 5 seconds for JetStream to store `user.deleted`, then answers 503 without deleting the account; the user retries later |
+| Every event, `user.deleted` included | Recorded with its change in `event_outbox`; the relay publishes it once the broker is back, in order. The request succeeds; the backlog shows in `auth_outbox_pending` (`AuthApiEventsStalled` past 5 minutes) |
 | `/ready` | 503 with `"nats": "down"` (`NatsDown` alerts) |
 | Instance start | Starts and connects in the background; only a wrong token stops the start |
 

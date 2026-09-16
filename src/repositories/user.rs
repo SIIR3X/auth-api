@@ -172,10 +172,10 @@ pub async fn find_by_identifier(
 
 /// Permanently deletes a user and all associated data via CASCADE.
 /// This is irreversible and fulfills GDPR right-to-erasure requests.
-pub async fn delete(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn delete<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }

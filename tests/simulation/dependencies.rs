@@ -137,42 +137,49 @@ async fn a_slow_redis_slows_requests_without_failing_them() {
 }
 
 #[tokio::test]
-async fn an_account_is_not_deleted_while_its_deletion_cannot_be_announced() {
+async fn an_account_deleted_while_the_broker_is_down_is_announced_when_it_returns() {
     let app = app_with_fault_proxies().await;
     let user = fixtures::authenticated_user(&app, 1).await;
-    let exists = || async {
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
-            .bind(user.id)
-            .fetch_one(&app.db)
-            .await
-            .unwrap()
+    let exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
+        .bind(user.id);
+    let announced = || async {
+        sqlx::query_scalar::<_, Option<time::OffsetDateTime>>(
+            "SELECT published_at FROM event_outbox
+             WHERE subject = 'events.auth.user.deleted' AND payload->>'user_id' = $1",
+        )
+        .bind(user.id.to_string())
+        .fetch_optional(&app.db)
+        .await
+        .unwrap()
     };
 
     dependencies(&app).nats.set(Fault::Refuse);
-    let refused = app
+    let res = app
         .delete_auth_json("/users/me", &user.access_token, &json!({}))
         .await;
     assert_eq!(
-        refused.status().as_u16(),
-        503,
-        "downstream erasure cannot be guaranteed"
+        res.status().as_u16(),
+        204,
+        "the deletion does not wait for the broker"
     );
-    assert!(exists().await, "the account was deleted without its event");
+    assert!(!exists.fetch_one(&app.db).await.unwrap());
+    assert_eq!(
+        announced().await,
+        Some(None),
+        "user.deleted is recorded with the deletion and waits for the broker"
+    );
 
     dependencies(&app).nats.set(Fault::None);
-    let mut status = 0;
-    for _ in 0..50 {
-        let res = app
-            .delete_auth_json("/users/me", &user.access_token, &json!({}))
-            .await;
-        status = res.status().as_u16();
-        if status == 204 {
-            break;
+    let published = tokio::time::timeout(Duration::from_secs(90), async {
+        while !matches!(announced().await, Some(Some(_))) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert_eq!(status, 204, "deletion did not recover with NATS");
-    assert!(!exists().await);
+    })
+    .await;
+    assert!(
+        published.is_ok(),
+        "user.deleted is published once the broker is back"
+    );
 }
 
 #[tokio::test]

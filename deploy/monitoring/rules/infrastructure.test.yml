@@ -156,7 +156,7 @@ tests:
         alertname: NatsDown
         exp_alerts:
           - exp_labels: { severity: critical, job: nats, instance: "10.0.0.1:7777" }
-            exp_annotations: { summary: "the NATS broker or its exporter is down; account deletions answer 503" }
+            exp_annotations: { summary: "the NATS broker or its exporter is down; domain events wait in the outbox" }
       - eval_time: 7m
         alertname: AuthApiEventsStalled
         exp_alerts:

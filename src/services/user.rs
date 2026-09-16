@@ -290,13 +290,19 @@ pub async fn delete_account(
         .collect();
 
     // Downstream services erase their data on `user.deleted`, and the user id is
-    // the only key to it: once the row is gone nothing can resend the event. It
-    // is therefore stored by JetStream first; if it cannot be, nothing is deleted.
-    events::publish_acked(state, "user.deleted", &events::UserDeleted { user_id }).await?;
+    // the only key to it. The audit entry, the event and the deletion commit
+    // together: the account is never gone without its event, and the event
+    // never announces a deletion that failed. The event waits in the outbox
+    // while NATS is down.
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
-    // Append the audit entry before deletion (audit_log uses SET NULL on user FK).
+    // Appended before the deletion: the foreign key then sets its user_id to NULL.
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
@@ -310,9 +316,16 @@ pub async fn delete_account(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    user_repo::delete(&state.db, user_id)
+    events::enqueue(&mut *tx, "user.deleted", &events::UserDeleted { user_id }).await?;
+
+    user_repo::delete(&mut *tx, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    events::wake();
 
     auth_svc::invalidate_session_caches(state, &session_ids).await;
 

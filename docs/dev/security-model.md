@@ -94,8 +94,10 @@ the database together, is out of scope.
   `GET /users/me/audit`.
 - An email change is confirmed on both addresses, revokes the other sessions,
   and notifies the previous address.
-- Account deletion publishes `user.deleted` with a JetStream acknowledgement
-  before the row is deleted, so downstream erasure cannot be lost.
+- Account deletion records `user.deleted` in the event outbox in the same
+  transaction as the deletion, so downstream erasure cannot be lost and is
+  never announced for an account that still exists; the relay delivers it to
+  JetStream, waiting for the broker when it is down.
 
 ## Network edge
 
