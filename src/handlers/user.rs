@@ -54,6 +54,10 @@ pub struct ConfirmNewEmailRequest {
 pub struct ChangePasswordRequest {
     pub current_password: Option<String>,
     pub new_password: String,
+    /// Keep the session making the request signed in; every other session is
+    /// revoked either way. Default: false.
+    #[serde(default)]
+    pub keep_current_session: bool,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -274,7 +278,7 @@ pub async fn confirm_new_email(
     tag = "account",
     request_body = ChangePasswordRequest,
     responses(
-        (status = 204, description = "Password changed; every session revoked, the current one included"),
+        (status = 204, description = "Password changed; every other session revoked, and the current one too unless `keep_current_session`"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
@@ -295,6 +299,7 @@ pub async fn change_password(
         auth.session_id,
         body.current_password.as_deref(),
         &body.new_password,
+        body.keep_current_session,
         ip,
         auth.request_id,
     )

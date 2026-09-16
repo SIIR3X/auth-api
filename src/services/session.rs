@@ -88,6 +88,7 @@ pub async fn revoke_all(
     user_id: Uuid,
     current_session_id: Uuid,
     current_password: Option<&str>,
+    keep_current_session: bool,
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<u64, AppError> {
@@ -105,12 +106,19 @@ pub async fn revoke_all(
     // Collect active sessions before revoking so we can blacklist their tokens.
     let active = session_repo::find_active_by_user(&state.db, user_id)
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        .map_err(|e| AppError::Internal(e.into()))?
+        .into_iter()
+        .filter(|s| !keep_current_session || s.id != current_session_id)
+        .collect::<Vec<_>>();
 
     // The revocation, its audit entry and its event commit together.
     let mut tx = state.db.begin().await?;
 
-    let count = session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
+    let count = if keep_current_session {
+        session_repo::revoke_others(&mut *tx, user_id, current_session_id).await?
+    } else {
+        session_repo::revoke_all_by_user(&mut *tx, user_id).await?
+    };
 
     audit::append(
         &mut *tx,
@@ -119,7 +127,7 @@ pub async fn revoke_all(
             request_id,
             action: AuditAction::SessionRevoked,
             ip_address: ip,
-            metadata: json!({"count": count, "all": true}),
+            metadata: json!({"count": count, "all": !keep_current_session}),
         },
     )
     .await

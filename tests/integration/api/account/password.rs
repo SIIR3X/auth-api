@@ -180,3 +180,48 @@ async fn concurrent_password_reset_token_use_only_succeeds_once() {
         "expected one success and one rejection (401 or 429), got {status_a} and {status_b}"
     );
 }
+
+/// A second session of `user`, signed in from another device.
+async fn second_session(app: &TestApp, user: &fixtures::AuthenticatedUser) -> String {
+    let res = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    body["access_token"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn a_password_change_can_keep_the_current_session() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 950).await;
+    let other = second_session(&app, &user).await;
+
+    let res = app
+        .patch_auth(
+            "/users/me/password",
+            &user.access_token,
+            &serde_json::json!({
+                "new_password": "Kept-Session-950!",
+                "keep_current_session": true,
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+
+    let current = app.get_auth("/users/me", &user.access_token).await;
+    assert_eq!(
+        current.status().as_u16(),
+        200,
+        "the current session stays signed in"
+    );
+    let elsewhere = app.get_auth("/users/me", &other).await;
+    assert_eq!(
+        elsewhere.status().as_u16(),
+        401,
+        "every other session is revoked"
+    );
+}

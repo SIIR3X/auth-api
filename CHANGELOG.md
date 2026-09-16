@@ -67,6 +67,9 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   `POST /auth/authorize`, `POST /auth/authorize/token`.
 - Client registry: scopes, redirect URIs, loopback redirects, default session
   limit; `auth-api --register-client`.
+- `PATCH /users/me/password` and `DELETE /users/me/sessions` accept
+  `keep_current_session`: every other session is revoked and the one making the
+  request stays signed in.
 - Passwords found in known data breaches are refused at registration, change
   and reset (`422 password_compromised`), through the Pwned Passwords range API
   with k-anonymity: only five characters of the SHA-1 leave the service

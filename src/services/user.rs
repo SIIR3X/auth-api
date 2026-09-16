@@ -141,12 +141,14 @@ pub async fn change_username(
 
 /// Verifies the current password before applying the new one, then revokes all sessions.
 /// Requires a verified email.
+#[allow(clippy::too_many_arguments)]
 pub async fn change_password(
     state: &AppState,
     user_id: Uuid,
     current_session_id: Uuid,
     current_password: Option<&str>,
     new_password: &str,
+    keep_current_session: bool,
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
@@ -181,16 +183,22 @@ pub async fn change_password(
         .map_err(|e| AppError::Internal(e.into()))?
         .into_iter()
         .map(|session| session.id)
+        .filter(|id| !keep_current_session || *id != current_session_id)
         .collect::<Vec<_>>();
 
-    // The new hash, the revocation of every session, the audit entry and the
+    // The new hash, the revocation of the sessions, the audit entry and the
     // events commit together.
     let mut tx = state.db.begin().await?;
 
     user_repo::update_password_hash(&mut *tx, user_id, &new_hash).await?;
 
-    // Revoke all sessions so other devices must re-authenticate
-    session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
+    // Other devices must sign in with the new password; the current session
+    // too unless the caller keeps it.
+    if keep_current_session {
+        session_repo::revoke_others(&mut *tx, user_id, current_session_id).await?;
+    } else {
+        session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
+    }
 
     audit::append(
         &mut *tx,

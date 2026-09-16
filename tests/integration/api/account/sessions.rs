@@ -334,3 +334,54 @@ async fn revoke_all_sessions_works_with_recent_reauth_no_password() {
         check.status()
     );
 }
+
+/// A second session of `user`, signed in from another device.
+async fn second_session(app: &TestApp, user: &fixtures::AuthenticatedUser) -> String {
+    let res = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    body["access_token"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn revoking_every_session_can_keep_the_current_one() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 951).await;
+    let other = second_session(&app, &user).await;
+
+    let res = app
+        .delete_auth_json(
+            "/users/me/sessions",
+            &user.access_token,
+            &serde_json::json!({ "keep_current_session": true }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+
+    let current = app.get_auth("/users/me", &user.access_token).await;
+    assert_eq!(
+        current.status().as_u16(),
+        200,
+        "the current session stays signed in"
+    );
+    let elsewhere = app.get_auth("/users/me", &other).await;
+    assert_eq!(
+        elsewhere.status().as_u16(),
+        401,
+        "every other session is revoked"
+    );
+
+    let recorded: serde_json::Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE user_id = $1 AND action = 'session_revoked'",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(recorded["all"], false);
+}

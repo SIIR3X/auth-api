@@ -41,6 +41,9 @@ pub struct SessionResponse {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct RevokeAllRequest {
     pub current_password: Option<String>,
+    /// Keep the session making the request signed in. Default: false.
+    #[serde(default)]
+    pub keep_current_session: bool,
 }
 
 // Handlers
@@ -124,7 +127,7 @@ pub async fn revoke(
     tag = "sessions",
     request_body = Option<RevokeAllRequest>,
     responses(
-        (status = 204, description = "Every session revoked, the current one included"),
+        (status = 204, description = "Every other session revoked, and the current one too unless `keep_current_session`"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
     ),
@@ -136,12 +139,15 @@ pub async fn revoke_all(
     auth: AuthUser,
     body: Option<Json<RevokeAllRequest>>,
 ) -> Result<StatusCode, AppError> {
-    let current_password = body.and_then(|Json(b)| b.current_password);
+    let (current_password, keep_current_session) = body
+        .map(|Json(b)| (b.current_password, b.keep_current_session))
+        .unwrap_or_default();
     session_svc::revoke_all(
         &state,
         auth.user_id,
         auth.session_id,
         current_password.as_deref(),
+        keep_current_session,
         ip,
         auth.request_id,
     )

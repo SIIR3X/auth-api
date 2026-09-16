@@ -1716,7 +1716,7 @@ paths:
         required: true
       responses:
         '204':
-          description: Password changed; every session revoked, the current one included
+          description: Password changed; every other session revoked, and the current one too unless `keep_current_session`
         '400':
           description: Malformed request
           content:
@@ -1878,7 +1878,7 @@ paths:
               - $ref: '#/components/schemas/RevokeAllRequest'
       responses:
         '204':
-          description: Every session revoked, the current one included
+          description: Every other session revoked, and the current one too unless `keep_current_session`
         '400':
           description: Malformed request
           content:
@@ -2829,6 +2829,11 @@ components:
           type:
           - string
           - 'null'
+        keep_current_session:
+          type: boolean
+          description: |-
+            Keep the session making the request signed in; every other session is
+            revoked either way. Default: false.
         new_password:
           type: string
     ChangeUsernameRequest:
@@ -3278,6 +3283,9 @@ components:
           type:
           - string
           - 'null'
+        keep_current_session:
+          type: boolean
+          description: 'Keep the session making the request signed in. Default: false.'
     SessionResponse:
       type: object
       required:
