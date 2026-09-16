@@ -54,6 +54,7 @@ use utoipa::{
         crate::handlers::user::change_locale,
         crate::handlers::user::delete_account,
         crate::handlers::user::reauthenticate,
+        crate::handlers::user::export_data,
         crate::handlers::audit::list,
         crate::handlers::session::list,
         crate::handlers::session::revoke,

@@ -105,6 +105,7 @@ issued.
 | GET | `/users/me` | JWT | General |
 | GET | `/users/me/audit` | JWT | General |
 | POST | `/users/me/reauth` | JWT | Strict |
+| GET | `/users/me/export` | JWT + reauth (recent only) | Strict |
 | PATCH | `/users/me/username` | JWT + reauth | General |
 | PATCH | `/users/me/password` | JWT + reauth | General |
 | PATCH | `/users/me/locale` | JWT | General |
@@ -113,6 +114,12 @@ issued.
 `/users/me/audit?limit=&cursor=` returns the caller's own security history,
 newest first: `{ "entries": [...], "next_cursor" }`. Pass `next_cursor` back as
 `cursor`; it is absent on the last page. `limit` is clamped to 1-200.
+
+`/users/me/export` downloads everything stored about the account as one JSON
+document (`account-data.json`): profile, roles, sessions, second factors,
+recovery code counts, known devices, client quotas, sign-in attempts and the
+security history. No password hash, secret or token digest is included. As a
+`GET` it takes no body: re-authenticate with `POST /users/me/reauth` first.
 
 ## Email change
 

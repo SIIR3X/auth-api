@@ -363,3 +363,41 @@ pub async fn reauthenticate(
     )
     .await
 }
+
+/// Everything stored about the account, after a recent re-authentication: the
+/// document is as sensitive as the account itself.
+pub async fn export_data(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
+    ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
+) -> Result<serde_json::Value, AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        user_id,
+        session_id,
+        None,
+        ip,
+        request_id,
+        "export_data",
+    )
+    .await?;
+
+    // Audited first, so the export records itself.
+    audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(user_id),
+            request_id,
+            action: AuditAction::DataExported,
+            ip_address: ip,
+            metadata: json!({}),
+        },
+    )
+    .await?;
+
+    crate::repositories::export::account_document(&state.db, user_id)
+        .await?
+        .ok_or(AppError::NotFound)
+}

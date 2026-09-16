@@ -53,7 +53,7 @@ erase their own data about that user id.
 
 | Right | How |
 |-------|-----|
-| Access | `GET /users/me`, `GET /users/me/sessions`, `GET /users/me/audit`, `GET /users/me/two-factor` |
+| Access and portability | `GET /users/me/export`: one JSON document with everything listed above that auth-api stores about the account, secrets excepted; the other `GET /users/me/*` routes show each part |
 | Rectification | `PATCH /users/me/username`, `PATCH /users/me/locale`, the email change flow (`/users/me/email/*`) |
 | Erasure | `DELETE /users/me`; for an account the user cannot reach, an administrator deletes it (`DELETE /admin/users/{id}`) |
 | Restriction | An administrator suspends the account (`POST /admin/users/{id}/suspend`) |

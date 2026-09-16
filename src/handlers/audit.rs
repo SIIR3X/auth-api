@@ -181,6 +181,7 @@ pub(crate) fn action_name(action: &AuditAction) -> &'static str {
         A::ClientRegistered => "client_registered",
         A::ClientUpdated => "client_updated",
         A::ClientDeleted => "client_deleted",
+        A::DataExported => "data_exported",
     }
 }
 

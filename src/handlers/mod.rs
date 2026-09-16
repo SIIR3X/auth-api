@@ -401,6 +401,8 @@ fn admin_router() -> Router<AppState> {
 fn me_strict_router() -> Router<AppState> {
     Router::new()
         .route("/reauth", post(user::reauthenticate))
+        // A download of everything stored: as costly as it is sensitive.
+        .route("/export", get(user::export_data))
         .route("/email/start", post(user::start_email_change))
         .route("/email/verify-current", post(user::verify_current_email))
         .route("/email/submit", post(user::submit_new_email))

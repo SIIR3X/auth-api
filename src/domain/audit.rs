@@ -49,6 +49,7 @@ pub enum AuditAction {
     ClientRegistered,
     ClientUpdated,
     ClientDeleted,
+    DataExported,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

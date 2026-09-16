@@ -449,6 +449,34 @@ pub async fn reauthenticate(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    get,
+    path = "/users/me/export",
+    tag = "account",
+    responses(
+        (status = 200, description = "Everything stored about the account, as a JSON download: profile, roles, sessions, second factors (no secrets), devices, sign-in attempts and security history", body = Object),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+    security(("bearer" = [])),
+)]
+pub async fn export_data(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    auth: AuthUser,
+) -> Result<impl axum::response::IntoResponse, AppError> {
+    let document =
+        user_svc::export_data(&state, auth.user_id, auth.session_id, ip, auth.request_id).await?;
+    Ok((
+        [(
+            axum::http::header::CONTENT_DISPOSITION,
+            "attachment; filename=\"account-data.json\"",
+        )],
+        Json(document),
+    ))
+}
+
 pub fn user_status_str(status: &crate::domain::user::UserStatus) -> String {
     use crate::domain::user::UserStatus;
     match status {

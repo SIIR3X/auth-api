@@ -80,6 +80,8 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   removing one revokes its sessions. `/admin/audit`: the audit log of every
   account, filtered by account and action, paged newest first.
 - CORS allows `PUT`.
+- `GET /users/me/export`: everything stored about the account as a JSON
+  download, after a recent re-authentication, audited as `data_exported`.
 - Simulations of random account lifecycles checked against a model, a timing
   test comparing existing and unknown accounts, and `make soak`: an hour of
   mixed traffic that fails on any error or on growing memory.

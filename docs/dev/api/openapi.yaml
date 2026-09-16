@@ -2884,6 +2884,44 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
       security:
       - bearer: []
+  /users/me/export:
+    get:
+      tags:
+      - account
+      operationId: export_data
+      responses:
+        '200':
+          description: 'Everything stored about the account, as a JSON download: profile, roles, sessions, second factors (no secrets), devices, sign-in attempts and security history'
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
   /users/me/locale:
     patch:
       tags:
