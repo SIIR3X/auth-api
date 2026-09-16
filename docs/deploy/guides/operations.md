@@ -199,7 +199,7 @@ only, never behind nginx). Key series:
 - `axum_http_requests_duration_seconds` - per-route latency histograms
 - `auth_db_pool_connections{state=max|open|idle|in_use}`, `auth_redis_pool_connections{state=max|open|available}`, `auth_redis_pool_waiting` - pool saturation, refreshed every 10 s; `in_use` at `max` with requests timing out = pool too small or a slow query
 - `auth_redis_errors_total{operation=budget|rate_limit|token_state}` - Redis failures, each refused with a 503 (fail closed)
-- `auth_events_publish_failures_total{reason=error|timeout}` - best-effort events dropped because NATS did not take them within 500 ms
+- `auth_outbox_pending`, `auth_outbox_oldest_pending_age_seconds` - domain events recorded but not yet stored by JetStream; `auth_events_published_total`, `auth_events_publish_failures_total{reason=error|timeout|stream}` - relay publications and failed attempts (each retried)
 - `auth_notifications_pending`, `auth_notifications_failed_total{task}`, `auth_notifications_dropped_total{task}` - e-mails in flight, failed after retries, dropped past 1 000 pending
 - `auth_background_tasks` - notifications and cache invalidations still running (drained for 5 s at shutdown)
 - `auth_cleanup_deleted_rows_total{job}`, `auth_cleanup_failures_total{job}` - retention jobs
@@ -362,14 +362,15 @@ them, so it never restarts the instances because of them.
 
 | Path | Without NATS |
 |------|--------------|
-| Every event except `user.deleted` | Published with a 500 ms timeout, then dropped and counted in `auth_events_publish_failures_total{reason}` (`AuthApiEventsDropped`); the request succeeds |
+| Every event except `user.deleted` | Recorded with its change in `event_outbox`; the relay publishes it once the broker is back, in order. The request succeeds; the backlog shows in `auth_outbox_pending` (`AuthApiEventsStalled` past 5 minutes) |
 | Account deletion | Waits up to 5 seconds for JetStream to store `user.deleted`, then answers 503 without deleting the account; the user retries later |
 | `/ready` | 503 with `"nats": "down"` (`NatsDown` alerts) |
 | Instance start | Starts and connects in the background; only a wrong token stops the start |
 
 **Response:** restart the broker (`docker compose -f docker-compose.api.yml
-restart nats`); the instances reconnect by themselves. Dropped events are not
-replayed: a downstream service that missed one reconciles from the API.
+restart nats`); the instances reconnect by themselves and the relay publishes
+the recorded events, oldest first. Nothing is lost. To see what waits:
+`SELECT subject, attempts, last_error FROM event_outbox WHERE published_at IS NULL ORDER BY seq;`
 
 **SMTP relay down.** E-mails are sent in the background, never inside the
 request: each attempt has a 10-second timeout and is retried after 2 then

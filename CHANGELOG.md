@@ -175,9 +175,15 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   Redis outage.
 - A database failure while checking a token answers 503 instead of 401, which
   signed users out during an outage and hid it from the server-error alerts.
-- Best-effort events wait at most 500 ms for NATS and are counted in
-  `auth_events_publish_failures_total` when dropped; the acknowledged
-  `user.deleted` waits at most 5 seconds. An unreachable broker no longer stops
+- Domain events go through a transactional outbox: each event is recorded in
+  the transaction of the change it announces and a background relay publishes
+  it to JetStream in order, with its id as message id (deduplication) and
+  `event_id` and `occurred_at` in the payload. An event is no longer lost when
+  NATS is down, requests never wait for the broker, and a rolled-back change
+  announces nothing. Registration, email verification, password changes and
+  resets, session revocation and email changes now commit their writes in one
+  transaction. `AuthApiEventsStalled` replaces `AuthApiEventsDropped`. The
+  acknowledged `user.deleted` waits at most 5 seconds. An unreachable broker no longer stops
   the start (a refused token still does): the client reconnects in the
   background, the stream is declared before the first acknowledged event, and
   `/ready` reports NATS.

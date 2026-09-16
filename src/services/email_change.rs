@@ -343,33 +343,34 @@ pub async fn confirm_new(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
+        events::enqueue(
+            &mut *tx,
+            "user.sessions_revoked",
+            &events::UserSessionsRevoked { user_id },
+        )
+        .await?;
+        events::enqueue(
+            &mut *tx,
+            "user.email_changed",
+            &events::UserEmailChanged {
+                user_id,
+                old_email: old_email.clone(),
+                new_email: new_email.to_string(),
+            },
+        )
+        .await?;
+
         tx.commit()
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
     }
+    events::wake();
 
     auth_svc::invalidate_session_caches(state, &other_session_ids).await;
-    events::publish(
-        state,
-        "user.sessions_revoked",
-        &events::UserSessionsRevoked { user_id },
-    )
-    .await;
 
     // Challenges and flows opened before the change belong to the old identity.
     auth_svc::purge_user_pre_auth_and_email_change(state, user_id).await;
     notify_previous_address(state, &previous, new_email);
-
-    events::publish(
-        state,
-        "user.email_changed",
-        &events::UserEmailChanged {
-            user_id,
-            old_email: old_email.clone(),
-            new_email: new_email.to_string(),
-        },
-    )
-    .await;
 
     // Clean up all Redis keys for this flow and arm the cooldown.
     if let Ok(mut conn) = state.redis.get().await {

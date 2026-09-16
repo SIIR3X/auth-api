@@ -99,6 +99,12 @@ async fn run_all(conn: &mut PgConnection, config: &Config) {
             "SELECT cleanup_expired_authorization_codes($1::interval, $2)",
             "1 hour".to_owned(),
         ),
+        // Published events stay a week for investigation.
+        (
+            "cleanup_published_events",
+            "SELECT cleanup_published_events($1::interval, $2)",
+            "7 days".to_owned(),
+        ),
         // TOTP replay-guard rows live ~90 s (one step of skew on each side);
         // the repository already self-cleans per user, this sweeps leftovers.
         (

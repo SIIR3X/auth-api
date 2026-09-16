@@ -1,6 +1,6 @@
 //! Repository for the `users` table.
 
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -20,7 +20,10 @@ pub struct NewUser<'a> {
 
 // Writes
 
-pub async fn create(pool: &PgPool, input: &NewUser<'_>) -> Result<User, sqlx::Error> {
+pub async fn create<'e>(
+    executor: impl PgExecutor<'e>,
+    input: &NewUser<'_>,
+) -> Result<User, sqlx::Error> {
     sqlx::query_as::<_, User>(
         "INSERT INTO users (username, email, password_hash, preferred_locale)
          VALUES ($1, $2, $3, $4)
@@ -30,19 +33,19 @@ pub async fn create(pool: &PgPool, input: &NewUser<'_>) -> Result<User, sqlx::Er
     .bind(input.email)
     .bind(input.password_hash)
     .bind(input.preferred_locale)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 
-pub async fn update_password_hash(
-    pool: &PgPool,
+pub async fn update_password_hash<'e>(
+    executor: impl PgExecutor<'e>,
     id: Uuid,
     password_hash: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
         .bind(id)
         .bind(password_hash)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }
@@ -121,7 +124,10 @@ pub async fn change_email<'e>(
 
 /// Sets email_verified_at and activates an account that was pending
 /// verification. Any other status (suspended, inactive) is left untouched.
-pub async fn mark_email_verified(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn mark_email_verified<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE users
          SET email_verified_at = NOW(),
@@ -132,7 +138,7 @@ pub async fn mark_email_verified(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Er
          WHERE id = $1",
     )
     .bind(id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }

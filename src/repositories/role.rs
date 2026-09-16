@@ -76,8 +76,8 @@ pub async fn find_by_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<Role>, sql
     .await
 }
 
-pub async fn assign_to_user(
-    pool: &PgPool,
+pub async fn assign_to_user<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     user_id: Uuid,
     role_id: Uuid,
     granted_by: Option<Uuid>,
@@ -91,7 +91,7 @@ pub async fn assign_to_user(
     .bind(user_id)
     .bind(role_id)
     .bind(granted_by)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 

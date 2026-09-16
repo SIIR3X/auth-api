@@ -165,12 +165,13 @@ groups:
         annotations:
           summary: "the NATS broker or its exporter is down; account deletions answer 503"
 
-      - alert: AuthApiEventsDropped
-        expr: sum by (instance) (increase(auth_events_publish_failures_total[15m])) > 0
+      - alert: AuthApiEventsStalled
+        expr: max(auth_outbox_oldest_pending_age_seconds) > 300
+        for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.instance }} dropped events NATS did not take in time"
+          summary: "domain events have waited more than 5 minutes to reach NATS"
 
   - name: background
     rules:

@@ -158,6 +158,26 @@ Append-only (a trigger refuses updates and deletes), partitioned by month.
 | `ip_address` | INET | Yes | |
 | `metadata` | JSONB | No | Action details, without personal data such as addresses |
 
+## Events
+
+### event_outbox
+
+Domain events waiting for, or already delivered to, NATS JetStream. A service
+inserts the event in the transaction of the change it announces; the relay
+publishes pending rows in `seq` order and marks them published.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `seq` | BIGINT | No | Primary key, publication order |
+| `id` | UUID | No | Unique; the JetStream message id and the payload's `event_id` |
+| `subject` | TEXT | No | `events.auth.user.*` |
+| `payload` | JSONB | No | Event fields; `occurred_at` is added from `created_at` when published |
+| `created_at` | TIMESTAMPTZ | No | |
+| `published_at` | TIMESTAMPTZ | Yes | Set once JetStream stored the event |
+| `attempts`, `next_attempt_at`, `last_error` | | | Failed attempts and the next retry |
+
+Published rows are kept seven days (`cleanup_published_events`).
+
 ## Retention
 
 `cleanup_*` SQL functions take a grace interval and a batch size; the

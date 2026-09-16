@@ -107,26 +107,19 @@ pub async fn revoke_all(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    let count = session_repo::revoke_all_by_user(&state.db, user_id)
+    // The revocation, its audit entry and its event commit together.
+    let mut tx = state
+        .db
+        .begin()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    let session_ids = active.iter().map(|s| s.id).collect::<Vec<_>>();
-    auth_svc::invalidate_session_caches(state, &session_ids).await;
-    events::publish(
-        state,
-        "user.sessions_revoked",
-        &events::UserSessionsRevoked { user_id },
-    )
-    .await;
-
-    for s in &active {
-        auth_svc::blocklist_refresh_token(state, &s.token_hash, s.expires_at).await;
-        reauth_svc::clear_recent_reauth(state, s.id).await;
-    }
+    let count = session_repo::revoke_all_by_user(&mut *tx, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
@@ -137,6 +130,25 @@ pub async fn revoke_all(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+
+    events::enqueue(
+        &mut *tx,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked { user_id },
+    )
+    .await?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    events::wake();
+
+    let session_ids = active.iter().map(|s| s.id).collect::<Vec<_>>();
+    auth_svc::invalidate_session_caches(state, &session_ids).await;
+    for s in &active {
+        auth_svc::blocklist_refresh_token(state, &s.token_hash, s.expires_at).await;
+        reauth_svc::clear_recent_reauth(state, s.id).await;
+    }
 
     Ok(count)
 }

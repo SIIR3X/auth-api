@@ -162,12 +162,15 @@ pub async fn revoke(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-pub async fn revoke_all_by_user(pool: &PgPool, user_id: Uuid) -> Result<u64, sqlx::Error> {
+pub async fn revoke_all_by_user<'e>(
+    executor: impl PgExecutor<'e>,
+    user_id: Uuid,
+) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
         "UPDATE sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
     )
     .bind(user_id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(result.rows_affected())
 }

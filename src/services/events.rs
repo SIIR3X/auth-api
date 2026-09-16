@@ -1,26 +1,36 @@
-//! Domain events published to NATS.
+//! Domain events, delivered to NATS JetStream through a transactional outbox.
 //!
-//! Two guarantees, chosen per event:
+//! A service records an event with [`enqueue`] in the transaction of the change
+//! it announces, and calls [`wake`] once committed. The relay ([`spawn_relay`])
+//! publishes pending events in order and marks each one published only after
+//! JetStream stored it:
 //!
-//! - [`publish`] is fire-and-forget: a failed publish is logged and the request
-//!   proceeds. Right for events whose loss leaves a stale mirror that a later
-//!   event repairs (`user.created`, `user.email_changed`, ...).
-//! - [`publish_acked`] waits for JetStream to persist the event and returns the
-//!   failure to the caller. Reserved for events whose loss is silent and
-//!   permanent: `user.deleted`, whose `user_id` is the only key downstream
-//!   services have to erase their data, and which nothing can resend once the
-//!   account row is gone.
+//! - a committed change always gets its event, even when NATS is down at the
+//!   time: it is published once the broker is back;
+//! - a rolled-back change announces nothing;
+//! - requests never wait for the broker.
 //!
-//! JetStream delivers at least once: consumers must process idempotently.
+//! One instance relays at a time (advisory lock). A publication that fails holds
+//! the queue and is retried with backoff, so a user's events never arrive out
+//! of order. Delivery is at least once: the event id is the JetStream message id,
+//! which deduplicates a publication repeated after a crash, and consumers still
+//! process idempotently. Every message carries `event_id` and `occurred_at`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use async_nats::jetstream;
+use async_nats::{HeaderMap, jetstream};
 use serde::Serialize;
+use sqlx::{PgConnection, PgExecutor, PgPool};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::{error::AppError, state::AppState};
+use crate::{
+    domain::outbox,
+    error::AppError,
+    repositories::event_outbox::{self, PendingEvent},
+    state::AppState,
+};
 
 /// Subject prefix for all auth-api domain events.
 const SUBJECT_PREFIX: &str = "events.auth";
@@ -37,11 +47,25 @@ const EVENT_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// Disk ceiling of last resort; retention bites first by orders of magnitude.
 const EVENT_MAX_BYTES: i64 = 256 * 1024 * 1024;
 
-/// How long a best-effort publication may hold its request.
-const PUBLISH_TIMEOUT: Duration = Duration::from_millis(500);
+/// JetStream deduplicates a message id seen within this window: longer than
+/// the longest retry delay, so a publication repeated after a crash between the
+/// acknowledgement and the outbox update is dropped by the server.
+const DUPLICATE_WINDOW: Duration = Duration::from_secs(10 * 60);
 
-/// How long an acknowledged publication (account deletion) may take in all.
+/// How long an acknowledged publication may take in all.
 const ACKED_PUBLISH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often the relay looks for pending events when nothing woke it.
+const RELAY_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Events published per relay run.
+const RELAY_BATCH: i64 = 100;
+
+/// Advisory lock held by the instance relaying.
+const RELAY_LOCK_KEY: &str = "auth_api_event_relay";
+
+/// Wakes the relay of this process when a transaction recorded events.
+static WAKE: Notify = Notify::const_new();
 
 /// Whether this process already declared the stream.
 static STREAM_READY: AtomicBool = AtomicBool::new(false);
@@ -84,41 +108,162 @@ pub struct UserSessionsRevoked {
     pub user_id: Uuid,
 }
 
-/// Publish a domain event to `events.auth.{event_name}`, fire-and-forget.
-pub async fn publish(state: &AppState, event_name: &str, payload: &impl Serialize) {
-    let subject = format!("{SUBJECT_PREFIX}.{event_name}");
-
-    let bytes = match serde_json::to_vec(payload) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!(event = event_name, error = %e, "failed to serialize event");
-            return;
-        }
-    };
-
-    // The client queues the message while the broker is reachable, but its
-    // queue is bounded: once full, a publication waits. Past the timeout the
-    // event is dropped and counted rather than holding the request.
-    match tokio::time::timeout(
-        PUBLISH_TIMEOUT,
-        state.nats.publish(subject.clone(), bytes.into()),
+/// Record `payload` as the event `events.auth.{event_name}`. Call it with the
+/// transaction of the change the event announces, then [`wake`] after the
+/// commit.
+pub async fn enqueue<'e>(
+    executor: impl PgExecutor<'e>,
+    event_name: &str,
+    payload: &impl Serialize,
+) -> Result<(), AppError> {
+    let payload = serde_json::to_value(payload).map_err(|e| AppError::Internal(e.into()))?;
+    event_outbox::insert(
+        executor,
+        &format!("{SUBJECT_PREFIX}.{event_name}"),
+        &payload,
     )
     .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            metrics::counter!("auth_events_publish_failures_total", "reason" => "error")
-                .increment(1);
-            tracing::error!(subject, error = %e, "failed to publish event to NATS");
+    .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(())
+}
+
+/// Tell this process's relay that events were committed, so they go out now
+/// instead of at the next poll.
+pub fn wake() {
+    WAKE.notify_one();
+}
+
+/// Relay pending events to JetStream for the life of the process.
+///
+/// Each round waits for a wake-up or the poll interval first, events left from
+/// before a restart included: a relay that reached for a connection the moment
+/// it started would do so in every short-lived process, tests included.
+pub fn spawn_relay(db: PgPool, nats: async_nats::Client) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep(RELAY_POLL_INTERVAL) => {}
+                () = WAKE.notified() => {}
+            }
+            loop {
+                match relay_once(&db, &nats).await {
+                    // A full batch: more may be waiting.
+                    Ok(published) if published == RELAY_BATCH as usize => continue,
+                    Ok(_) => break,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "event relay run failed");
+                        break;
+                    }
+                }
+            }
         }
-        Err(_) => {
-            metrics::counter!("auth_events_publish_failures_total", "reason" => "timeout")
-                .increment(1);
-            tracing::error!(
-                subject,
-                "publishing an event to NATS timed out; event dropped"
-            );
+    })
+}
+
+/// One relay run: publish the due events at the head of the queue. Returns how
+/// many were published; 0 when another instance holds the relay lock.
+pub async fn relay_once(db: &PgPool, nats: &async_nats::Client) -> Result<usize, sqlx::Error> {
+    let mut conn = db.acquire().await?;
+
+    // Every instance reports the backlog, so the alert does not depend on
+    // which one holds the lock.
+    let (pending, oldest_secs) = event_outbox::backlog(&mut *conn).await?;
+    metrics::gauge!("auth_outbox_pending").set(pending as f64);
+    metrics::gauge!("auth_outbox_oldest_pending_age_seconds").set(oldest_secs);
+    if pending == 0 {
+        return Ok(0);
+    }
+
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtextextended($1, 0))")
+        .bind(RELAY_LOCK_KEY)
+        .fetch_one(&mut *conn)
+        .await?;
+    if !locked {
+        return Ok(0);
+    }
+
+    let published = publish_pending(&mut conn, nats).await;
+
+    let unlocked =
+        sqlx::query_scalar::<_, bool>("SELECT pg_advisory_unlock(hashtextextended($1, 0))")
+            .bind(RELAY_LOCK_KEY)
+            .fetch_one(&mut *conn)
+            .await;
+    if !matches!(unlocked, Ok(true)) {
+        // Never hand a connection that may still hold the lock back to the pool.
+        conn.close_on_drop();
+    }
+    published
+}
+
+async fn publish_pending(
+    conn: &mut PgConnection,
+    nats: &async_nats::Client,
+) -> Result<usize, sqlx::Error> {
+    if let Err(e) = ensure_user_stream_once(nats).await {
+        metrics::counter!("auth_events_publish_failures_total", "reason" => "stream").increment(1);
+        tracing::warn!(error = %e, "the user event stream is not available; events wait");
+        return Ok(0);
+    }
+
+    let mut published = 0;
+    for event in event_outbox::head(&mut *conn, RELAY_BATCH).await? {
+        // The head is not due yet: everything behind it waits, in order.
+        if !event.due {
+            break;
         }
+        match publish_one(nats, &event).await {
+            Ok(()) => {
+                event_outbox::mark_published(&mut *conn, event.seq).await?;
+                metrics::counter!("auth_events_published_total").increment(1);
+                published += 1;
+            }
+            Err((reason, error)) => {
+                metrics::counter!("auth_events_publish_failures_total", "reason" => reason)
+                    .increment(1);
+                let retry_in = outbox::retry_delay(event.attempts.saturating_add(1));
+                tracing::warn!(
+                    subject = event.subject,
+                    attempts = event.attempts + 1,
+                    retry_in_secs = retry_in.as_secs(),
+                    error,
+                    "event not published; the queue waits for it"
+                );
+                event_outbox::mark_failed(&mut *conn, event.seq, &error, retry_in).await?;
+                break;
+            }
+        }
+    }
+    Ok(published)
+}
+
+/// Publish one event and wait for JetStream to store it.
+async fn publish_one(
+    nats: &async_nats::Client,
+    event: &PendingEvent,
+) -> Result<(), (&'static str, String)> {
+    let message = outbox::envelope(event.payload.clone(), event.id, event.created_at);
+    let bytes = serde_json::to_vec(&message).map_err(|e| ("error", e.to_string()))?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        async_nats::header::NATS_MESSAGE_ID,
+        event.id.to_string().as_str(),
+    );
+
+    // Two awaits: the first hands the message to the server, the second waits
+    // for the acknowledgement that it is stored.
+    let stored = async {
+        jetstream::new(nats.clone())
+            .publish_with_headers(event.subject.clone(), headers, bytes.into())
+            .await
+            .map_err(|e| ("error", e.to_string()))?
+            .await
+            .map_err(|e| ("error", e.to_string()))
+    };
+    match tokio::time::timeout(ACKED_PUBLISH_TIMEOUT, stored).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(("timeout", "not stored in time".to_owned())),
     }
 }
 
@@ -145,6 +290,7 @@ pub async fn ensure_user_stream(nats: &async_nats::Client) -> Result<(), String>
             subjects: vec![USER_SUBJECT_FILTER.to_owned()],
             max_age: EVENT_RETENTION,
             max_bytes: EVENT_MAX_BYTES,
+            duplicate_window: DUPLICATE_WINDOW,
             discard: jetstream::stream::DiscardPolicy::New,
             ..Default::default()
         })
@@ -154,7 +300,8 @@ pub async fn ensure_user_stream(nats: &async_nats::Client) -> Result<(), String>
 }
 
 /// Publish and wait for JetStream to persist the event; fails the caller with
-/// `ServiceUnavailable` when it could not be stored.
+/// `ServiceUnavailable` when it could not be stored. Only account deletion
+/// still uses it: its event cannot wait in the outbox of a row it deletes.
 pub async fn publish_acked(
     state: &AppState,
     event_name: &str,

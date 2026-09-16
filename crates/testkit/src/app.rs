@@ -102,6 +102,10 @@ pub struct TestApp {
     /// Responses outside the OpenAPI contract, checked when the app is dropped.
     pub contract: contract::Recorder,
     server: JoinHandle<()>,
+    /// The event relay: stopped before the database is dropped, or a connection
+    /// it opens while `DROP DATABASE ... WITH (FORCE)` runs holds the drop until
+    /// PostgreSQL's 60-second authentication timeout.
+    relay: JoinHandle<()>,
     mailpit_api_port: Option<u16>,
     // Declared last: dropped after everything holding a connection to it.
     _database: TestDb,
@@ -198,6 +202,9 @@ impl TestApp {
             state.mailer = Mailer::new(mail.clone());
         }
 
+        // Events recorded by the requests reach NATS as in production.
+        let relay = auth_api::services::events::spawn_relay(state.db.clone(), state.nats.clone());
+
         let contract = contract::Recorder::default();
         let router = handlers::router(state.clone()).layer(axum::middleware::from_fn_with_state(
             contract.clone(),
@@ -242,6 +249,7 @@ impl TestApp {
             dependencies,
             contract,
             server,
+            relay,
             mailpit_api_port: mailpit_ports.map(|p| p.api_port),
             _database: database,
         }
@@ -418,6 +426,7 @@ impl TestApp {
 
 impl Drop for TestApp {
     fn drop(&mut self) {
+        self.relay.abort();
         self.server.abort();
         contract::settle(&self.contract);
     }

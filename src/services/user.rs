@@ -174,10 +174,6 @@ pub async fn change_password(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    user_repo::update_password_hash(&state.db, user_id, &new_hash)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
     let revoked_session_ids = session_repo::find_active_by_user(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
@@ -185,28 +181,25 @@ pub async fn change_password(
         .map(|session| session.id)
         .collect::<Vec<_>>();
 
-    // Revoke all sessions so other devices must re-authenticate
-    session_repo::revoke_all_by_user(&state.db, user_id)
+    // The new hash, the revocation of every session, the audit entry and the
+    // events commit together.
+    let mut tx = state
+        .db
+        .begin()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    auth_svc::invalidate_session_caches(state, &revoked_session_ids).await;
+    user_repo::update_password_hash(&mut *tx, user_id, &new_hash)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
-    events::publish(
-        state,
-        "user.password_changed",
-        &events::UserPasswordChanged { user_id },
-    )
-    .await;
-    events::publish(
-        state,
-        "user.sessions_revoked",
-        &events::UserSessionsRevoked { user_id },
-    )
-    .await;
+    // Revoke all sessions so other devices must re-authenticate
+    session_repo::revoke_all_by_user(&mut *tx, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
@@ -217,6 +210,26 @@ pub async fn change_password(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+
+    events::enqueue(
+        &mut *tx,
+        "user.password_changed",
+        &events::UserPasswordChanged { user_id },
+    )
+    .await?;
+    events::enqueue(
+        &mut *tx,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked { user_id },
+    )
+    .await?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    events::wake();
+
+    auth_svc::invalidate_session_caches(state, &revoked_session_ids).await;
 
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();

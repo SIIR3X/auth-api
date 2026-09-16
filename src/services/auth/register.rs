@@ -34,8 +34,22 @@ pub async fn register(
         return Ok(None);
     }
 
+    let default_role = role::find_default(&state.db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let raw_token = crypto::generate_token();
+    let hash_bytes = crypto::sha256(raw_token.as_bytes());
+
+    // The account, its role, its verification token, the audit entry and the
+    // `user.created` event are committed together.
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
     let created = user_repo::create(
-        &state.db,
+        &mut *tx,
         &NewUser {
             username,
             email,
@@ -62,21 +76,14 @@ pub async fn register(
         }
     };
 
-    // Assign default role if one exists
-    if let Some(role) = role::find_default(&state.db)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-    {
-        // Best-effort: default role assignment must not block registration.
-        let _ = role::assign_to_user(&state.db, user.id, role.id, None).await;
+    if let Some(role) = default_role {
+        role::assign_to_user(&mut *tx, user.id, role.id, None)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
     }
 
-    // Email verification token
-    let raw_token = crypto::generate_token();
-    let hash_bytes = crypto::sha256(raw_token.as_bytes());
-
     token::create_verification(
-        &state.db,
+        &mut *tx,
         &NewEmailVerificationToken {
             user_id: user.id,
             token_hash: &hash_bytes,
@@ -89,13 +96,41 @@ pub async fn register(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
+    audit::append(
+        &mut *tx,
+        &NewAuditEntry {
+            user_id: Some(user.id),
+            request_id,
+            action: AuditAction::Register,
+            ip_address: ip,
+            metadata: json!({}),
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+
+    events::enqueue(
+        &mut *tx,
+        "user.created",
+        &events::UserCreated {
+            user_id: user.id,
+            email: user.email.clone(),
+            username: user.username.clone(),
+        },
+    )
+    .await?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    events::wake();
+
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();
     let mail_cfg = state.config.mail.clone();
     let email_to = email.to_string();
     let username = username.to_string();
     let locale = locale.to_string();
-    let raw_token = raw_token.clone();
     let frontend_url = state.config.server.frontend_url.clone();
     email::dispatch_best_effort("verification_email", async move {
         email::send_verification_email(
@@ -110,30 +145,6 @@ pub async fn register(
         )
         .await
     });
-
-    audit::append(
-        &state.db,
-        &NewAuditEntry {
-            user_id: Some(user.id),
-            request_id,
-            action: AuditAction::Register,
-            ip_address: ip,
-            metadata: json!({}),
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    events::publish(
-        state,
-        "user.created",
-        &events::UserCreated {
-            user_id: user.id,
-            email: user.email.clone(),
-            username: user.username.clone(),
-        },
-    )
-    .await;
 
     Ok(Some(user))
 }
@@ -150,19 +161,26 @@ pub async fn verify_email(
     let record =
         check_one_time_token(state, token::find_verification_by_hash(&state.db, &hash)).await?;
 
-    let consumed = token::consume_verification(&state.db, record.id)
+    // Consuming the token, verifying the address and announcing it commit together.
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let consumed = token::consume_verification(&mut *tx, record.id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
     if !consumed {
         return Err(AppError::TokenInvalid);
     }
 
-    user_repo::mark_email_verified(&state.db, record.user_id)
+    user_repo::mark_email_verified(&mut *tx, record.user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(record.user_id),
             request_id,
@@ -174,15 +192,20 @@ pub async fn verify_email(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    events::publish(
-        state,
+    events::enqueue(
+        &mut *tx,
         "user.email_verified",
         &events::UserEmailVerified {
             user_id: record.user_id,
             email: record.target_email.clone(),
         },
     )
-    .await;
+    .await?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    events::wake();
 
     Ok(())
 }

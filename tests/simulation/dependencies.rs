@@ -284,3 +284,54 @@ async fn a_hung_broker_does_not_hold_ordinary_requests() {
         started.elapsed()
     );
 }
+
+#[tokio::test]
+async fn events_recorded_while_the_broker_is_down_go_out_when_it_returns() {
+    let app = app_with_fault_proxies().await;
+    let user = fixtures::authenticated_user(&app, 2).await;
+    let pending_event = || async {
+        sqlx::query_as::<_, (Option<time::OffsetDateTime>, i32)>(
+            "SELECT published_at, attempts FROM event_outbox
+             WHERE subject = 'events.auth.user.password_changed' AND payload->>'user_id' = $1",
+        )
+        .bind(user.id.to_string())
+        .fetch_optional(&app.db)
+        .await
+        .unwrap()
+    };
+
+    dependencies(&app).nats.set(Fault::Refuse);
+    let res = app
+        .patch_auth(
+            "/users/me/password",
+            &user.access_token,
+            &json!({ "current_password": user.password, "new_password": "Another-Pass-2026!" }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        204,
+        "the change does not depend on the broker"
+    );
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let (published, _) = pending_event()
+        .await
+        .expect("the event is recorded with the change");
+    assert!(published.is_none(), "nothing reaches a broker that is down");
+
+    dependencies(&app).nats.set(Fault::None);
+    let delivered = tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            if let Some((Some(_), attempts)) = pending_event().await {
+                return attempts;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    assert!(
+        delivered.is_ok(),
+        "the event is published once the broker is back"
+    );
+}

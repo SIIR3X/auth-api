@@ -107,8 +107,8 @@ tests:
         values: "2x10"
       - series: 'up{job="nats",instance="10.0.0.1:7777"}'
         values: "0x5"
-      - series: 'auth_events_publish_failures_total{instance="10.0.0.1:9465",reason="timeout"}'
-        values: "0 1 1"
+      - series: 'auth_outbox_oldest_pending_age_seconds{instance="10.0.0.1:9465"}'
+        values: "0 400x10"
     alert_rule_test:
       - eval_time: 3m
         alertname: PostgresDown
@@ -157,11 +157,11 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical, job: nats, instance: "10.0.0.1:7777" }
             exp_annotations: { summary: "the NATS broker or its exporter is down; account deletions answer 503" }
-      - eval_time: 2m
-        alertname: AuthApiEventsDropped
+      - eval_time: 7m
+        alertname: AuthApiEventsStalled
         exp_alerts:
-          - exp_labels: { severity: warning, instance: "10.0.0.1:9465" }
-            exp_annotations: { summary: "10.0.0.1:9465 dropped events NATS did not take in time" }
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "domain events have waited more than 5 minutes to reach NATS" }
 
   - interval: 1m
     input_series:

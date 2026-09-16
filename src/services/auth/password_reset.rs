@@ -139,17 +139,6 @@ pub async fn reset_password(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    let consumed = token::consume_password_reset(&state.db, record.id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    if !consumed {
-        return Err(AppError::TokenInvalid);
-    }
-
-    user_repo::update_password_hash(&state.db, record.user_id, &new_hash)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
     let revoked_session_ids = session_repo::find_active_by_user(&state.db, record.user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
@@ -157,43 +146,37 @@ pub async fn reset_password(
         .map(|session| session.id)
         .collect::<Vec<_>>();
 
-    // Invalidate all active sessions to force re-login with the new password
-    session_repo::revoke_all_by_user(&state.db, record.user_id)
+    // Consuming the token, the new hash, the revocations, the audit entry and
+    // the events commit together.
+    let mut tx = state
+        .db
+        .begin()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    invalidate_session_caches(state, &revoked_session_ids).await;
+    let consumed = token::consume_password_reset(&mut *tx, record.id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    if !consumed {
+        return Err(AppError::TokenInvalid);
+    }
 
-    events::publish(
-        state,
-        "user.password_changed",
-        &events::UserPasswordChanged {
-            user_id: record.user_id,
-        },
-    )
-    .await;
-    events::publish(
-        state,
-        "user.sessions_revoked",
-        &events::UserSessionsRevoked {
-            user_id: record.user_id,
-        },
-    )
-    .await;
+    user_repo::update_password_hash(&mut *tx, record.user_id, &new_hash)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
-    // Close the post-reset hijack window: any pre-auth (2FA challenge) token
-    // or email-change flow that was already in flight before the reset would
-    // otherwise survive and could be used by an attacker who knew them.
-    // Best-effort: Redis failures here must not fail the reset.
-    purge_user_pre_auth_and_email_change(state, record.user_id).await;
+    // Invalidate all active sessions to force re-login with the new password
+    session_repo::revoke_all_by_user(&mut *tx, record.user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
-    // Also purge pending verification and reset tokens
-    token::revoke_active_password_reset_by_user(&state.db, record.user_id)
+    // Also purge pending reset tokens
+    token::revoke_active_password_reset_by_user(&mut *tx, record.user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(record.user_id),
             request_id,
@@ -204,6 +187,36 @@ pub async fn reset_password(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+
+    events::enqueue(
+        &mut *tx,
+        "user.password_changed",
+        &events::UserPasswordChanged {
+            user_id: record.user_id,
+        },
+    )
+    .await?;
+    events::enqueue(
+        &mut *tx,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked {
+            user_id: record.user_id,
+        },
+    )
+    .await?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    events::wake();
+
+    invalidate_session_caches(state, &revoked_session_ids).await;
+
+    // Close the post-reset hijack window: any pre-auth (2FA challenge) token
+    // or email-change flow that was already in flight before the reset would
+    // otherwise survive and could be used by an attacker who knew them.
+    // Best-effort: Redis failures here must not fail the reset.
+    purge_user_pre_auth_and_email_change(state, record.user_id).await;
 
     Ok(())
 }

@@ -5,7 +5,7 @@
 
 use ipnetwork::IpNetwork;
 
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -32,8 +32,8 @@ pub struct NewPasswordResetToken<'a> {
 
 // Email verification
 
-pub async fn create_verification(
-    pool: &PgPool,
+pub async fn create_verification<'e>(
+    executor: impl PgExecutor<'e>,
     input: &NewEmailVerificationToken<'_>,
 ) -> Result<EmailVerificationToken, sqlx::Error> {
     sqlx::query_as::<_, EmailVerificationToken>(
@@ -48,7 +48,7 @@ pub async fn create_verification(
     .bind(input.request_ip)
     .bind(input.request_user_agent)
     .bind(input.target_email)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 
@@ -65,14 +65,17 @@ pub async fn find_verification_by_hash(
 }
 
 /// Marks the token as used. Returns false if it was already consumed.
-pub async fn consume_verification(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+pub async fn consume_verification<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
         "UPDATE email_verification_tokens
          SET used_at = NOW()
          WHERE id = $1 AND used_at IS NULL",
     )
     .bind(id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(result.rows_affected() == 1)
 }
@@ -127,21 +130,24 @@ pub async fn find_password_reset_by_hash(
 }
 
 /// Marks the token as used. Returns false if it was already consumed.
-pub async fn consume_password_reset(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+pub async fn consume_password_reset<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
         "UPDATE password_reset_tokens
          SET used_at = NOW()
          WHERE id = $1 AND used_at IS NULL",
     )
     .bind(id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(result.rows_affected() == 1)
 }
 
 /// Invalidates any active token before issuing a new one.
-pub async fn revoke_active_password_reset_by_user(
-    pool: &PgPool,
+pub async fn revoke_active_password_reset_by_user<'e>(
+    executor: impl PgExecutor<'e>,
     user_id: Uuid,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -150,7 +156,7 @@ pub async fn revoke_active_password_reset_by_user(
          WHERE user_id = $1 AND used_at IS NULL",
     )
     .bind(user_id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
