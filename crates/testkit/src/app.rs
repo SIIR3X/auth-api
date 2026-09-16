@@ -526,6 +526,7 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             tokens_grace_days: 1,
             login_attempts_retention_days: 90,
             recovery_codes_grace_days: 7,
+            unverified_accounts_retention_days: 7,
         },
         audit: AuditConfig {
             retention_months: 6,

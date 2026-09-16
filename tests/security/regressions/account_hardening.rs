@@ -108,6 +108,36 @@ async fn forgot_password_takes_the_same_minimum_time_either_way() {
 }
 
 #[tokio::test]
+async fn resending_the_verification_looks_the_same_for_every_address() {
+    let app = TestApp::spawn().await;
+    let pending = fixtures::register_user(&app, 645).await;
+    let active = fixtures::register_user(&app, 646).await;
+    fixtures::activate_user(&app.db, active.id).await;
+
+    let mut answers = Vec::new();
+    for email in [
+        pending.email.as_str(),
+        active.email.as_str(),
+        "nobody645@example.com",
+    ] {
+        let started = Instant::now();
+        let res = app
+            .post("/auth/verify-email/resend", &json!({ "email": email }))
+            .await;
+        assert!(
+            started.elapsed() >= Duration::from_millis(240),
+            "{email} answered in {:?}",
+            started.elapsed()
+        );
+        answers.push((res.status().as_u16(), res.text().await.unwrap()));
+    }
+    assert!(
+        answers.windows(2).all(|pair| pair[0] == pair[1]),
+        "answers differ: {answers:?}"
+    );
+}
+
+#[tokio::test]
 async fn forgot_password_is_capped_per_account() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 644).await;

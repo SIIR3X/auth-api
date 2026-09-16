@@ -67,6 +67,13 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   `POST /auth/authorize`, `POST /auth/authorize/token`.
 - Client registry: scopes, redirect URIs, loopback redirects, default session
   limit; `auth-api --register-client`.
+- `POST /auth/verify-email/resend`: a new verification link for a pending
+  account, answering alike for every address and capped per account and per
+  address; registering again on a pending address sends the verification again.
+- Accounts whose address was never verified are deleted after
+  `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` (7), audited and announced with
+  `user.deleted`. A password reset verifies a pending account, so the owner of
+  an address takes back an account someone else registered with it.
 - `GET /auth/device/{user_code}`: what the signed-in user is about to approve.
 - `GET /users/me/audit`: the caller's security history, cursor-paginated.
 - `GET /users/me/two-factor`: configured methods and remaining recovery codes.

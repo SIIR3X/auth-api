@@ -240,6 +240,9 @@ pub struct CleanupConfig {
     pub login_attempts_retention_days: u32,
     /// Grace period in days after recovery code expiry before deletion. Default: 7.
     pub recovery_codes_grace_days: u32,
+    /// Age in days after which an account whose address was never verified is
+    /// deleted; 0 keeps them. Default: 7.
+    pub unverified_accounts_retention_days: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -467,6 +470,9 @@ impl Config {
                     .unwrap_or(90),
                 recovery_codes_grace_days: vars
                     .parse("CLEANUP_RECOVERY_CODES_GRACE_DAYS")?
+                    .unwrap_or(7),
+                unverified_accounts_retention_days: vars
+                    .parse("CLEANUP_UNVERIFIED_ACCOUNT_DAYS")?
                     .unwrap_or(7),
             },
             audit: AuditConfig {

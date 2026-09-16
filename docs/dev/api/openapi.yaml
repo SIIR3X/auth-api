@@ -1107,6 +1107,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /auth/verify-email/resend:
+    post:
+      tags:
+      - auth
+      operationId: resend_verification
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendVerificationRequest'
+        required: true
+      responses:
+        '200':
+          description: Accepted; identical whether the address is unknown, pending or already verified
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /health:
     get:
       tags:
@@ -3199,6 +3249,17 @@ components:
       - pre_auth_token
       properties:
         pre_auth_token:
+          type: string
+    ResendVerificationRequest:
+      type: object
+      required:
+      - email
+      properties:
+        captcha_token:
+          type:
+          - string
+          - 'null'
+        email:
           type: string
     ResetPasswordRequest:
       type: object

@@ -36,6 +36,7 @@ const PUBLIC: &[&str] = &[
     "POST /auth/two-factor/email/resend",
     "POST /auth/two-factor/recovery",
     "POST /auth/verify-email",
+    "POST /auth/verify-email/resend",
 ];
 
 struct Operation {

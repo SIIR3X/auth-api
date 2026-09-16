@@ -191,6 +191,15 @@ const MAX_FORGOT_PASSWORD_BY_ACCOUNT: i64 = 3;
 /// Window of the per-account forgot-password budget (1 hour).
 const FORGOT_PASSWORD_ACCOUNT_WINDOW_SECS: u64 = 3600;
 
+/// Verification e-mail requests per client address (IPv6 /64) per window.
+const MAX_VERIFICATION_RESENDS_BY_IP: i64 = 5;
+const VERIFICATION_RESEND_IP_WINDOW_SECS: u64 = 900;
+
+/// Verification e-mails per account per window, across every address:
+/// registrations on the same pending address count too.
+const MAX_VERIFICATION_RESENDS_BY_ACCOUNT: i64 = 3;
+const VERIFICATION_RESEND_ACCOUNT_WINDOW_SECS: u64 = 3600;
+
 /// Every forgot-password response takes at least this long, known address or not.
 const FORGOT_PASSWORD_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(250);
 

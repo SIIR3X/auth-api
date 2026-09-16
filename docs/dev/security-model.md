@@ -27,8 +27,12 @@ the database together, is out of scope.
 - **No account oracle.** An unknown identifier still pays a full hash against a
   decoy. A locked account answers the same whatever the password. Registration
   answers `202` identically whether or not the address is taken (the owner is
-  emailed instead). Forgot-password takes a constant minimum time and answers
-  identically.
+  emailed instead; a pending one gets its verification again). Forgot-password
+  and verification resends take a constant minimum time and answer identically.
+- **Addresses cannot be squatted.** A password reset proves ownership of the
+  address: it verifies a pending account with the password its owner chose, so
+  an account someone else registered with the address is taken back. Accounts
+  never verified are deleted after `CLEANUP_UNVERIFIED_ACCOUNT_DAYS`.
 - **Lockout** after `LOCKOUT_THRESHOLD` consecutive wrong passwords. Failed
   second factors never count: whoever fails a second factor already holds the
   password, and letting them lock the account would let them shut the owner out.
@@ -140,7 +144,7 @@ when a cited test no longer exists.
 | ID | Control | Tests |
 |----|---------|-------|
 | SEC-01 | Passwords are hashed with Argon2id, salted per hash | `hash_and_verify_correct_password`, `same_password_produces_different_hashes`, `async_hash_and_verify_match_sync_behavior` |
-| SEC-02 | No account oracle: unknown identifiers, locked accounts, taken addresses and forgotten passwords answer alike | `locked_account_answers_the_same_whatever_the_password`, `registering_a_taken_email_looks_like_a_new_signup`, `forgot_password_takes_the_same_minimum_time_either_way`, `forgot_password_returns_200_for_unknown_email`, `login_unknown_user` |
+| SEC-02 | No account oracle: unknown identifiers, locked accounts, taken addresses, forgotten passwords and verification resends answer alike | `locked_account_answers_the_same_whatever_the_password`, `registering_a_taken_email_looks_like_a_new_signup`, `forgot_password_takes_the_same_minimum_time_either_way`, `forgot_password_returns_200_for_unknown_email`, `resending_the_verification_looks_the_same_for_every_address`, `login_unknown_user` |
 | SEC-03 | Lockout after consecutive wrong passwords, never after failed second factors | `account_locked_after_threshold_failures`, `account_unlocked_after_lockout_expires`, `second_factor_failures_do_not_lock_the_account`, `a_zero_threshold_never_locks`, `validate_rejects_zero_lockout_threshold` |
 | SEC-04 | Attempt budgets are consumed atomically and fail closed | `concurrent_attempts_never_exceed_the_budget`, `unreachable_redis_fails_closed`, `refresh_rate_limited_after_20_invalid_tokens`, `forgot_password_is_capped_per_account`, `concurrent_reauthentication_guesses_never_exceed_the_budget`, `rotating_ipv6_addresses_within_a_64_does_not_reset_the_failure_budget` |
 | SEC-05 | Access tokens: ES256 only, issuer, audience and time claims checked, revocation checked on every request | `missing_or_malformed_credentials_are_refused`, `forged_tokens_for_a_live_session_are_refused`, `a_token_outlives_neither_its_expiry_nor_its_logout`, `time_claims_follow_the_supplied_clock`, `decode_rejects_non_es256_alg`, `a_rotation_keeps_every_published_key_valid`, `a_kid_does_not_lend_its_key_to_another_signature` |

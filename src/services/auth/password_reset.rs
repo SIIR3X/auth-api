@@ -175,6 +175,18 @@ pub async fn reset_password(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
+    // The reset link went to the account's address: whoever used it owns the
+    // address. A pending account is verified with the password its owner just
+    // chose, which also takes back an address someone else registered.
+    if user_repo::verify_if_pending(&mut *tx, record.user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    {
+        token::revoke_active_verification_by_user(&mut *tx, record.user_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+    }
+
     audit::append(
         &mut *tx,
         &NewAuditEntry {

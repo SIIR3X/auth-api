@@ -163,6 +163,7 @@ the audit log partitions.
 | `CLEANUP_TOKENS_GRACE_DAYS` | `1` | Kept after expiry: email codes, verification and reset tokens |
 | `CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS` | `90` | Login attempt ledger retention |
 | `CLEANUP_RECOVERY_CODES_GRACE_DAYS` | `7` | Kept after expiry |
+| `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` | `7` | Accounts whose address was never verified are deleted after this many days (audited, `user.deleted` published); `0` keeps them |
 | `AUDIT_LOG_RETENTION_MONTHS` | `12` | Monthly audit partitions kept; `0` keeps every partition |
 
 Authorization codes are kept one hour past expiry (so a replay still finds the

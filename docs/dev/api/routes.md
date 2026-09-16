@@ -42,6 +42,7 @@ loopback only.
 |--------|-------|------|------------|
 | POST | `/auth/register` | - | Strict |
 | POST | `/auth/verify-email` | - | Strict |
+| POST | `/auth/verify-email/resend` | - | Strict |
 | POST | `/auth/login` | - | Strict |
 | POST | `/auth/two-factor/complete` | pre-auth token | Strict |
 | POST | `/auth/two-factor/email/complete` | pre-auth token | Strict |

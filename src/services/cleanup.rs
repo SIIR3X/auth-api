@@ -118,6 +118,16 @@ async fn run_all(conn: &mut PgConnection, config: &Config) {
         sweep(conn, name, sql, interval).await;
     }
 
+    if c.unverified_accounts_retention_days > 0 {
+        sweep(
+            conn,
+            "purge_unverified_accounts",
+            "SELECT purge_unverified_accounts($1::interval, $2)",
+            &format!("{} days", c.unverified_accounts_retention_days),
+        )
+        .await;
+    }
+
     if let Err(e) = rotate_audit_log(&mut *conn, config.audit.retention_months).await {
         tracing::warn!(error = ?e, "audit log partition rotation failed");
     }

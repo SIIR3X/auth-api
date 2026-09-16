@@ -49,6 +49,12 @@ pub struct VerifyEmailRequest {
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
+pub struct ResendVerificationRequest {
+    pub email: String,
+    pub captcha_token: Option<String>,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ForgotPasswordRequest {
     pub email: String,
     pub captcha_token: Option<String>,
@@ -305,6 +311,30 @@ pub async fn verify_email(
     Json(body): Json<VerifyEmailRequest>,
 ) -> Result<StatusCode, AppError> {
     auth_svc::verify_email(&state, &body.token, ip, rid).await?;
+    Ok(StatusCode::OK)
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/verify-email/resend",
+    tag = "auth",
+    request_body = ResendVerificationRequest,
+    responses(
+        (status = 200, description = "Accepted; identical whether the address is unknown, pending or already verified"),
+        (status = 429, description = "Rate limited; see Retry-After"),
+    ),
+)]
+pub async fn resend_verification(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    UserAgent(ua): UserAgent,
+    RequestId(rid): RequestId,
+    Json(body): Json<ResendVerificationRequest>,
+) -> Result<StatusCode, AppError> {
+    let captcha_token = body.captcha_token.as_deref().unwrap_or("");
+    captcha_svc::verify(&state, captcha_token).await?;
+
+    auth_svc::resend_verification(&state, &body.email, ip, ua.as_deref(), rid).await?;
     Ok(StatusCode::OK)
 }
 

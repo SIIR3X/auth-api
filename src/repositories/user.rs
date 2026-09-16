@@ -143,6 +143,23 @@ pub async fn mark_email_verified<'e>(
     Ok(())
 }
 
+/// Verify the address of a pending account and activate it; any other account
+/// is left untouched. Returns whether the account was pending.
+pub async fn verify_if_pending<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE users
+         SET email_verified_at = NOW(), status = 'active'::user_status
+         WHERE id = $1 AND status = 'pending_verification'",
+    )
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 // Reads
 
 pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<User>, sqlx::Error> {

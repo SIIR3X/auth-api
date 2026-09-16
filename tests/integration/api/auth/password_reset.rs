@@ -339,3 +339,221 @@ async fn verify_email_with_already_used_token_rejected() {
         .await;
     assert_eq!(second.status().as_u16(), 401);
 }
+
+// resend verification
+
+const VERIFICATION_SUBJECT: &str = "Verify your email address";
+
+fn verification_mails(app: &TestApp, email: &str) -> Vec<testkit::mail::CapturedMail> {
+    app.mail
+        .messages_to(email)
+        .into_iter()
+        .filter(|mail| mail.subject == VERIFICATION_SUBJECT)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_resent_verification_link_replaces_the_previous_one() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::register_user(&app, 900).await;
+    let first = app
+        .mail
+        .wait_for(&user.email, VERIFICATION_SUBJECT)
+        .await
+        .value_after("token=")
+        .expect("a verification link");
+
+    let res = app
+        .post(
+            "/auth/verify-email/resend",
+            &serde_json::json!({ "email": user.email }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+    let mails = app.mail.wait_for_count(&user.email, 2).await;
+    let second = mails
+        .last()
+        .and_then(|mail| mail.value_after("token="))
+        .expect("a second verification link");
+    assert_ne!(first, second);
+
+    app.clear_verify_email_rate_limit(&app.client_ip).await;
+    let stale = app
+        .post("/auth/verify-email", &serde_json::json!({ "token": first }))
+        .await;
+    assert_eq!(
+        stale.status().as_u16(),
+        401,
+        "the previous link no longer works"
+    );
+    let fresh = app
+        .post(
+            "/auth/verify-email",
+            &serde_json::json!({ "token": second }),
+        )
+        .await;
+    assert_eq!(fresh.status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn only_pending_accounts_receive_a_resent_verification() {
+    let app = TestApp::spawn().await;
+    let active = fixtures::register_user(&app, 901).await;
+    fixtures::activate_user(&app.db, active.id).await;
+    app.mail.wait_for(&active.email, VERIFICATION_SUBJECT).await;
+
+    for email in [active.email.as_str(), "nobody901@example.com"] {
+        let res = app
+            .post(
+                "/auth/verify-email/resend",
+                &serde_json::json!({ "email": email }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 200);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(verification_mails(&app, &active.email).len(), 1);
+    assert!(app.mail.messages_to("nobody901@example.com").is_empty());
+}
+
+#[tokio::test]
+async fn resent_verifications_are_capped_per_account() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::register_user(&app, 902).await;
+    app.mail.wait_for(&user.email, VERIFICATION_SUBJECT).await;
+
+    for _ in 0..4 {
+        let res = app
+            .post(
+                "/auth/verify-email/resend",
+                &serde_json::json!({ "email": user.email }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 200, "the cap must stay silent");
+    }
+
+    app.mail.wait_for_count(&user.email, 4).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        verification_mails(&app, &user.email).len(),
+        4,
+        "the registration link and three resends"
+    );
+}
+
+#[tokio::test]
+async fn registering_again_on_a_pending_address_resends_the_verification() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::register_user(&app, 903).await;
+    app.mail.wait_for(&user.email, VERIFICATION_SUBJECT).await;
+
+    let res = app
+        .post(
+            "/auth/register",
+            &serde_json::json!({
+                "username": "testuser903bis",
+                "email": user.email,
+                "password": "Another-Password-903",
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 202);
+
+    app.mail.wait_for_count(&user.email, 2).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let subjects: Vec<String> = app
+        .mail
+        .messages_to(&user.email)
+        .into_iter()
+        .map(|mail| mail.subject)
+        .collect();
+    assert_eq!(subjects, [VERIFICATION_SUBJECT, VERIFICATION_SUBJECT]);
+}
+
+#[tokio::test]
+async fn a_password_reset_verifies_a_pending_account() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::register_user(&app, 904).await;
+    app.clear_forgot_password_rate_limit(&app.client_ip).await;
+
+    let res = app
+        .post(
+            "/auth/forgot-password",
+            &serde_json::json!({ "email": user.email }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+    let token = app
+        .mail
+        .wait_for(&user.email, "Reset your password")
+        .await
+        .value_after("token=")
+        .expect("a reset link");
+
+    let reset = app
+        .post(
+            "/auth/reset-password",
+            &serde_json::json!({ "token": token, "new_password": "Owner-Chosen-904" }),
+        )
+        .await;
+    assert_eq!(reset.status().as_u16(), 200);
+
+    let login = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": "Owner-Chosen-904" }),
+        )
+        .await;
+    assert_eq!(
+        login.status().as_u16(),
+        200,
+        "the owner of the address signs in with the password they chose"
+    );
+}
+
+#[tokio::test]
+async fn accounts_never_verified_are_purged_and_announced() {
+    let app = TestApp::spawn().await;
+    let old_pending = fixtures::register_user(&app, 905).await;
+    let recent_pending = fixtures::register_user(&app, 906).await;
+    let old_active = fixtures::register_user(&app, 907).await;
+    fixtures::activate_user(&app.db, old_active.id).await;
+    sqlx::query("UPDATE users SET created_at = NOW() - INTERVAL '8 days' WHERE id = ANY($1)")
+        .bind(vec![old_pending.id, old_active.id])
+        .execute(&app.db)
+        .await
+        .unwrap();
+
+    auth_api::services::cleanup::run_once(&app.db, &app.state.config)
+        .await
+        .unwrap();
+
+    let remaining: Vec<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE id = ANY($1) ORDER BY username")
+            .bind(vec![old_pending.id, recent_pending.id, old_active.id])
+            .fetch_all(&app.db)
+            .await
+            .unwrap();
+    assert_eq!(remaining, [recent_pending.id, old_active.id]);
+
+    let announced: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM event_outbox
+         WHERE subject = 'events.auth.user.deleted' AND payload->>'user_id' = $1",
+    )
+    .bind(old_pending.id.to_string())
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(announced, 1, "downstream services erase the account too");
+
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log
+         WHERE action = 'account_deleted' AND user_id IS NULL
+           AND metadata->>'reason' = 'never_verified'",
+    )
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+}

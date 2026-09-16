@@ -328,6 +328,7 @@ fn auth_router() -> Router<AppState> {
         // Token delivered in the body (POST) to keep it out of access logs and
         // browser history. Switched from GET /verify-email?token= for this reason.
         .route("/verify-email", post(auth::verify_email))
+        .route("/verify-email/resend", post(auth::resend_verification))
         .route("/forgot-password", post(auth::forgot_password))
         .route("/reset-password", post(auth::reset_password))
         .route("/two-factor/complete", post(auth::complete_two_factor))
