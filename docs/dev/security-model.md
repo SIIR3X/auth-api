@@ -106,6 +106,9 @@ the database together, is out of scope.
   the user's current permissions on every refresh, and no roles.
 - **Refresh:** a client's session is refreshed only by that client at the token
   endpoint, with its authentication; the first-party route refuses it.
+- **OpenID Connect:** identity scopes grant no permission and release only
+  their own claims; the ID token is bound to the client (`aud`), the request
+  (`nonce`) and the access token (`at_hash`).
 - **Client credentials:** only a confidential client with scopes that has the
   grant turned on obtains tokens for itself; they carry no user, so account
   routes refuse them, and they stop being active when the grant is turned off.
@@ -233,3 +236,4 @@ when a cited test no longer exists.
 | SEC-36 | Confidential clients authenticate at every token request, and client sessions are refreshed only by their client | `a_confidential_client_must_authenticate_with_its_secret`, `a_public_client_has_no_secret_to_present`, `a_device_code_works_for_its_client_only`, `tokens_carry_only_the_consented_scopes_even_after_refresh`, `basic_credentials_are_form_decoded`, `a_request_asks_for_a_subset_of_the_client_scopes` |
 | SEC-37 | Introspection is reserved to confidential clients and says nothing of inactive tokens; revocation reaches only the requesting client's tokens | `a_resource_server_learns_what_a_token_is_worth`, `revoking_a_refresh_token_ends_its_session`, `revoking_an_access_token_ends_that_token_only`, `a_client_cannot_revoke_the_tokens_of_another` |
 | SEC-38 | The client credentials grant is limited to confidential, scoped clients that enable it, and its tokens never act as a user | `a_client_obtains_a_token_for_itself_with_its_scopes`, `the_grant_is_reserved_to_confidential_clients_that_enable_it`, `a_client_token_is_introspected_and_revoked`, `a_client_subject_is_stable_and_never_a_user_id` |
+| SEC-39 | ID tokens are bound to their client, nonce and access token, and identity scopes release only their claims | `an_openid_request_gets_an_id_token_bound_to_its_nonce_and_access_token`, `userinfo_releases_the_claims_of_the_granted_scopes`, `scopes_release_their_claims_only` |

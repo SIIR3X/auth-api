@@ -78,6 +78,9 @@ pub struct OAuthTokenResponse {
     /// Space-separated scopes the token carries; absent when unrestricted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// OpenID Connect ID token, when the `openid` scope was granted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<String>,
 }
 
 /// Form fields of `POST /oauth/token`, for the document.
@@ -225,6 +228,86 @@ pub async fn metadata(State(state): State<AppState>) -> Result<impl IntoResponse
 
 #[utoipa::path(
     get,
+    path = "/.well-known/openid-configuration",
+    tag = "oauth",
+    responses(
+        (status = 200, description = "OpenID Provider metadata (OpenID Connect Discovery 1.0)", body = Object),
+    ),
+)]
+pub async fn openid_configuration(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, AppError> {
+    let issuer = state
+        .config
+        .server
+        .public_url
+        .trim_end_matches('/')
+        .to_owned();
+    let mut scopes: Vec<String> = crate::domain::oidc::SCOPES
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    scopes.extend(
+        role_repo::find_all_permissions(&state.db)
+            .await?
+            .into_iter()
+            .map(|p| p.name),
+    );
+    Ok((
+        [(header::CACHE_CONTROL, "public, max-age=300")],
+        Json(json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("{issuer}/oauth/authorize"),
+            "token_endpoint": format!("{issuer}/oauth/token"),
+            "userinfo_endpoint": format!("{issuer}/oauth/userinfo"),
+            "jwks_uri": format!("{issuer}/.well-known/jwks.json"),
+            "revocation_endpoint": format!("{issuer}/oauth/revoke"),
+            "introspection_endpoint": format!("{issuer}/oauth/introspect"),
+            "scopes_supported": scopes,
+            "response_types_supported": ["code"],
+            "response_modes_supported": ["query"],
+            "grant_types_supported": [
+                oauth::GRANT_AUTHORIZATION_CODE,
+                oauth::GRANT_REFRESH_TOKEN,
+                oauth::GRANT_DEVICE_CODE,
+                oauth::GRANT_CLIENT_CREDENTIALS,
+            ],
+            "subject_types_supported": ["public"],
+            "id_token_signing_alg_values_supported": ["ES256"],
+            "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
+            "code_challenge_methods_supported": ["S256"],
+            "claims_supported": [
+                "iss", "sub", "aud", "azp", "exp", "iat", "auth_time", "nonce", "at_hash",
+                "preferred_username", "locale", "updated_at", "email", "email_verified"
+            ],
+            "claims_parameter_supported": false,
+            "request_parameter_supported": false,
+            "request_uri_parameter_supported": false,
+        })),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/oauth/userinfo",
+    tag = "oauth",
+    responses(
+        (status = 200, description = "Claims about the user released by the session's scopes (OIDC Core 5.3)", body = Object),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "The session was not granted `openid`", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
+pub async fn userinfo(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    let claims = oauth_svc::userinfo(&state, auth.user_id, auth.session_id).await?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(claims)))
+}
+
+#[utoipa::path(
+    get,
     path = "/oauth/authorize",
     tag = "oauth",
     params(
@@ -235,6 +318,7 @@ pub async fn metadata(State(state): State<AppState>) -> Result<impl IntoResponse
         ("code_challenge_method" = String, Query, description = "`S256`"),
         ("scope" = Option<String>, Query, description = "Space-separated permissions; omitted, the client's registered scopes"),
         ("state" = Option<String>, Query, description = "Echoed back, at most 512 bytes"),
+        ("nonce" = Option<String>, Query, description = "OpenID Connect: echoed in the ID token"),
     ),
     responses(
         (status = 303, description = "To the consent page (`OAUTH_CONSENT_URI?request_id=...`), or back to the client with `error`"),
@@ -386,6 +470,7 @@ pub async fn token(
             expires_in: issued.expires_in,
             refresh_token: issued.refresh_token,
             scope,
+            id_token: issued.id_token,
         }),
     )
         .into_response())

@@ -26,6 +26,7 @@ processing, not a legal notice.
 | Webhook deliveries: the event (user id only), attempts, last status | `webhook_deliveries`, then the registered endpoints | Letting other systems follow account changes, erasure included | 7 days after delivery or giving up (`CLEANUP_WEBHOOK_DELIVERY_DAYS`); endpoints keep what they receive | `user.deleted` is delivered like the other events |
 | Counters and short-lived state: budgets per client address (/64 in IPv6) or per account, pre-authentication and email-change flows | Redis | Rate limiting, abuse budgets, multi-step flows | Minutes to hours (key expiry) | Expire on their own |
 | Emails sent (address, content) | The SMTP relay | Verification, reset, security notices | The relay's own retention | Outside auth-api |
+| Username, locale, email address and its verification, in ID tokens and UserInfo | Client applications granted `profile` or `email` | Signing the user in to them | Held by the client | Outside auth-api; `user.deleted` tells subscribed services |
 | First five characters of a new password's SHA-1 | Pwned Passwords range API | Refusing breached passwords (k-anonymity: the password and its full hash never leave) | Not stored by auth-api | - |
 
 The application logs record the route, status, latency and request id of each

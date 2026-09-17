@@ -193,6 +193,8 @@ struct StoredRequest {
     code_challenge: String,
     scopes: Option<Vec<String>>,
     state: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
 }
 
 /// Where `GET /oauth/authorize` sends the browser.
@@ -245,6 +247,9 @@ pub async fn start_authorization(
     if param("state").is_some_and(|s| s.len() > oauth::MAX_STATE_LEN) {
         return refuse(ErrorCode::InvalidRequest, "state is too long");
     }
+    if param("nonce").is_some_and(|n| n.chars().count() > oauth::MAX_STATE_LEN) {
+        return refuse(ErrorCode::InvalidRequest, "nonce is too long");
+    }
     if param("response_type") != Some("code") {
         return refuse(
             ErrorCode::UnsupportedResponseType,
@@ -272,6 +277,7 @@ pub async fn start_authorization(
         code_challenge: code_challenge.to_owned(),
         scopes,
         state: client_state.map(str::to_owned),
+        nonce: param("nonce").map(str::to_owned),
     })
     .map_err(|e| AppError::Internal(e.into()))?;
     let mut conn = state
@@ -305,7 +311,12 @@ async fn check_scopes(
         }
     };
     if let Some(scopes) = &scopes {
-        let unknown = role_repo::unknown_permissions(&state.db, scopes).await?;
+        let permissions: Vec<String> = scopes
+            .iter()
+            .filter(|scope| !crate::domain::oidc::is_oidc_scope(scope))
+            .cloned()
+            .collect();
+        let unknown = role_repo::unknown_permissions(&state.db, &permissions).await?;
         if !unknown.is_empty() {
             return Ok(Err(format!("unknown scopes: {}", unknown.join(" "))));
         }
@@ -420,6 +431,7 @@ pub async fn approve_request(
         redirect_uri: &request.redirect_uri,
         code_challenge: &request.code_challenge,
         requested: request.scopes.as_deref(),
+        nonce: request.nonce.as_deref(),
         // Proven above: the recent re-authentication marker now stands for it.
         current_password: None,
         ip,
@@ -459,17 +471,8 @@ pub struct TokenResponse {
     pub refresh_token: Option<String>,
     pub scopes: Option<Vec<String>>,
     pub expires_in: u64,
-}
-
-impl TokenResponse {
-    fn session(tokens: AuthTokens, expires_in: u64) -> Self {
-        Self {
-            access_token: tokens.access_token,
-            refresh_token: Some(tokens.refresh_token),
-            scopes: tokens.session.scopes,
-            expires_in,
-        }
-    }
+    /// Present when the session was granted the `openid` scope.
+    pub id_token: Option<String>,
 }
 
 pub async fn token(
@@ -512,7 +515,7 @@ pub async fn token(
         return client_credentials(state, &client, param("scope")).await;
     }
 
-    let tokens = match grant_type {
+    let (tokens, nonce) = match grant_type {
         oauth::GRANT_AUTHORIZATION_CODE => {
             let redirect_uri = match param("redirect_uri") {
                 Some(uri) => uri.to_owned(),
@@ -533,7 +536,7 @@ pub async fn token(
             )
             .await?
         }
-        oauth::GRANT_REFRESH_TOKEN => {
+        oauth::GRANT_REFRESH_TOKEN => (
             auth_svc::refresh_token(
                 state,
                 required("refresh_token")?,
@@ -542,9 +545,10 @@ pub async fn token(
                 user_agent,
                 None,
             )
-            .await?
-        }
-        _ => {
+            .await?,
+            None,
+        ),
+        _ => (
             device_svc::poll(
                 state,
                 required("device_code")?,
@@ -553,10 +557,77 @@ pub async fn token(
                 user_agent,
                 device_name,
             )
-            .await?
-        }
+            .await?,
+            None,
+        ),
     };
-    Ok(TokenResponse::session(tokens, expires_in))
+
+    let id_token = if crate::domain::oidc::requests_identity(tokens.session.scopes.as_deref()) {
+        Some(id_token(state, &client, &tokens, nonce).await?)
+    } else {
+        None
+    };
+    Ok(TokenResponse {
+        access_token: tokens.access_token,
+        refresh_token: Some(tokens.refresh_token),
+        scopes: tokens.session.scopes,
+        expires_in,
+        id_token,
+    })
+}
+
+/// An OpenID Connect ID token for the session's user and this client.
+async fn id_token(
+    state: &AppState,
+    client: &RegisteredClient,
+    tokens: &AuthTokens,
+    nonce: Option<String>,
+) -> Result<String, AppError> {
+    let user = crate::repositories::user::find_by_id(&state.db, tokens.session.user_id)
+        .await?
+        .ok_or(AppError::TokenInvalid)?;
+    let scopes = tokens.session.scopes.clone().unwrap_or_default();
+    let now = state.clock.now().unix_timestamp();
+    let claims = crate::domain::oidc::IdTokenClaims {
+        iss: state.config.server.public_url.clone(),
+        sub: user.id,
+        aud: client.client_id.clone(),
+        azp: client.client_id.clone(),
+        exp: now
+            .saturating_add(i64::try_from(state.config.jwt.access_expiry_secs).unwrap_or(i64::MAX)),
+        iat: now,
+        auth_time: tokens.session.family_created_at.unix_timestamp(),
+        nonce,
+        at_hash: crate::domain::oidc::at_hash(&tokens.access_token),
+        profile: crate::domain::oidc::user_claims(&user, &scopes),
+    };
+    crate::utils::jwt::encode_claims(&claims, &state.jwt_signing_key, Some(&state.jwt_kid))
+        .map_err(|e| AppError::Internal(e.into()))
+}
+
+/// The UserInfo response (OIDC Core 5.3) for an access token of a session
+/// granted `openid`.
+pub async fn userinfo(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
+) -> Result<serde_json::Value, AppError> {
+    let session = crate::repositories::session::find_by_id(&state.db, session_id)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    if !crate::domain::oidc::requests_identity(session.scopes.as_deref()) {
+        return Err(AppError::Forbidden);
+    }
+    let user = crate::repositories::user::find_by_id(&state.db, user_id)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    let claims =
+        crate::domain::oidc::user_claims(&user, session.scopes.as_deref().unwrap_or_default());
+    let mut response = serde_json::to_value(claims).map_err(|e| AppError::Internal(e.into()))?;
+    if let serde_json::Value::Object(object) = &mut response {
+        object.insert("sub".into(), serde_json::Value::String(user.id.to_string()));
+    }
+    Ok(response)
 }
 
 /// A token for the client itself (RFC 6749 section 4.4): no user, no session,
@@ -601,6 +672,7 @@ async fn client_credentials(
         refresh_token: None,
         scopes: Some(scopes),
         expires_in,
+        id_token: None,
     })
 }
 

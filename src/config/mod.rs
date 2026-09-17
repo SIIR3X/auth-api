@@ -388,9 +388,13 @@ impl Config {
                     .string("SERVER_HOST")
                     .unwrap_or_else(|| "0.0.0.0".into()),
                 port: vars.parse("SERVER_PORT")?.unwrap_or(3000u16),
+                // The issuer of every token and of the published metadata:
+                // one spelling, without a trailing slash.
                 public_url: vars
                     .string("APP_PUBLIC_URL")
-                    .unwrap_or_else(|| "http://localhost:3000".into()),
+                    .unwrap_or_else(|| "http://localhost:3000".into())
+                    .trim_end_matches('/')
+                    .to_owned(),
                 frontend_url: vars
                     .string("FRONTEND_URL")
                     .or_else(|| vars.string("APP_PUBLIC_URL"))

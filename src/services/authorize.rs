@@ -54,6 +54,8 @@ pub struct Approval<'a> {
     pub code_challenge: &'a str,
     /// Scopes of the request (`None`: unrestricted).
     pub requested: Option<&'a [String]>,
+    /// OpenID Connect nonce, echoed in the ID token.
+    pub nonce: Option<&'a str>,
     pub current_password: Option<&'a str>,
     pub ip: Option<IpNetwork>,
     pub request_id: Option<Uuid>,
@@ -83,7 +85,7 @@ pub async fn describe(
     let unavailable_scopes = requested
         .unwrap_or_default()
         .iter()
-        .filter(|scope| !held.contains(scope))
+        .filter(|scope| !crate::domain::oidc::is_oidc_scope(scope) && !held.contains(scope))
         .cloned()
         .collect();
     let (sessions_used, sessions_allowed) = session_allowance(state, user_id, client).await?;
@@ -148,6 +150,7 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
             redirect_uri: approval.redirect_uri,
             code_challenge: approval.code_challenge,
             scopes: scopes.as_deref(),
+            nonce: approval.nonce,
             expires_at: state.clock.in_secs(CODE_TTL_SECS),
         },
     )
@@ -157,13 +160,14 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
     Ok(code)
 }
 
-/// What an approval grants: the requested scopes the user holds, or `None`
-/// (unrestricted) when the request named none and the client has none.
+/// What an approval grants: the requested scopes the user holds, and the
+/// OpenID Connect scopes; or `None` (unrestricted) when the request named none
+/// and the client has none.
 fn consent(requested: Option<&[String]>, held: &[String]) -> Option<Vec<String>> {
     requested.map(|requested| {
         requested
             .iter()
-            .filter(|scope| held.contains(scope))
+            .filter(|scope| crate::domain::oidc::is_oidc_scope(scope) || held.contains(scope))
             .cloned()
             .collect()
     })
@@ -174,10 +178,11 @@ fn consent(requested: Option<&[String]>, held: &[String]) -> Option<Vec<String>>
 /// The code is consumed before anything else is checked, so a failed attempt
 /// (wrong verifier, wrong redirect) ends the code instead of leaving it open to
 /// further guesses. Every refusal answers identically.
+/// Returns the tokens and the OpenID Connect nonce of the request, if any.
 pub async fn redeem(
     state: &AppState,
     request: &Redemption<'_>,
-) -> Result<auth_svc::AuthTokens, AppError> {
+) -> Result<(auth_svc::AuthTokens, Option<String>), AppError> {
     let hash = crypto::sha256(request.code.as_bytes());
 
     let Some(entry) = code_repo::consume(&state.db, &hash)
@@ -227,7 +232,7 @@ pub async fn redeem(
         tracing::warn!(error = %e, "could not link the authorization code to its session");
     }
 
-    Ok(tokens)
+    Ok((tokens, entry.nonce))
 }
 
 /// RFC 6749 section 4.1.2: a code presented again after redemption means it

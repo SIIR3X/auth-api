@@ -81,6 +81,8 @@ and 8628 (device authorization). Token and device authorization requests are
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
 | GET | `/.well-known/oauth-authorization-server` | - | General |
+| GET | `/.well-known/openid-configuration` | - | General |
+| GET | `/oauth/userinfo` | JWT of a session granted `openid` | Strict |
 | GET | `/oauth/authorize` | - | Strict |
 | GET | `/oauth/authorization-requests/{id}` | JWT | Strict |
 | POST | `/oauth/authorization-requests/{id}/approve` | JWT (+ reauth for non-primary clients) | Strict |
@@ -137,6 +139,16 @@ client id, `client_id` names the client, `sid` is nil, and `permissions` are the
 granted scopes. Account routes refuse it; resource servers accept it like any
 access token. Removing the client's secret or turning the grant off ends the
 tokens already issued, as introspection reports.
+
+**OpenID Connect.** The provider supports the authorization code flow:
+`GET /.well-known/openid-configuration`, the `openid`, `profile` and `email`
+scopes (any client may ask for them; they grant no permission), `nonce`, an
+`id_token` (ES256, `aud` the client, `at_hash`, `auth_time`, and the claims of
+the granted scopes) in token responses of sessions granted `openid`, refreshes
+included, and `GET /oauth/userinfo` for their access tokens. `profile` releases
+`preferred_username`, `locale` and `updated_at`; `email` releases `email` and
+`email_verified`. Not supported: implicit and hybrid flows, request objects,
+`prompt`, `max_age`, dynamic registration.
 
 **Introspection (RFC 7662).** A confidential client (a resource server)
 posts `token` and learns `active`, and for an active token its `token_type`

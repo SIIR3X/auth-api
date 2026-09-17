@@ -39,6 +39,7 @@ async fn code(db: &TestDb, user_id: Uuid, hash: &[u8; 32], expires_at: OffsetDat
             redirect_uri: "https://app.example.com/callback",
             code_challenge: CHALLENGE,
             scopes: None,
+            nonce: None,
             expires_at,
         },
     )

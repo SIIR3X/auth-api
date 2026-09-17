@@ -57,6 +57,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /.well-known/openid-configuration:
+    get:
+      tags:
+      - oauth
+      operationId: openid_configuration
+      responses:
+        '200':
+          description: OpenID Provider metadata (OpenID Connect Discovery 1.0)
+          content:
+            application/json:
+              schema:
+                type: object
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /admin/audit:
     get:
       tags:
@@ -3031,6 +3055,12 @@ paths:
         required: false
         schema:
           type: string
+      - name: nonce
+        in: query
+        description: 'OpenID Connect: echoed in the ID token'
+        required: false
+        schema:
+          type: string
       responses:
         '303':
           description: To the consent page (`OAUTH_CONSENT_URI?request_id=...`), or back to the client with `error`
@@ -3433,6 +3463,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /oauth/userinfo:
+    get:
+      tags:
+      - oauth
+      operationId: userinfo
+      responses:
+        '200':
+          description: Claims about the user released by the session's scopes (OIDC Core 5.3)
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: The session was not granted `openid`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
   /ready:
     get:
       tags:
@@ -5900,6 +5968,11 @@ components:
           format: int64
           description: Seconds.
           minimum: 0
+        id_token:
+          type:
+          - string
+          - 'null'
+          description: OpenID Connect ID token, when the `openid` scope was granted.
         refresh_token:
           type:
           - string

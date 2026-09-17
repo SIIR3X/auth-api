@@ -40,6 +40,8 @@ use utoipa::{
         crate::handlers::auth::complete_email_two_factor,
         crate::handlers::auth::resend_email_two_factor,
         crate::handlers::oauth::metadata,
+        crate::handlers::oauth::openid_configuration,
+        crate::handlers::oauth::userinfo,
         crate::handlers::oauth::authorize,
         crate::handlers::oauth::describe_request,
         crate::handlers::oauth::approve_request,

@@ -245,6 +245,10 @@ fn build_router(
             "/.well-known/oauth-authorization-server",
             get(oauth::metadata),
         )
+        .route(
+            "/.well-known/openid-configuration",
+            get(oauth::openid_configuration),
+        )
         // Logout is authenticated (requires a valid JWT via AuthUser) but intentionally
         // placed outside the auth rate-limit bucket. Exhausting that bucket during a
         // brute-force attack must not prevent the legitimate user from ending their session.
@@ -436,6 +440,7 @@ fn oauth_router() -> Router<AppState> {
         .route("/token", post(oauth::token))
         .route("/device_authorization", post(oauth::device_authorization))
         .route("/introspect", post(oauth::introspect))
+        .route("/userinfo", get(oauth::userinfo))
         .route("/revoke", post(oauth::revoke))
         .route("/device/verify", post(oauth::verify_device))
         .route("/device/{user_code}", get(oauth::describe_device))

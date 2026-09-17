@@ -6,6 +6,7 @@ mod confidential;
 mod device_flow;
 mod introspection;
 mod metadata;
+mod openid_connect;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use reqwest::header::{HeaderMap, HeaderValue};

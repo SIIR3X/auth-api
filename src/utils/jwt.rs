@@ -92,6 +92,17 @@ impl Claims {
     }
 }
 
+/// Sign any claims set with the access token key (ID tokens).
+pub fn encode_claims(
+    claims: &impl serde::Serialize,
+    key: &EncodingKey,
+    kid: Option<&str>,
+) -> Result<String, JwtError> {
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = kid.map(str::to_owned);
+    jsonwebtoken::encode(&header, claims, key).map_err(|e| JwtError::Encode(e.to_string()))
+}
+
 pub fn encode_token(
     claims: &Claims,
     key: &EncodingKey,

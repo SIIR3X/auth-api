@@ -105,7 +105,8 @@ pub fn parse_scope(scope: Option<&str>) -> Result<Option<Vec<String>>, String> {
 }
 
 /// The scopes a request asks for, checked against the client's registration:
-/// a restricted client may ask for a subset of its scopes only. Without a
+/// a restricted client may ask for a subset of its scopes only, plus the
+/// OpenID Connect scopes, which any client may ask for. Without a
 /// `scope` parameter the client's scopes apply (`None`: unrestricted).
 pub fn requested_scopes(
     requested: Option<Vec<String>>,
@@ -117,7 +118,9 @@ pub fn requested_scopes(
         Some(requested) => {
             let outside: Vec<String> = requested
                 .iter()
-                .filter(|scope| !client_scopes.contains(scope))
+                .filter(|scope| {
+                    !super::oidc::is_oidc_scope(scope) && !client_scopes.contains(scope)
+                })
                 .cloned()
                 .collect();
             if outside.is_empty() {
@@ -205,6 +208,10 @@ mod tests {
         assert_eq!(
             requested_scopes(Some(vec!["users:manage".into()]), &client),
             Err(vec!["users:manage".to_owned()])
+        );
+        assert_eq!(
+            requested_scopes(Some(vec!["openid".into(), "docs:read".into()]), &client),
+            Ok(Some(vec!["openid".to_owned(), "docs:read".to_owned()]))
         );
         assert_eq!(
             requested_scopes(Some(vec!["users:manage".into()]), &[]),
