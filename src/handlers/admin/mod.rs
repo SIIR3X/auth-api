@@ -6,6 +6,7 @@ pub mod audit;
 pub mod clients;
 pub mod roles;
 pub mod users;
+pub mod webhooks;
 
 use crate::services::admin::Actor;
 

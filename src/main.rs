@@ -102,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
 
     cleanup::spawn_cleanup_task(state.db.clone(), state.config.clone());
     let _relay = auth_api::services::events::spawn_relay(state.db.clone(), state.nats.clone());
+    let _webhooks = auth_api::services::webhooks::spawn_dispatcher(state.clone());
     let nats = state.nats.clone();
     auth_api::utils::container_metrics::spawn();
     auth_api::utils::pool_metrics::spawn(

@@ -20,19 +20,6 @@ pub struct PendingEvent {
     pub due: bool,
 }
 
-/// Record an event; call it with the transaction of the change it announces.
-pub async fn insert<'e>(
-    executor: impl PgExecutor<'e>,
-    subject: &str,
-    payload: &Value,
-) -> Result<Uuid, sqlx::Error> {
-    sqlx::query_scalar("INSERT INTO event_outbox (subject, payload) VALUES ($1, $2) RETURNING id")
-        .bind(subject)
-        .bind(payload)
-        .fetch_one(executor)
-        .await
-}
-
 /// The oldest unpublished events, in the order they were recorded.
 pub async fn head<'e>(
     executor: impl PgExecutor<'e>,

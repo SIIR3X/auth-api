@@ -90,7 +90,7 @@ server. In production, run them in a one-off container:
 | `--healthcheck` | Call the local `/live` and exit 0 or 1 (the image's health check) |
 | `--grant-role <role> --user <email>` | Grant a role to an account, audited; appoints the first administrator (`--grant-role admin`) |
 | `--register-client <id> --name <name> [options]` | Create or update a registered client (needs only `DATABASE_URL`) |
-| `--rotate-totp-keys` | Re-encrypt TOTP secrets under `ENCRYPTION_KEY` (see the [operations runbook](../../deploy/guides/operations.md)) |
+| `--rotate-totp-keys` | Re-encrypt TOTP secrets and webhook signing secrets under `ENCRYPTION_KEY` (see the [operations runbook](../../deploy/guides/operations.md)) |
 
 `--register-client` options:
 

@@ -4,6 +4,7 @@ mod audit;
 mod clients;
 mod roles;
 mod users;
+mod webhooks;
 
 use auth_api::{domain::role::ADMIN_PERMISSIONS, repositories::role as role_repo};
 use serde_json::{Value, json};

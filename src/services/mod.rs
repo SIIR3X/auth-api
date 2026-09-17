@@ -22,3 +22,4 @@ pub mod reauth;
 pub mod session;
 pub mod two_factor;
 pub mod user;
+pub mod webhooks;

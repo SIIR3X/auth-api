@@ -52,6 +52,13 @@ pub fn generate_otp() -> String {
     format!("{code:06}")
 }
 
+/// `N` bytes from the OS CSPRNG.
+pub fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut bytes = [0u8; N];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
+}
+
 pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);

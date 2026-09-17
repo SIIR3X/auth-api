@@ -62,6 +62,19 @@ impl Config {
                 validate_production_encryption_key("PREVIOUS_ENCRYPTION_KEY", previous)?;
             }
 
+            if self.webhooks.allow_http {
+                return Err(ConfigError::Invalid {
+                    key: "WEBHOOK_ALLOW_HTTP".into(),
+                    reason: "must be false in production -- deliveries carry account events and their signature".into(),
+                });
+            }
+            if self.webhooks.allow_private_networks {
+                return Err(ConfigError::Invalid {
+                    key: "WEBHOOK_ALLOW_PRIVATE_NETWORKS".into(),
+                    reason: "must be false in production -- a webhook must not reach the internal network".into(),
+                });
+            }
+
             if self.pwned_passwords.enabled {
                 validate_https_url("PWNED_PASSWORDS_URL", &self.pwned_passwords.api_url)?;
             }

@@ -109,6 +109,11 @@ async fn run_all(conn: &mut PgConnection, config: &Config) {
             "SELECT cleanup_stale_known_devices($1::interval, $2)",
             format!("{} days", c.known_devices_retention_days),
         ),
+        (
+            "cleanup_finished_webhook_deliveries",
+            "SELECT cleanup_finished_webhook_deliveries($1::interval, $2)",
+            format!("{} days", c.webhook_deliveries_retention_days),
+        ),
         // Published events stay a week for investigation.
         (
             "cleanup_published_events",

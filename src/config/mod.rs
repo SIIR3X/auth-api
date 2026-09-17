@@ -252,6 +252,8 @@ pub struct CleanupConfig {
     /// Days after which a device unseen is forgotten (a sign-in from it alerts
     /// again). Default: 90.
     pub known_devices_retention_days: u32,
+    /// Days finished webhook deliveries are kept for inspection. Default: 7.
+    pub webhook_deliveries_retention_days: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -275,6 +277,17 @@ pub struct PwnedPasswordsConfig {
     pub timeout_ms: u64,
     /// Accept the password when the API gives no answer. Default: true.
     pub fail_open: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct WebhookConfig {
+    /// Accept `http://` endpoints. Default: outside production only.
+    pub allow_http: bool,
+    /// Deliver to loopback, private and other internal addresses. Default:
+    /// false; refused in production.
+    pub allow_private_networks: bool,
+    /// Timeout of one delivery, in milliseconds. Default: 5000.
+    pub timeout_ms: u64,
 }
 
 #[derive(Clone)]
@@ -333,6 +346,7 @@ pub struct Config {
     pub cors: CorsConfig,
     pub captcha: CaptchaConfig,
     pub pwned_passwords: PwnedPasswordsConfig,
+    pub webhooks: WebhookConfig,
     pub cleanup: CleanupConfig,
     pub audit: AuditConfig,
     pub log: LogConfig,
@@ -487,6 +501,13 @@ impl Config {
                 timeout_ms: vars.parse("PWNED_PASSWORDS_TIMEOUT_MS")?.unwrap_or(1500),
                 fail_open: vars.parse("PWNED_PASSWORDS_FAIL_OPEN")?.unwrap_or(true),
             },
+            webhooks: WebhookConfig {
+                allow_http: vars.parse("WEBHOOK_ALLOW_HTTP")?.unwrap_or(!is_production),
+                allow_private_networks: vars
+                    .parse("WEBHOOK_ALLOW_PRIVATE_NETWORKS")?
+                    .unwrap_or(false),
+                timeout_ms: vars.parse("WEBHOOK_TIMEOUT_MS")?.unwrap_or(5000),
+            },
             cors: CorsConfig {
                 allowed_origins: vars
                     .string("CORS_ALLOWED_ORIGINS")
@@ -512,6 +533,9 @@ impl Config {
                 known_devices_retention_days: vars
                     .parse("CLEANUP_KNOWN_DEVICE_DAYS")?
                     .unwrap_or(90),
+                webhook_deliveries_retention_days: vars
+                    .parse("CLEANUP_WEBHOOK_DELIVERY_DAYS")?
+                    .unwrap_or(7),
             },
             audit: AuditConfig {
                 retention_months: vars.parse("AUDIT_LOG_RETENTION_MONTHS")?.unwrap_or(12),

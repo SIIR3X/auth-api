@@ -190,6 +190,14 @@ groups:
         annotations:
           summary: "{{ $labels.instance }} dropped e-mails: 1 000 were already pending"
 
+      - alert: AuthApiWebhooksFailing
+        expr: sum(increase(auth_webhook_deliveries_total{outcome="failed"}[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "webhook deliveries were given up after every retry"
+          description: "An endpoint stayed unreachable or refused deliveries for hours: see GET /admin/webhooks/{id}/deliveries, fix it, then retry."
+
       - alert: AuthApiCleanupFailing
         expr: sum by (job, instance) (increase(auth_cleanup_failures_total[2h])) > 0
         labels:

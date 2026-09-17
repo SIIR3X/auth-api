@@ -209,4 +209,10 @@ A change to roles that would leave no account with `roles:manage` answers
 `409 last_administrator`; the default role cannot be deleted
 (`409 default_role`). Access tokens carry the permissions of their issuance
 until refreshed; `/admin` routes read them from the database on every request.
+Webhooks (`webhooks:manage`): `GET`/`POST /admin/webhooks`,
+`PUT`/`DELETE /admin/webhooks/{id}`, `POST /admin/webhooks/{id}/secret`,
+`GET /admin/webhooks/{id}/deliveries` and
+`POST /admin/webhooks/{id}/deliveries/{delivery_id}/retry`. See the
+[webhook guide](../guides/webhooks.md).
+
 `GET /admin/audit` takes `user_id`, `action`, `limit` and `cursor`.

@@ -128,13 +128,15 @@ pub async fn enqueue<'e>(
     payload: &impl Serialize,
 ) -> Result<(), AppError> {
     let payload = serde_json::to_value(payload).map_err(|e| AppError::Internal(e.into()))?;
-    event_outbox::insert(
+    // Webhook deliveries are recorded with the event: an endpoint receives
+    // exactly the events that were committed, whatever NATS is doing.
+    crate::repositories::webhook::record_event(
         executor,
         &format!("{SUBJECT_PREFIX}.{event_name}"),
+        event_name,
         &payload,
     )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    .await?;
     Ok(())
 }
 
@@ -142,6 +144,7 @@ pub async fn enqueue<'e>(
 /// instead of at the next poll.
 pub fn wake() {
     WAKE.notify_one();
+    super::webhooks::wake();
 }
 
 /// Relay pending events to JetStream for the life of the process.

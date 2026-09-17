@@ -363,6 +363,23 @@ pub fn pwned_range(data: &[u8]) {
     }
 }
 
+/// Webhook URLs: never a panic, and an accepted URL is http(s) with a host and
+/// no credentials.
+pub fn webhook_url(data: &[u8]) {
+    let Some(text) = text(data) else { return };
+    if let Ok(url) = crate::domain::webhook::check_url(text, true) {
+        assert!(matches!(url.scheme(), "http" | "https"), "{text:?}");
+        assert!(url.host_str().is_some_and(|h| !h.is_empty()), "{text:?}");
+        assert!(
+            url.username().is_empty() && url.password().is_none(),
+            "{text:?}"
+        );
+    }
+    if let Ok(ip) = text.parse::<std::net::IpAddr>() {
+        let _ = crate::domain::webhook::is_public_address(ip);
+    }
+}
+
 /// Input validators: they never panic, and what they accept fits the database.
 pub fn validators(data: &[u8]) {
     let Some(input) = text(data) else { return };
@@ -449,6 +466,7 @@ pub const TARGETS: &[Target] = &[
     ("pkce", pkce),
     ("pre_auth_state", pre_auth_state),
     ("pwned_range", pwned_range),
+    ("webhook_url", webhook_url),
     ("redirect_uri", redirect_uri),
     ("totp_code", totp_code),
     ("validators", validators),

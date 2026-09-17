@@ -7,6 +7,7 @@
 - [Quality gate](guides/quality-gate.md) - `make ci`: what it checks and when to run it
 - [Release](guides/release.md) - Building a release bundle
 - [Configuration](guides/configuration.md) - Environment files, secrets, and variables reference
+- [Webhooks](guides/webhooks.md) - Receiving signed account events over HTTPS
 
 ## API
 

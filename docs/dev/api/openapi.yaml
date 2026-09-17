@@ -1272,6 +1272,445 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
       security:
       - bearer: []
+  /admin/webhooks:
+    get:
+      tags:
+      - admin
+      operationId: list
+      responses:
+        '200':
+          description: Every webhook endpoint
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WebhookResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `webhooks:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+    post:
+      tags:
+      - admin
+      operationId: create
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookRequest'
+        required: true
+      responses:
+        '201':
+          description: Endpoint registered; its signing secret is in this response only
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedWebhookResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `webhooks:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid URL or unknown event
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/webhooks/{id}:
+    put:
+      tags:
+      - admin
+      operationId: update
+      parameters:
+      - name: id
+        in: path
+        description: Webhook id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookRequest'
+        required: true
+      responses:
+        '200':
+          description: Endpoint updated; the secret is unchanged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `webhooks:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such webhook
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid URL or unknown event
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+    delete:
+      tags:
+      - admin
+      operationId: delete
+      parameters:
+      - name: id
+        in: path
+        description: Webhook id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Endpoint and its pending deliveries removed
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `webhooks:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such webhook
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/webhooks/{id}/deliveries:
+    get:
+      tags:
+      - admin
+      operationId: deliveries
+      parameters:
+      - name: id
+        in: path
+        description: Webhook id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The latest 100 deliveries, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WebhookDeliveryResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `webhooks:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/webhooks/{id}/deliveries/{delivery_id}/retry:
+    post:
+      tags:
+      - admin
+      operationId: retry
+      parameters:
+      - name: id
+        in: path
+        description: Webhook id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: delivery_id
+        in: path
+        description: Delivery id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Delivery queued again with a fresh attempt budget
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `webhooks:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such delivery for this webhook
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /admin/webhooks/{id}/secret:
+    post:
+      tags:
+      - admin
+      operationId: rotate_secret
+      parameters:
+      - name: id
+        in: path
+        description: Webhook id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: A new signing secret
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSecretResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Missing `webhooks:manage`, or no second factor enrolled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such webhook
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
   /auth/authorize:
     post:
       tags:
@@ -4712,6 +5151,16 @@ components:
           secret:
             type: string
             description: The secret, shown once.
+    CreatedWebhookResponse:
+      allOf:
+      - $ref: '#/components/schemas/WebhookResponse'
+      - type: object
+        required:
+        - secret
+        properties:
+          secret:
+            type: string
+            description: Signing secret (`whsec_...`), shown once.
     CurrentPasswordRequest:
       type: object
       description: |-
@@ -5484,6 +5933,116 @@ components:
       properties:
         code:
           type: string
+    WebhookDeliveryResponse:
+      type: object
+      required:
+      - id
+      - event_id
+      - event
+      - attempts
+      - created_at
+      properties:
+        attempts:
+          type: integer
+          format: int32
+        created_at:
+          type: integer
+          format: int64
+        delivered_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        event:
+          type: string
+        event_id:
+          type: string
+          format: uuid
+        failed_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        id:
+          type: string
+          format: uuid
+        last_error:
+          type:
+          - string
+          - 'null'
+        last_status:
+          type:
+          - integer
+          - 'null'
+          format: int32
+        next_attempt_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: Next attempt, while neither delivered nor given up.
+    WebhookRequest:
+      type: object
+      required:
+      - url
+      - events
+      properties:
+        description:
+          type:
+          - string
+          - 'null'
+        enabled:
+          type:
+          - boolean
+          - 'null'
+          description: 'Default: true.'
+        events:
+          type: array
+          items:
+            type: string
+          description: Event names (`user.created`, `user.deleted`, ...) or `*`.
+        url:
+          type: string
+          description: HTTPS URL receiving the deliveries.
+    WebhookResponse:
+      type: object
+      required:
+      - id
+      - url
+      - events
+      - enabled
+      - created_at
+      - updated_at
+      properties:
+        created_at:
+          type: integer
+          format: int64
+        description:
+          type:
+          - string
+          - 'null'
+        enabled:
+          type: boolean
+        events:
+          type: array
+          items:
+            type: string
+        id:
+          type: string
+          format: uuid
+        updated_at:
+          type: integer
+          format: int64
+        url:
+          type: string
+    WebhookSecretResponse:
+      type: object
+      required:
+      - secret
+      properties:
+        secret:
+          type: string
+          description: The new signing secret, shown once; the previous one stops signing now.
   securitySchemes:
     bearer:
       type: http

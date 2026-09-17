@@ -19,7 +19,7 @@ use auth_api::{
         AuditConfig, CaptchaConfig, CleanupConfig, Config, CorsConfig, CryptoConfig,
         DatabaseConfig, DeviceAuthConfig, Environment, JwtConfig, LogConfig, LogFormat, MailConfig,
         MetricsConfig, NatsConfig, PwnedPasswordsConfig, RateLimitConfig, RedisConfig,
-        SecurityConfig, ServerConfig, SmtpConfig,
+        SecurityConfig, ServerConfig, SmtpConfig, WebhookConfig,
     },
     handlers,
     state::AppState,
@@ -409,6 +409,11 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             timeout_ms: 1500,
             fail_open: true,
         },
+        webhooks: WebhookConfig {
+            allow_http: false,
+            allow_private_networks: false,
+            timeout_ms: 5000,
+        },
         cleanup: CleanupConfig {
             interval_secs: 3600,
             sessions_grace_days: 7,
@@ -417,6 +422,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             recovery_codes_grace_days: 7,
             unverified_accounts_retention_days: 7,
             known_devices_retention_days: 90,
+            webhook_deliveries_retention_days: 7,
         },
         audit: AuditConfig {
             retention_months: 6,

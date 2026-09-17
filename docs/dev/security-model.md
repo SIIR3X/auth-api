@@ -113,6 +113,18 @@ the database together, is out of scope.
   recent re-authentication. No change may leave the deployment without an
   account holding `roles:manage`.
 
+## Webhooks
+
+- Deliveries are recorded in the transaction of the change, like events: an
+  endpoint never hears of a change that rolled back.
+- Each delivery is signed with the endpoint's secret (HMAC-SHA256 over id,
+  timestamp and body); secrets are encrypted with the keyring and shown once.
+- Before each delivery the host is resolved and every address checked: loopback,
+  private, link-local, shared, documentation, multicast and reserved ranges,
+  and IPv6 forms embedding them, are refused. The connection is pinned to the
+  checked address and redirects are not followed, so a DNS answer or a
+  redirect cannot turn a webhook against the internal network.
+
 ## Data
 
 - Every token, code and refresh token is stored as a digest.
@@ -202,3 +214,4 @@ when a cited test no longer exists.
 | SEC-32 | The data export needs a recent re-authentication and holds no secret and no other account | `the_export_holds_the_account_its_history_and_no_secret`, `exporting_needs_a_recent_reauthentication` |
 | SEC-33 | Sign-in links are single-use, short-lived, replaced by the next one, off by default, and never skip the second factor | `a_link_signs_in_once`, `a_new_link_replaces_the_previous_one_and_an_old_link_expires`, `a_second_factor_is_still_required`, `unknown_pending_and_suspended_addresses_answer_alike_and_get_nothing`, `links_are_capped_per_account_and_off_unless_enabled` |
 | SEC-34 | Personal access tokens are stored as digests, shown once, scoped to permissions the account holds, and end with their session or account | `a_token_is_exchanged_for_access_tokens_carrying_its_scopes_only`, `a_revoked_token_and_its_access_tokens_stop_working`, `tokens_expire_and_follow_the_account_status`, `creation_is_checked`, `scopes_are_limited_to_the_permissions_held` |
+| SEC-35 | Webhooks are signed, never reach internal addresses or follow redirects, and deliver exactly the committed events | `a_subscribed_endpoint_receives_signed_events`, `internal_addresses_are_never_called`, `internal_addresses_are_refused`, `only_plain_https_urls_are_registered`, `endpoints_are_checked_updated_rotated_and_removed`, `validate_rejects_production_webhooks_to_http_or_internal_addresses` |

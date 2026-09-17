@@ -69,6 +69,14 @@ address), `first_seen_at`, `last_seen_at`. Forgotten after
 Single-use tokens (`token_hash`, `expires_at`, `used_at`). At most one active
 token per user. `magic_link_tokens` hold sign-in links (15 minutes).
 
+### webhook_endpoints, webhook_deliveries
+
+`webhook_endpoints`: `url`, `description`, `events` (names or `*`), `secret`
+(encrypted with the keyring), `enabled`. `webhook_deliveries`: one row per
+endpoint and event (`event_id`, `event_name`, `payload`, `occurred_at`),
+recorded with the event; `attempts`, `next_attempt_at`, `delivered_at` or
+`failed_at`, `last_status`, `last_error`.
+
 ### personal_access_tokens
 
 Tokens an account creates for its scripts: `name`, `token_hash` (SHA-256 of the

@@ -160,6 +160,17 @@ Registered clients (device and authorization code flows) live in the database
 and are managed with `auth-api --register-client` (see [Commands](commands.md))
 or `PUT /admin/clients/{client_id}`.
 
+### Webhooks
+
+Endpoints are registered through `/admin/webhooks` (see the
+[webhook guide](webhooks.md)).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBHOOK_TIMEOUT_MS` | `5000` | Timeout of one delivery |
+| `WEBHOOK_ALLOW_HTTP` | `true` outside production | Accept `http://` endpoints; refused in production |
+| `WEBHOOK_ALLOW_PRIVATE_NETWORKS` | `false` | Deliver to loopback, private and other internal addresses; refused in production |
+
 ### Retention
 
 The application is the only scheduler: every `CLEANUP_INTERVAL_SECS`, one
@@ -173,6 +184,7 @@ the audit log partitions.
 | `CLEANUP_TOKENS_GRACE_DAYS` | `1` | Kept after expiry: email codes, verification and reset tokens |
 | `CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS` | `90` | Login attempt ledger retention |
 | `CLEANUP_RECOVERY_CODES_GRACE_DAYS` | `7` | Kept after expiry |
+| `CLEANUP_WEBHOOK_DELIVERY_DAYS` | `7` | Delivered and given-up webhook deliveries are deleted after this many days |
 | `CLEANUP_KNOWN_DEVICE_DAYS` | `90` | Devices unused for this many days are forgotten; a later sign-in from one alerts again |
 | `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` | `7` | Accounts whose address was never verified are deleted after this many days (audited, `user.deleted` published); `0` keeps them |
 | `AUDIT_LOG_RETENTION_MONTHS` | `12` | Monthly audit partitions kept; `0` keeps every partition |
@@ -204,4 +216,5 @@ With `APP_ENV=production` the service refuses to start when:
 - `SMTP_USERNAME` or `CAPTCHA_SECRET` is empty;
 - `RATE_LIMIT_FAIL_OPEN`, `RATE_LIMIT_ALLOW_MISSING_IP` or `CAPTCHA_FAIL_OPEN`
   is `true`, or `JWT_STRICT_SESSION_BINDING` is `false`;
+- `WEBHOOK_ALLOW_HTTP` or `WEBHOOK_ALLOW_PRIVATE_NETWORKS` is `true`;
 - `SENSITIVE_ACTION_REAUTH_SECS` or `ARGON2_MAX_CONCURRENCY` is `0`.

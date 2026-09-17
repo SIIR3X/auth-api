@@ -95,3 +95,10 @@ path = "fuzz_targets/validators.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "webhook_url"
+path = "fuzz_targets/webhook_url.rs"
+test = false
+doc = false
+bench = false

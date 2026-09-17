@@ -53,6 +53,10 @@ pub enum AuditAction {
     MagicLinkSent,
     PersonalAccessTokenCreated,
     PersonalAccessTokenRevoked,
+    WebhookCreated,
+    WebhookUpdated,
+    WebhookDeleted,
+    WebhookSecretRotated,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

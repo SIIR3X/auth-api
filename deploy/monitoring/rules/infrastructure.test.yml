@@ -171,6 +171,8 @@ tests:
         values: "0 0 4 4"
       - series: 'auth_cleanup_failures_total{job="auth-api",instance="10.0.0.1:9465"}'
         values: "0 1 1"
+      - series: 'auth_webhook_deliveries_total{instance="10.0.0.1:9465",outcome="failed"}'
+        values: "0 0 1 1"
     alert_rule_test:
       - eval_time: 15m
         alertname: AuthApiNotificationsFailing
@@ -189,3 +191,10 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning, job: auth-api, instance: "10.0.0.1:9465" }
             exp_annotations: { summary: "a retention job failed on 10.0.0.1:9465" }
+      - eval_time: 3m
+        alertname: AuthApiWebhooksFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "webhook deliveries were given up after every retry"
+              description: "An endpoint stayed unreachable or refused deliveries for hours: see GET /admin/webhooks/{id}/deliveries, fix it, then retry."

@@ -97,6 +97,11 @@ fn valid_config() -> Config {
             timeout_ms: 1500,
             fail_open: true,
         },
+        webhooks: WebhookConfig {
+            allow_http: false,
+            allow_private_networks: false,
+            timeout_ms: 5000,
+        },
         cleanup: CleanupConfig {
             interval_secs: 3600,
             sessions_grace_days: 7,
@@ -105,6 +110,7 @@ fn valid_config() -> Config {
             recovery_codes_grace_days: 7,
             unverified_accounts_retention_days: 7,
             known_devices_retention_days: 90,
+            webhook_deliveries_retention_days: 7,
         },
         audit: AuditConfig {
             retention_months: 6,
@@ -982,4 +988,23 @@ fn remember_me_selects_the_long_session_lifetime() {
     jwt.short_session_expiry_secs = 1;
     assert_eq!(jwt.session_ttl_secs(true), 30);
     assert_eq!(jwt.session_ttl_secs(false), 1);
+}
+
+#[test]
+fn validate_rejects_production_webhooks_to_http_or_internal_addresses() {
+    let mut config = valid_config();
+    config.webhooks.allow_http = true;
+    let err = config
+        .validate()
+        .expect_err("WEBHOOK_ALLOW_HTTP in production");
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "WEBHOOK_ALLOW_HTTP"));
+
+    let mut config = valid_config();
+    config.webhooks.allow_private_networks = true;
+    let err = config
+        .validate()
+        .expect_err("WEBHOOK_ALLOW_PRIVATE_NETWORKS in production");
+    assert!(
+        matches!(err, ConfigError::Invalid { key, .. } if key == "WEBHOOK_ALLOW_PRIVATE_NETWORKS")
+    );
 }

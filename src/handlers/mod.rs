@@ -399,6 +399,22 @@ fn admin_router() -> Router<AppState> {
         .route("/clients/{client_id}", put(admin::clients::save))
         .route("/clients/{client_id}", delete(admin::clients::delete))
         .route("/audit", get(admin::audit::list))
+        .route("/webhooks", get(admin::webhooks::list))
+        .route("/webhooks", post(admin::webhooks::create))
+        .route("/webhooks/{id}", put(admin::webhooks::update))
+        .route("/webhooks/{id}", delete(admin::webhooks::delete))
+        .route(
+            "/webhooks/{id}/secret",
+            post(admin::webhooks::rotate_secret),
+        )
+        .route(
+            "/webhooks/{id}/deliveries",
+            get(admin::webhooks::deliveries),
+        )
+        .route(
+            "/webhooks/{id}/deliveries/{delivery_id}/retry",
+            post(admin::webhooks::retry),
+        )
 }
 
 // Sensitive authenticated routes placed under the strict auth rate-limit bucket.

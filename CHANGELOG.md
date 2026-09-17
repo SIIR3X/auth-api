@@ -91,6 +91,15 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   carrying those scopes and no roles. Each token owns a session of the new type
   `personal_access_token`, so revoking the session, changing the password or
   suspending the account ends it too.
+- Webhooks: `/admin/webhooks` registers HTTPS endpoints for domain events
+  (`user.created` ... `user.deleted`, or `*`). Deliveries are recorded in the
+  transaction of the change, signed per Standard Webhooks (`webhook-id`,
+  `webhook-timestamp`, `webhook-signature` with HMAC-SHA256), retried with
+  backoff for about fourteen hours, and inspectable and retriable by an
+  administrator. Endpoints resolving to internal addresses are never called,
+  redirects are not followed, and the connection goes to the checked address.
+  `WEBHOOK_*`, `CLEANUP_WEBHOOK_DELIVERY_DAYS`, alert `AuthApiWebhooksFailing`;
+  `--rotate-totp-keys` also re-encrypts webhook secrets.
 - `GET /users/me/export`: everything stored about the account as a JSON
   download, after a recent re-authentication, audited as `data_exported`.
 - Simulations of random account lifecycles checked against a model, a timing

@@ -114,6 +114,8 @@ pub struct TestApp {
     /// it opens while `DROP DATABASE ... WITH (FORCE)` runs holds the drop until
     /// PostgreSQL's 60-second authentication timeout.
     relay: Option<JoinHandle<()>>,
+    /// The webhook dispatcher, stopped for the same reason.
+    webhooks: JoinHandle<()>,
     mailpit_api_port: Option<u16>,
     // Declared last: dropped after everything holding a connection to it.
     _database: TestDb,
@@ -218,6 +220,7 @@ impl TestApp {
         // Events recorded by the requests reach NATS as in production.
         let relay = event_relay
             .then(|| auth_api::services::events::spawn_relay(state.db.clone(), state.nats.clone()));
+        let webhooks = auth_api::services::webhooks::spawn_dispatcher(state.clone());
 
         let contract = contract::Recorder::default();
         let router = handlers::router(state.clone()).layer(axum::middleware::from_fn_with_state(
@@ -264,6 +267,7 @@ impl TestApp {
             contract,
             server,
             relay,
+            webhooks,
             mailpit_api_port: mailpit_ports.map(|p| p.api_port),
             _database: database,
         }
@@ -443,6 +447,7 @@ impl Drop for TestApp {
         if let Some(relay) = &self.relay {
             relay.abort();
         }
+        self.webhooks.abort();
         self.server.abort();
         contract::settle(&self.contract);
     }
@@ -544,6 +549,11 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             timeout_ms: 1500,
             fail_open: true,
         },
+        webhooks: WebhookConfig {
+            allow_http: true,
+            allow_private_networks: true,
+            timeout_ms: 5000,
+        },
         cleanup: CleanupConfig {
             interval_secs: 3600,
             sessions_grace_days: 7,
@@ -552,6 +562,7 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             recovery_codes_grace_days: 7,
             unverified_accounts_retention_days: 7,
             known_devices_retention_days: 90,
+            webhook_deliveries_retention_days: 7,
         },
         audit: AuditConfig {
             retention_months: 6,

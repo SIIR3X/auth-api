@@ -24,3 +24,4 @@ pub mod session;
 pub mod token;
 pub mod two_factor;
 pub mod user;
+pub mod webhook;

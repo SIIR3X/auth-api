@@ -1,4 +1,5 @@
-//! Re-encryption of TOTP secrets after an encryption key change.
+//! Re-encryption of TOTP secrets and webhook signing secrets after an
+//! encryption key change.
 //!
 //! Every secret not yet under the current key is decrypted (with the key its
 //! ciphertext names, or by trying both keys for values written before
@@ -19,7 +20,7 @@ use crate::{
     error::AppError,
     repositories::{
         audit::{self, NewAuditEntry},
-        two_factor as tf_repo,
+        two_factor as tf_repo, webhook as webhook_repo,
     },
     state::AppState,
     utils::crypto,
@@ -60,8 +61,40 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    let total = methods.len();
+    let endpoints = webhook_repo::find_all_endpoints(&state.db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    let total = methods.len() + endpoints.len();
     let (mut rotated, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+
+    for endpoint in endpoints {
+        if !keyring.needs_rotation(&endpoint.secret) {
+            skipped += 1;
+            continue;
+        }
+        let reencrypted = match keyring
+            .decrypt(&endpoint.secret)
+            .and_then(|plaintext| keyring.encrypt(&plaintext))
+        {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!(webhook_id = %endpoint.id, error = ?e, "cannot re-encrypt webhook secret");
+                failed += 1;
+                continue;
+            }
+        };
+        match webhook_repo::rewrap_secret(&state.db, endpoint.id, &endpoint.secret, &reencrypted)
+            .await
+        {
+            Ok(true) => rotated += 1,
+            Ok(false) => skipped += 1,
+            Err(e) => {
+                tracing::warn!(webhook_id = %endpoint.id, error = ?e, "cannot store re-encrypted webhook secret");
+                failed += 1;
+            }
+        }
+    }
 
     for (id, stored) in methods {
         if !keyring.needs_rotation(&stored) {
@@ -101,7 +134,7 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
             action: AuditAction::EncryptionKeyRotated,
             ip_address: None,
             metadata: json!({
-                "scope": "totp_secrets",
+                "scope": "totp_and_webhook_secrets",
                 "key_id": keyring.current_kid(),
                 "total": total,
                 "rotated": rotated,

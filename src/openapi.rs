@@ -94,6 +94,13 @@ use utoipa::{
         crate::handlers::admin::clients::save,
         crate::handlers::admin::clients::delete,
         crate::handlers::admin::audit::list,
+        crate::handlers::admin::webhooks::list,
+        crate::handlers::admin::webhooks::create,
+        crate::handlers::admin::webhooks::update,
+        crate::handlers::admin::webhooks::delete,
+        crate::handlers::admin::webhooks::rotate_secret,
+        crate::handlers::admin::webhooks::deliveries,
+        crate::handlers::admin::webhooks::retry,
     ),
     modifiers(&SecurityAddon, &CommonResponses),
     tags(
