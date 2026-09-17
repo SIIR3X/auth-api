@@ -129,6 +129,15 @@ roles. The token response echoes `scope` when the session is restricted.
 `grant_type=refresh_token`; `/auth/refresh` refuses them. The session must
 belong to the authenticated client.
 
+**Client credentials.** A confidential client registered with scopes and
+`allows_client_credentials` (`PUT /admin/clients/{client_id}`) posts
+`grant_type=client_credentials` and optional `scope` to `POST /oauth/token`. The
+token carries no user and no refresh token: `sub` is a UUID derived from the
+client id, `client_id` names the client, `sid` is nil, and `permissions` are the
+granted scopes. Account routes refuse it; resource servers accept it like any
+access token. Removing the client's secret or turning the grant off ends the
+tokens already issued, as introspection reports.
+
 **Introspection (RFC 7662).** A confidential client (a resource server)
 posts `token` and learns `active`, and for an active token its `token_type`
 (`access_token`, `refresh_token`, `personal_access_token`), `scope`,

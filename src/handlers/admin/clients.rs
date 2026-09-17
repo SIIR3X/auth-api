@@ -30,6 +30,8 @@ pub struct ClientResponse {
     pub default_max_sessions: i16,
     /// Authenticates with a secret at the token endpoint.
     pub confidential: bool,
+    /// May obtain tokens for itself with the client credentials grant.
+    pub allows_client_credentials: bool,
     pub created_at: i64,
 }
 
@@ -52,11 +54,15 @@ pub struct SaveClientRequest {
     pub allows_loopback_redirect: bool,
     /// Default: 5.
     pub default_max_sessions: Option<i16>,
+    /// Allow the client credentials grant; needs a secret and scopes. Omitted:
+    /// unchanged (false for a new client).
+    pub allows_client_credentials: Option<bool>,
 }
 
 fn client_response(client: RegisteredClient) -> ClientResponse {
     ClientResponse {
         confidential: client.is_confidential(),
+        allows_client_credentials: client.allows_client_credentials,
         created_at: client.created_at.unix_timestamp(),
         client_id: client.client_id,
         display_name: client.display_name,
@@ -124,6 +130,7 @@ pub async fn save(
             allows_loopback_redirect: body.allows_loopback_redirect,
             default_max_sessions: body.default_max_sessions.unwrap_or(5),
         },
+        body.allows_client_credentials,
     )
     .await?;
     let status = if created {

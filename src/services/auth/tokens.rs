@@ -286,6 +286,18 @@ pub async fn blocklist_jti(state: &AppState, jti: Uuid, token_exp: i64) {
     }
 }
 
+/// Whether an access token was revoked. Fails closed like the token state
+/// check.
+pub async fn is_jti_blocked(state: &AppState, jti: Uuid) -> Result<bool, AppError> {
+    let mut conn = state.redis.get().await.map_err(|e| {
+        tracing::error!(%jti, error = %e, "jti blocklist check failed: Redis pool unavailable");
+        AppError::ServiceUnavailable("redis_unavailable")
+    })?;
+    conn.exists(format!("{JTI_BLOCKLIST_PREFIX}{jti}"))
+        .await
+        .map_err(|_| AppError::ServiceUnavailable("redis_query_failed"))
+}
+
 /// Check that an access token was neither revoked nor issued for a session
 /// that has ended.
 ///

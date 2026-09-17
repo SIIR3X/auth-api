@@ -72,7 +72,9 @@ pub struct OAuthTokenResponse {
     pub token_type: &'static str,
     /// Seconds.
     pub expires_in: u64,
-    pub refresh_token: String,
+    /// Absent for the client credentials grant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
     /// Space-separated scopes the token carries; absent when unrestricted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
@@ -81,7 +83,7 @@ pub struct OAuthTokenResponse {
 /// Form fields of `POST /oauth/token`, for the document.
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct OAuthTokenRequest {
-    /// `authorization_code`, `refresh_token` or
+    /// `authorization_code`, `refresh_token`, `client_credentials` or
     /// `urn:ietf:params:oauth:grant-type:device_code`.
     pub grant_type: String,
     pub client_id: Option<String>,
@@ -92,6 +94,8 @@ pub struct OAuthTokenRequest {
     pub code_verifier: Option<String>,
     pub refresh_token: Option<String>,
     pub device_code: Option<String>,
+    /// Space-separated scopes, for `client_credentials`.
+    pub scope: Option<String>,
     /// Label of the new session in the account's session list.
     pub device_name: Option<String>,
 }
@@ -210,6 +214,7 @@ pub async fn metadata(State(state): State<AppState>) -> Result<impl IntoResponse
                 oauth::GRANT_AUTHORIZATION_CODE,
                 oauth::GRANT_REFRESH_TOKEN,
                 oauth::GRANT_DEVICE_CODE,
+                oauth::GRANT_CLIENT_CREDENTIALS,
             ],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
             "code_challenge_methods_supported": ["S256"],
@@ -369,17 +374,17 @@ pub async fn token(
         ua.as_deref(),
     )
     .await?;
-    let scope = issued.tokens.session.scopes.as_ref().map(|s| s.join(" "));
+    let scope = issued.scopes.as_ref().map(|s| s.join(" "));
     Ok((
         [
             (header::CACHE_CONTROL, "no-store"),
             (header::PRAGMA, "no-cache"),
         ],
         Json(OAuthTokenResponse {
-            access_token: issued.tokens.access_token,
+            access_token: issued.access_token,
             token_type: "Bearer",
             expires_in: issued.expires_in,
-            refresh_token: issued.tokens.refresh_token,
+            refresh_token: issued.refresh_token,
             scope,
         }),
     )

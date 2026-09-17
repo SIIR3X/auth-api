@@ -454,8 +454,22 @@ pub async fn deny_request(state: &AppState, id: &str) -> Result<String, AppError
 
 /// RFC 6749 section 5.1.
 pub struct TokenResponse {
-    pub tokens: AuthTokens,
+    pub access_token: String,
+    /// Absent for the client credentials grant.
+    pub refresh_token: Option<String>,
+    pub scopes: Option<Vec<String>>,
     pub expires_in: u64,
+}
+
+impl TokenResponse {
+    fn session(tokens: AuthTokens, expires_in: u64) -> Self {
+        Self {
+            access_token: tokens.access_token,
+            refresh_token: Some(tokens.refresh_token),
+            scopes: tokens.session.scopes,
+            expires_in,
+        }
+    }
 }
 
 pub async fn token(
@@ -472,6 +486,7 @@ pub async fn token(
         oauth::GRANT_AUTHORIZATION_CODE,
         oauth::GRANT_REFRESH_TOKEN,
         oauth::GRANT_DEVICE_CODE,
+        oauth::GRANT_CLIENT_CREDENTIALS,
     ]
     .contains(&grant_type)
     {
@@ -491,6 +506,11 @@ pub async fn token(
         })
     };
     let device_name = param("device_name");
+    let expires_in = state.config.jwt.access_expiry_secs;
+
+    if grant_type == oauth::GRANT_CLIENT_CREDENTIALS {
+        return client_credentials(state, &client, param("scope")).await;
+    }
 
     let tokens = match grant_type {
         oauth::GRANT_AUTHORIZATION_CODE => {
@@ -536,9 +556,51 @@ pub async fn token(
             .await?
         }
     };
+    Ok(TokenResponse::session(tokens, expires_in))
+}
+
+/// A token for the client itself (RFC 6749 section 4.4): no user, no session,
+/// no refresh token; the permissions of its scopes, narrowed by `scope`.
+async fn client_credentials(
+    state: &AppState,
+    client: &RegisteredClient,
+    scope: Option<&str>,
+) -> Result<TokenResponse, EndpointError> {
+    if !client.is_confidential() || !client.allows_client_credentials {
+        return Err(OAuthError::new(
+            ErrorCode::UnauthorizedClient,
+            "this client may not use the client credentials grant",
+        )
+        .into());
+    }
+    let scopes = check_scopes(state, client, scope)
+        .await?
+        .map_err(|message| OAuthError::new(ErrorCode::InvalidScope, message))?
+        .unwrap_or_default();
+
+    let issuer = state.config.server.public_url.clone();
+    let now = state.clock.now().unix_timestamp();
+    let expires_in = state.config.jwt.access_expiry_secs;
+    let mut claims = crate::utils::jwt::Claims::new(
+        oauth::client_subject(&issuer, &client.client_id),
+        Uuid::nil(),
+        now,
+        now.saturating_add(i64::try_from(expires_in).unwrap_or(i64::MAX)),
+    )
+    .with_rbac(Vec::new(), scopes.clone());
+    claims.client_id = Some(client.client_id.clone());
+    claims.iss = Some(issuer);
+    claims.aud = state.config.jwt.audience.clone();
+    let access_token =
+        crate::utils::jwt::encode_token(&claims, &state.jwt_signing_key, Some(&state.jwt_kid))
+            .map_err(|e| AppError::Internal(e.into()))?;
+    metrics::counter!("auth_client_credentials_tokens_total").increment(1);
+
     Ok(TokenResponse {
-        tokens,
-        expires_in: state.config.jwt.access_expiry_secs,
+        access_token,
+        refresh_token: None,
+        scopes: Some(scopes),
+        expires_in,
     })
 }
 
@@ -626,18 +688,33 @@ pub async fn introspect(
             let Some(claims) = verified_claims(state, jwt) else {
                 return Ok(Introspection::default());
             };
-            if auth_svc::verify_token_state(state, claims.jti, claims.sid)
-                .await
-                .is_err()
-            {
+            let active = match claims.client_id.as_deref() {
+                // A client credentials token: active while not revoked and the
+                // client may still use the grant.
+                Some(client_id) if claims.sid.is_nil() => {
+                    !auth_svc::is_jti_blocked(state, claims.jti).await?
+                        && crate::repositories::registered_client::find_by_id(&state.db, client_id)
+                            .await?
+                            .is_some_and(|c| c.allows_client_credentials)
+                }
+                _ => auth_svc::verify_token_state(state, claims.jti, claims.sid)
+                    .await
+                    .is_ok(),
+            };
+            if !active {
                 return Ok(Introspection::default());
             }
-            let session = crate::repositories::session::find_by_id(&state.db, claims.sid).await?;
+            let session_client = match claims.client_id.clone() {
+                Some(client_id) => Some(client_id),
+                None => crate::repositories::session::find_by_id(&state.db, claims.sid)
+                    .await?
+                    .and_then(|s| s.client_id),
+            };
             Introspection {
                 active: true,
                 token_type: Some("access_token"),
                 scope: Some(claims.permissions.join(" ")).filter(|s| !s.is_empty()),
-                client_id: session.and_then(|s| s.client_id),
+                client_id: session_client,
                 sub: Some(claims.sub),
                 exp: Some(claims.exp),
                 iat: Some(claims.iat),
@@ -725,6 +802,12 @@ pub async fn revoke(
             let Some(claims) = verified_claims(state, jwt) else {
                 return Ok(());
             };
+            if claims.sid.is_nil() {
+                if claims.client_id.as_deref() == Some(&client.client_id) {
+                    auth_svc::blocklist_jti(state, claims.jti, claims.exp).await;
+                }
+                return Ok(());
+            }
             if let Some(session) =
                 crate::repositories::session::find_by_id(&state.db, claims.sid).await?
                 && owned(&session)

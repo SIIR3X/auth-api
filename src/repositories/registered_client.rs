@@ -104,11 +104,33 @@ pub async fn set_secret_hash(
     client_id: &str,
     secret_hash: Option<&[u8]>,
 ) -> Result<bool, sqlx::Error> {
-    let result =
-        sqlx::query("UPDATE registered_clients SET client_secret_hash = $2 WHERE client_id = $1")
-            .bind(client_id)
-            .bind(secret_hash)
-            .execute(pool)
-            .await?;
+    // Without a secret, the client credentials grant goes too.
+    let result = sqlx::query(
+        "UPDATE registered_clients
+             SET client_secret_hash = $2,
+                 allows_client_credentials = allows_client_credentials AND $2 IS NOT NULL
+             WHERE client_id = $1",
+    )
+    .bind(client_id)
+    .bind(secret_hash)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Allow or forbid the client credentials grant. Returns whether the client
+/// exists.
+pub async fn set_client_credentials<'e>(
+    executor: impl PgExecutor<'e>,
+    client_id: &str,
+    allowed: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE registered_clients SET allows_client_credentials = $2 WHERE client_id = $1",
+    )
+    .bind(client_id)
+    .bind(allowed)
+    .execute(executor)
+    .await?;
     Ok(result.rows_affected() == 1)
 }

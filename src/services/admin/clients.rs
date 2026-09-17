@@ -30,6 +30,7 @@ pub async fn save(
     state: &AppState,
     actor: &Actor,
     client: &NewRegisteredClient<'_>,
+    allows_client_credentials: Option<bool>,
 ) -> Result<(RegisteredClient, bool), AppError> {
     client_domain::check_settings(
         client.client_id,
@@ -58,12 +59,28 @@ pub async fn save(
 
     let mut tx = state.db.begin().await?;
     let existed = client_repo::lock_existing(&mut *tx, client.client_id).await?;
-    let saved = client_repo::upsert(&mut *tx, client).await.map_err(|e| {
+    let mut saved = client_repo::upsert(&mut *tx, client).await.map_err(|e| {
+        let scoped = matches!(&e, sqlx::Error::Database(db)
+            if db.constraint() == Some("registered_clients_client_credentials_scoped"));
+        if scoped {
+            return AppError::Validation(
+                "a client using the client credentials grant keeps at least one scope".into(),
+            );
+        }
         AppError::from_unique_violation(
             e,
             &[("idx_registered_clients_primary", "primary_client_exists")],
         )
     })?;
+    if let Some(allowed) = allows_client_credentials {
+        if allowed && (!saved.is_confidential() || saved.scopes.is_empty()) {
+            return Err(AppError::Validation(
+                "the client credentials grant needs a client secret and scopes".into(),
+            ));
+        }
+        client_repo::set_client_credentials(&mut *tx, &saved.client_id, allowed).await?;
+        saved.allows_client_credentials = allowed;
+    }
     audit::append(
         &mut *tx,
         &entry(

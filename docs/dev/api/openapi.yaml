@@ -5414,8 +5414,12 @@ components:
       - allows_loopback_redirect
       - default_max_sessions
       - confidential
+      - allows_client_credentials
       - created_at
       properties:
+        allows_client_credentials:
+          type: boolean
+          description: May obtain tokens for itself with the client credentials grant.
         allows_loopback_redirect:
           type: boolean
         client_id:
@@ -5866,7 +5870,7 @@ components:
         grant_type:
           type: string
           description: |-
-            `authorization_code`, `refresh_token` or
+            `authorization_code`, `refresh_token`, `client_credentials` or
             `urn:ietf:params:oauth:grant-type:device_code`.
         redirect_uri:
           type:
@@ -5876,6 +5880,11 @@ components:
           type:
           - string
           - 'null'
+        scope:
+          type:
+          - string
+          - 'null'
+          description: Space-separated scopes, for `client_credentials`.
     OAuthTokenResponse:
       type: object
       description: RFC 6749 section 5.1.
@@ -5883,7 +5892,6 @@ components:
       - access_token
       - token_type
       - expires_in
-      - refresh_token
       properties:
         access_token:
           type: string
@@ -5893,7 +5901,10 @@ components:
           description: Seconds.
           minimum: 0
         refresh_token:
-          type: string
+          type:
+          - string
+          - 'null'
+          description: Absent for the client credentials grant.
         scope:
           type:
           - string
@@ -6148,6 +6159,13 @@ components:
       required:
       - display_name
       properties:
+        allows_client_credentials:
+          type:
+          - boolean
+          - 'null'
+          description: |-
+            Allow the client credentials grant; needs a secret and scopes. Omitted:
+            unchanged (false for a new client).
         allows_loopback_redirect:
           type: boolean
         default_max_sessions:

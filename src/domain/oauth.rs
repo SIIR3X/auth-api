@@ -41,6 +41,17 @@ impl ErrorCode {
 pub const GRANT_AUTHORIZATION_CODE: &str = "authorization_code";
 pub const GRANT_REFRESH_TOKEN: &str = "refresh_token";
 pub const GRANT_DEVICE_CODE: &str = "urn:ietf:params:oauth:grant-type:device_code";
+pub const GRANT_CLIENT_CREDENTIALS: &str = "client_credentials";
+
+/// The `sub` of a client credentials token: a UUID derived from the issuer and
+/// the client id, stable across tokens and distinct from every user id (those
+/// are random, version 4).
+pub fn client_subject(issuer: &str, client_id: &str) -> uuid::Uuid {
+    uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("{}/clients/{client_id}", issuer.trim_end_matches('/')).as_bytes(),
+    )
+}
 
 /// Longest `state` echoed back to a client.
 pub const MAX_STATE_LEN: usize = 512;
@@ -214,6 +225,17 @@ mod tests {
             basic_credentials(&format!("Basic {}", B64.encode(":secret"))),
             None
         );
+    }
+
+    #[test]
+    fn a_client_subject_is_stable_and_never_a_user_id() {
+        let subject = client_subject("https://auth.example.com/", "backend");
+        assert_eq!(
+            subject,
+            client_subject("https://auth.example.com", "backend")
+        );
+        assert_ne!(subject, client_subject("https://auth.example.com", "other"));
+        assert_eq!(subject.get_version_num(), 5);
     }
 
     #[test]

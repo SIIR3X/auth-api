@@ -142,6 +142,7 @@ pub fn redirect_uri(data: &[u8]) {
         allows_loopback_redirect: loopback,
         default_max_sessions: 1,
         client_secret_hash: None,
+        allows_client_credentials: false,
     };
 
     if validate_redirect(&client, candidate).is_err() || registered.iter().any(|r| r == candidate) {

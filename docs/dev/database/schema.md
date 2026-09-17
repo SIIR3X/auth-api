@@ -117,7 +117,8 @@ Authorization code flow with PKCE.
 | `created_at` | TIMESTAMPTZ | No | |
 
 Managed with `auth-api --register-client` or `/admin/clients`.
-`client_secret_hash` (SHA-256 of the secret) is set for a confidential client.
+`client_secret_hash` (SHA-256 of the secret) is set for a confidential client;
+`allows_client_credentials` requires it and at least one scope.
 
 ### user_client_quotas
 

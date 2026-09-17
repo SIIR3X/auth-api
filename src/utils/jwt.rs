@@ -61,6 +61,10 @@ pub struct Claims {
     /// Permission names granted through roles (e.g. ["users:read", "users:manage"]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permissions: Vec<String>,
+    /// The client a client credentials token was issued to (RFC 9068). Such a
+    /// token belongs to no user and no session: `sid` is nil.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 impl Claims {
@@ -77,6 +81,7 @@ impl Claims {
             aud: Vec::new(),
             roles: Vec::new(),
             permissions: Vec::new(),
+            client_id: None,
         }
     }
 
@@ -402,6 +407,7 @@ mod tests {
             aud: Vec::new(),
             roles: Vec::new(),
             permissions: Vec::new(),
+            client_id: None,
         };
         let token = encode_token(&claims, &sk, None).unwrap();
         assert!(matches!(
@@ -425,6 +431,7 @@ mod tests {
             aud: Vec::new(),
             roles: Vec::new(),
             permissions: Vec::new(),
+            client_id: None,
         };
         let token = encode_token(&claims, &sk, None).unwrap();
         assert!(matches!(
@@ -618,6 +625,7 @@ mod tests {
                 aud: Vec::new(),
                 roles: Vec::new(),
                 permissions: Vec::new(),
+                client_id: None,
             };
 
             let token = encode_token(&claims, &sk, None).unwrap();
@@ -650,6 +658,7 @@ mod tests {
                 aud: Vec::new(),
                 roles: Vec::new(),
                 permissions: Vec::new(),
+                client_id: None,
             };
 
             let token = encode_token(&claims, &sk, None).unwrap();

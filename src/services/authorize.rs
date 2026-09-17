@@ -413,6 +413,7 @@ mod tests {
             allows_loopback_redirect: loopback,
             default_max_sessions: 5,
             client_secret_hash: None,
+            allows_client_credentials: false,
         }
     }
 

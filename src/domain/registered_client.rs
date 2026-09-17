@@ -27,6 +27,8 @@ pub struct RegisteredClient {
     /// SHA-256 of the client secret of a confidential client; `None` for a
     /// public client.
     pub client_secret_hash: Option<Vec<u8>>,
+    /// May obtain tokens for itself with the client credentials grant.
+    pub allows_client_credentials: bool,
 }
 
 impl RegisteredClient {
@@ -133,6 +135,7 @@ mod tests {
             allows_loopback_redirect: false,
             default_max_sessions: 2,
             client_secret_hash: None,
+            allows_client_credentials: false,
         }
     }
 

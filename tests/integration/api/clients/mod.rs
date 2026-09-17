@@ -1,6 +1,7 @@
 //! Client applications: OAuth 2.1 flows through the standard endpoints.
 
 mod authorization_code;
+mod client_credentials;
 mod confidential;
 mod device_flow;
 mod introspection;
