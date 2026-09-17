@@ -198,6 +198,10 @@ pub async fn metadata(State(state): State<AppState>) -> Result<impl IntoResponse
             "authorization_endpoint": format!("{issuer}/oauth/authorize"),
             "token_endpoint": format!("{issuer}/oauth/token"),
             "device_authorization_endpoint": format!("{issuer}/oauth/device_authorization"),
+            "introspection_endpoint": format!("{issuer}/oauth/introspect"),
+            "revocation_endpoint": format!("{issuer}/oauth/revoke"),
+            "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+            "revocation_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
             "jwks_uri": format!("{issuer}/.well-known/jwks.json"),
             "scopes_supported": scopes,
             "response_types_supported": ["code"],
@@ -410,6 +414,59 @@ pub async fn device_authorization(
     )
     .await?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(started)).into_response())
+}
+
+/// Form fields of `POST /oauth/introspect` and `POST /oauth/revoke`.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct TokenOperationRequest {
+    pub token: String,
+    /// `access_token` or `refresh_token`; the token's shape decides anyway.
+    pub token_type_hint: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/oauth/introspect",
+    tag = "oauth",
+    request_body(content = TokenOperationRequest, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "RFC 7662: `{ \"active\": false }` for anything unknown, expired or revoked", body = oauth_svc::Introspection),
+        (status = 400, description = "`invalid_request` or `unauthorized_client` (a public client)", body = OAuthErrorBody),
+        (status = 401, description = "`invalid_client`", body = OAuthErrorBody),
+    ),
+)]
+pub async fn introspect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, EndpointError> {
+    let parameters = form(&headers, &body)?;
+    let introspection = oauth_svc::introspect(&state, authorization(&headers), &parameters).await?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(introspection)).into_response())
+}
+
+#[utoipa::path(
+    post,
+    path = "/oauth/revoke",
+    tag = "oauth",
+    request_body(content = TokenOperationRequest, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "RFC 7009: the token no longer works, if it was issued to this client; the same answer otherwise"),
+        (status = 400, description = "`invalid_request`", body = OAuthErrorBody),
+        (status = 401, description = "`invalid_client`", body = OAuthErrorBody),
+    ),
+)]
+pub async fn revoke(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, EndpointError> {
+    let parameters = form(&headers, &body)?;
+    oauth_svc::revoke(&state, authorization(&headers), &parameters, ip).await?;
+    Ok(StatusCode::OK)
 }
 
 #[utoipa::path(

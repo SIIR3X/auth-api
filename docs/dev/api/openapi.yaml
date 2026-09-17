@@ -3257,6 +3257,122 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /oauth/introspect:
+    post:
+      tags:
+      - oauth
+      operationId: introspect
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TokenOperationRequest'
+        required: true
+      responses:
+        '200':
+          description: 'RFC 7662: `{ "active": false }` for anything unknown, expired or revoked'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Introspection'
+        '400':
+          description: '`invalid_request` or `unauthorized_client` (a public client)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorBody'
+        '401':
+          description: '`invalid_client`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /oauth/revoke:
+    post:
+      tags:
+      - oauth
+      operationId: revoke
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TokenOperationRequest'
+        required: true
+      responses:
+        '200':
+          description: 'RFC 7009: the token no longer works, if it was issued to this client; the same answer otherwise'
+        '400':
+          description: '`invalid_request`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorBody'
+        '401':
+          description: '`invalid_client`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /oauth/token:
     post:
       tags:
@@ -5591,6 +5707,57 @@ components:
           - 'null'
         email:
           type: string
+    Introspection:
+      type: object
+      description: What introspection says about a token. `None` fields are left out.
+      required:
+      - active
+      properties:
+        active:
+          type: boolean
+        aud:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+        client_id:
+          type:
+          - string
+          - 'null'
+        exp:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        iat:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        iss:
+          type:
+          - string
+          - 'null'
+        jti:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        scope:
+          type:
+          - string
+          - 'null'
+        sub:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        token_type:
+          type:
+          - string
+          - 'null'
+          description: '`access_token`, `refresh_token` or `personal_access_token`.'
     LoginRequest:
       type: object
       required:
@@ -6070,6 +6237,27 @@ components:
           type: string
         new_email:
           type: string
+    TokenOperationRequest:
+      type: object
+      description: Form fields of `POST /oauth/introspect` and `POST /oauth/revoke`.
+      required:
+      - token
+      properties:
+        client_id:
+          type:
+          - string
+          - 'null'
+        client_secret:
+          type:
+          - string
+          - 'null'
+        token:
+          type: string
+        token_type_hint:
+          type:
+          - string
+          - 'null'
+          description: '`access_token` or `refresh_token`; the token''s shape decides anyway.'
     TokensResponse:
       type: object
       required:

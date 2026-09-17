@@ -120,7 +120,9 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   authorization and refresh at `POST /oauth/token`, `scope` requests narrowed to
   the client's registration, metadata at `/.well-known/oauth-authorization-server`
   (RFC 8414), confidential clients authenticating with `client_secret_basic` or
-  `client_secret_post` (`POST`/`DELETE /admin/clients/{client_id}/secret`).
+  `client_secret_post` (`POST`/`DELETE /admin/clients/{client_id}/secret`),
+  token introspection for resource servers (`POST /oauth/introspect`, RFC 7662)
+  and revocation (`POST /oauth/revoke`, RFC 7009).
 - Client registry: scopes, redirect URIs, loopback redirects, default session
   limit; `auth-api --register-client`.
 - A sign-in from a browser and system family the account never used e-mails

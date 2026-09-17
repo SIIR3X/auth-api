@@ -3,6 +3,7 @@
 mod authorization_code;
 mod confidential;
 mod device_flow;
+mod introspection;
 mod metadata;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};

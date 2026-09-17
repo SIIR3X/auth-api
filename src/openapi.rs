@@ -46,6 +46,8 @@ use utoipa::{
         crate::handlers::oauth::deny_request,
         crate::handlers::oauth::token,
         crate::handlers::oauth::device_authorization,
+        crate::handlers::oauth::introspect,
+        crate::handlers::oauth::revoke,
         crate::handlers::oauth::describe_device,
         crate::handlers::oauth::verify_device,
         crate::handlers::user::me,

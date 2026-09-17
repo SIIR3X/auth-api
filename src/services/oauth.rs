@@ -557,3 +557,214 @@ pub async fn device_authorization(
         .map_err(|message| OAuthError::new(ErrorCode::InvalidScope, message))?;
     Ok(device_svc::initiate(state, ip, user_agent, &client, scopes).await?)
 }
+
+// Introspection (RFC 7662) and revocation (RFC 7009)
+
+/// What introspection says about a token. `None` fields are left out.
+#[derive(Debug, Default, Serialize, utoipa::ToSchema)]
+pub struct Introspection {
+    pub active: bool,
+    /// `access_token`, `refresh_token` or `personal_access_token`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_type: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sub: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iat: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aud: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jti: Option<Uuid>,
+}
+
+/// The kind of a presented token, from its shape.
+enum Presented<'a> {
+    Access(&'a str),
+    Personal(&'a str),
+    Refresh(&'a str),
+}
+
+fn classify(token: &str) -> Presented<'_> {
+    if crate::domain::personal_access_token::random_part(token).is_some() {
+        Presented::Personal(token)
+    } else if token.split('.').count() == 3 {
+        Presented::Access(token)
+    } else {
+        Presented::Refresh(token)
+    }
+}
+
+/// Introspect a token for a confidential client (a resource server). Anything
+/// unknown, expired or revoked is `{ "active": false }` and nothing more.
+pub async fn introspect(
+    state: &AppState,
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+) -> Result<Introspection, EndpointError> {
+    let client = authenticate_client(state, authorization, parameters).await?;
+    if !client.is_confidential() {
+        return Err(OAuthError::new(
+            ErrorCode::UnauthorizedClient,
+            "introspection is reserved to confidential clients",
+        )
+        .into());
+    }
+    let token = oauth::parameter(parameters, "token")
+        .ok_or_else(|| OAuthError::new(ErrorCode::InvalidRequest, "token is required"))?;
+    let now = state.clock.now();
+
+    let introspection = match classify(token) {
+        Presented::Access(jwt) => {
+            let Some(claims) = verified_claims(state, jwt) else {
+                return Ok(Introspection::default());
+            };
+            if auth_svc::verify_token_state(state, claims.jti, claims.sid)
+                .await
+                .is_err()
+            {
+                return Ok(Introspection::default());
+            }
+            let session = crate::repositories::session::find_by_id(&state.db, claims.sid).await?;
+            Introspection {
+                active: true,
+                token_type: Some("access_token"),
+                scope: Some(claims.permissions.join(" ")).filter(|s| !s.is_empty()),
+                client_id: session.and_then(|s| s.client_id),
+                sub: Some(claims.sub),
+                exp: Some(claims.exp),
+                iat: Some(claims.iat),
+                iss: claims.iss,
+                aud: Some(claims.aud).filter(|aud| !aud.is_empty()),
+                jti: Some(claims.jti),
+            }
+        }
+        Presented::Refresh(raw) => {
+            let Some(session) = crate::repositories::session::find_by_token_hash(
+                &state.db,
+                &crypto::sha256(raw.as_bytes()),
+            )
+            .await?
+            .filter(|s| s.is_active(now) && s.rotated_at.is_none()) else {
+                return Ok(Introspection::default());
+            };
+            Introspection {
+                active: true,
+                token_type: Some("refresh_token"),
+                scope: session.scopes.as_ref().map(|s| s.join(" ")),
+                client_id: session.client_id,
+                sub: Some(session.user_id),
+                exp: Some(session.expires_at.unix_timestamp()),
+                iat: Some(session.created_at.unix_timestamp()),
+                ..Introspection::default()
+            }
+        }
+        Presented::Personal(secret) => {
+            let random =
+                crate::domain::personal_access_token::random_part(secret).unwrap_or_default();
+            let Some(found) = crate::repositories::personal_access_token::find_by_hash(
+                &state.db,
+                &crypto::sha256(random.as_bytes()),
+            )
+            .await?
+            .filter(|f| f.session_revoked_at.is_none() && f.token.expires_at > now) else {
+                return Ok(Introspection::default());
+            };
+            Introspection {
+                active: true,
+                token_type: Some("personal_access_token"),
+                scope: Some(found.token.scopes.join(" ")),
+                sub: Some(found.token.user_id),
+                exp: Some(found.token.expires_at.unix_timestamp()),
+                iat: Some(found.token.created_at.unix_timestamp()),
+                ..Introspection::default()
+            }
+        }
+    };
+    Ok(introspection)
+}
+
+/// The claims of an access token this instance signed for itself, unexpired.
+fn verified_claims(state: &AppState, jwt: &str) -> Option<crate::utils::jwt::Claims> {
+    let claims = crate::utils::jwt::decode_token_with_keys(
+        jwt,
+        &state.jwt_verifying_keys,
+        state.clock.now().unix_timestamp(),
+    )
+    .ok()?;
+    let issuer = state.config.server.public_url.as_str();
+    crate::utils::jwt::validate_iss_aud(&claims, issuer, issuer).ok()?;
+    Some(claims)
+}
+
+/// Revoke a token issued to the requesting client. Unknown tokens, and tokens
+/// of other clients, are answered the same way and left alone (RFC 7009
+/// section 2.2): the answer reveals nothing.
+pub async fn revoke(
+    state: &AppState,
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+    ip: Option<IpNetwork>,
+) -> Result<(), EndpointError> {
+    let client = authenticate_client(state, authorization, parameters).await?;
+    let token = oauth::parameter(parameters, "token")
+        .ok_or_else(|| OAuthError::new(ErrorCode::InvalidRequest, "token is required"))?;
+    let owned = |session: &crate::domain::session::Session| {
+        session.client_id.as_deref() == Some(&client.client_id)
+    };
+
+    match classify(token) {
+        Presented::Access(jwt) => {
+            let Some(claims) = verified_claims(state, jwt) else {
+                return Ok(());
+            };
+            if let Some(session) =
+                crate::repositories::session::find_by_id(&state.db, claims.sid).await?
+                && owned(&session)
+            {
+                auth_svc::blocklist_jti(state, claims.jti, claims.exp).await;
+            }
+        }
+        Presented::Refresh(raw) => {
+            if let Some(session) = crate::repositories::session::find_by_token_hash(
+                &state.db,
+                &crypto::sha256(raw.as_bytes()),
+            )
+            .await?
+                && owned(&session)
+                && session.revoked_at.is_none()
+            {
+                // The access tokens of the grant end with its session.
+                crate::repositories::session::revoke(&state.db, session.id).await?;
+                auth_svc::invalidate_session_caches(state, &[session.id]).await;
+                auth_svc::blocklist_refresh_token(state, &session.token_hash, session.expires_at)
+                    .await;
+                crate::repositories::audit::append(
+                    &state.db,
+                    &crate::repositories::audit::NewAuditEntry {
+                        user_id: Some(session.user_id),
+                        request_id: None,
+                        action: crate::domain::audit::AuditAction::SessionRevoked,
+                        ip_address: ip,
+                        metadata: serde_json::json!({
+                            "session_id": session.id,
+                            "by": "client",
+                            "client_id": client.client_id,
+                        }),
+                    },
+                )
+                .await?;
+            }
+        }
+        // Personal access tokens belong to accounts, not clients.
+        Presented::Personal(_) => {}
+    }
+    Ok(())
+}

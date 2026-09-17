@@ -435,6 +435,8 @@ fn oauth_router() -> Router<AppState> {
         .route("/authorize", get(oauth::authorize))
         .route("/token", post(oauth::token))
         .route("/device_authorization", post(oauth::device_authorization))
+        .route("/introspect", post(oauth::introspect))
+        .route("/revoke", post(oauth::revoke))
         .route("/device/verify", post(oauth::verify_device))
         .route("/device/{user_code}", get(oauth::describe_device))
         .route("/authorization-requests/{id}", get(oauth::describe_request))

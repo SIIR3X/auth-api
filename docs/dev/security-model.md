@@ -106,6 +106,9 @@ the database together, is out of scope.
   the user's current permissions on every refresh, and no roles.
 - **Refresh:** a client's session is refreshed only by that client at the token
   endpoint, with its authentication; the first-party route refuses it.
+- **Introspection and revocation:** only confidential clients introspect, and
+  an inactive token reveals nothing but `active: false`. A client revokes its
+  own tokens only; any other token gets the same answer and is left alone.
 
 ## Administration
 
@@ -225,3 +228,4 @@ when a cited test no longer exists.
 | SEC-34 | Personal access tokens are stored as digests, shown once, scoped to permissions the account holds, and end with their session or account | `a_token_is_exchanged_for_access_tokens_carrying_its_scopes_only`, `a_revoked_token_and_its_access_tokens_stop_working`, `tokens_expire_and_follow_the_account_status`, `creation_is_checked`, `scopes_are_limited_to_the_permissions_held` |
 | SEC-35 | Webhooks are signed, never reach internal addresses or follow redirects, and deliver exactly the committed events | `a_subscribed_endpoint_receives_signed_events`, `internal_addresses_are_never_called`, `internal_addresses_are_refused`, `only_plain_https_urls_are_registered`, `endpoints_are_checked_updated_rotated_and_removed`, `validate_rejects_production_webhooks_to_http_or_internal_addresses` |
 | SEC-36 | Confidential clients authenticate at every token request, and client sessions are refreshed only by their client | `a_confidential_client_must_authenticate_with_its_secret`, `a_public_client_has_no_secret_to_present`, `a_device_code_works_for_its_client_only`, `tokens_carry_only_the_consented_scopes_even_after_refresh`, `basic_credentials_are_form_decoded`, `a_request_asks_for_a_subset_of_the_client_scopes` |
+| SEC-37 | Introspection is reserved to confidential clients and says nothing of inactive tokens; revocation reaches only the requesting client's tokens | `a_resource_server_learns_what_a_token_is_worth`, `revoking_a_refresh_token_ends_its_session`, `revoking_an_access_token_ends_that_token_only`, `a_client_cannot_revoke_the_tokens_of_another` |

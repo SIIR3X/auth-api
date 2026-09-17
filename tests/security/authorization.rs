@@ -40,6 +40,8 @@ const PUBLIC: &[&str] = &[
     "POST /auth/verify-email",
     "POST /auth/verify-email/resend",
     "POST /oauth/device_authorization",
+    "POST /oauth/introspect",
+    "POST /oauth/revoke",
     "POST /oauth/token",
 ];
 

@@ -87,6 +87,8 @@ and 8628 (device authorization). Token and device authorization requests are
 | POST | `/oauth/authorization-requests/{id}/deny` | JWT | Strict |
 | POST | `/oauth/token` | client | Strict |
 | POST | `/oauth/device_authorization` | client | Strict |
+| POST | `/oauth/introspect` | confidential client | Strict |
+| POST | `/oauth/revoke` | client | Strict |
 | GET | `/oauth/device/{user_code}` | JWT | Strict |
 | POST | `/oauth/device/verify` | JWT | Strict |
 
@@ -126,6 +128,17 @@ roles. The token response echoes `scope` when the session is restricted.
 **Refresh.** A client refreshes its sessions at `POST /oauth/token` with
 `grant_type=refresh_token`; `/auth/refresh` refuses them. The session must
 belong to the authenticated client.
+
+**Introspection (RFC 7662).** A confidential client (a resource server)
+posts `token` and learns `active`, and for an active token its `token_type`
+(`access_token`, `refresh_token`, `personal_access_token`), `scope`,
+`client_id`, `sub`, `exp`, `iat` and, for access tokens, `iss`, `aud` and `jti`.
+Anything unknown, expired or revoked is `{ "active": false }`.
+
+**Revocation (RFC 7009).** A client posts one of its tokens. A refresh token
+ends its session and every access token of it; an access token stops working
+until it expires. Unknown tokens and tokens of other clients get the same `200`
+and are left alone.
 
 **Device authorization.** `POST /oauth/device_authorization` (`client_id`,
 `scope`) answers `device_code`, `user_code`, `verification_uri`,
