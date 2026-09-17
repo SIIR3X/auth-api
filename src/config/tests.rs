@@ -124,6 +124,7 @@ fn valid_config() -> Config {
             ttl_secs: 300,
             poll_interval_secs: 5,
             verification_uri: "https://auth.example.com/device".into(),
+            consent_uri: "https://auth.example.com/authorize".into(),
         },
         metrics: MetricsConfig {
             enabled: true,

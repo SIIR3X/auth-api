@@ -329,6 +329,10 @@ pub struct DeviceAuthConfig {
     pub poll_interval_secs: u64,
     /// Base URL of the verification page shown to the user (auth frontend).
     pub verification_uri: String,
+    /// Page of the auth frontend where a signed-in user approves an
+    /// authorization request; `GET /oauth/authorize` redirects there with
+    /// `request_id`. Default: `{FRONTEND_URL}/authorize`.
+    pub consent_uri: String,
 }
 
 #[derive(Debug, Clone)]
@@ -549,6 +553,15 @@ impl Config {
                 ttl_secs: vars.parse("DEVICE_AUTH_TTL_SECS")?.unwrap_or(300),
                 poll_interval_secs: vars.parse("DEVICE_AUTH_POLL_INTERVAL_SECS")?.unwrap_or(5),
                 verification_uri: vars.require("DEVICE_AUTH_VERIFICATION_URI")?,
+                consent_uri: vars.string("OAUTH_CONSENT_URI").unwrap_or_else(|| {
+                    format!(
+                        "{}/authorize",
+                        vars.string("FRONTEND_URL")
+                            .or_else(|| vars.string("APP_PUBLIC_URL"))
+                            .unwrap_or_else(|| "http://localhost:3000".into())
+                            .trim_end_matches('/')
+                    )
+                }),
             },
             metrics: MetricsConfig {
                 enabled: vars.parse("METRICS_ENABLED")?.unwrap_or(true),

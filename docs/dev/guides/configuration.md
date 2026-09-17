@@ -153,6 +153,7 @@ The breached-password check needs outbound HTTPS to the range API.
 | `DEVICE_AUTH_VERIFICATION_URI` | required | Page where a user enters a device code (RFC 8628 `verification_uri`) |
 | `DEVICE_AUTH_TTL_SECS` | `300` | Lifetime of a device code |
 | `DEVICE_AUTH_POLL_INTERVAL_SECS` | `5` | Minimum polling interval; faster polls get `slow_down` |
+| `OAUTH_CONSENT_URI` | `{FRONTEND_URL}/authorize` | Frontend page where a signed-in user approves an authorization request; `GET /oauth/authorize` sends the browser there with `request_id`. HTTPS in production |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated origins allowed to call the API from a browser |
 | `CORS_ALLOW_CREDENTIALS` | `true` | Allow credentialed cross-origin requests |
 
@@ -206,7 +207,7 @@ session it produced) and TOTP replay records 90 seconds; neither is configurable
 
 With `APP_ENV=production` the service refuses to start when:
 
-- `APP_PUBLIC_URL`, `FRONTEND_URL` or `CAPTCHA_VERIFY_URL` is not HTTPS;
+- `APP_PUBLIC_URL`, `FRONTEND_URL`, `OAUTH_CONSENT_URI` or `CAPTCHA_VERIFY_URL` is not HTTPS;
 - `TRUSTED_PROXY_CIDRS` is empty (every client would share the proxy's address);
 - the JWT keys do not form a pair, or are the committed development pair;
 - `ENCRYPTION_KEY` is not 32 bytes, is a committed development key, or is an

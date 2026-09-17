@@ -1,6 +1,6 @@
 //! Access log: one structured line per request.
 //!
-//! Logs the route template (`/auth/device/{user_code}`), never the raw path,
+//! Logs the route template (`/oauth/device/{user_code}`), never the raw path,
 //! so codes and identifiers carried in URLs stay out of the logs. Health checks
 //! log at debug to keep probes from drowning real traffic.
 

@@ -105,8 +105,8 @@ impl Contract {
             }
         }
 
-        // Literal segments win over parameters (`/auth/device/token` before
-        // `/auth/device/{user_code}`).
+        // Literal segments win over parameters (`/oauth/device/verify` before
+        // `/oauth/device/{user_code}`).
         operations.sort_by_key(|op| {
             std::cmp::Reverse(
                 op.segments
@@ -396,8 +396,8 @@ mod tests {
         let contract = contract();
         assert_eq!(contract.template("GET", "/users/me"), Some("/users/me"));
         assert_eq!(
-            contract.template("GET", "/auth/device/ABCD-2345"),
-            Some("/auth/device/{user_code}")
+            contract.template("GET", "/oauth/device/ABCD-2345"),
+            Some("/oauth/device/{user_code}")
         );
     }
 }

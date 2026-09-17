@@ -78,21 +78,21 @@ struct DeviceAuthState {
     client_ip: Option<String>,
     user_agent: Option<String>,
     created_at: i64,
+    /// Scopes the client asked for (`None`: unrestricted).
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
 }
 
+/// RFC 8628 section 3.2.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DeviceInitResponse {
     pub device_code: String,
     pub user_code: String,
     pub verification_uri: String,
+    /// `verification_uri` with the user code, for a QR code or a link.
+    pub verification_uri_complete: String,
     pub expires_in: u64,
     pub interval: u64,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct DevicePollResult {
-    pub access_token: String,
-    pub refresh_token: String,
 }
 
 /// What the signed-in user is shown before approving a device. Nothing here is
@@ -178,29 +178,15 @@ pub async fn reserve_user_code(
     )))
 }
 
-async fn resolve_client(
-    state: &AppState,
-    client_id: Option<&str>,
-) -> Result<RegisteredClient, AppError> {
-    match client_id {
-        Some(cid) => client_repo::find_by_id(&state.db, cid).await,
-        None => client_repo::find_primary(&state.db).await,
-    }
-    .map_err(|e| AppError::Internal(e.into()))?
-    .ok_or(AppError::DeviceClientUnknown)
-}
-
-/// Start a device authorization. The client is resolved here (the named one,
-/// or the primary client), so an unknown client is refused before a code is
-/// issued and every stored entry records a registered client.
+/// Start a device authorization for an authenticated client: every stored
+/// entry records a registered client.
 pub async fn initiate(
     state: &AppState,
     client_ip: Option<IpNetwork>,
     user_agent: Option<&str>,
-    client_id: Option<&str>,
+    client: &RegisteredClient,
+    scopes: Option<Vec<String>>,
 ) -> Result<DeviceInitResponse, AppError> {
-    let client = resolve_client(state, client_id).await?;
-
     let device_code = crypto::generate_token();
     let hash_encoded = device_hash_encoded(&device_code);
     let ttl = state.config.device_auth.ttl_secs;
@@ -218,10 +204,11 @@ pub async fn initiate(
         user_code: user_code.clone(),
         status: DeviceAuthStatus::Pending,
         user_id: None,
-        client_id: Some(client.client_id),
+        client_id: Some(client.client_id.clone()),
         client_ip: client_ip.map(|ip| ip.ip().to_string()),
         user_agent: user_agent.map(str::to_owned),
         created_at: state.clock.now().unix_timestamp(),
+        scopes,
     };
     let entry_json = serde_json::to_string(&entry).map_err(|e| AppError::Internal(e.into()))?;
 
@@ -229,23 +216,30 @@ pub async fn initiate(
         .await
         .map_err(redis_error)?;
 
+    let verification_uri = state.config.device_auth.verification_uri.clone();
+    let verification_uri_complete =
+        crate::domain::oauth::redirect_with(&verification_uri, &[("user_code", &user_code)])
+            .unwrap_or_else(|| verification_uri.clone());
     Ok(DeviceInitResponse {
         device_code,
         user_code,
-        verification_uri: state.config.device_auth.verification_uri.clone(),
+        verification_uri,
+        verification_uri_complete,
         expires_in: ttl,
         interval: state.config.device_auth.poll_interval_secs,
     })
 }
 
-/// Poll for the outcome of a device authorization.
+/// Poll for the outcome of a device authorization, as the authenticated client
+/// that started it.
 pub async fn poll(
     state: &AppState,
     device_code: &str,
+    client_id: &str,
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
     device_name: Option<&str>,
-) -> Result<DevicePollResult, AppError> {
+) -> Result<auth_svc::AuthTokens, AppError> {
     let hash_encoded = device_hash_encoded(device_code);
     let dk = device_key(&hash_encoded);
 
@@ -259,6 +253,10 @@ pub async fn poll(
     let entry: DeviceAuthState =
         serde_json::from_str(&entry_json.ok_or(AppError::DeviceCodeExpired)?)
             .map_err(|e| AppError::Internal(e.into()))?;
+    // A device code works for the client it was issued to only.
+    if entry.client_id.as_deref() != Some(client_id) {
+        return Err(AppError::InvalidAuthorizationCode);
+    }
 
     match poll_outcome(&entry.status, entry.user_id, entry.client_id.as_deref()) {
         PollOutcome::Pending => {
@@ -322,8 +320,8 @@ pub async fn poll(
             drop(conn);
 
             // The consent for a device flow is the approval itself: the session
-            // carries the client's registered scopes (none: unrestricted).
-            let scopes = (!client.scopes.is_empty()).then_some(client.scopes.as_slice());
+            // carries the scopes of the request (none: unrestricted).
+            let scopes = entry.scopes.as_deref();
 
             let tokens = auth_svc::issue_tokens(
                 state,
@@ -342,10 +340,7 @@ pub async fn poll(
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?;
 
-            Ok(DevicePollResult {
-                access_token: tokens.access_token,
-                refresh_token: tokens.refresh_token,
-            })
+            Ok(tokens)
         }
     }
 }
@@ -545,6 +540,7 @@ mod tests {
             client_ip: Some("192.168.1.1".into()),
             user_agent: Some("MyApp/1.0".into()),
             created_at: 1700000000,
+            scopes: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();

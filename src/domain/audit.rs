@@ -57,6 +57,7 @@ pub enum AuditAction {
     WebhookUpdated,
     WebhookDeleted,
     WebhookSecretRotated,
+    ClientSecretRotated,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

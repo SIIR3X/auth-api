@@ -107,6 +107,52 @@ pub async fn delete(state: &AppState, actor: &Actor, client_id: &str) -> Result<
     Ok(())
 }
 
+/// Give the client a new secret, making it confidential: from now on it must
+/// authenticate at the token endpoint. Returns the secret, shown once.
+pub async fn rotate_secret(
+    state: &AppState,
+    actor: &Actor,
+    client_id: &str,
+) -> Result<String, AppError> {
+    let secret =
+        crate::domain::oauth::format_client_secret(&crate::utils::crypto::generate_token());
+    let digest = crate::utils::crypto::sha256(secret.as_bytes());
+    if !client_repo::set_secret_hash(&state.db, client_id, Some(&digest)).await? {
+        return Err(AppError::NotFound);
+    }
+    audit::append(
+        &state.db,
+        &entry(
+            actor,
+            AuditAction::ClientSecretRotated,
+            json!({ "client_id": client_id, "confidential": true }),
+        ),
+    )
+    .await?;
+    Ok(secret)
+}
+
+/// Remove the client's secret, making it a public client.
+pub async fn remove_secret(
+    state: &AppState,
+    actor: &Actor,
+    client_id: &str,
+) -> Result<(), AppError> {
+    if !client_repo::set_secret_hash(&state.db, client_id, None).await? {
+        return Err(AppError::NotFound);
+    }
+    audit::append(
+        &state.db,
+        &entry(
+            actor,
+            AuditAction::ClientSecretRotated,
+            json!({ "client_id": client_id, "confidential": false }),
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
 fn entry(actor: &Actor, action: AuditAction, extra: serde_json::Value) -> NewAuditEntry {
     NewAuditEntry {
         user_id: Some(actor.user_id),

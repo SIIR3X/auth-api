@@ -23,7 +23,7 @@ use crate::{
     handlers::{
         audit::{decode_cursor, encode_cursor},
         auth::{validate_email, validate_username},
-        device::validate_user_code,
+        oauth::validate_user_code,
         user::{validate_locale, validate_password},
     },
     middleware::client_ip::resolve_client_ip,
@@ -141,6 +141,7 @@ pub fn redirect_uri(data: &[u8]) {
         redirect_uris: registered.clone(),
         allows_loopback_redirect: loopback,
         default_max_sessions: 1,
+        client_secret_hash: None,
     };
 
     if validate_redirect(&client, candidate).is_err() || registered.iter().any(|r| r == candidate) {

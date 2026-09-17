@@ -2,9 +2,14 @@
 
 use super::*;
 
+/// Rotate a refresh token. `client_id` names the authenticated client of an
+/// OAuth token request; `None` is the first-party route, which refreshes only
+/// sessions issued to no client: a client's session is refreshed by that client,
+/// through the token endpoint and its client authentication.
 pub async fn refresh_token(
     state: &AppState,
     raw_token: &str,
+    client_id: Option<&str>,
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
     request_id: Option<Uuid>,
@@ -63,6 +68,10 @@ pub async fn refresh_token(
             return Err(AppError::TokenInvalid);
         }
     };
+
+    if session.client_id.as_deref() != client_id {
+        return Err(AppError::TokenInvalid);
+    }
 
     let policy = RefreshPolicy {
         reuse_grace: REFRESH_REUSE_GRACE,

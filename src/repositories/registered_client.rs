@@ -96,3 +96,19 @@ pub async fn lock_existing<'e>(
             .await?;
     Ok(row.is_some())
 }
+
+/// Set the digest of the client's secret, or clear it to make the client
+/// public. Returns whether the client exists.
+pub async fn set_secret_hash(
+    pool: &PgPool,
+    client_id: &str,
+    secret_hash: Option<&[u8]>,
+) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("UPDATE registered_clients SET client_secret_hash = $2 WHERE client_id = $1")
+            .bind(client_id)
+            .bind(secret_hash)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected() == 1)
+}

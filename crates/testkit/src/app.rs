@@ -576,6 +576,7 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             ttl_secs: 300,
             poll_interval_secs: 5,
             verification_uri: "http://localhost:5173/device".into(),
+            consent_uri: "http://localhost:5173/authorize".into(),
         },
         metrics: MetricsConfig {
             enabled: false,

@@ -24,9 +24,17 @@ pub struct RegisteredClient {
     pub allows_loopback_redirect: bool,
     /// Concurrent device sessions per user when no quota row overrides it.
     pub default_max_sessions: i16,
+    /// SHA-256 of the client secret of a confidential client; `None` for a
+    /// public client.
+    pub client_secret_hash: Option<Vec<u8>>,
 }
 
 impl RegisteredClient {
+    /// Whether the client authenticates with a secret at the token endpoint.
+    pub fn is_confidential(&self) -> bool {
+        self.client_secret_hash.is_some()
+    }
+
     /// Concurrent device sessions a user may hold for this client.
     ///
     /// A per-user quota row always applies. Without one, a non-primary client is
@@ -124,6 +132,7 @@ mod tests {
             redirect_uris: vec![],
             allows_loopback_redirect: false,
             default_max_sessions: 2,
+            client_secret_hash: None,
         }
     }
 

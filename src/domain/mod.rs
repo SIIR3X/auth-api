@@ -14,6 +14,7 @@ pub mod device;
 pub mod email_change;
 pub mod known_device;
 pub mod login_attempt;
+pub mod oauth;
 pub mod outbox;
 pub mod personal_access_token;
 pub mod pwned;

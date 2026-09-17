@@ -28,7 +28,15 @@ pub struct ClientResponse {
     pub redirect_uris: Vec<String>,
     pub allows_loopback_redirect: bool,
     pub default_max_sessions: i16,
+    /// Authenticates with a secret at the token endpoint.
+    pub confidential: bool,
     pub created_at: i64,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ClientSecretResponse {
+    /// The client secret (`aacs_...`), shown once.
+    pub client_secret: String,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -48,6 +56,7 @@ pub struct SaveClientRequest {
 
 fn client_response(client: RegisteredClient) -> ClientResponse {
     ClientResponse {
+        confidential: client.is_confidential(),
         created_at: client.created_at.unix_timestamp(),
         client_id: client.client_id,
         display_name: client.display_name,
@@ -146,5 +155,64 @@ pub async fn delete(
 ) -> Result<StatusCode, AppError> {
     admin.require(&state, "clients:manage").await?;
     admin_clients::delete(&state, &actor(&admin, ip), &client_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/admin/clients/{client_id}/secret",
+    tag = "admin",
+    params(("client_id" = String, Path, description = "Client id")),
+    responses(
+        (status = 200, description = "A new secret; the client is confidential from now on", body = ClientSecretResponse),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `clients:manage`, no second factor, or re-authentication required", body = crate::error::ErrorBody),
+        (status = 404, description = "No such client", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
+pub async fn rotate_secret(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    Path(client_id): Path<String>,
+) -> Result<Json<ClientSecretResponse>, AppError> {
+    admin.require(&state, "clients:manage").await?;
+    crate::services::reauth::require_recent_reauth_or_password(
+        &state,
+        admin.auth.user_id,
+        admin.auth.session_id,
+        None,
+        ip,
+        admin.auth.request_id,
+        "admin_client_secret",
+    )
+    .await?;
+    let client_secret =
+        admin_clients::rotate_secret(&state, &actor(&admin, ip), &client_id).await?;
+    Ok(Json(ClientSecretResponse { client_secret }))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/admin/clients/{client_id}/secret",
+    tag = "admin",
+    params(("client_id" = String, Path, description = "Client id")),
+    responses(
+        (status = 204, description = "Secret removed; the client is public"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `clients:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 404, description = "No such client", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
+pub async fn remove_secret(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    Path(client_id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    admin.require(&state, "clients:manage").await?;
+    admin_clients::remove_secret(&state, &actor(&admin, ip), &client_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

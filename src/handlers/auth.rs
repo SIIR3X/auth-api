@@ -301,7 +301,7 @@ pub async fn refresh(
     Json(body): Json<RefreshRequest>,
 ) -> Result<Json<TokensResponse>, AppError> {
     let tokens =
-        auth_svc::refresh_token(&state, &body.refresh_token, ip, ua.as_deref(), rid).await?;
+        auth_svc::refresh_token(&state, &body.refresh_token, None, ip, ua.as_deref(), rid).await?;
     Ok(Json(TokensResponse {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,

@@ -16,6 +16,7 @@ pub mod email_change;
 pub mod events;
 pub mod key_rotation;
 pub mod mailer;
+pub mod oauth;
 pub mod personal_access_token;
 pub mod pwned;
 pub mod reauth;

@@ -29,9 +29,8 @@ use crate::{
 pub mod admin;
 pub mod audit;
 pub mod auth;
-pub mod authorize;
-pub mod device;
 pub mod extractors;
+pub mod oauth;
 pub mod personal_access_token;
 pub mod session;
 pub mod two_factor;
@@ -242,6 +241,10 @@ fn build_router(
 
     let public = Router::new()
         .route("/.well-known/jwks.json", get(jwks))
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(oauth::metadata),
+        )
         // Logout is authenticated (requires a valid JWT via AuthUser) but intentionally
         // placed outside the auth rate-limit bucket. Exhausting that bucket during a
         // brute-force attack must not prevent the legitimate user from ending their session.
@@ -256,6 +259,13 @@ fn build_router(
         .nest(
             "/auth",
             auth_router().layer(middleware::from_fn_with_state(
+                rl_auth.clone(),
+                rate_limit::layer_with_state,
+            )),
+        )
+        .nest(
+            "/oauth",
+            oauth_router().layer(middleware::from_fn_with_state(
                 rl_auth,
                 rate_limit::layer_with_state,
             )),
@@ -356,15 +366,6 @@ fn auth_router() -> Router<AppState> {
             "/two-factor/email/resend",
             post(auth::resend_email_two_factor),
         )
-        // Device authorization flow (RFC 8628)
-        .route("/device", post(device::authorize))
-        .route("/device/token", post(device::token))
-        .route("/device/verify", post(device::verify))
-        .route("/device/{user_code}", get(device::describe))
-        // Authorization Code with PKCE (RFC 7636, RFC 8252)
-        .route("/authorize", post(authorize::approve))
-        .route("/authorize/describe", post(authorize::describe))
-        .route("/authorize/token", post(authorize::token))
 }
 
 // Administration: every route checks its own permission.
@@ -398,6 +399,14 @@ fn admin_router() -> Router<AppState> {
         .route("/clients", get(admin::clients::list))
         .route("/clients/{client_id}", put(admin::clients::save))
         .route("/clients/{client_id}", delete(admin::clients::delete))
+        .route(
+            "/clients/{client_id}/secret",
+            post(admin::clients::rotate_secret),
+        )
+        .route(
+            "/clients/{client_id}/secret",
+            delete(admin::clients::remove_secret),
+        )
         .route("/audit", get(admin::audit::list))
         .route("/webhooks", get(admin::webhooks::list))
         .route("/webhooks", post(admin::webhooks::create))
@@ -414,6 +423,28 @@ fn admin_router() -> Router<AppState> {
         .route(
             "/webhooks/{id}/deliveries/{delivery_id}/retry",
             post(admin::webhooks::retry),
+        )
+}
+
+// OAuth 2.1 (RFC 6749, 7636, 8252, 8628). Every route shares the strict bucket:
+// the token endpoint answers unauthenticated guesses, and the approval routes
+// mint long-lived sessions.
+
+fn oauth_router() -> Router<AppState> {
+    Router::new()
+        .route("/authorize", get(oauth::authorize))
+        .route("/token", post(oauth::token))
+        .route("/device_authorization", post(oauth::device_authorization))
+        .route("/device/verify", post(oauth::verify_device))
+        .route("/device/{user_code}", get(oauth::describe_device))
+        .route("/authorization-requests/{id}", get(oauth::describe_request))
+        .route(
+            "/authorization-requests/{id}/approve",
+            post(oauth::approve_request),
+        )
+        .route(
+            "/authorization-requests/{id}/deny",
+            post(oauth::deny_request),
         )
 }
 

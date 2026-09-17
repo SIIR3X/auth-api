@@ -29,12 +29,12 @@ async fn access_logs_carry_route_templates_not_codes() {
     let user = fixtures::authenticated_user(&app, 1).await;
 
     let user_code = "WXYZ-6789";
-    app.get_auth(&format!("/auth/device/{user_code}"), &user.access_token)
+    app.get_auth(&format!("/oauth/device/{user_code}"), &user.access_token)
         .await;
 
     let contents = logs.contents();
     assert!(
-        contents.contains("/auth/device/{user_code}"),
+        contents.contains("/oauth/device/{user_code}"),
         "no access log line for the route: {contents}"
     );
     assert!(

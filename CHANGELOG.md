@@ -12,6 +12,17 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 
 **API**
 
+- Client flows moved to standard OAuth 2.1 endpoints. `POST /auth/authorize`,
+  `/auth/authorize/describe` and `/auth/authorize/token` are replaced by
+  `GET /oauth/authorize` (redirecting to `OAUTH_CONSENT_URI`),
+  `/oauth/authorization-requests/{id}` (describe, approve, deny) and
+  `POST /oauth/token`. `POST /auth/device` and `/auth/device/token` are replaced
+  by `POST /oauth/device_authorization` and `POST /oauth/token`;
+  `/auth/device/{user_code}` and `/auth/device/verify` move to `/oauth/device/`.
+  Token and device requests are form-encoded and answer RFC 6749 errors
+  (`{ "error", "error_description" }`); a device flow names its `client_id`.
+- Client sessions are refreshed at `POST /oauth/token` by their client;
+  `/auth/refresh` refuses them.
 - `POST /auth/register` answers `202` with `{ "status", "message" }` for every
   request, whether or not the address is taken; the owner of a taken address is
   emailed. The response no longer carries the account.
@@ -105,8 +116,11 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
 - Simulations of random account lifecycles checked against a model, a timing
   test comparing existing and unknown accounts, and `make soak`: an hour of
   mixed traffic that fails on any error or on growing memory.
-- Authorization code flow with PKCE: `POST /auth/authorize/describe`,
-  `POST /auth/authorize`, `POST /auth/authorize/token`.
+- OAuth 2.1 authorization server: authorization code with PKCE, device
+  authorization and refresh at `POST /oauth/token`, `scope` requests narrowed to
+  the client's registration, metadata at `/.well-known/oauth-authorization-server`
+  (RFC 8414), confidential clients authenticating with `client_secret_basic` or
+  `client_secret_post` (`POST`/`DELETE /admin/clients/{client_id}/secret`).
 - Client registry: scopes, redirect URIs, loopback redirects, default session
   limit; `auth-api --register-client`.
 - A sign-in from a browser and system family the account never used e-mails
@@ -133,7 +147,7 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` (7), audited and announced with
   `user.deleted`. A password reset verifies a pending account, so the owner of
   an address takes back an account someone else registered with it.
-- `GET /auth/device/{user_code}`: what the signed-in user is about to approve.
+- `GET /oauth/device/{user_code}`: what the signed-in user is about to approve.
 - `GET /users/me/audit`: the caller's security history, cursor-paginated.
 - `GET /users/me/two-factor`: configured methods and remaining recovery codes.
 - Events `user.password_changed` and `user.sessions_revoked`.

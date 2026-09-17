@@ -49,10 +49,11 @@ pub struct AuthorizationRequest {
 pub struct Approval<'a> {
     pub user_id: Uuid,
     pub session_id: Uuid,
-    pub client_id: &'a str,
+    pub client: &'a RegisteredClient,
     pub redirect_uri: &'a str,
     pub code_challenge: &'a str,
-    pub code_challenge_method: &'a str,
+    /// Scopes of the request (`None`: unrestricted).
+    pub requested: Option<&'a [String]>,
     pub current_password: Option<&'a str>,
     pub ip: Option<IpNetwork>,
     pub request_id: Option<Uuid>,
@@ -69,30 +70,28 @@ pub struct Redemption<'a> {
     pub device_name: Option<&'a str>,
 }
 
-/// Validate a request without minting anything, for the consent screen.
+/// What a stored authorization request would grant this user, for the consent
+/// screen. Nothing is minted.
 pub async fn describe(
     state: &AppState,
     user_id: Uuid,
-    client_id: &str,
-    redirect_uri: &str,
+    client: &RegisteredClient,
+    requested: Option<&[String]>,
 ) -> Result<AuthorizationRequest, AppError> {
-    let client = load_client(state, client_id).await?;
-    validate_redirect(&client, redirect_uri)?;
-
     let held = permission_names(state, user_id).await?;
-    let scopes = client.consented_scopes(&held).unwrap_or_default();
-    let unavailable_scopes = client
-        .scopes
+    let scopes = consent(requested, &held).unwrap_or_default();
+    let unavailable_scopes = requested
+        .unwrap_or_default()
         .iter()
         .filter(|scope| !held.contains(scope))
         .cloned()
         .collect();
-    let (sessions_used, sessions_allowed) = session_allowance(state, user_id, &client).await?;
+    let (sessions_used, sessions_allowed) = session_allowance(state, user_id, client).await?;
 
     Ok(AuthorizationRequest {
         client_id: client.client_id.clone(),
         client_name: client.display_name.clone(),
-        unrestricted: client.scopes.is_empty(),
+        unrestricted: requested.is_none(),
         scopes,
         unavailable_scopes,
         sessions_used,
@@ -100,12 +99,19 @@ pub async fn describe(
     })
 }
 
+/// Whether approving for `client` needs a recent re-authentication first.
+pub async fn requires_reauthentication(
+    state: &AppState,
+    session_id: Uuid,
+    client: &RegisteredClient,
+) -> bool {
+    !client.is_primary && !reauth_svc::has_recent_reauth(state, session_id).await
+}
+
 /// Mint a single-use code for an approval the user has just given. Returns the
 /// code in clear, once: only its hash is stored.
 pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String, AppError> {
-    let client = load_client(state, approval.client_id).await?;
-    validate_redirect(&client, approval.redirect_uri)?;
-    validate_challenge(approval.code_challenge, approval.code_challenge_method)?;
+    let client = approval.client;
 
     // A third-party client obtains a long-lived session on the user's behalf:
     // consenting to one requires a fresh proof of the password, exactly like
@@ -127,7 +133,10 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
 
     // Scopes are frozen at consent: a later widening of the client's
     // registration must not widen what this approval grants.
-    let scopes = client.consented_scopes(&permission_names(state, approval.user_id).await?);
+    let scopes = consent(
+        approval.requested,
+        &permission_names(state, approval.user_id).await?,
+    );
 
     let code = crypto::generate_token();
     code_repo::create(
@@ -146,6 +155,18 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
     .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(code)
+}
+
+/// What an approval grants: the requested scopes the user holds, or `None`
+/// (unrestricted) when the request named none and the client has none.
+fn consent(requested: Option<&[String]>, held: &[String]) -> Option<Vec<String>> {
+    requested.map(|requested| {
+        requested
+            .iter()
+            .filter(|scope| held.contains(scope))
+            .cloned()
+            .collect()
+    })
 }
 
 /// Exchange a code and its verifier for a session.
@@ -358,7 +379,10 @@ pub(crate) async fn session_allowance(
     Ok((used, client.session_limit(quota.as_ref())))
 }
 
-async fn load_client(state: &AppState, client_id: &str) -> Result<RegisteredClient, AppError> {
+pub(crate) async fn load_client(
+    state: &AppState,
+    client_id: &str,
+) -> Result<RegisteredClient, AppError> {
     client_repo::find_by_id(&state.db, client_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
@@ -388,6 +412,7 @@ mod tests {
             redirect_uris: uris.iter().map(|u| u.to_string()).collect(),
             allows_loopback_redirect: loopback,
             default_max_sessions: 5,
+            client_secret_hash: None,
         }
     }
 

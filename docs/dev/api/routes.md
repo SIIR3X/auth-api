@@ -71,39 +71,72 @@ loopback only.
   like `login`, including the two-factor challenge. A new link replaces the
   previous one.
 
-## Client applications
+## Client applications (OAuth 2.1)
 
-### Device authorization (RFC 8628)
-
-| Method | Route | Auth | Rate limit |
-|--------|-------|------|------------|
-| POST | `/auth/device` | - | Strict |
-| POST | `/auth/device/token` | - | Strict |
-| GET | `/auth/device/{user_code}` | JWT | Strict |
-| POST | `/auth/device/verify` | JWT | Strict |
-
-The device starts a flow (`client_id` optional: the primary client) and polls
-`token`; polling faster than the interval returns `slow_down`. The signed-in
-user previews the request, then approves or denies it. An approval is collected
-once; account status and the client's session limit are checked when tokens are
-issued.
-
-### Authorization code with PKCE (RFC 7636, RFC 8252)
+Standard endpoints: RFC 6749, 7636 (PKCE), 8252 (native apps), 8414 (metadata)
+and 8628 (device authorization). Token and device authorization requests are
+`application/x-www-form-urlencoded`; their errors are
+`{ "error", "error_description" }` with `Cache-Control: no-store`.
 
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
-| POST | `/auth/authorize/describe` | JWT | Strict |
-| POST | `/auth/authorize` | JWT (+ reauth for non-primary clients) | Strict |
-| POST | `/auth/authorize/token` | code + verifier | Strict |
+| GET | `/.well-known/oauth-authorization-server` | - | General |
+| GET | `/oauth/authorize` | - | Strict |
+| GET | `/oauth/authorization-requests/{id}` | JWT | Strict |
+| POST | `/oauth/authorization-requests/{id}/approve` | JWT (+ reauth for non-primary clients) | Strict |
+| POST | `/oauth/authorization-requests/{id}/deny` | JWT | Strict |
+| POST | `/oauth/token` | client | Strict |
+| POST | `/oauth/device_authorization` | client | Strict |
+| GET | `/oauth/device/{user_code}` | JWT | Strict |
+| POST | `/oauth/device/verify` | JWT | Strict |
 
-- `S256` only; the verifier follows RFC 7636 (43-128 characters).
+**Client authentication.** A public client sends `client_id`. A confidential
+client (one given a secret with `POST /admin/clients/{client_id}/secret`)
+authenticates with `Authorization: Basic` (`client_secret_basic`) or
+`client_id` and `client_secret` in the body (`client_secret_post`), never both;
+a failure answers `401 invalid_client`.
+
+**Authorization code.** `GET /oauth/authorize` takes `response_type=code`,
+`client_id`, `redirect_uri` (optional when the client has exactly one),
+`code_challenge` with `code_challenge_method=S256`, `scope` and `state`.
+
+- An unknown client or an unregistered redirect URI answers directly with an
+  error, never through the redirect.
+- Other errors (`unsupported_response_type`, `invalid_request`,
+  `invalid_scope`) go back to the redirect URI with `error` and `state`.
+- A valid request is stored for 10 minutes and the browser is sent (`303`) to
+  `OAUTH_CONSENT_URI?request_id=...`. The consent page reads it with
+  `GET /oauth/authorization-requests/{id}` (client, scopes, session limits,
+  whether a re-authentication is needed) and approves or denies it; the answer
+  holds `redirect_to`, the client redirect carrying `code` and `state`, or
+  `error=access_denied`. A request is decided once.
 - The redirect URI must be registered exactly, or be a loopback
   `http://127.0.0.1:{port}/path` / `http://[::1]:{port}/path` for a registered
   path when the client allows it. `localhost` is refused.
-- A code is single use: a failed redemption burns it, and a replayed code
+- The client redeems the code at `POST /oauth/token` with
+  `grant_type=authorization_code`, `code`, `code_verifier` and `redirect_uri`.
+  A code is single use: a failed redemption burns it, and a replayed code
   revokes the session it produced.
-- Tokens carry only the permissions consented for the client, on issue and
-  on every refresh.
+
+**Scopes.** `scope` lists permissions. A client registered with scopes may ask
+for a subset of them; without `scope`, its registered scopes apply. Tokens carry
+the consented scopes the user holds, on issue and on every refresh, and no
+roles. The token response echoes `scope` when the session is restricted.
+
+**Refresh.** A client refreshes its sessions at `POST /oauth/token` with
+`grant_type=refresh_token`; `/auth/refresh` refuses them. The session must
+belong to the authenticated client.
+
+**Device authorization.** `POST /oauth/device_authorization` (`client_id`,
+`scope`) answers `device_code`, `user_code`, `verification_uri`,
+`verification_uri_complete`, `expires_in` and `interval`. The device polls
+`POST /oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:device_code`:
+`authorization_pending`, `slow_down` when polling faster than the interval,
+`access_denied`, `expired_token`, or tokens. The signed-in user previews the
+request (`GET /oauth/device/{user_code}`) and approves or denies it
+(`POST /oauth/device/verify`). An approval is collected once, by the client that
+started the flow; account status and the client's session limit are checked
+when tokens are issued (`invalid_grant` otherwise).
 
 ## Account
 
@@ -199,6 +232,8 @@ are regenerated.
 | GET | `/admin/clients` | Admin `clients:manage` | General |
 | PUT | `/admin/clients/{client_id}` | Admin `clients:manage` + reauth | General |
 | DELETE | `/admin/clients/{client_id}` | Admin `clients:manage` | General |
+| POST | `/admin/clients/{client_id}/secret` | Admin `clients:manage` + reauth | General |
+| DELETE | `/admin/clients/{client_id}/secret` | Admin `clients:manage` | General |
 | GET | `/admin/audit` | Admin `audit:read` | General |
 
 `GET /admin/users` takes `query` (start of the address or username), `status`,

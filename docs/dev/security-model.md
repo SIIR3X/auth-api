@@ -86,17 +86,26 @@ the database together, is out of scope.
 
 ## Client applications
 
-- Only registered clients can obtain sessions through the device or
-  authorization code flows.
+- Only registered clients can obtain sessions, through the standard OAuth 2.1
+  endpoints. A confidential client proves its secret at every token and device
+  authorization request; the secret (256 random bits) is stored as a digest and
+  compared in constant time.
+- **Authorization endpoint:** an unknown client or an unregistered redirect URI
+  is answered directly, never redirected; the stored request lives ten minutes
+  and is decided once. Consenting to a third-party client requires a
+  re-authentication, checked before the request is used up.
 - **Device flow (RFC 8628):** user codes are reserved atomically, polling is
-  paced, an approval is collected exactly once, and account status and session
-  limits are rechecked when tokens are issued.
+  paced, an approval is collected exactly once and only by the client that
+  started the flow, and account status and session limits are rechecked when
+  tokens are issued.
 - **Authorization code with PKCE:** S256 only, exact redirect URIs (loopback on
   any port only for a registered path, never `localhost`), single-use codes
-  consumed atomically, a replayed code revokes its session. Consenting to a
-  third-party client requires a re-authentication.
-- **Scopes:** a client's tokens carry only the consented permissions, re-derived
-  from the user's current permissions on every refresh, and no roles.
+  consumed atomically, a replayed code revokes its session.
+- **Scopes:** a request may narrow the client's registered scopes, never widen
+  them; a client's tokens carry only the consented permissions, re-derived from
+  the user's current permissions on every refresh, and no roles.
+- **Refresh:** a client's session is refreshed only by that client at the token
+  endpoint, with its authentication; the first-party route refuses it.
 
 ## Administration
 
@@ -215,3 +224,4 @@ when a cited test no longer exists.
 | SEC-33 | Sign-in links are single-use, short-lived, replaced by the next one, off by default, and never skip the second factor | `a_link_signs_in_once`, `a_new_link_replaces_the_previous_one_and_an_old_link_expires`, `a_second_factor_is_still_required`, `unknown_pending_and_suspended_addresses_answer_alike_and_get_nothing`, `links_are_capped_per_account_and_off_unless_enabled` |
 | SEC-34 | Personal access tokens are stored as digests, shown once, scoped to permissions the account holds, and end with their session or account | `a_token_is_exchanged_for_access_tokens_carrying_its_scopes_only`, `a_revoked_token_and_its_access_tokens_stop_working`, `tokens_expire_and_follow_the_account_status`, `creation_is_checked`, `scopes_are_limited_to_the_permissions_held` |
 | SEC-35 | Webhooks are signed, never reach internal addresses or follow redirects, and deliver exactly the committed events | `a_subscribed_endpoint_receives_signed_events`, `internal_addresses_are_never_called`, `internal_addresses_are_refused`, `only_plain_https_urls_are_registered`, `endpoints_are_checked_updated_rotated_and_removed`, `validate_rejects_production_webhooks_to_http_or_internal_addresses` |
+| SEC-36 | Confidential clients authenticate at every token request, and client sessions are refreshed only by their client | `a_confidential_client_must_authenticate_with_its_secret`, `a_public_client_has_no_secret_to_present`, `a_device_code_works_for_its_client_only`, `tokens_carry_only_the_consented_scopes_even_after_refresh`, `basic_credentials_are_form_decoded`, `a_request_asks_for_a_subset_of_the_client_scopes` |

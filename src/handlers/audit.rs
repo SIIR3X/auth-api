@@ -189,6 +189,7 @@ pub(crate) fn action_name(action: &AuditAction) -> &'static str {
         A::WebhookUpdated => "webhook_updated",
         A::WebhookDeleted => "webhook_deleted",
         A::WebhookSecretRotated => "webhook_secret_rotated",
+        A::ClientSecretRotated => "client_secret_rotated",
     }
 }
 

@@ -20,12 +20,11 @@ use crate::common::{app::TestApp, fixtures};
 /// Operations reachable without an access token.
 const PUBLIC: &[&str] = &[
     "GET /.well-known/jwks.json",
+    "GET /.well-known/oauth-authorization-server",
     "GET /health",
     "GET /live",
+    "GET /oauth/authorize",
     "GET /ready",
-    "POST /auth/authorize/token",
-    "POST /auth/device",
-    "POST /auth/device/token",
     "POST /auth/forgot-password",
     "POST /auth/login",
     "POST /auth/magic-link",
@@ -40,6 +39,8 @@ const PUBLIC: &[&str] = &[
     "POST /auth/two-factor/recovery",
     "POST /auth/verify-email",
     "POST /auth/verify-email/resend",
+    "POST /oauth/device_authorization",
+    "POST /oauth/token",
 ];
 
 struct Operation {

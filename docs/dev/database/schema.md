@@ -116,7 +116,8 @@ Authorization code flow with PKCE.
 | `default_max_sessions` | SMALLINT | No | Concurrent sessions per user without a quota row (the primary client is unlimited) |
 | `created_at` | TIMESTAMPTZ | No | |
 
-Managed with `auth-api --register-client`.
+Managed with `auth-api --register-client` or `/admin/clients`.
+`client_secret_hash` (SHA-256 of the secret) is set for a confidential client.
 
 ### user_client_quotas
 
