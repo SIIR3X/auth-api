@@ -32,6 +32,7 @@ fn valid_config() -> Config {
         },
         nats: NatsConfig {
             url: "nats://broker-token@127.0.0.1:4222".into(),
+            stream_replicas: 1,
         },
         jwt: JwtConfig {
             private_key: TEST_PRIVATE_KEY_PEM.into(),
@@ -1076,4 +1077,14 @@ fn identity_providers_are_read_from_their_variables() {
         [("IDENTITY_PROVIDERS", "Bad Name")].into_iter().collect();
     let env = super::env_vars::Env::new(|key: &str| bad.get(key).map(|v| (*v).to_owned()));
     assert!(super::identity_providers(&env).is_err());
+}
+
+#[test]
+fn validate_rejects_an_even_number_of_stream_replicas() {
+    let mut config = valid_config();
+    config.nats.stream_replicas = 2;
+    let err = config
+        .validate()
+        .expect_err("2 replicas cannot hold a quorum");
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "NATS_STREAM_REPLICAS"));
 }

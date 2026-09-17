@@ -344,6 +344,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             url: std::env::var("BENCH_NATS_URL")
                 .or_else(|_| std::env::var("TEST_NATS_URL"))
                 .unwrap_or_else(|_| "nats://127.0.0.1:4222".into()),
+            stream_replicas: 1,
         },
         jwt: JwtConfig {
             private_key: "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgL+1qOaZ7C+H1mGbV\njUP83/W450N4GfOnZSrQ7P//4Y2hRANCAAR4BApTJy8Anvp+O7YNVlTeCbBZ+1YJ\nk+r5ELHGFIXciAEGSrCTOkCm3yChSYroYWLE3ZN4reh6JDbIMX/QnBGx\n-----END PRIVATE KEY-----".into(),

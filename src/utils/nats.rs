@@ -57,6 +57,26 @@ pub fn split_credentials(url: &str) -> Result<(String, NatsCredentials), String>
     Ok((parsed.to_string(), credentials))
 }
 
+/// Split a `NATS_URL` naming one server or a cluster (`nats://a:4222,nats://b:4222`):
+/// the addresses to try, and the credentials they share. The client connects to
+/// any of them and follows the cluster when a server goes away.
+pub fn split_cluster(urls: &str) -> Result<(Vec<String>, NatsCredentials), String> {
+    let mut addresses = Vec::new();
+    let mut shared: Option<NatsCredentials> = None;
+    for url in urls.split(',').map(str::trim).filter(|u| !u.is_empty()) {
+        let (address, credentials) = split_credentials(url)?;
+        match &shared {
+            Some(seen) if *seen != credentials => {
+                return Err("servers of a cluster must share their credentials".into());
+            }
+            _ => shared = Some(credentials),
+        }
+        addresses.push(address);
+    }
+    let credentials = shared.ok_or("names no server")?;
+    Ok((addresses, credentials))
+}
+
 /// Client options presenting `credentials` to the broker.
 pub fn connect_options(credentials: NatsCredentials) -> ConnectOptions {
     match credentials {
@@ -155,5 +175,15 @@ mod tests {
         );
         assert!(!token.contains("s3cr3t") && !pair.contains("p@ss"));
         assert!(pair.contains("auth"));
+    }
+
+    #[test]
+    fn a_cluster_shares_its_credentials() {
+        let (addresses, credentials) =
+            split_cluster("nats://secret@a:4222, nats://secret@b:4222,").unwrap();
+        assert_eq!(addresses, ["nats://a:4222", "nats://b:4222"]);
+        assert_eq!(credentials, NatsCredentials::Token("secret".into()));
+        assert!(split_cluster("nats://one@a:4222,nats://two@b:4222").is_err());
+        assert!(split_cluster(" , ").is_err());
     }
 }

@@ -6,6 +6,12 @@ use super::*;
 
 impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if ![1, 3, 5].contains(&self.nats.stream_replicas) {
+            return Err(ConfigError::Invalid {
+                key: "NATS_STREAM_REPLICAS".into(),
+                reason: "must be 1, 3 or 5".into(),
+            });
+        }
         validate_jwt_keys(&self.jwt)?;
         validate_encryption_key("ENCRYPTION_KEY", &self.crypto.encryption_key)?;
         validate_optional_encryption_key(

@@ -16,4 +16,5 @@ Follow the steps in this order for a complete deployment.
 ## Operations
 
 - [Monitoring](guides/monitoring.md) - Prometheus, Alertmanager and the external probe on a separate host, exporters and alerts
+- [High Availability](guides/high-availability.md) - Surviving the loss of any host: load balancers, Patroni, Redis Sentinel, a NATS cluster, and failover drills
 - [Operations Runbook](guides/operations.md) - Key rotations, backup/restore, Redis outage response, manual interventions, metrics

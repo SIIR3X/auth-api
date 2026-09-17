@@ -85,6 +85,8 @@ pub struct RedisConfig {
 #[derive(Clone)]
 pub struct NatsConfig {
     pub url: String,
+    /// Copies of the event stream kept by a JetStream cluster (1, 3 or 5).
+    pub stream_replicas: usize,
 }
 
 #[derive(Clone)]
@@ -474,6 +476,7 @@ impl Config {
                 url: vars
                     .string("NATS_URL")
                     .unwrap_or_else(|| "nats://nats:4222".into()),
+                stream_replicas: vars.parse("NATS_STREAM_REPLICAS")?.unwrap_or(1),
             },
             jwt: JwtConfig {
                 private_key: vars.require("JWT_PRIVATE_KEY")?.replace("\\n", "\n"),

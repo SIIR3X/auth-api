@@ -482,6 +482,7 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
         },
         nats: NatsConfig {
             url: nats_url.into(),
+            stream_replicas: 1,
         },
         jwt: JwtConfig {
             private_key: keys::PRIVATE_KEY_PEM.into(),

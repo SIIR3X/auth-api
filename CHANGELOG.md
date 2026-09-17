@@ -122,6 +122,10 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   (`/users/me/external-identities`) and never matched by email; the sign-in is
   bound to the browser that started it, the ID token verified against the
   provider's keys, and an enrolled second factor still applies.
+- High availability, self-hosted: `docs/deploy/guides/high-availability.md`
+  (keepalived and nginx, Patroni behind HAProxy, Redis Sentinel, a NATS cluster,
+  failover drills). `NATS_URL` accepts the servers of a cluster and
+  `NATS_STREAM_REPLICAS` sets the copies of the event stream.
 - OpenTelemetry traces over OTLP/HTTP (`OTEL_EXPORTER_OTLP_ENDPOINT`,
   `OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER_ARG`): one server span per request,
   named after its route template, continuing a W3C `traceparent`.

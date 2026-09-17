@@ -78,7 +78,8 @@ and `occurred_at`. The broker ships in the compose files.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NATS_URL` | `nats://nats:4222` | Broker URL |
+| `NATS_URL` | `nats://nats:4222` | Broker URL, or comma-separated URLs of a cluster sharing their credentials |
+| `NATS_STREAM_REPLICAS` | `1` | Copies of the event stream a JetStream cluster keeps: 1, 3 or 5 |
 
 ### Access tokens (ES256)
 

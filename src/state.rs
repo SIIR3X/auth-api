@@ -107,6 +107,7 @@ impl AppState {
     /// Connect every remaining dependency around a prepared, validated config.
     async fn assemble(config: Config, db: PgPool) -> Result<Self, AppStateError> {
         let redis = redis_pool::build(&config.redis).map_err(AppStateError::Redis)?;
+        crate::services::events::set_stream_replicas(config.nats.stream_replicas);
         let nats = connect_nats(&config.nats.url).await?;
         // Declared now when the broker is up; otherwise before the first
         // durable publish (account deletion).
@@ -165,15 +166,16 @@ impl AppState {
 async fn connect_nats(url: &str) -> Result<async_nats::Client, AppStateError> {
     use crate::utils::nats;
 
-    let (address, credentials) = nats::split_credentials(url).map_err(|reason| {
+    let (addresses, credentials) = nats::split_cluster(url).map_err(|reason| {
         AppStateError::Config(ConfigError::Invalid {
             key: "NATS_URL".into(),
             reason,
         })
     })?;
 
+    let address = addresses.join(",");
     match nats::connect_options(credentials.clone())
-        .connect(address.as_str())
+        .connect(addresses.as_slice())
         .await
     {
         Ok(client) => Ok(client),
@@ -190,7 +192,7 @@ async fn connect_nats(url: &str) -> Result<async_nats::Client, AppStateError> {
             tracing::warn!(address, error = %e, "NATS unreachable at startup; connecting in the background");
             Ok(nats::connect_options(credentials)
                 .retry_on_initial_connect()
-                .connect(address.as_str())
+                .connect(addresses.as_slice())
                 .await?)
         }
     }

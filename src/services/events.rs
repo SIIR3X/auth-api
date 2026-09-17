@@ -69,6 +69,14 @@ static WAKE: Notify = Notify::const_new();
 /// Whether this process already declared the stream.
 static STREAM_READY: AtomicBool = AtomicBool::new(false);
 
+/// Copies of the stream a JetStream cluster keeps (`NATS_STREAM_REPLICAS`).
+static STREAM_REPLICAS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+/// Set once while the application state is built.
+pub fn set_stream_replicas(replicas: usize) {
+    STREAM_REPLICAS.store(replicas, Ordering::Relaxed);
+}
+
 // Events carry the user id only: they are stored by JetStream for 30 days and
 // read by every consumer, and a service that needs an address or a username
 // reads it from the API.
@@ -307,6 +315,7 @@ pub async fn ensure_user_stream(nats: &async_nats::Client) -> Result<(), String>
             max_bytes: EVENT_MAX_BYTES,
             duplicate_window: DUPLICATE_WINDOW,
             discard: jetstream::stream::DiscardPolicy::New,
+            num_replicas: STREAM_REPLICAS.load(Ordering::Relaxed),
             ..Default::default()
         })
         .await
