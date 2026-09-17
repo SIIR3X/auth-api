@@ -30,6 +30,7 @@ const PUBLIC: &[&str] = &[
     "POST /auth/login",
     "POST /auth/magic-link",
     "POST /auth/magic-link/complete",
+    "POST /auth/personal-access-tokens/exchange",
     "POST /auth/refresh",
     "POST /auth/register",
     "POST /auth/reset-password",

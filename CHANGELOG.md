@@ -84,6 +84,13 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   `POST /auth/magic-link` and `POST /auth/magic-link/complete`. A link stands
   for the password only: accounts with a second factor still answer their
   challenge. English and French emails.
+- Personal access tokens: `GET`/`POST /users/me/tokens` and
+  `DELETE /users/me/tokens/{id}` (creation needs a re-authentication; at most
+  20 active, 1 to 365 days, scopes limited to the account's permissions), and
+  `POST /auth/personal-access-tokens/exchange` for a short-lived access token
+  carrying those scopes and no roles. Each token owns a session of the new type
+  `personal_access_token`, so revoking the session, changing the password or
+  suspending the account ends it too.
 - `GET /users/me/export`: everything stored about the account as a JSON
   download, after a recent re-authentication, audited as `data_exported`.
 - Simulations of random account lifecycles checked against a model, a timing

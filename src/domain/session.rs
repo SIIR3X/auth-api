@@ -45,6 +45,7 @@ pub fn capped_expiry(
 pub enum SessionType {
     Web,
     Device,
+    PersonalAccessToken,
 }
 
 #[derive(Debug, Clone, PartialEq, sqlx::Type)]

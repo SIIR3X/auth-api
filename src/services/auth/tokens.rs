@@ -186,7 +186,7 @@ async fn alert_new_device(
     });
 }
 
-pub(super) async fn build_access_token(
+pub(crate) async fn build_access_token(
     user_id: Uuid,
     session_id: uuid::Uuid,
     scopes: Option<&[String]>,

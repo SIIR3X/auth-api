@@ -238,6 +238,7 @@ impl IntoResponse for AppError {
                         "At least one account must keep the permission to manage roles."
                     }
                     "default_role" => "The role given to every new account cannot be deleted.",
+                    "too_many_tokens" => "Revoke a personal access token before creating another.",
                     _ => "A resource with this value already exists.",
                 };
                 (StatusCode::CONFLICT, ErrorBody::new(code, message))

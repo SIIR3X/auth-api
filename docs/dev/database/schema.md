@@ -51,7 +51,7 @@ marks the old one rotated.
 | `rotated_at` | TIMESTAMPTZ | Yes | |
 | `replaced_by_session_id` | UUID | Yes | FK -> sessions, the successor |
 | `compromised_at`, `compromise_reason` | | Yes | Set when a replay is detected |
-| `session_type` | session_type | No | `web` or `device` |
+| `session_type` | session_type | No | `web`, `device` or `personal_access_token` |
 | `client_id` | VARCHAR(100) | Yes | Registered client the session was issued to |
 | `scopes` | TEXT[] | Yes | Permissions consented for that client; `NULL` is unrestricted |
 | `ip_address`, `user_agent`, `device_name` | | Yes | |
@@ -68,6 +68,12 @@ address), `first_seen_at`, `last_seen_at`. Forgotten after
 
 Single-use tokens (`token_hash`, `expires_at`, `used_at`). At most one active
 token per user. `magic_link_tokens` hold sign-in links (15 minutes).
+
+### personal_access_tokens
+
+Tokens an account creates for its scripts: `name`, `token_hash` (SHA-256 of the
+random part), `scopes`, `expires_at`, `last_used_at`, and `session_id`, the
+session of type `personal_access_token` whose revocation ends the token.
 
 ### authorization_codes
 

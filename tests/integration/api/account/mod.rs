@@ -5,3 +5,4 @@ mod password;
 mod profile;
 mod reauth;
 mod sessions;
+mod tokens;

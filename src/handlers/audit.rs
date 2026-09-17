@@ -183,6 +183,8 @@ pub(crate) fn action_name(action: &AuditAction) -> &'static str {
         A::ClientDeleted => "client_deleted",
         A::DataExported => "data_exported",
         A::MagicLinkSent => "magic_link_sent",
+        A::PersonalAccessTokenCreated => "personal_access_token_created",
+        A::PersonalAccessTokenRevoked => "personal_access_token_revoked",
     }
 }
 

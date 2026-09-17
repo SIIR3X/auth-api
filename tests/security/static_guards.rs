@@ -228,3 +228,43 @@ fn the_repository_is_written_in_english() {
         "French text outside the exempt paths"
     );
 }
+
+#[test]
+fn documented_schemas_have_unique_names() {
+    // The OpenAPI document names a schema after its type: a second type with
+    // the same name silently replaces the first, and the contract then checks
+    // responses against the wrong shape.
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    let mut duplicates = Vec::new();
+    for (path, code) in production_sources() {
+        let mut documented = false;
+        for line in code.lines() {
+            let line = line.trim();
+            if line.starts_with("#[derive(") && line.contains("ToSchema") {
+                documented = true;
+                continue;
+            }
+            if !documented || line.starts_with("#[") || line.starts_with("///") {
+                continue;
+            }
+            documented = false;
+            let Some(rest) = line
+                .strip_prefix("pub struct ")
+                .or_else(|| line.strip_prefix("pub enum "))
+                .or_else(|| line.strip_prefix("struct "))
+                .or_else(|| line.strip_prefix("enum "))
+            else {
+                continue;
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if let Some(first) = seen.insert(name.clone(), path.clone()) {
+                duplicates.push(format!("{name}: {first} and {path}"));
+            }
+        }
+    }
+    assert!(seen.len() > 50, "found only {} schemas", seen.len());
+    assert_eq!(duplicates, Vec::<String>::new(), "schema names used twice");
+}

@@ -53,6 +53,7 @@ loopback only.
 | POST | `/auth/logout` | JWT | General |
 | POST | `/auth/magic-link` | - | Strict |
 | POST | `/auth/magic-link/complete` | sign-in link | Strict |
+| POST | `/auth/personal-access-tokens/exchange` | personal access token | Strict |
 | POST | `/auth/forgot-password` | - | Strict |
 | POST | `/auth/reset-password` | - | Strict |
 
@@ -112,6 +113,9 @@ issued.
 | GET | `/users/me/audit` | JWT | General |
 | POST | `/users/me/reauth` | JWT | Strict |
 | GET | `/users/me/export` | JWT + reauth (recent only) | Strict |
+| GET | `/users/me/tokens` | JWT | General |
+| POST | `/users/me/tokens` | JWT + reauth (recent only) | General |
+| DELETE | `/users/me/tokens/{id}` | JWT | General |
 | PATCH | `/users/me/username` | JWT + reauth | General |
 | PATCH | `/users/me/password` | JWT + reauth | General |
 | PATCH | `/users/me/locale` | JWT | General |
@@ -120,6 +124,12 @@ issued.
 `/users/me/audit?limit=&cursor=` returns the caller's own security history,
 newest first: `{ "entries": [...], "next_cursor" }`. Pass `next_cursor` back as
 `cursor`; it is absent on the last page. `limit` is clamped to 1-200.
+
+Personal access tokens (`aapat_...`) are shown once, at creation. Their
+exchange returns `{ "access_token", "token_type": "Bearer", "expires_in" }`: an
+access token carrying the token's scopes (intersected with the account's
+current permissions) and no roles. A token lives in a session of type
+`personal_access_token`: revoking either ends both.
 
 `/users/me/export` downloads everything stored about the account as one JSON
 document (`account-data.json`): profile, roles, sessions, second factors,
