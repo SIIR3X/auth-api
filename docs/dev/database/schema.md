@@ -77,6 +77,12 @@ endpoint and event (`event_id`, `event_name`, `payload`, `occurred_at`),
 recorded with the event; `attempts`, `next_attempt_at`, `delivered_at` or
 `failed_at`, `last_status`, `last_error`.
 
+### passkeys
+
+WebAuthn credentials: `credential_id` (unique), `public_key` (COSE),
+`algorithm`, `sign_count`, `aaguid`, `name`, `backup_eligible`, `backed_up`,
+`last_used_at`.
+
 ### personal_access_tokens
 
 Tokens an account creates for its scripts: `name`, `token_hash` (SHA-256 of the

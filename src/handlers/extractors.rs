@@ -116,6 +116,7 @@ impl FromRequestParts<AppState> for AdminUser {
         if crate::repositories::two_factor::find_primary_by_user(&state.db, auth.user_id)
             .await?
             .is_none()
+            && !crate::repositories::passkey::exists_for_user(&state.db, auth.user_id).await?
         {
             return Err(AppError::TwoFactorRequired);
         }

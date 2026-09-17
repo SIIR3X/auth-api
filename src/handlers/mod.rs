@@ -31,6 +31,7 @@ pub mod audit;
 pub mod auth;
 pub mod extractors;
 pub mod oauth;
+pub mod passkey;
 pub mod personal_access_token;
 pub mod session;
 pub mod two_factor;
@@ -355,6 +356,8 @@ fn auth_router() -> Router<AppState> {
         .route("/forgot-password", post(auth::forgot_password))
         .route("/magic-link", post(auth::request_magic_link))
         .route("/magic-link/complete", post(auth::complete_magic_link))
+        .route("/passkeys/options", post(passkey::authentication_options))
+        .route("/passkeys/sign-in", post(passkey::sign_in))
         .route(
             "/personal-access-tokens/exchange",
             post(personal_access_token::exchange),
@@ -483,6 +486,11 @@ fn me_router() -> Router<AppState> {
         .route("/password", patch(user::change_password))
         .route("/locale", patch(user::change_locale))
         .route("/", delete(user::delete_account))
+        // Passkeys
+        .route("/passkeys", get(passkey::list))
+        .route("/passkeys", post(passkey::register))
+        .route("/passkeys/options", post(passkey::registration_options))
+        .route("/passkeys/{id}", delete(passkey::remove))
         // Personal access tokens
         .route("/tokens", get(personal_access_token::list))
         .route("/tokens", post(personal_access_token::create))

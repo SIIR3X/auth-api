@@ -280,6 +280,17 @@ pub struct PwnedPasswordsConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct WebAuthnConfig {
+    /// Relying party id: the registrable domain passkeys are bound to. Default:
+    /// the host of `FRONTEND_URL`.
+    pub rp_id: String,
+    /// Name shown by the authenticator. Default: the mail sender name.
+    pub rp_name: String,
+    /// Origins allowed to run ceremonies. Default: the origin of `FRONTEND_URL`.
+    pub origins: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct WebhookConfig {
     /// Accept `http://` endpoints. Default: outside production only.
     pub allow_http: bool,
@@ -351,6 +362,7 @@ pub struct Config {
     pub captcha: CaptchaConfig,
     pub pwned_passwords: PwnedPasswordsConfig,
     pub webhooks: WebhookConfig,
+    pub webauthn: WebAuthnConfig,
     pub cleanup: CleanupConfig,
     pub audit: AuditConfig,
     pub log: LogConfig,
@@ -508,6 +520,36 @@ impl Config {
                     .unwrap_or_else(|| "https://api.pwnedpasswords.com".into()),
                 timeout_ms: vars.parse("PWNED_PASSWORDS_TIMEOUT_MS")?.unwrap_or(1500),
                 fail_open: vars.parse("PWNED_PASSWORDS_FAIL_OPEN")?.unwrap_or(true),
+            },
+            webauthn: {
+                let frontend = vars
+                    .string("FRONTEND_URL")
+                    .or_else(|| vars.string("APP_PUBLIC_URL"))
+                    .unwrap_or_else(|| "http://localhost:3000".into());
+                let frontend = reqwest::Url::parse(&frontend).ok();
+                WebAuthnConfig {
+                    rp_id: vars.string("WEBAUTHN_RP_ID").unwrap_or_else(|| {
+                        frontend
+                            .as_ref()
+                            .and_then(|url| url.host_str().map(str::to_owned))
+                            .unwrap_or_else(|| "localhost".into())
+                    }),
+                    rp_name: vars
+                        .string("WEBAUTHN_RP_NAME")
+                        .or_else(|| vars.string("SMTP_FROM_NAME"))
+                        .unwrap_or_else(|| "auth-api".into()),
+                    origins: match vars.string("WEBAUTHN_ORIGINS") {
+                        Some(list) => list
+                            .split(',')
+                            .map(|o| o.trim().trim_end_matches('/').to_owned())
+                            .filter(|o| !o.is_empty())
+                            .collect(),
+                        None => frontend
+                            .map(|url| url.origin().ascii_serialization())
+                            .into_iter()
+                            .collect(),
+                    },
+                }
             },
             webhooks: WebhookConfig {
                 allow_http: vars.parse("WEBHOOK_ALLOW_HTTP")?.unwrap_or(!is_production),

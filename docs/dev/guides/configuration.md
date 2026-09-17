@@ -161,6 +161,14 @@ Registered clients (device and authorization code flows) live in the database
 and are managed with `auth-api --register-client` (see [Commands](commands.md))
 or `PUT /admin/clients/{client_id}`.
 
+### Passkeys
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBAUTHN_RP_ID` | host of `FRONTEND_URL` | Relying party id passkeys are bound to; changing it orphans every registered passkey |
+| `WEBAUTHN_RP_NAME` | `SMTP_FROM_NAME` | Name the authenticator shows |
+| `WEBAUTHN_ORIGINS` | origin of `FRONTEND_URL` | Comma-separated origins allowed to run ceremonies; in production HTTPS, on the relying party id or its subdomains |
+
 ### Webhooks
 
 Endpoints are registered through `/admin/webhooks` (see the
@@ -218,4 +226,6 @@ With `APP_ENV=production` the service refuses to start when:
 - `RATE_LIMIT_FAIL_OPEN`, `RATE_LIMIT_ALLOW_MISSING_IP` or `CAPTCHA_FAIL_OPEN`
   is `true`, or `JWT_STRICT_SESSION_BINDING` is `false`;
 - `WEBHOOK_ALLOW_HTTP` or `WEBHOOK_ALLOW_PRIVATE_NETWORKS` is `true`;
+- `WEBAUTHN_ORIGINS` is empty, or lists an origin that is not HTTPS or not on
+  `WEBAUTHN_RP_ID`;
 - `SENSITIVE_ACTION_REAUTH_SECS` or `ARGON2_MAX_CONCURRENCY` is `0`.

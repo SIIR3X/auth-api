@@ -549,6 +549,11 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             timeout_ms: 1500,
             fail_open: true,
         },
+        webauthn: WebAuthnConfig {
+            rp_id: "localhost".into(),
+            rp_name: "Auth API".into(),
+            origins: vec!["http://localhost:5173".into()],
+        },
         webhooks: WebhookConfig {
             allow_http: true,
             allow_private_networks: true,

@@ -208,6 +208,8 @@ async fn security_headers_enable_hsts_for_https_production() {
         config.jwt.strict_session_binding = true;
         config.webhooks.allow_http = false;
         config.device_auth.consent_uri = "https://app.example.com/authorize".into();
+        config.webauthn.rp_id = "app.example.com".into();
+        config.webauthn.origins = vec!["https://app.example.com".into()];
         config.webhooks.allow_private_networks = false;
         // The committed development AES key is refused in production.
         config.crypto.encryption_key = "6M+xtK7VzYMoz/3mc3vJf2e6h9b9yLyx3Eabo/236YE=".into();

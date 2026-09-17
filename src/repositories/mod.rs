@@ -12,6 +12,7 @@ pub mod event_outbox;
 pub mod export;
 pub mod known_device;
 pub mod login_attempt;
+pub mod passkey;
 pub mod personal_access_token;
 pub mod recovery_code;
 pub mod registered_client;

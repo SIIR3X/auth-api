@@ -6,6 +6,8 @@
 //!   migration set, dropped when the value is;
 //! - [`TestClock`]: the application clock, moved forward without sleeping;
 //! - [`MailOutbox`]: every message the application sends, decoded;
+//! - [`authenticator::SoftAuthenticator`]: a passkey authenticator in memory,
+//!   answering WebAuthn ceremonies like a browser would pass them on;
 //! - [`FaultProxy`]: a TCP proxy between the application and a dependency,
 //!   adding latency, hanging or refusing connections on demand.
 //!
@@ -14,6 +16,7 @@
 //! [`env`]). The unit and property suites need none of it.
 
 pub mod app;
+pub mod authenticator;
 pub mod clock;
 pub mod contract;
 pub mod db;

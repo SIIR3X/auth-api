@@ -63,6 +63,12 @@ use utoipa::{
         crate::handlers::user::delete_account,
         crate::handlers::user::reauthenticate,
         crate::handlers::user::export_data,
+        crate::handlers::passkey::list,
+        crate::handlers::passkey::registration_options,
+        crate::handlers::passkey::register,
+        crate::handlers::passkey::remove,
+        crate::handlers::passkey::authentication_options,
+        crate::handlers::passkey::sign_in,
         crate::handlers::personal_access_token::list,
         crate::handlers::personal_access_token::create,
         crate::handlers::personal_access_token::revoke,
@@ -119,6 +125,7 @@ use utoipa::{
         (name = "email-change", description = "Changing the account's email address"),
         (name = "sessions", description = "Active sessions"),
         (name = "two-factor", description = "Second factors and recovery codes"),
+        (name = "passkeys", description = "Passkeys (WebAuthn): registering them and signing in with them"),
         (name = "admin", description = "Administration: accounts, roles, client applications and the audit log. Requires the permission of each operation and a second factor"),
     )
 )]

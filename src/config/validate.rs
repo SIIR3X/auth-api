@@ -63,6 +63,20 @@ impl Config {
                 validate_production_encryption_key("PREVIOUS_ENCRYPTION_KEY", previous)?;
             }
 
+            if self.webauthn.origins.is_empty()
+                || self.webauthn.origins.iter().any(|origin| {
+                    !origin.starts_with("https://")
+                        || !crate::domain::webauthn::origin_matches_rp(origin, &self.webauthn.rp_id)
+                })
+            {
+                return Err(ConfigError::Invalid {
+                    key: "WEBAUTHN_ORIGINS".into(),
+                    reason:
+                        "must list HTTPS origins on WEBAUTHN_RP_ID or its subdomains in production"
+                            .into(),
+                });
+            }
+
             if self.webhooks.allow_http {
                 return Err(ConfigError::Invalid {
                     key: "WEBHOOK_ALLOW_HTTP".into(),

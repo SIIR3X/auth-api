@@ -19,7 +19,7 @@ use auth_api::{
         AuditConfig, CaptchaConfig, CleanupConfig, Config, CorsConfig, CryptoConfig,
         DatabaseConfig, DeviceAuthConfig, Environment, JwtConfig, LogConfig, LogFormat, MailConfig,
         MetricsConfig, NatsConfig, PwnedPasswordsConfig, RateLimitConfig, RedisConfig,
-        SecurityConfig, ServerConfig, SmtpConfig, WebhookConfig,
+        SecurityConfig, ServerConfig, SmtpConfig, WebAuthnConfig, WebhookConfig,
     },
     handlers,
     state::AppState,
@@ -408,6 +408,11 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             api_url: "https://api.pwnedpasswords.com".into(),
             timeout_ms: 1500,
             fail_open: true,
+        },
+        webauthn: WebAuthnConfig {
+            rp_id: "localhost".into(),
+            rp_name: "Auth API".into(),
+            origins: vec!["http://localhost:5173".into()],
         },
         webhooks: WebhookConfig {
             allow_http: false,

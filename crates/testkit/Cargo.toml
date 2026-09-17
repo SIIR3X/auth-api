@@ -11,6 +11,7 @@ anyhow = "1.0.102"
 auth-api = { path = "../.." }
 axum = "0.8.8"
 base64 = "0.22.1"
+ciborium = "0.2.2"
 deadpool-redis = "0.23.0"
 dotenvy = "0.15.7"
 jsonschema = { version = "0.56.0", default-features = false }

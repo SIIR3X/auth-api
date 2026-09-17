@@ -97,6 +97,11 @@ fn valid_config() -> Config {
             timeout_ms: 1500,
             fail_open: true,
         },
+        webauthn: WebAuthnConfig {
+            rp_id: "auth.example.com".into(),
+            rp_name: "Auth API".into(),
+            origins: vec!["https://auth.example.com".into()],
+        },
         webhooks: WebhookConfig {
             allow_http: false,
             allow_private_networks: false,
@@ -1008,4 +1013,23 @@ fn validate_rejects_production_webhooks_to_http_or_internal_addresses() {
     assert!(
         matches!(err, ConfigError::Invalid { key, .. } if key == "WEBHOOK_ALLOW_PRIVATE_NETWORKS")
     );
+}
+
+#[test]
+fn validate_rejects_production_passkey_origins_outside_the_relying_party() {
+    for origins in [
+        vec![],
+        vec!["http://auth.example.com".to_owned()],
+        vec!["https://evil.example.org".to_owned()],
+    ] {
+        let mut config = valid_config();
+        config.webauthn.origins = origins.clone();
+        let err = config
+            .validate()
+            .expect_err("bad passkey origins in production");
+        assert!(
+            matches!(err, ConfigError::Invalid { ref key, .. } if key == "WEBAUTHN_ORIGINS"),
+            "{origins:?}"
+        );
+    }
 }

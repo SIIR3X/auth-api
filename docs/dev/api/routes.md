@@ -224,6 +224,31 @@ every other session and notifies the previous address.
 | DELETE | `/users/me/sessions` | JWT + reauth | General |
 | DELETE | `/users/me/sessions/{id}` | JWT + reauth | General |
 
+## Passkeys
+
+| Method | Route | Auth | Rate limit |
+|--------|-------|------|------------|
+| GET | `/users/me/passkeys` | JWT | General |
+| POST | `/users/me/passkeys/options` | JWT + reauth (recent only) | General |
+| POST | `/users/me/passkeys` | JWT | General |
+| DELETE | `/users/me/passkeys/{id}` | JWT + reauth | General |
+| POST | `/auth/passkeys/options` | - | Strict |
+| POST | `/auth/passkeys/sign-in` | passkey | Strict |
+
+Registration: `options` returns the `PublicKeyCredentialCreationOptions` (JSON
+form) to pass to `navigator.credentials.create()`, then `POST /users/me/passkeys`
+sends `{ "name", "credential" }` with the credential's `toJSON()`. Passkeys are
+discoverable, require user verification, and use ES256, EdDSA or RS256;
+attestation is not requested. The first passkey of an account without recovery
+codes returns ten, once.
+
+Sign-in: `POST /auth/passkeys/options` returns request options with no allowed
+credentials (the browser offers the user's passkeys), then
+`POST /auth/passkeys/sign-in` sends `{ "credential", "device_name", "remember_me" }`
+and gets `{ "access_token", "refresh_token" }`. A passkey with user verification
+is two factors: no second-factor challenge follows. A passkey also counts as the
+second factor `/admin` requires.
+
 ## Two-factor
 
 | Method | Route | Auth | Rate limit |

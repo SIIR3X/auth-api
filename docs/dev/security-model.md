@@ -84,6 +84,19 @@ the database together, is out of scope.
 - TOTP secrets are encrypted with AES-256-GCM. Ciphertexts name their key, so
   the key can be rotated without downtime and the rotation can be resumed.
 
+## Passkeys
+
+- Registration needs a recent re-authentication. A response is accepted only
+  for the challenge issued to the session, from an allowed origin, for this
+  relying party, with user presence and verification; attestation is not
+  requested nor trusted.
+- A sign-in challenge is used once, whatever the outcome. The assertion must
+  verify against the stored key, come from an allowed origin with user
+  verification, carry the credential's user handle, and make a kept signature
+  counter grow; a counter that does not grow refuses the sign-in (possible
+  clone). Every refusal answers `invalid_credentials` and counts against the
+  client address.
+
 ## Client applications
 
 - Only registered clients can obtain sessions, through the standard OAuth 2.1
@@ -237,3 +250,4 @@ when a cited test no longer exists.
 | SEC-37 | Introspection is reserved to confidential clients and says nothing of inactive tokens; revocation reaches only the requesting client's tokens | `a_resource_server_learns_what_a_token_is_worth`, `revoking_a_refresh_token_ends_its_session`, `revoking_an_access_token_ends_that_token_only`, `a_client_cannot_revoke_the_tokens_of_another` |
 | SEC-38 | The client credentials grant is limited to confidential, scoped clients that enable it, and its tokens never act as a user | `a_client_obtains_a_token_for_itself_with_its_scopes`, `the_grant_is_reserved_to_confidential_clients_that_enable_it`, `a_client_token_is_introspected_and_revoked`, `a_client_subject_is_stable_and_never_a_user_id` |
 | SEC-39 | ID tokens are bound to their client, nonce and access token, and identity scopes release only their claims | `an_openid_request_gets_an_id_token_bound_to_its_nonce_and_access_token`, `userinfo_releases_the_claims_of_the_granted_scopes`, `scopes_release_their_claims_only` |
+| SEC-40 | Passkeys: registration re-authenticated and verified, sign-in challenges single use, signatures verified, cloned counters refused | `a_registration_is_verified_before_it_is_stored`, `forged_replayed_or_cloned_assertions_are_refused`, `a_passkey_signs_in_without_password_or_second_factor`, `a_removed_passkey_no_longer_signs_in`, `assertions_verify_against_the_stored_key_only`, `client_data_answers_the_challenge_from_an_allowed_origin`, `validate_rejects_production_passkey_origins_outside_the_relying_party` |

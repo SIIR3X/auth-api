@@ -365,6 +365,24 @@ pub fn pwned_range(data: &[u8]) {
     }
 }
 
+/// WebAuthn authenticator data, attestation objects and COSE keys: never a
+/// panic, and parsed authenticator data accounts for every byte.
+pub fn webauthn(data: &[u8]) {
+    use crate::domain::webauthn;
+    if let Ok(parsed) = webauthn::parse_authenticator_data(data) {
+        assert!(data.len() >= 37);
+        if let Some(attested) = parsed.attested {
+            let _ = webauthn::parse_cose_key(&attested.public_key);
+            assert!(!attested.credential_id.is_empty());
+        }
+    }
+    let _ = webauthn::attestation_auth_data(data);
+    if let Ok(key) = webauthn::parse_cose_key(data) {
+        assert!(!webauthn::verify_assertion(&key, data, b"{}", data));
+    }
+    let _ = webauthn::challenge_of(data);
+}
+
 /// Webhook URLs: never a panic, and an accepted URL is http(s) with a host and
 /// no credentials.
 pub fn webhook_url(data: &[u8]) {
@@ -468,6 +486,7 @@ pub const TARGETS: &[Target] = &[
     ("pkce", pkce),
     ("pre_auth_state", pre_auth_state),
     ("pwned_range", pwned_range),
+    ("webauthn", webauthn),
     ("webhook_url", webhook_url),
     ("redirect_uri", redirect_uri),
     ("totp_code", totp_code),

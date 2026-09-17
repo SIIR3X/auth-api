@@ -111,6 +111,12 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   redirects are not followed, and the connection goes to the checked address.
   `WEBHOOK_*`, `CLEANUP_WEBHOOK_DELIVERY_DAYS`, alert `AuthApiWebhooksFailing`;
   `--rotate-totp-keys` also re-encrypts webhook secrets.
+- Passkeys (WebAuthn): `/users/me/passkeys` registers, lists and removes them;
+  `POST /auth/passkeys/options` and `/auth/passkeys/sign-in` sign in with one,
+  without password or second-factor challenge. Discoverable credentials with
+  user verification, ES256/EdDSA/RS256, challenge single use, signature
+  counters checked against clones; the first passkey comes with recovery codes,
+  and a passkey counts as an administrator's second factor (`WEBAUTHN_*`).
 - `GET /users/me/export`: everything stored about the account as a JSON
   download, after a recent re-authentication, audited as `data_exported`.
 - Simulations of random account lifecycles checked against a model, a timing
