@@ -229,6 +229,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "auth-api-verifier"
+version = "0.1.0"
+dependencies = [
+ "auth-api",
+ "auth-api-verifier",
+ "axum",
+ "jsonwebtoken",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "testkit",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "uuid",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

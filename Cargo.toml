@@ -7,7 +7,7 @@ publish = false
 autotests = false
 
 [workspace]
-members = ["crates/testkit"]
+members = ["crates/testkit", "crates/verifier"]
 exclude = ["fuzz"]
 
 [dependencies]
