@@ -226,6 +226,9 @@ session it produced) and TOTP replay records 90 seconds; neither is configurable
 | `LOG_FORMAT` | `pretty` | `json` in production |
 | `METRICS_ENABLED` | `true` | Serve Prometheus metrics on a separate listener |
 | `METRICS_PORT` | `9464` | Metrics listener port; publish on loopback only |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP/HTTP collector base URL (`/v1/traces` is appended); unset, no trace is exported |
+| `OTEL_SERVICE_NAME` | `auth-api` | `service.name` of the traces |
+| `OTEL_TRACES_SAMPLER_ARG` | `0.1` | Share of new traces recorded, 0 to 1; a request with a sampled `traceparent` is always recorded |
 
 ## Production checks
 

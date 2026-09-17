@@ -19,7 +19,7 @@ use auth_api::{
         AuditConfig, CaptchaConfig, CleanupConfig, Config, CorsConfig, CryptoConfig,
         DatabaseConfig, DeviceAuthConfig, Environment, JwtConfig, LogConfig, LogFormat, MailConfig,
         MetricsConfig, NatsConfig, PwnedPasswordsConfig, RateLimitConfig, RedisConfig,
-        SecurityConfig, ServerConfig, SmtpConfig, WebAuthnConfig, WebhookConfig,
+        SecurityConfig, ServerConfig, SmtpConfig, TelemetryConfig, WebAuthnConfig, WebhookConfig,
     },
     handlers,
     state::AppState,
@@ -434,6 +434,11 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
         audit: AuditConfig {
             retention_months: 6,
             ip_retention_days: 90,
+        },
+        telemetry: TelemetryConfig {
+            otlp_endpoint: None,
+            service_name: "auth-api".into(),
+            sample_ratio: 0.1,
         },
         log: LogConfig {
             level: "error".into(),

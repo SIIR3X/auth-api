@@ -306,6 +306,18 @@ pub struct IdentityProviderConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct TelemetryConfig {
+    /// OTLP/HTTP collector base URL (`OTEL_EXPORTER_OTLP_ENDPOINT`, such as
+    /// `http://otel-collector:4318`). Unset: no trace is exported.
+    pub otlp_endpoint: Option<String>,
+    /// `OTEL_SERVICE_NAME`. Default: `auth-api`.
+    pub service_name: String,
+    /// Share of new traces recorded (`OTEL_TRACES_SAMPLER_ARG`, 0 to 1); a
+    /// request carrying a sampled `traceparent` is always recorded. Default: 0.1.
+    pub sample_ratio: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct WebAuthnConfig {
     /// Relying party id: the registrable domain passkeys are bound to. Default:
     /// the host of `FRONTEND_URL`.
@@ -397,6 +409,7 @@ pub struct Config {
     pub cleanup: CleanupConfig,
     pub audit: AuditConfig,
     pub log: LogConfig,
+    pub telemetry: TelemetryConfig,
     pub device_auth: DeviceAuthConfig,
     pub metrics: MetricsConfig,
 }
@@ -631,6 +644,18 @@ impl Config {
             audit: AuditConfig {
                 retention_months: vars.parse("AUDIT_LOG_RETENTION_MONTHS")?.unwrap_or(12),
                 ip_retention_days: vars.parse("AUDIT_IP_RETENTION_DAYS")?.unwrap_or(90),
+            },
+            telemetry: TelemetryConfig {
+                otlp_endpoint: vars
+                    .string("OTEL_EXPORTER_OTLP_ENDPOINT")
+                    .map(|url| url.trim_end_matches('/').to_owned()),
+                service_name: vars
+                    .string("OTEL_SERVICE_NAME")
+                    .unwrap_or_else(|| "auth-api".into()),
+                sample_ratio: vars
+                    .parse::<f64>("OTEL_TRACES_SAMPLER_ARG")?
+                    .unwrap_or(0.1)
+                    .clamp(0.0, 1.0),
             },
             log: LogConfig {
                 level: vars.string("LOG_LEVEL").unwrap_or_else(|| "info".into()),

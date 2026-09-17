@@ -6,6 +6,8 @@
 
 use std::time::Instant;
 
+use tracing::Instrument;
+
 use axum::{
     extract::{MatchedPath, Request},
     middleware::Next,
@@ -26,12 +28,15 @@ pub async fn layer(req: Request, next: Next) -> Response {
         .get(&X_REQUEST_ID)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+    let route = route.as_deref().unwrap_or("<unmatched>");
+    let span = crate::telemetry::request_span(&method, route, req.headers());
 
-    let res = next.run(req).await;
+    let res = next.run(req).instrument(span.clone()).await;
 
     let status = res.status().as_u16();
+    span.record("http.response.status_code", status);
+    let _entered = span.enter();
     let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let route = route.as_deref().unwrap_or("<unmatched>");
     let request_id = request_id.as_deref().unwrap_or("-");
 
     if matches!(route, "/health" | "/live" | "/ready") {

@@ -575,6 +575,11 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             retention_months: 6,
             ip_retention_days: 90,
         },
+        telemetry: TelemetryConfig {
+            otlp_endpoint: None,
+            service_name: "auth-api".into(),
+            sample_ratio: 0.1,
+        },
         log: LogConfig {
             level: "error".into(),
             format: LogFormat::Pretty,

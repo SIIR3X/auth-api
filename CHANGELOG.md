@@ -122,6 +122,9 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   (`/users/me/external-identities`) and never matched by email; the sign-in is
   bound to the browser that started it, the ID token verified against the
   provider's keys, and an enrolled second factor still applies.
+- OpenTelemetry traces over OTLP/HTTP (`OTEL_EXPORTER_OTLP_ENDPOINT`,
+  `OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER_ARG`): one server span per request,
+  named after its route template, continuing a W3C `traceparent`.
 - `GET /users/me/export`: everything stored about the account as a JSON
   download, after a recent re-authentication, audited as `data_exported`.
 - Simulations of random account lifecycles checked against a model, a timing

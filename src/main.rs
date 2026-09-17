@@ -27,7 +27,8 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env().expect("failed to load config");
 
-    init_tracing(&config.log);
+    let tracer_provider = auth_api::telemetry::tracer_provider(&config.telemetry)?;
+    init_tracing(&config.log, tracer_provider.as_ref());
     auth_api::utils::password::log_capacity(&config.crypto);
 
     // One-off command: re-encrypt all TOTP secrets with the new key.
@@ -174,6 +175,13 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => tracing::warn!("flushing NATS events timed out at shutdown"),
     }
 
+    // Phase 4: the last spans.
+    if let Some(provider) = tracer_provider
+        && let Err(e) = provider.shutdown()
+    {
+        tracing::warn!(error = %e, "traces not flushed at shutdown");
+    }
+
     tracing::info!("shutdown complete");
     Ok(())
 }
@@ -228,12 +236,17 @@ async fn run_healthcheck() -> i32 {
     }
 }
 
-fn init_tracing(cfg: &auth_api::config::LogConfig) {
+fn init_tracing(
+    cfg: &auth_api::config::LogConfig,
+    tracer_provider: Option<&opentelemetry_sdk::trace::SdkTracerProvider>,
+) {
     use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
     let filter = EnvFilter::try_new(&cfg.level).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let registry = tracing_subscriber::registry().with(filter);
+    let registry = tracing_subscriber::registry()
+        .with(filter)
+        .with(tracer_provider.map(auth_api::telemetry::layer));
 
     match cfg.format {
         LogFormat::Json => registry

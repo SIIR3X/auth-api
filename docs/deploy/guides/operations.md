@@ -227,6 +227,41 @@ ratio, Argon2 saturation, p95 latency, missing backups) and
 `deploy/monitoring/rules/infrastructure.yml` (probe, hosts, containers,
 dependencies, pools); installation in the [monitoring guide](monitoring.md).
 
+### Traces
+
+With `OTEL_EXPORTER_OTLP_ENDPOINT` set, each instance exports OpenTelemetry
+traces over OTLP/HTTP (`{endpoint}/v1/traces`) to any collector: the
+OpenTelemetry Collector, Grafana Alloy, Tempo or Jaeger accept it. Each request
+is a server span named after its route template (`POST /oauth/token`), with
+`http.request.method`, `http.route` and `http.response.status_code`; a request
+carrying a W3C `traceparent` continues the caller's trace, so a gateway or a
+client application sees auth-api inside its own traces. Paths, query strings,
+headers and bodies are never recorded.
+
+`OTEL_TRACES_SAMPLER_ARG` (default `0.1`) keeps one new trace in ten; a sampled
+`traceparent` is always followed. Spans are batched in memory and flushed at
+shutdown; an unreachable collector drops spans and never slows requests.
+
+A minimal collector on the monitoring host, forwarding to Tempo:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 10.0.0.3:4318
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlp/tempo]
+```
+
 ## 7. Release Bundle Verification
 
 `make release` writes a `SHA256SUMS` file into the bundle. Record its own

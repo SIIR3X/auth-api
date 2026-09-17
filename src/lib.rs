@@ -10,4 +10,5 @@ pub mod openapi;
 pub mod repositories;
 pub mod services;
 pub mod state;
+pub mod telemetry;
 pub mod utils;

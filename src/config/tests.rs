@@ -123,6 +123,11 @@ fn valid_config() -> Config {
             retention_months: 6,
             ip_retention_days: 90,
         },
+        telemetry: TelemetryConfig {
+            otlp_endpoint: None,
+            service_name: "auth-api".into(),
+            sample_ratio: 0.1,
+        },
         log: LogConfig {
             level: "info".into(),
             format: LogFormat::Pretty,
