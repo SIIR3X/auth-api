@@ -414,6 +414,8 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             rp_name: "Auth API".into(),
             origins: vec!["http://localhost:5173".into()],
         },
+        identity_providers: Vec::new(),
+        external_login_uri: "http://localhost:5173/external-login".into(),
         webhooks: WebhookConfig {
             allow_http: false,
             allow_private_networks: false,

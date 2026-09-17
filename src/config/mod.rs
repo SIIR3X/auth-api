@@ -279,6 +279,32 @@ pub struct PwnedPasswordsConfig {
     pub fail_open: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityProviderKind {
+    /// OpenID Connect, discovered from its issuer (Google is one).
+    Oidc,
+    /// GitHub's OAuth apps: no ID token, the user API names the person.
+    Github,
+}
+
+#[derive(Clone)]
+pub struct IdentityProviderConfig {
+    /// Identifier in routes (`/auth/external/{name}`): lower-case letters,
+    /// digits, `-` and `_`.
+    pub name: String,
+    pub kind: IdentityProviderKind,
+    pub display_name: String,
+    pub client_id: String,
+    pub client_secret: String,
+    /// OpenID Connect issuer, discovered at `{issuer}/.well-known/openid-configuration`.
+    pub issuer: String,
+    pub scopes: Vec<String>,
+    /// GitHub endpoints (overridable for GitHub Enterprise).
+    pub authorization_url: String,
+    pub token_url: String,
+    pub user_url: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct WebAuthnConfig {
     /// Relying party id: the registrable domain passkeys are bound to. Default:
@@ -363,6 +389,11 @@ pub struct Config {
     pub pwned_passwords: PwnedPasswordsConfig,
     pub webhooks: WebhookConfig,
     pub webauthn: WebAuthnConfig,
+    /// External identity providers, in `IDENTITY_PROVIDERS` order.
+    pub identity_providers: Vec<IdentityProviderConfig>,
+    /// Frontend page receiving the outcome of an external sign-in or link, as
+    /// `?code=`; default `{FRONTEND_URL}/external-login`.
+    pub external_login_uri: String,
     pub cleanup: CleanupConfig,
     pub audit: AuditConfig,
     pub log: LogConfig,
@@ -551,6 +582,16 @@ impl Config {
                     },
                 }
             },
+            identity_providers: identity_providers(&vars)?,
+            external_login_uri: vars.string("EXTERNAL_LOGIN_URI").unwrap_or_else(|| {
+                format!(
+                    "{}/external-login",
+                    vars.string("FRONTEND_URL")
+                        .or_else(|| vars.string("APP_PUBLIC_URL"))
+                        .unwrap_or_else(|| "http://localhost:3000".into())
+                        .trim_end_matches('/')
+                )
+            }),
             webhooks: WebhookConfig {
                 allow_http: vars.parse("WEBHOOK_ALLOW_HTTP")?.unwrap_or(!is_production),
                 allow_private_networks: vars
@@ -729,6 +770,88 @@ impl std::fmt::Debug for SmtpConfig {
             .field("from_address", &self.from_address)
             .finish()
     }
+}
+
+impl std::fmt::Debug for IdentityProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdentityProviderConfig")
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &REDACTED)
+            .field("issuer", &self.issuer)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `IDENTITY_PROVIDERS=google,github,corp`, each configured by `IDP_{NAME}_*`.
+fn identity_providers<L: Fn(&str) -> Option<String>>(
+    vars: &Env<L>,
+) -> Result<Vec<IdentityProviderConfig>, ConfigError> {
+    let mut providers: Vec<IdentityProviderConfig> = Vec::new();
+    for name in vars.csv("IDENTITY_PROVIDERS").unwrap_or_default() {
+        if !crate::domain::external_identity::is_valid_provider_name(&name)
+            || providers.iter().any(|p| p.name == name)
+        {
+            return Err(ConfigError::Invalid {
+                key: "IDENTITY_PROVIDERS".into(),
+                reason: format!("'{name}' is not a unique name of [a-z0-9_-]"),
+            });
+        }
+        let key = |suffix: &str| {
+            format!(
+                "IDP_{}_{suffix}",
+                name.to_ascii_uppercase().replace('-', "_")
+            )
+        };
+        let kind_name = vars.string(&key("KIND")).unwrap_or_else(|| name.clone());
+        let (kind, issuer, scopes) = match kind_name.as_str() {
+            "google" => (
+                IdentityProviderKind::Oidc,
+                "https://accounts.google.com".to_owned(),
+                "openid",
+            ),
+            "github" => (IdentityProviderKind::Github, String::new(), "read:user"),
+            "oidc" => (
+                IdentityProviderKind::Oidc,
+                vars.require(&key("ISSUER"))?,
+                "openid",
+            ),
+            other => {
+                return Err(ConfigError::Invalid {
+                    key: key("KIND"),
+                    reason: format!("'{other}' is not google, github or oidc"),
+                });
+            }
+        };
+        providers.push(IdentityProviderConfig {
+            display_name: vars
+                .string(&key("DISPLAY_NAME"))
+                .unwrap_or_else(|| name.clone()),
+            kind,
+            client_id: vars.require(&key("CLIENT_ID"))?,
+            client_secret: vars.require(&key("CLIENT_SECRET"))?,
+            issuer: vars
+                .string(&key("ISSUER"))
+                .unwrap_or(issuer)
+                .trim_end_matches('/')
+                .to_owned(),
+            scopes: vars
+                .csv(&key("SCOPES"))
+                .unwrap_or_else(|| vec![scopes.to_owned()]),
+            authorization_url: vars
+                .string(&key("AUTHORIZATION_URL"))
+                .unwrap_or_else(|| "https://github.com/login/oauth/authorize".into()),
+            token_url: vars
+                .string(&key("TOKEN_URL"))
+                .unwrap_or_else(|| "https://github.com/login/oauth/access_token".into()),
+            user_url: vars
+                .string(&key("USER_URL"))
+                .unwrap_or_else(|| "https://api.github.com/user".into()),
+            name,
+        });
+    }
+    Ok(providers)
 }
 
 impl std::fmt::Debug for CaptchaConfig {

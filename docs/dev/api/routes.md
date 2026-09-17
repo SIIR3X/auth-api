@@ -224,6 +224,39 @@ every other session and notifies the previous address.
 | DELETE | `/users/me/sessions` | JWT + reauth | General |
 | DELETE | `/users/me/sessions/{id}` | JWT + reauth | General |
 
+## External identities
+
+| Method | Route | Auth | Rate limit |
+|--------|-------|------|------------|
+| GET | `/auth/external/providers` | - | Strict |
+| POST | `/auth/external/{provider}/start` | - | Strict |
+| GET | `/auth/external/{provider}/callback` | - | Strict |
+| POST | `/auth/external/complete` | outcome code + binding | Strict |
+| GET | `/users/me/external-identities` | JWT | General |
+| POST | `/users/me/external-identities/{provider}/start` | JWT + reauth (recent only) | General |
+| POST | `/users/me/external-identities/complete` | JWT | General |
+| DELETE | `/users/me/external-identities/{id}` | JWT + reauth | General |
+
+Providers (`IDENTITY_PROVIDERS`): Google, GitHub, or any OpenID Connect issuer.
+
+1. `start` answers `{ "authorization_url", "binding" }`. Keep `binding` in the
+   browser (session storage) and send the browser to `authorization_url`
+   (authorization code with PKCE; state and nonce).
+2. The provider sends the browser back to `/auth/external/{provider}/callback`,
+   which exchanges the code, verifies the ID token (signature from the
+   provider's JWKS, issuer, audience, nonce, expiry) or reads the GitHub user,
+   then redirects (`303`) to `EXTERNAL_LOGIN_URI?code=...`.
+3. The frontend sends `{ "code", "binding" }` to `/auth/external/complete` (a
+   sign-in: tokens or the account's two-factor challenge, like `login`) or to
+   `/users/me/external-identities/complete` (a link: `201`). An outcome is used
+   once, within two minutes, by the browser holding its binding.
+
+An identity signs in only once linked by the signed-in owner of the account:
+nothing is matched or created from an email address
+(`409 external_identity_not_linked`). One identity links to one account, and an
+account links one identity per provider
+(`409 external_identity_already_linked`).
+
 ## Passkeys
 
 | Method | Route | Auth | Rate limit |

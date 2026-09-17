@@ -12,6 +12,7 @@ pub mod captcha;
 pub mod client_quota;
 pub mod device;
 pub mod email_change;
+pub mod external_identity;
 pub mod known_device;
 pub mod login_attempt;
 pub mod oauth;

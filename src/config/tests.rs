@@ -102,6 +102,8 @@ fn valid_config() -> Config {
             rp_name: "Auth API".into(),
             origins: vec!["https://auth.example.com".into()],
         },
+        identity_providers: Vec::new(),
+        external_login_uri: "https://auth.example.com/external-login".into(),
         webhooks: WebhookConfig {
             allow_http: false,
             allow_private_networks: false,
@@ -1032,4 +1034,41 @@ fn validate_rejects_production_passkey_origins_outside_the_relying_party() {
             "{origins:?}"
         );
     }
+}
+
+#[test]
+fn identity_providers_are_read_from_their_variables() {
+    let vars: std::collections::HashMap<&str, &str> = [
+        ("IDENTITY_PROVIDERS", "google,corp-sso,github"),
+        ("IDP_GOOGLE_CLIENT_ID", "google-id"),
+        ("IDP_GOOGLE_CLIENT_SECRET", "google-secret"),
+        ("IDP_CORP_SSO_KIND", "oidc"),
+        ("IDP_CORP_SSO_ISSUER", "https://sso.example.com/"),
+        ("IDP_CORP_SSO_CLIENT_ID", "corp"),
+        ("IDP_CORP_SSO_CLIENT_SECRET", "corp-secret"),
+        ("IDP_CORP_SSO_DISPLAY_NAME", "Corporate SSO"),
+        ("IDP_GITHUB_CLIENT_ID", "gh"),
+        ("IDP_GITHUB_CLIENT_SECRET", "gh-secret"),
+    ]
+    .into_iter()
+    .collect();
+    let env = super::env_vars::Env::new(|key: &str| vars.get(key).map(|v| (*v).to_owned()));
+    let providers = super::identity_providers(&env).unwrap();
+    assert_eq!(providers.len(), 3);
+    assert_eq!(providers[0].issuer, "https://accounts.google.com");
+    assert_eq!(providers[1].issuer, "https://sso.example.com");
+    assert_eq!(providers[1].display_name, "Corporate SSO");
+    assert_eq!(providers[2].kind, IdentityProviderKind::Github);
+    assert!(!format!("{:?}", providers[0]).contains("google-secret"));
+
+    let missing: std::collections::HashMap<&str, &str> =
+        [("IDENTITY_PROVIDERS", "corp"), ("IDP_CORP_KIND", "oidc")]
+            .into_iter()
+            .collect();
+    let env = super::env_vars::Env::new(|key: &str| missing.get(key).map(|v| (*v).to_owned()));
+    assert!(super::identity_providers(&env).is_err());
+    let bad: std::collections::HashMap<&str, &str> =
+        [("IDENTITY_PROVIDERS", "Bad Name")].into_iter().collect();
+    let env = super::env_vars::Env::new(|key: &str| bad.get(key).map(|v| (*v).to_owned()));
+    assert!(super::identity_providers(&env).is_err());
 }

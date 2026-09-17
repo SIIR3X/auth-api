@@ -117,6 +117,11 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   user verification, ES256/EdDSA/RS256, challenge single use, signature
   counters checked against clones; the first passkey comes with recovery codes,
   and a passkey counts as an administrator's second factor (`WEBAUTHN_*`).
+- Sign-in with Google, GitHub or any OpenID Connect provider
+  (`IDENTITY_PROVIDERS`, `IDP_*`): identities are linked by the signed-in owner
+  (`/users/me/external-identities`) and never matched by email; the sign-in is
+  bound to the browser that started it, the ID token verified against the
+  provider's keys, and an enrolled second factor still applies.
 - `GET /users/me/export`: everything stored about the account as a JSON
   download, after a recent re-authentication, audited as `data_exported`.
 - Simulations of random account lifecycles checked against a model, a timing

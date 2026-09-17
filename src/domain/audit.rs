@@ -60,6 +60,8 @@ pub enum AuditAction {
     ClientSecretRotated,
     PasskeyRegistered,
     PasskeyRemoved,
+    ExternalIdentityLinked,
+    ExternalIdentityUnlinked,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

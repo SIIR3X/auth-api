@@ -239,6 +239,12 @@ impl IntoResponse for AppError {
                     }
                     "default_role" => "The role given to every new account cannot be deleted.",
                     "too_many_tokens" => "Revoke a personal access token before creating another.",
+                    "external_identity_not_linked" => {
+                        "No account is linked to this identity: sign in, then link it from the account settings."
+                    }
+                    "external_identity_already_linked" => {
+                        "This identity is already linked to an account."
+                    }
                     _ => "A resource with this value already exists.",
                 };
                 (StatusCode::CONFLICT, ErrorBody::new(code, message))

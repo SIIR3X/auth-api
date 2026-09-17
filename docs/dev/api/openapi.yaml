@@ -1880,6 +1880,198 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
       security:
       - bearer: []
+  /auth/external/complete:
+    post:
+      tags:
+      - external-identities
+      operationId: complete_sign_in
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalCompleteRequest'
+        required: true
+      responses:
+        '200':
+          description: Tokens, or the account's two-factor challenge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Unknown, used or foreign code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Account locked, suspended or inactive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`external_identity_not_linked`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: The provider could not identify the person
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /auth/external/providers:
+    get:
+      tags:
+      - external-identities
+      operationId: providers
+      responses:
+        '200':
+          description: Configured identity providers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IdentityProviderResponse'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /auth/external/{provider}/callback:
+    get:
+      tags:
+      - external-identities
+      operationId: callback
+      parameters:
+      - name: provider
+        in: path
+        description: Provider name
+        required: true
+        schema:
+          type: string
+      responses:
+        '303':
+          description: To `EXTERNAL_LOGIN_URI` with `code`, or `error` when the request matches no pending sign-in
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /auth/external/{provider}/start:
+    post:
+      tags:
+      - external-identities
+      operationId: start_sign_in
+      parameters:
+      - name: provider
+        in: path
+        description: Provider name
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Where to send the browser to sign in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalStartResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: The provider's metadata is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /auth/forgot-password:
     post:
       tags:
@@ -4066,6 +4258,250 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
       security:
       - bearer: []
+  /users/me/external-identities:
+    get:
+      tags:
+      - external-identities
+      operationId: list
+      responses:
+        '200':
+          description: Identities linked to the account
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExternalIdentityResponse'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/external-identities/complete:
+    post:
+      tags:
+      - external-identities
+      operationId: complete_link
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalCompleteRequest'
+        required: true
+      responses:
+        '201':
+          description: Identity linked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalIdentityResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token, or an unknown, used or foreign code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`external_identity_already_linked`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: The provider could not identify the person
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/external-identities/{id}:
+    delete:
+      tags:
+      - external-identities
+      operationId: unlink
+      parameters:
+      - name: id
+        in: path
+        description: Identity id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/CurrentPasswordRequest'
+      responses:
+        '204':
+          description: Identity unlinked
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such identity on this account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Body larger than 64 KB
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '415':
+          description: Body is not JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
+  /users/me/external-identities/{provider}/start:
+    post:
+      tags:
+      - external-identities
+      operationId: start_link
+      parameters:
+      - name: provider
+        in: path
+        description: Provider name
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Where to send the browser to link the identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalStartResponse'
+        '400':
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No such provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: Rate limited; see Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: A dependency is unavailable or the request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security:
+      - bearer: []
   /users/me/locale:
     patch:
       tags:
@@ -6122,6 +6558,57 @@ components:
         message:
           type: string
           description: Human-readable explanation; may change between versions.
+    ExternalCompleteRequest:
+      type: object
+      required:
+      - code
+      - binding
+      properties:
+        binding:
+          type: string
+        code:
+          type: string
+          description: '`code` given to `EXTERNAL_LOGIN_URI` after the provider.'
+        device_name:
+          type:
+          - string
+          - 'null'
+        remember_me:
+          type:
+          - boolean
+          - 'null'
+    ExternalIdentityResponse:
+      type: object
+      required:
+      - id
+      - provider
+      - created_at
+      properties:
+        created_at:
+          type: integer
+          format: int64
+        id:
+          type: string
+          format: uuid
+        last_used_at:
+          type:
+          - integer
+          - 'null'
+          format: int64
+        provider:
+          type: string
+    ExternalStartResponse:
+      type: object
+      required:
+      - authorization_url
+      - binding
+      properties:
+        authorization_url:
+          type: string
+          description: Send the browser there.
+        binding:
+          type: string
+          description: Keep in the browser (session storage) and present at completion.
     FlowTokenResponse:
       type: object
       required:
@@ -6139,6 +6626,16 @@ components:
           - string
           - 'null'
         email:
+          type: string
+    IdentityProviderResponse:
+      type: object
+      required:
+      - name
+      - display_name
+      properties:
+        display_name:
+          type: string
+        name:
           type: string
     Introspection:
       type: object
@@ -7064,6 +7561,8 @@ tags:
   description: Active sessions
 - name: two-factor
   description: Second factors and recovery codes
+- name: external-identities
+  description: Signing in with Google, GitHub or an OpenID Connect provider, and linking them to an account
 - name: passkeys
   description: 'Passkeys (WebAuthn): registering them and signing in with them'
 - name: admin

@@ -161,6 +161,22 @@ Registered clients (device and authorization code flows) live in the database
 and are managed with `auth-api --register-client` (see [Commands](commands.md))
 or `PUT /admin/clients/{client_id}`.
 
+### External identity providers
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `IDENTITY_PROVIDERS` | none | Comma-separated provider names (`google,github,corp`) |
+| `IDP_{NAME}_KIND` | the name | `google`, `github` or `oidc` |
+| `IDP_{NAME}_CLIENT_ID`, `IDP_{NAME}_CLIENT_SECRET` | required | Credentials of auth-api at the provider; register the redirect URI `{APP_PUBLIC_URL}/auth/external/{name}/callback` |
+| `IDP_{NAME}_ISSUER` | Google's for `google` | OpenID Connect issuer (required for `oidc`), discovered at `/.well-known/openid-configuration` |
+| `IDP_{NAME}_DISPLAY_NAME` | the name | Label for the sign-in button |
+| `IDP_{NAME}_SCOPES` | `openid` / `read:user` | Comma-separated scopes |
+| `IDP_{NAME}_AUTHORIZATION_URL`, `_TOKEN_URL`, `_USER_URL` | github.com | GitHub Enterprise endpoints |
+| `EXTERNAL_LOGIN_URI` | `{FRONTEND_URL}/external-login` | Frontend page receiving `?code=` after the provider |
+
+In production the issuers, GitHub endpoints and `EXTERNAL_LOGIN_URI` must be
+HTTPS.
+
 ### Passkeys
 
 | Variable | Default | Description |

@@ -192,6 +192,8 @@ pub(crate) fn action_name(action: &AuditAction) -> &'static str {
         A::ClientSecretRotated => "client_secret_rotated",
         A::PasskeyRegistered => "passkey_registered",
         A::PasskeyRemoved => "passkey_removed",
+        A::ExternalIdentityLinked => "external_identity_linked",
+        A::ExternalIdentityUnlinked => "external_identity_unlinked",
     }
 }
 

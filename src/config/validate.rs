@@ -77,6 +77,24 @@ impl Config {
                 });
             }
 
+            validate_https_url("EXTERNAL_LOGIN_URI", &self.external_login_uri)?;
+            for provider in &self.identity_providers {
+                let urls = match provider.kind {
+                    crate::config::IdentityProviderKind::Oidc => vec![("ISSUER", &provider.issuer)],
+                    crate::config::IdentityProviderKind::Github => vec![
+                        ("AUTHORIZATION_URL", &provider.authorization_url),
+                        ("TOKEN_URL", &provider.token_url),
+                        ("USER_URL", &provider.user_url),
+                    ],
+                };
+                for (suffix, url) in urls {
+                    validate_https_url(
+                        &format!("IDP_{}_{suffix}", provider.name.to_ascii_uppercase()),
+                        url,
+                    )?;
+                }
+            }
+
             if self.webhooks.allow_http {
                 return Err(ConfigError::Invalid {
                     key: "WEBHOOK_ALLOW_HTTP".into(),

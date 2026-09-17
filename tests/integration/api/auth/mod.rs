@@ -1,5 +1,6 @@
 mod captcha;
 mod events;
+mod external;
 mod lockout;
 mod login;
 mod magic_link;

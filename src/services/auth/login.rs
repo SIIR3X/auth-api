@@ -209,7 +209,7 @@ pub async fn login(
 /// The account proved its first factor (password, sign-in link): pause for the
 /// second factor when one is enrolled, sign in otherwise.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn first_factor_proven(
+pub(crate) async fn first_factor_proven(
     state: &AppState,
     user: &User,
     identifier: Option<&str>,

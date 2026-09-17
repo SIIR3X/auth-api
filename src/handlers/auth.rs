@@ -236,7 +236,7 @@ pub async fn login(
     Ok(Json(login_response(result)))
 }
 
-fn login_response(result: auth_svc::LoginResult) -> LoginResponse {
+pub(crate) fn login_response(result: auth_svc::LoginResult) -> LoginResponse {
     match result {
         auth_svc::LoginResult::Complete(tokens) => LoginResponse::Complete {
             access_token: tokens.access_token,

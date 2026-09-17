@@ -29,6 +29,7 @@ use crate::{
 pub mod admin;
 pub mod audit;
 pub mod auth;
+pub mod external_identity;
 pub mod extractors;
 pub mod oauth;
 pub mod passkey;
@@ -356,6 +357,19 @@ fn auth_router() -> Router<AppState> {
         .route("/forgot-password", post(auth::forgot_password))
         .route("/magic-link", post(auth::request_magic_link))
         .route("/magic-link/complete", post(auth::complete_magic_link))
+        .route("/external/providers", get(external_identity::providers))
+        .route(
+            "/external/complete",
+            post(external_identity::complete_sign_in),
+        )
+        .route(
+            "/external/{provider}/start",
+            post(external_identity::start_sign_in),
+        )
+        .route(
+            "/external/{provider}/callback",
+            get(external_identity::callback),
+        )
         .route("/passkeys/options", post(passkey::authentication_options))
         .route("/passkeys/sign-in", post(passkey::sign_in))
         .route(
@@ -486,6 +500,20 @@ fn me_router() -> Router<AppState> {
         .route("/password", patch(user::change_password))
         .route("/locale", patch(user::change_locale))
         .route("/", delete(user::delete_account))
+        // External identities
+        .route("/external-identities", get(external_identity::list))
+        .route(
+            "/external-identities/complete",
+            post(external_identity::complete_link),
+        )
+        .route(
+            "/external-identities/{provider}/start",
+            post(external_identity::start_link),
+        )
+        .route(
+            "/external-identities/{id}",
+            delete(external_identity::unlink),
+        )
         // Passkeys
         .route("/passkeys", get(passkey::list))
         .route("/passkeys", post(passkey::register))

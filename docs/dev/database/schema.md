@@ -77,6 +77,11 @@ endpoint and event (`event_id`, `event_name`, `payload`, `occurred_at`),
 recorded with the event; `attempts`, `next_attempt_at`, `delivered_at` or
 `failed_at`, `last_status`, `last_error`.
 
+### external_identities
+
+Identities at external providers linked to an account: `provider`, `subject`
+(unique per provider), `last_used_at`; one per provider per account.
+
 ### passkeys
 
 WebAuthn credentials: `credential_id` (unique), `public_key` (COSE),

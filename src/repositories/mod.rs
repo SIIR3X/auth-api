@@ -10,6 +10,7 @@ pub mod client_quota;
 pub mod email_2fa;
 pub mod event_outbox;
 pub mod export;
+pub mod external_identity;
 pub mod known_device;
 pub mod login_attempt;
 pub mod passkey;
