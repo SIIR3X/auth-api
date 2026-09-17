@@ -122,6 +122,9 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   (`/users/me/external-identities`) and never matched by email; the sign-in is
   bound to the browser that started it, the ID token verified against the
   provider's keys, and an enrolled second factor still applies.
+- `DATABASE_READ_URL`: an optional read replica for security histories, the
+  admin audit log, account search and webhook delivery lists; sizing profile
+  XL (three API hosts, 450 sign-ins per second, extrapolated).
 - High availability, self-hosted: `docs/deploy/guides/high-availability.md`
   (keepalived and nginx, Patroni behind HAProxy, Redis Sentinel, a NATS cluster,
   failover drills). `NATS_URL` accepts the servers of a cluster and

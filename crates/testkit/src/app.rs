@@ -474,6 +474,7 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             max_connections: 10,
             min_connections: 1,
             acquire_timeout_secs: 30,
+            read_url: None,
         },
         redis: RedisConfig {
             url: redis_url.into(),

@@ -40,7 +40,7 @@ pub async fn search(
     let pattern = query
         .filter(|q| !q.trim().is_empty())
         .map(user_domain::prefix_pattern);
-    Ok(user_repo::search(&state.db, pattern.as_deref(), status, before, limit).await?)
+    Ok(user_repo::search(&state.db_read, pattern.as_deref(), status, before, limit).await?)
 }
 
 pub async fn detail(state: &AppState, user_id: Uuid) -> Result<UserDetail, AppError> {

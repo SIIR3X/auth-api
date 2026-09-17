@@ -58,6 +58,7 @@ before `docker compose` runs (see [Secrets](../../deploy/api/secrets.md)).
 | `DB_MAX_CONNECTIONS` | `20` | Pool size |
 | `DB_MIN_CONNECTIONS` | `2` | Connections kept open |
 | `DB_ACQUIRE_TIMEOUT_SECS` | `5` | Wait for a pooled connection |
+| `DATABASE_READ_URL` | unset | Read replica for lag-tolerant reads (security histories, admin audit log and account search, webhook deliveries); same pool settings. Unset: the primary |
 
 ### Redis
 

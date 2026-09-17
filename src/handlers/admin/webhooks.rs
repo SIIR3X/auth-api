@@ -255,7 +255,7 @@ pub async fn deliveries(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<WebhookDeliveryResponse>>, AppError> {
     admin.require(&state, "webhooks:manage").await?;
-    let deliveries = webhook_repo::find_recent_deliveries(&state.db, id, 100).await?;
+    let deliveries = webhook_repo::find_recent_deliveries(&state.db_read, id, 100).await?;
     Ok(Json(
         deliveries.into_iter().map(delivery_response).collect(),
     ))

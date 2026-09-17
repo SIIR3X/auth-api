@@ -24,6 +24,7 @@ fn valid_config() -> Config {
             max_connections: 10,
             min_connections: 1,
             acquire_timeout_secs: 5,
+            read_url: None,
         },
         redis: RedisConfig {
             url: "redis://127.0.0.1:6379".into(),

@@ -78,9 +78,9 @@ if selected static; then
       ENCRYPTION_KEY=x SMTP_USERNAME=x SMTP_PASSWORD=x CAPTCHA_SECRET=x NATS_URL=x "$@"
   }
 
-  for profile in s m l; do
+  for profile in s m l xl; do
     files=(-f docker-compose.api.yml)
-    [ "$profile" = l ] && files+=(-f docker-compose.api.l.yml)
+    case "$profile" in l | xl) files+=(-f docker-compose.api.l.yml) ;; esac
     run "compose: API, profile ${profile^^}" \
       compose_env docker compose --env-file "deploy/profiles/$profile.env" "${files[@]}" config -q
   done

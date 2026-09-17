@@ -76,7 +76,7 @@ pub async fn list(
     let before = params.cursor.as_deref().map(decode_cursor).transpose()?;
 
     let rows = audit_repo::find_page(
-        &state.db,
+        &state.db_read,
         params.user_id,
         params.action.as_deref(),
         before,

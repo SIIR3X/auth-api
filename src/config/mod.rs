@@ -71,6 +71,10 @@ pub struct DatabaseConfig {
     /// an exhausted pool must answer fast and show in the metrics, not wait out
     /// the 30-second request timeout.
     pub acquire_timeout_secs: u64,
+    /// A read replica (`DATABASE_READ_URL`) for reads that tolerate a few
+    /// seconds of lag: security histories, the admin audit log and account
+    /// search. Unset: they read the primary.
+    pub read_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -466,6 +470,7 @@ impl Config {
                 max_connections: vars.parse("DB_MAX_CONNECTIONS")?.unwrap_or(20),
                 min_connections: vars.parse("DB_MIN_CONNECTIONS")?.unwrap_or(2),
                 acquire_timeout_secs: vars.parse("DB_ACQUIRE_TIMEOUT_SECS")?.unwrap_or(5),
+                read_url: vars.string("DATABASE_READ_URL"),
             },
             redis: RedisConfig {
                 url: vars.require("REDIS_URL")?,
@@ -729,6 +734,7 @@ impl std::fmt::Debug for DatabaseConfig {
             .field("max_connections", &self.max_connections)
             .field("min_connections", &self.min_connections)
             .field("acquire_timeout_secs", &self.acquire_timeout_secs)
+            .field("read_url", &self.read_url.as_ref().map(|_| REDACTED))
             .finish()
     }
 }

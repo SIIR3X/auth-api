@@ -56,6 +56,9 @@ pub enum AppStateError {
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// Reads that tolerate replication lag: the replica of `DATABASE_READ_URL`,
+    /// or the primary pool itself.
+    pub db_read: PgPool,
     pub redis: RedisPool,
     pub nats: async_nats::Client,
     pub clock: Arc<dyn Clock>,
@@ -91,7 +94,17 @@ impl AppState {
     pub async fn from_config(mut config: Config) -> Result<Self, AppStateError> {
         prepare_config(&mut config)?;
         let db = build_pg_pool(&config.database).await?;
-        Self::assemble(config, db).await
+        let db_read = match config.database.read_url.as_deref() {
+            Some(url) => {
+                build_pg_pool(&DatabaseConfig {
+                    url: url.to_owned(),
+                    ..config.database.clone()
+                })
+                .await?
+            }
+            None => db.clone(),
+        };
+        Self::assemble(config, db, db_read).await
     }
 
     /// Build the application state with an existing database pool.
@@ -101,11 +114,12 @@ impl AppState {
         db: PgPool,
     ) -> Result<Self, AppStateError> {
         prepare_config(&mut config)?;
-        Self::assemble(config, db).await
+        let db_read = db.clone();
+        Self::assemble(config, db, db_read).await
     }
 
     /// Connect every remaining dependency around a prepared, validated config.
-    async fn assemble(config: Config, db: PgPool) -> Result<Self, AppStateError> {
+    async fn assemble(config: Config, db: PgPool, db_read: PgPool) -> Result<Self, AppStateError> {
         let redis = redis_pool::build(&config.redis).map_err(AppStateError::Redis)?;
         crate::services::events::set_stream_replicas(config.nats.stream_replicas);
         let nats = connect_nats(&config.nats.url).await?;
@@ -139,6 +153,7 @@ impl AppState {
 
         Ok(Self {
             db,
+            db_read,
             redis,
             nats,
             clock: Arc::new(SystemClock),

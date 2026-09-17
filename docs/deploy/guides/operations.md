@@ -351,23 +351,37 @@ mixed traffic of profile M at 1 million accounts (291 requests per second):
 - **Restore** of the 8.8 GiB database (2.4 GiB compressed dump): 134 s to dump,
   131 s to restore in one transaction.
 
-These rules give the three profiles shipped in `deploy/profiles/`, passed to
-compose with `--env-file`:
+These rules give the profiles shipped in `deploy/profiles/`, passed to compose
+with `--env-file`:
 
-| | S | M | L |
-|---|---|---|---|
-| Accounts | up to 100 000 | up to 1 million | up to 5 million |
-| Peak sign-ins per second | 10 | 56 | 150 |
-| API instances x CPU | 2 x 1 | 2 x 3 | 4 x 4 (`docker-compose.api.l.yml`) |
-| Memory per instance (limit / reservation) | 384 / 192 MiB | 512 / 256 MiB | 512 / 256 MiB |
-| `DB_MAX_CONNECTIONS` per instance | 8 | 12 | 16 |
-| NATS (CPU / memory) | 0.25 / 128 MiB | 0.5 / 192 MiB | 1 / 256 MiB |
-| API VPS (vCPU / RAM) | 3 / 2 GB | 8 / 4 GB | 20 / 8 GB |
-| DB VPS (vCPU / RAM), PostgreSQL memory | 2 / 4 GB, 2 GB | 4 / 16 GB, 8 GB | 8 / 48 GB, 32 GB |
+| | S | M | L | XL |
+|---|---|---|---|---|
+| Accounts | up to 100 000 | up to 1 million | up to 5 million | up to 20 million |
+| Peak sign-ins per second | 10 | 56 | 150 | 450 |
+| API instances x CPU | 2 x 1 | 2 x 3 | 4 x 4 (`docker-compose.api.l.yml`) | 12 x 4: three hosts of profile L |
+| Memory per instance (limit / reservation) | 384 / 192 MiB | 512 / 256 MiB | 512 / 256 MiB | 512 / 256 MiB |
+| `DB_MAX_CONNECTIONS` per instance | 8 | 12 | 16 | 12, and 12 on the replica |
+| NATS (CPU / memory) | 0.25 / 128 MiB | 0.5 / 192 MiB | 1 / 256 MiB | 1 / 256 MiB on each of three servers |
+| API hosts (vCPU / RAM) | 1 x 3 / 2 GB | 1 x 8 / 4 GB | 1 x 20 / 8 GB | 3 x 20 / 8 GB |
+| Database hosts (vCPU / RAM), PostgreSQL memory | 1 x 2 / 4 GB, 2 GB | 1 x 4 / 16 GB, 8 GB | 1 x 8 / 48 GB, 32 GB | 3 x 16 / 192 GB, 128 GB |
 
 The API VPS keeps about 600 MiB beside the containers for nginx and the
-system. Beyond profile L, PostgreSQL writes become the limit (connection
-pooling, read replicas, shorter retention), which these profiles do not cover.
+system. Profiles S to L were validated by `make sizing`; XL is extrapolated from
+the measured rate of about 11 sign-ins per CPU and has not been measured.
+
+**Beyond profile L** PostgreSQL becomes the limit:
+
+- run it highly available (the [high availability guide](high-availability.md)),
+  which XL assumes;
+- set `DATABASE_READ_URL` to an HAProxy port routing to the replicas (falling
+  back to the primary): security histories, the admin audit log, account search
+  and webhook delivery lists read there, a few seconds behind at most;
+  everything a user just changed is read from the primary;
+- 12 instances with 12 connections each need `max_connections` of 200 on the
+  primary and on each replica: keep `DB_MAX_CONNECTIONS` at 12 or put PgBouncer
+  (transaction pooling) in front of PostgreSQL;
+- shorten `AUDIT_LOG_RETENTION_MONTHS` and `CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS`
+  if the audit and sign-in tables outgrow memory.
 
 Run `make sizing` again after changing the Argon2 parameters, the profiles or
 a hot path, and watch the capacity alerts on the target machine.

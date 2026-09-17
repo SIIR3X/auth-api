@@ -75,9 +75,10 @@ pub async fn list(
     let limit = page_limit(params.limit);
     let before = params.cursor.as_deref().map(decode_cursor).transpose()?;
 
-    let rows = audit_repo::find_page_by_user(&state.db, auth.user_id, before, rows_to_fetch(limit))
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let rows =
+        audit_repo::find_page_by_user(&state.db_read, auth.user_id, before, rows_to_fetch(limit))
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
 
     let (rows, more) = split_page(rows, limit);
     let next_cursor = if more {

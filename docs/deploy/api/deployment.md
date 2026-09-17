@@ -83,7 +83,7 @@ values:
 mkdir -p /srv/auth-api && cd /srv/auth-api
 cp releases/auth-api-X.Y.Z/docker-compose.api.yml releases/auth-api-X.Y.Z/config.prod.env \
    releases/auth-api-X.Y.Z/nats.conf releases/auth-api-X.Y.Z/scripts/rolling-update.sh .
-cp releases/auth-api-X.Y.Z/deploy/profiles/m.env profile.env   # s.env, m.env or l.env
+cp releases/auth-api-X.Y.Z/deploy/profiles/m.env profile.env   # s.env, m.env, l.env or xl.env
 # Profile L: also copy docker-compose.api.l.yml
 nano config.prod.env
 ```

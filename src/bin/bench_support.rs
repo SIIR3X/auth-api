@@ -332,6 +332,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             max_connections: 32,
             min_connections: 4,
             acquire_timeout_secs: 5,
+            read_url: None,
         },
         redis: RedisConfig {
             url: redis_url.into(),
