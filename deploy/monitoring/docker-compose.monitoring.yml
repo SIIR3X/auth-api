@@ -9,7 +9,7 @@
 
 services:
   prometheus:
-    image: prom/prometheus:v3.5.0
+    image: prom/prometheus:v3.14.0
     restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -32,7 +32,7 @@ services:
         limits: { cpus: "1.0", memory: 1G }
 
   alertmanager:
-    image: prom/alertmanager:v0.28.1
+    image: prom/alertmanager:v0.34.1
     restart: unless-stopped
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
@@ -52,7 +52,7 @@ services:
         limits: { cpus: "0.25", memory: 128M }
 
   blackbox:
-    image: prom/blackbox-exporter:v0.27.0
+    image: prom/blackbox-exporter:v0.28.0
     restart: unless-stopped
     command:
       - --config.file=/etc/blackbox/blackbox.yml
