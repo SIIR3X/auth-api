@@ -6,7 +6,6 @@
 
 use serde_json::{Value, json};
 use testkit::logs::LogCapture;
-use totp_rs::{Algorithm, Secret, TOTP};
 
 use crate::common::{app::TestApp, fixtures};
 
@@ -112,14 +111,6 @@ async fn account_flows_never_log_their_secrets() {
         .unwrap();
     let secret = setup["base32_secret"].as_str().unwrap().to_owned();
     secrets.push(("the TOTP secret", secret.clone()));
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        6,
-        1,
-        30,
-        Secret::Encoded(secret).to_bytes().unwrap(),
-    )
-    .unwrap();
     let verified: Value = app
         .post_auth(
             &format!(
@@ -127,7 +118,7 @@ async fn account_flows_never_log_their_secrets() {
                 setup["method_id"].as_str().unwrap()
             ),
             &access_token,
-            &json!({ "code": totp.generate_current().unwrap() }),
+            &json!({ "code": auth_api::utils::totp::current_code(&secret).unwrap() }),
         )
         .await
         .json()

@@ -7,7 +7,6 @@ use auth_api::{
 };
 use criterion::{Criterion, SamplingMode, criterion_group, criterion_main};
 use time::OffsetDateTime;
-use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 
 fn jwt_benches(c: &mut Criterion) {
@@ -96,10 +95,6 @@ fn totp_benches(c: &mut Criterion) {
     let encrypted = keyring
         .encrypt(&secret)
         .expect("failed to encrypt benchmark secret");
-    let secret_bytes = Secret::Encoded(secret.clone())
-        .to_bytes()
-        .expect("valid secret bytes");
-    let totp_ctx = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes).expect("valid totp");
 
     group.bench_function("generate_secret", |b| b.iter(totp::generate_secret));
     group.bench_function("build_qr_uri", |b| {
@@ -113,7 +108,7 @@ fn totp_benches(c: &mut Criterion) {
     });
     group.bench_function("generate_and_verify_code", |b| {
         b.iter(|| {
-            let code = totp_ctx.generate_current().expect("code");
+            let code = totp::current_code(&secret).expect("code");
             totp::verify_code(
                 black_box(&encrypted),
                 black_box(&code),

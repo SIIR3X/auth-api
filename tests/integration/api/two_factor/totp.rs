@@ -10,26 +10,17 @@ use serde_json::Value;
 
 /// Generate the current valid TOTP code for a base32-encoded secret.
 fn generate_totp_code(base32_secret: &str) -> String {
-    use totp_rs::{Algorithm, Secret, TOTP};
-    let bytes = Secret::Encoded(base32_secret.to_owned())
-        .to_bytes()
-        .expect("invalid base32 secret from setup response");
-    let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, bytes).expect("TOTP construction failed");
-    totp.generate_current()
-        .expect("failed to get current TOTP code")
+    auth_api::utils::totp::current_code(base32_secret)
+        .expect("invalid base32 secret from setup response")
 }
 
 /// The code `step_offset` 30-second steps away from now: still accepted within
 /// the skew, and distinct from the code that confirmed the method, which the
 /// replay table refuses.
 fn generate_totp_code_at(base32_secret: &str, step_offset: i64) -> String {
-    use totp_rs::{Algorithm, Secret, TOTP};
-    let bytes = Secret::Encoded(base32_secret.to_owned())
-        .to_bytes()
-        .expect("invalid base32 secret from setup response");
-    let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, bytes).expect("TOTP construction failed");
     let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
-    totp.generate(now.saturating_add_signed(step_offset * 30))
+    auth_api::utils::totp::code_at(base32_secret, now.saturating_add_signed(step_offset * 30))
+        .expect("invalid base32 secret from setup response")
 }
 
 /// Set up TOTP for a user: calls setup, then verifies with a real code.

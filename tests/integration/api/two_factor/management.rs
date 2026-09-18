@@ -16,14 +16,7 @@ use crate::common::{
 };
 
 fn totp_code(base32_secret: &str) -> String {
-    use totp_rs::{Algorithm, Secret, TOTP};
-    let bytes = Secret::Encoded(base32_secret.to_owned())
-        .to_bytes()
-        .unwrap();
-    TOTP::new(Algorithm::SHA1, 6, 1, 30, bytes)
-        .unwrap()
-        .generate_current()
-        .unwrap()
+    auth_api::utils::totp::current_code(base32_secret).unwrap()
 }
 
 async fn enable_totp(app: &TestApp, user: &AuthenticatedUser) -> String {

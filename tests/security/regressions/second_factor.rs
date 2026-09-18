@@ -16,13 +16,9 @@ use crate::common::{
 };
 
 fn totp_code(base32_secret: &str, step_offset: i64) -> String {
-    use totp_rs::{Algorithm, Secret, TOTP};
-    let bytes = Secret::Encoded(base32_secret.to_owned())
-        .to_bytes()
-        .unwrap();
-    let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, bytes).unwrap();
     let now = time::OffsetDateTime::now_utc().unix_timestamp() as u64;
-    totp.generate(now.saturating_add_signed(step_offset * 30))
+    auth_api::utils::totp::code_at(base32_secret, now.saturating_add_signed(step_offset * 30))
+        .unwrap()
 }
 
 /// A 6-digit code that is not valid anywhere in the accepted window.

@@ -16,7 +16,6 @@ use deadpool_redis::redis::AsyncCommands;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 
 use auth_api::{
@@ -2412,12 +2411,7 @@ async fn clear_totp_reuse_key(state: &AppState, user_id: Uuid, code: &str) {
 }
 
 fn current_totp_code(base32_secret: &str) -> Result<String> {
-    let secret_bytes = Secret::Encoded(base32_secret.to_string())
-        .to_bytes()
-        .context("invalid base32 TOTP secret")?;
-    let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes)
-        .context("failed to build TOTP generator")?;
-    totp.generate_current()
+    auth_api::utils::totp::current_code(base32_secret)
         .context("failed to generate current TOTP code")
 }
 
