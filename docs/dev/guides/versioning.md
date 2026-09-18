@@ -56,8 +56,9 @@ A part of the contract to be removed is first deprecated in a minor release:
 ## 4. Upgrades
 
 - Migrations run forward only and are frozen once released
-  (`migrations/SHA256SUMS`). Every release migrates from any earlier 1.x
-  release: skipping versions is supported, one release at a time is not needed.
+  (`migrations/SHA256SUMS`). Every release migrates from any earlier release
+  of the same major version, and from the last release of the previous one:
+  one release at a time is not needed.
 - A minor or patch upgrade is a rolling update: instances of the previous and
   the new release run side by side during it. A release never needs a
   migration that the previous release cannot run against, within a major

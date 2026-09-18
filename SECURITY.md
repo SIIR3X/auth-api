@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| Latest 1.x minor release | Yes |
-| Previous 1.x minor release | Security fixes for 90 days after the next minor release |
+| Latest 2.x minor release | Yes |
+| Previous 2.x minor release | Security fixes for 90 days after the next minor release |
 | Earlier releases | No |
 
 See the [versioning policy](docs/dev/guides/versioning.md).

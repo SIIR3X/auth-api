@@ -1,12 +1,19 @@
 # Changelog
 
-All notable changes. Versions follow [Semantic Versioning](https://semver.org/);
-before 1.0.0, a minor version may break compatibility.
+All notable changes. Versions follow [Semantic Versioning](https://semver.org/)
+as described in the [versioning policy](docs/dev/guides/versioning.md).
 
 ## [Unreleased]
 
-A hardening, performance and cleanup release. It changes the HTTP contract and
-the configuration: read **Breaking changes** and **Upgrading** before deploying.
+## [2.0.0] - 2026-09-16
+
+The release after 1.1.3, and the first under the
+[versioning policy](docs/dev/guides/versioning.md): from here on the contract
+only breaks in a major release. Compared with 1.1.3 it hardens every flow, adds
+administration, standard OAuth 2.1 and OpenID Connect, passkeys, external
+identity providers, webhooks, telemetry and high availability, and changes the
+HTTP contract and the configuration: read **Breaking changes** and
+**Upgrading** before deploying over 1.1.3.
 
 ### Breaking changes
 
@@ -457,3 +464,16 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
    with `auth-api --register-client`.
 5. Update client applications: re-authenticate before sensitive actions, and
    stop reading the account from the registration response.
+6. Move client applications to the `/oauth` endpoints (**Breaking changes**),
+   give confidential clients their secret
+   (`POST /admin/clients/{client_id}/secret`), and set `OAUTH_CONSENT_URI` if
+   the consent page is not `{FRONTEND_URL}/authorize`.
+7. Appoint the first administrator with
+   `auth-api --grant-role admin --user <email>`, and have them enroll a second
+   factor or a passkey.
+8. Review the new variables and their defaults: `MAGIC_LINK_ENABLED`,
+   `PWNED_PASSWORDS_*`, `NEW_DEVICE_ALERTS_ENABLED`, `WEBAUTHN_*`,
+   `IDENTITY_PROVIDERS` and `IDP_*`, `EXTERNAL_LOGIN_URI`, `WEBHOOK_*`,
+   `OTEL_*`, `NATS_STREAM_REPLICAS`, `DATABASE_READ_URL`, and the retention
+   variables `CLEANUP_UNVERIFIED_ACCOUNT_DAYS`, `CLEANUP_KNOWN_DEVICE_DAYS`,
+   `CLEANUP_WEBHOOK_DELIVERY_DAYS`, `AUDIT_IP_RETENTION_DAYS`.

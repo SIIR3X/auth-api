@@ -297,7 +297,11 @@ millisecond. Login throughput scales with `ARGON2_MAX_CONCURRENCY` and CPU
 cores. Watch `argon2_queue_available_permits`: a sustained 0 means logins are
 queueing.
 
-_Recorded 2026-09-15 on the development machine; re-run per environment before
+_Recorded 2026-09-15 on the development machine. Re-run on 2026-09-16 for 2.0.0,
+the same machine under more background load measured refresh at 5.2 ms and
+authenticated reads at 1.2 to 1.5 ms, and the commit before the 2.0 work at
+6.1 ms and 1.4 ms: the differences come from the machine, not from the code;
+credential paths were unchanged. Re-run per environment before
 capacity planning._
 
 ## 9. Capacity Planning
