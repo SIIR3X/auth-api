@@ -6,7 +6,7 @@
 
 use ipnetwork::IpNetwork;
 
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -37,6 +37,11 @@ pub struct NewSession<'a> {
     pub user_agent: Option<&'a str>,
     pub session_type: SessionType,
     pub client_id: Option<&'a str>,
+    /// Start of the family: `None` for a new sign-in (now), the previous
+    /// session's value for a rotation.
+    pub family_created_at: Option<OffsetDateTime>,
+    /// Consented client scopes; `None` for an unrestricted session.
+    pub scopes: Option<&'a [String]>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -59,18 +64,21 @@ pub struct ActiveSessionSummary {
 }
 
 impl SessionValidation {
-    pub fn is_active(&self) -> bool {
-        self.revoked_at.is_none() && self.expires_at > OffsetDateTime::now_utc()
+    pub fn is_active(&self, now: OffsetDateTime) -> bool {
+        self.revoked_at.is_none() && self.expires_at > now
     }
 }
 
 // Writes
 
-pub async fn create(pool: &PgPool, input: &NewSession<'_>) -> Result<Session, sqlx::Error> {
+pub async fn create<'e>(
+    executor: impl PgExecutor<'e>,
+    input: &NewSession<'_>,
+) -> Result<Session, sqlx::Error> {
     sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()), $12)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -83,7 +91,9 @@ pub async fn create(pool: &PgPool, input: &NewSession<'_>) -> Result<Session, sq
     .bind(input.user_agent)
     .bind(input.session_type)
     .bind(input.client_id)
-    .fetch_one(pool)
+    .bind(input.family_created_at)
+    .bind(input.scopes)
+    .fetch_one(executor)
     .await
 }
 
@@ -109,8 +119,8 @@ pub async fn rotate(
 
     let new_session = sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -123,6 +133,8 @@ pub async fn rotate(
     .bind(input.user_agent)
     .bind(input.session_type)
     .bind(input.client_id)
+    .bind(input.family_created_at.unwrap_or(old_session.family_created_at))
+    .bind(input.scopes.map(<[String]>::to_vec).or(old_session.scopes))
     .fetch_one(&mut *tx)
     .await?;
 
@@ -150,12 +162,32 @@ pub async fn revoke(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-pub async fn revoke_all_by_user(pool: &PgPool, user_id: Uuid) -> Result<u64, sqlx::Error> {
+pub async fn revoke_all_by_user<'e>(
+    executor: impl PgExecutor<'e>,
+    user_id: Uuid,
+) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
         "UPDATE sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
     )
     .bind(user_id)
-    .execute(pool)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Revoke every active session of a user except `keep` (the one making the request).
+pub async fn revoke_others<'e>(
+    executor: impl PgExecutor<'e>,
+    user_id: Uuid,
+    keep: Uuid,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE sessions SET revoked_at = NOW()
+         WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL",
+    )
+    .bind(user_id)
+    .bind(keep)
+    .execute(executor)
     .await?;
     Ok(result.rows_affected())
 }
@@ -251,4 +283,19 @@ pub async fn find_active_summary_by_user(
         .bind(user_id)
         .fetch_all(pool)
         .await
+}
+
+/// Revoke every active session of a client application, returning them.
+pub async fn revoke_by_client<'e>(
+    executor: impl PgExecutor<'e>,
+    client_id: &str,
+) -> Result<Vec<Session>, sqlx::Error> {
+    sqlx::query_as::<_, Session>(
+        "UPDATE sessions SET revoked_at = NOW()
+         WHERE client_id = $1 AND revoked_at IS NULL
+         RETURNING *",
+    )
+    .bind(client_id)
+    .fetch_all(executor)
+    .await
 }

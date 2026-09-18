@@ -9,7 +9,11 @@
 
 use serde::Deserialize;
 
-use crate::{error::AppError, state::AppState};
+use crate::{
+    domain::captcha::{CaptchaUpstream, CaptchaVerdict, captcha_verdict},
+    error::AppError,
+    state::AppState,
+};
 
 #[derive(Deserialize)]
 struct HCaptchaResponse {
@@ -32,45 +36,47 @@ pub async fn verify(state: &AppState, token: &str) -> Result<(), AppError> {
         return Err(AppError::CaptchaFailed);
     }
 
-    let resp = match state
+    let upstream = ask_upstream(state, secret, token).await;
+    match captcha_verdict(upstream, config.fail_open_on_error) {
+        CaptchaVerdict::Accepted => {
+            if !matches!(upstream, CaptchaUpstream::Answered { .. }) {
+                tracing::warn!(?upstream, "captcha upstream gave no answer, failing open");
+            }
+            Ok(())
+        }
+        CaptchaVerdict::Rejected => Err(AppError::CaptchaFailed),
+        CaptchaVerdict::Unavailable => Err(AppError::ServiceUnavailable("captcha")),
+    }
+}
+
+/// Ask the verification endpoint about `token`.
+async fn ask_upstream(state: &AppState, secret: &str, token: &str) -> CaptchaUpstream {
+    let response = match state
         .http_client
-        .post(&config.verify_url)
+        .post(&state.config.captcha.verify_url)
         .form(&[("secret", secret), ("response", token)])
         .send()
         .await
     {
-        Ok(resp) => resp,
-        Err(e) if config.fail_open_on_error => {
-            tracing::warn!(error = %e, "captcha upstream unavailable, failing open");
-            return Ok(());
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(%error, "captcha upstream unreachable");
+            return CaptchaUpstream::Unreachable;
         }
-        Err(_) => return Err(AppError::ServiceUnavailable("captcha")),
     };
 
-    if !resp.status().is_success() {
-        if config.fail_open_on_error {
-            tracing::warn!(
-                status = %resp.status(),
-                "captcha upstream returned non-success status, failing open"
-            );
-            return Ok(());
-        }
-
-        return Err(AppError::ServiceUnavailable("captcha"));
+    if !response.status().is_success() {
+        tracing::warn!(status = %response.status(), "captcha upstream returned a non-success status");
+        return CaptchaUpstream::Failed;
     }
 
-    let body: HCaptchaResponse = match resp.json().await {
-        Ok(body) => body,
-        Err(e) if config.fail_open_on_error => {
-            tracing::warn!(error = %e, "captcha response parse failed, failing open");
-            return Ok(());
+    match response.json::<HCaptchaResponse>().await {
+        Ok(body) => CaptchaUpstream::Answered {
+            success: body.success,
+        },
+        Err(error) => {
+            tracing::warn!(%error, "captcha response could not be parsed");
+            CaptchaUpstream::Unreadable
         }
-        Err(_) => return Err(AppError::ServiceUnavailable("captcha")),
-    };
-
-    if body.success {
-        Ok(())
-    } else {
-        Err(AppError::CaptchaFailed)
     }
 }

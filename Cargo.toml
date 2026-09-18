@@ -1,8 +1,14 @@
 [package]
 name = "auth-api"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2024"
+rust-version = "1.88"
 publish = false
+autotests = false
+
+[workspace]
+members = ["crates/testkit", "crates/verifier"]
+exclude = ["fuzz"]
 
 [dependencies]
 aes-gcm = "0.11.0"
@@ -12,7 +18,9 @@ async-nats = "0.49"
 axum = "0.8.8"
 axum-prometheus = "0.10"
 metrics = "0.24"
+async-trait = "0.1"
 base64 = "0.22.1"
+deadpool = { version = "0.13", default-features = false, features = ["managed", "rt_tokio_1"] }
 deadpool-redis = { version = "0.23.0", features = ["rt_tokio_1", "script"] }
 dotenvy = "0.15.7"
 p256 = { version = "0.13", features = ["ecdsa", "pem", "jwk"] }
@@ -21,11 +29,20 @@ ipnetwork = "0.20"
 # pulls in the `rsa` crate, which carries the unfixed RUSTSEC-2023-0071
 # (Marvin) advisory - RSA is never used here, we only sign/verify ES256.
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
-lettre = { version = "0.11.19", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
+lettre = { version = "0.11.19", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname", "pool"] }
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry-http = { version = "0.32", default-features = false }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "http-proto"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "rt-tokio"] }
+percent-encoding = "2.3"
 rand = "0.10.0"
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+sha1 = "0.10.6"
+ciborium = "0.2.2"
+form_urlencoded = "1.2"
+hmac = "0.13.0"
 sha2 = "0.11.0"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "derive", "json", "ipnetwork", "migrate"] }
 tera = { version = "2.0", features = ["glob_fs"] }
@@ -34,69 +51,58 @@ time = { version = "0.3.47", features = ["serde"] }
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
 totp-rs = { version = "5.7.1", features = ["gen_secret"] }
 tracing = "0.1.44"
+tracing-opentelemetry = { version = "0.33", default-features = false }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
-uuid = { version = "1.22.0", features = ["v4", "serde"] }
-async-trait = "0.1.89"
+uuid = { version = "1.22.0", features = ["v4", "v5", "serde"] }
 tower-http = { version = "0.7.0", features = ["cors", "timeout"] }
 email_address = "0.2.9"
-maxminddb = "0.29.0"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "form"] }
+utoipa = { version = "5", features = ["time", "uuid", "yaml"] }
+
+[features]
+# Entry points of the fuzz targets (`fuzz/`, `tests/fuzz_corpus.rs`). Never
+# enabled in a build that is deployed.
+fuzzing = []
 
 [dev-dependencies]
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "testing"] }
+testkit = { path = "crates/testkit" }
 criterion = { version = "0.8.2", features = ["html_reports"] }
-p256 = { version = "0.13", features = ["ecdsa"] }
-postgres = { version = "0.19.12", features = ["with-uuid-1", "with-time-0_3"] }
+futures = "0.3"
 proptest = "1.9.0"
-rand_core = { version = "0.6", features = ["getrandom"] }
-serde_json = "1.0"
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "derive", "json", "ipnetwork", "migrate"] }
-tokio = { version = "1.50.0", features = ["full"] }
-uuid = { version = "1.22.0", features = ["v4"] }
+tokio = { version = "1.50.0", features = ["full", "test-util"] }
+tower = { version = "0.5.3", features = ["util"] }
 
+# Argon2 optimized even in dev and test builds: unoptimized, a hash at the
+# production parameters takes several times longer, which slowed every test that
+# signs in and made the timing simulation measure the build instead of the code.
+[profile.dev.package.argon2]
+opt-level = 3
 
-[[test]]
-name = "migrations"
-path = "tests/db/migrations/mod.rs"
+[profile.dev.package.blake2]
+opt-level = 3
 
-[[test]]
-name = "users"
-path = "tests/db/users/mod.rs"
-
-[[test]]
-name = "sessions"
-path = "tests/db/sessions/mod.rs"
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
 
 [[test]]
-name = "rbac"
-path = "tests/db/rbac/mod.rs"
+name = "integration"
+path = "tests/integration/main.rs"
 
 [[test]]
-name = "two_factor"
-path = "tests/db/two_factor/mod.rs"
+name = "security"
+path = "tests/security/main.rs"
 
 [[test]]
-name = "tokens"
-path = "tests/db/tokens/mod.rs"
+name = "simulation"
+path = "tests/simulation/main.rs"
 
 [[test]]
-name = "audit"
-path = "tests/db/audit/mod.rs"
-
-[[test]]
-name = "flows"
-path = "tests/db/flows/mod.rs"
-
-[[test]]
-name = "db_smoke_test"
-path = "tests/db/smoke_test.rs"
-
-[[test]]
-name = "performance"
-path = "tests/db/performance/mod.rs"
-
-[[test]]
-name = "http"
-path = "tests/http/mod.rs"
+name = "fuzz_corpus"
+path = "tests/fuzz_corpus.rs"
+required-features = ["fuzzing"]
 
 [[bench]]
 name = "core_benches"

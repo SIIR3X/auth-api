@@ -1,127 +1,276 @@
-//! IP-based token bucket rate limiter backed by Redis.
+//! Per-client rate limiting backed by Redis.
 //!
-//! Each client IP gets a bucket with `burst_size` tokens that refills at
-//! `requests_per_second` tokens per second. The state is stored in Redis as a
-//! sorted set so it survives restarts and works across multiple instances.
+//! Each bucket is a sliding-window estimate over one minute, kept as one small
+//! hash per client: the count of the current fixed window, the count of the
+//! previous one, and which window "current" is. The estimate weights the
+//! previous window by the part of it still inside the sliding minute. Memory
+//! and work are O(1) per request, where a sorted set of timestamps grew with
+//! the limit.
 //!
-//! Algorithm: sliding window counter using a Redis sorted set per IP.
-//! Each request adds one entry with score = now_ms. Entries older than the
-//! window are pruned on every check. If the count exceeds the limit the
-//! request is rejected with 429.
+//! A route can be subject to several buckets (the general one and the stricter
+//! auth one). They are checked in a single script call: a request is counted in
+//! every bucket or in none, and a refused request consumes nothing.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{net::IpAddr, sync::LazyLock};
 
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header::RETRY_AFTER},
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use deadpool_redis::{Pool as RedisPool, redis::Script};
+use deadpool_redis::redis::Script;
 use ipnetwork::IpNetwork;
 
-use crate::handlers::extractors::ClientIp;
+use crate::domain::rate_limit::{LimiterAnswer, RateLimitVerdict, rate_limit_verdict};
+use crate::utils::redis_pool::RedisPool;
 
-const WINDOW_MS: u64 = 60_000; // 1 minute sliding window
+use super::client_ip::ClientIp;
 
-/// Per-process monotonic counter used to make sorted-set members unique without
-/// calling the RNG on every request.
-static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-const RATE_LIMIT_LUA: &str = r#"
-local key = KEYS[1]
-local now_ms = tonumber(ARGV[1])
-local window_ms = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3])
-local member = ARGV[4]
+/// Length of the sliding window.
+const WINDOW_MS: u64 = 60_000;
 
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now_ms - window_ms)
+/// KEYS: one hash per bucket. ARGV: now_ms, window_ms, then one limit per key.
+/// Returns 0 when allowed, otherwise the milliseconds until the first refusing
+/// bucket frees a slot (at least 1).
+static SLIDING_WINDOW: LazyLock<Script> = LazyLock::new(|| {
+    Script::new(
+        r#"
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local current = math.floor(now / window)
+local into = (now % window) / window
 
-local count = redis.call('ZCARD', key)
-if count >= limit then
-    redis.call('PEXPIRE', key, window_ms + 1000)
-    return 0
+local state = {}
+for i, key in ipairs(KEYS) do
+    local limit = tonumber(ARGV[2 + i])
+    local fields = redis.call('HMGET', key, 'w', 'c', 'p')
+    local w, c, p = tonumber(fields[1]), tonumber(fields[2]) or 0, tonumber(fields[3]) or 0
+    if w == nil or w < current - 1 then
+        c, p = 0, 0
+    elseif w == current - 1 then
+        c, p = 0, c
+    end
+    if p * (1 - into) + c + 1 > limit then
+        local wait = window - (now % window)
+        if c + 1 <= limit and p > 0 then
+            -- Only the previous window's weight is in the way: it decays
+            -- continuously, so the slot frees before the window turns.
+            local needed = (p * (1 - into) + c + 1 - limit) / p
+            wait = math.ceil(needed * window)
+        end
+        return math.max(wait, 1)
+    end
+    state[i] = {c, p}
 end
 
-redis.call('ZADD', key, now_ms, member)
-redis.call('PEXPIRE', key, window_ms + 1000)
-return 1
-"#;
+for i, key in ipairs(KEYS) do
+    redis.call('HSET', key, 'w', current, 'c', state[i][1] + 1, 'p', state[i][2])
+    redis.call('PEXPIRE', key, 2 * window)
+end
+return 0
+"#,
+    )
+});
 
-async fn check_rate_limit(
-    redis: &RedisPool,
-    key_prefix: &str,
-    ip: &str,
-    limit: u64,
-) -> Result<bool, anyhow::Error> {
-    let mut conn = redis.get().await?;
-
-    let key = format!("{key_prefix}:{ip}");
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_millis() as u64;
-
-    let member = format!(
-        "{now_ms}-{}",
-        REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
-    );
-    let script = Script::new(RATE_LIMIT_LUA);
-    let allowed: i32 = script
-        .key(&key)
-        .arg(now_ms as i64)
-        .arg(WINDOW_MS as i64)
-        .arg(limit as i64)
-        .arg(&member)
-        .invoke_async(&mut conn)
-        .await?;
-
-    Ok(allowed == 1)
+/// One rate-limit bucket: `limit` requests per minute under `prefix:{client}`.
+#[derive(Clone, Copy, Debug)]
+pub struct Bucket {
+    pub prefix: &'static str,
+    pub limit: u64,
 }
-
-// Extractor-free version for use as a plain function from a closure middleware.
-// Returns (pool, limit) as state so the router can configure different limits
-// per route group.
 
 #[derive(Clone)]
 pub struct RateLimitState {
     pub redis: RedisPool,
-    pub limit: u64,
+    /// Every bucket a request through this layer counts against.
+    pub buckets: Vec<Bucket>,
     pub trusted_proxy_cidrs: Vec<IpNetwork>,
     pub fail_open_on_redis_error: bool,
     pub allow_requests_without_ip: bool,
-    /// Redis key prefix for the rate-limit sorted set.
-    /// Defaults to "rl" when not set. Use different prefixes for buckets that
-    /// must track independently (e.g. "rl_auth" for auth-only limits).
-    pub key_prefix: &'static str,
 }
 
+/// `Ok(None)` when allowed, `Ok(Some(wait_ms))` when refused.
+async fn check(
+    redis: &RedisPool,
+    buckets: &[Bucket],
+    client: &str,
+) -> Result<Option<u64>, anyhow::Error> {
+    let mut conn = redis.get().await?;
+    let now_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+
+    let mut invocation = SLIDING_WINDOW.prepare_invoke();
+    for bucket in buckets {
+        invocation.key(format!("{}:{client}", bucket.prefix));
+    }
+    invocation.arg(now_ms).arg(WINDOW_MS);
+    for bucket in buckets {
+        invocation.arg(bucket.limit);
+    }
+
+    let wait_ms: u64 = invocation.invoke_async(&mut *conn).await?;
+    Ok((wait_ms > 0).then_some(wait_ms))
+}
+
+/// Key a client address for rate limiting and abuse budgets.
+///
+/// IPv4 addresses are used as-is. An IPv6 client is bucketed by its /64, the
+/// prefix a single subscriber is typically delegated: otherwise rotating through
+/// interface identifiers would reset every per-IP limit at will.
+pub fn ip_bucket(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+    }
+}
+/// The network [`ip_bucket`] keys a client by: the address itself for IPv4, its
+/// /64 for IPv6. Budgets counted in SQL use it to group addresses the way the
+/// Redis budgets do.
+pub fn ip_bucket_network(ip: IpAddr) -> ipnetwork::IpNetwork {
+    match ip {
+        IpAddr::V4(v4) => ipnetwork::IpNetwork::from(IpAddr::V4(v4)),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => ipnetwork::IpNetwork::from(IpAddr::V4(v4)),
+            None => {
+                let s = v6.segments();
+                let prefix = std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0);
+                ipnetwork::IpNetwork::new(IpAddr::V6(prefix), 64)
+                    .expect("64 is a valid IPv6 prefix length")
+            }
+        },
+    }
+}
 pub async fn layer_with_state(
     State(state): State<RateLimitState>,
     client_ip: ClientIp,
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ip = match client_ip.0 {
-        Some(ip) => ip.ip().to_string(),
+    let client = match client_ip.0 {
+        Some(ip) => ip_bucket(ip.ip()),
         None if state.allow_requests_without_ip => return next.run(req).await,
         None => return (StatusCode::SERVICE_UNAVAILABLE, "client IP unavailable").into_response(),
     };
 
-    match check_rate_limit(&state.redis, state.key_prefix, &ip, state.limit).await {
-        Ok(true) => next.run(req).await,
-        Ok(false) => (
-            StatusCode::TOO_MANY_REQUESTS,
-            [("Retry-After", "60")],
-            "rate limit exceeded",
-        )
-            .into_response(),
+    let answer = match check(&state.redis, &state.buckets, &client).await {
+        Ok(None) => LimiterAnswer::Clear,
+        Ok(Some(ms)) => LimiterAnswer::Wait { ms },
         Err(e) => {
-            if state.fail_open_on_redis_error {
-                tracing::warn!(ip = %ip, error = %e, "rate limit Redis error, failing open");
-                next.run(req).await
-            } else {
-                tracing::warn!(ip = %ip, error = %e, "rate limit Redis error, failing closed");
-                (StatusCode::SERVICE_UNAVAILABLE, "rate limiter unavailable").into_response()
+            metrics::counter!("auth_redis_errors_total", "operation" => "rate_limit").increment(1);
+            tracing::warn!(
+                client = %client,
+                error = %e,
+                fail_open = state.fail_open_on_redis_error,
+                "rate limit Redis error"
+            );
+            LimiterAnswer::Unreachable
+        }
+    };
+
+    match rate_limit_verdict(answer, state.fail_open_on_redis_error) {
+        RateLimitVerdict::Allow => next.run(req).await,
+        RateLimitVerdict::Refuse { retry_after_secs } => {
+            let mut res = (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
+            res.headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs));
+            res
+        }
+        RateLimitVerdict::Unavailable => {
+            (StatusCode::SERVICE_UNAVAILABLE, "rate limiter unavailable").into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ip_bucket;
+
+    #[test]
+    fn ipv4_addresses_are_kept_whole() {
+        assert_eq!(ip_bucket("203.0.113.7".parse().unwrap()), "203.0.113.7");
+    }
+
+    #[test]
+    fn ipv6_addresses_share_their_64() {
+        let a = ip_bucket("2001:db8:1:2:aaaa::1".parse().unwrap());
+        let b = ip_bucket("2001:db8:1:2:ffff:ffff:ffff:ffff".parse().unwrap());
+        assert_eq!(a, b);
+        assert_eq!(a, "2001:db8:1:2::/64");
+        assert_ne!(a, ip_bucket("2001:db8:1:3::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_addresses_use_the_ipv4_bucket() {
+        assert_eq!(
+            ip_bucket("::ffff:198.51.100.4".parse().unwrap()),
+            "198.51.100.4"
+        );
+    }
+
+    #[test]
+    fn sql_budgets_group_addresses_like_redis_budgets() {
+        use super::ip_bucket_network;
+
+        let network = ip_bucket_network("2001:db8:1:2:aaaa::1".parse().unwrap());
+        assert_eq!(network.to_string(), "2001:db8:1:2::/64");
+        assert!(network.contains("2001:db8:1:2:ffff::9".parse().unwrap()));
+        assert!(!network.contains("2001:db8:1:3::1".parse().unwrap()));
+        assert_eq!(
+            ip_bucket_network("203.0.113.7".parse().unwrap()).to_string(),
+            "203.0.113.7/32"
+        );
+        assert_eq!(
+            ip_bucket_network("::ffff:198.51.100.4".parse().unwrap()).to_string(),
+            "198.51.100.4/32"
+        );
+    }
+
+    mod properties {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        use proptest::prelude::*;
+
+        use super::super::{ip_bucket, ip_bucket_network};
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            #[test]
+            fn every_address_of_a_bucket_network_shares_its_bucket(
+                prefix in any::<[u16; 4]>(),
+                first in any::<[u16; 4]>(),
+                second in any::<[u16; 4]>(),
+            ) {
+                let address = |host: [u16; 4]| IpAddr::V6(Ipv6Addr::new(
+                    prefix[0], prefix[1], prefix[2], prefix[3], host[0], host[1], host[2], host[3],
+                ));
+                let (a, b) = (address(first), address(second));
+                // IPv4-mapped addresses are bucketed as IPv4 on purpose.
+                prop_assume!(prefix[..3] != [0, 0, 0] || prefix[3] != 0 || first[..2] != [0, 0xffff]);
+                prop_assume!(prefix[..3] != [0, 0, 0] || prefix[3] != 0 || second[..2] != [0, 0xffff]);
+
+                prop_assert_eq!(ip_bucket(a), ip_bucket(b));
+                let network = ip_bucket_network(a);
+                prop_assert!(network.contains(a) && network.contains(b));
+                prop_assert_eq!(network, ip_bucket_network(b));
+            }
+
+            #[test]
+            fn an_ipv4_address_is_its_own_bucket(octets in any::<[u8; 4]>()) {
+                let ip = IpAddr::V4(Ipv4Addr::from(octets));
+                prop_assert_eq!(ip_bucket(ip), ip.to_string());
+                prop_assert_eq!(ip_bucket_network(ip).prefix(), 32);
             }
         }
     }

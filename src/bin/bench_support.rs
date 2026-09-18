@@ -18,8 +18,8 @@ use auth_api::{
     config::{
         AuditConfig, CaptchaConfig, CleanupConfig, Config, CorsConfig, CryptoConfig,
         DatabaseConfig, DeviceAuthConfig, Environment, JwtConfig, LogConfig, LogFormat, MailConfig,
-        MetricsConfig, NatsConfig, RateLimitConfig, RedisConfig, RiskConfig, SecurityConfig,
-        ServerConfig, SmtpConfig,
+        MetricsConfig, NatsConfig, PwnedPasswordsConfig, RateLimitConfig, RedisConfig,
+        SecurityConfig, ServerConfig, SmtpConfig, TelemetryConfig, WebAuthnConfig, WebhookConfig,
     },
     handlers,
     state::AppState,
@@ -178,7 +178,10 @@ pub fn benchmark_config(db_url: &str, redis_url: &str) -> Config {
     config.server.host = "127.0.0.1".into();
     config.server.port = 0;
     config.server.public_url = "http://127.0.0.1".into();
-    config.server.trusted_proxy_cidrs.clear();
+    // The benchmark client is the only peer; trusting it lets a scenario give
+    // each request its own client address through X-Forwarded-For, so per-IP
+    // budgets measure the endpoint instead of contention between workers.
+    config.server.trusted_proxy_cidrs = vec!["127.0.0.1/32".parse().expect("valid CIDR")];
     config.database.url = db_url.into();
     config.database.max_connections = config.database.max_connections.max(32);
     config.database.min_connections = config.database.min_connections.min(4);
@@ -189,6 +192,10 @@ pub fn benchmark_config(db_url: &str, redis_url: &str) -> Config {
     config.rate_limit.fail_open_on_redis_error = true;
     config.rate_limit.allow_requests_without_ip = true;
     config.security.lockout_threshold = config.security.lockout_threshold.max(10_000);
+    // Workers re-authenticate once at setup, as a client does before sensitive
+    // actions; the window must outlast the longest scenario.
+    config.security.sensitive_action_reauth_secs =
+        config.security.sensitive_action_reauth_secs.max(3_600);
     config.captcha.secret = None;
     config.mail.smtp = SmtpConfig {
         host: "127.0.0.1".into(),
@@ -317,6 +324,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             host: "127.0.0.1".into(),
             port: 0,
             public_url: "http://localhost".into(),
+            frontend_url: "http://localhost".into(),
             trusted_proxy_cidrs: Vec::new(),
         },
         database: DatabaseConfig {
@@ -324,6 +332,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             max_connections: 32,
             min_connections: 4,
             acquire_timeout_secs: 5,
+            read_url: None,
         },
         redis: RedisConfig {
             url: redis_url.into(),
@@ -336,11 +345,13 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             url: std::env::var("BENCH_NATS_URL")
                 .or_else(|_| std::env::var("TEST_NATS_URL"))
                 .unwrap_or_else(|_| "nats://127.0.0.1:4222".into()),
+            stream_replicas: 1,
         },
         jwt: JwtConfig {
             private_key: "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgL+1qOaZ7C+H1mGbV\njUP83/W450N4GfOnZSrQ7P//4Y2hRANCAAR4BApTJy8Anvp+O7YNVlTeCbBZ+1YJ\nk+r5ELHGFIXciAEGSrCTOkCm3yChSYroYWLE3ZN4reh6JDbIMX/QnBGx\n-----END PRIVATE KEY-----".into(),
             public_key: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEeAQKUycvAJ76fju2DVZU3gmwWftW\nCZPq+RCxxhSF3IgBBkqwkzpApt8goUmK6GFixN2TeK3oeiQ2yDF/0JwRsQ==\n-----END PUBLIC KEY-----".into(),
             previous_public_key: None,
+            next_public_key: None,
             access_expiry_secs: 900,
             refresh_expiry_secs: 86400,
             short_session_expiry_secs: 3600,
@@ -369,6 +380,8 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             lockout_threshold: 10_000,
             lockout_duration_secs: 1800,
             sensitive_action_reauth_secs: 600,
+            new_device_alerts: true,
+            magic_links: false,
         },
         captcha: CaptchaConfig {
             secret: None,
@@ -392,23 +405,42 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             templates_dir: "templates".into(),
             default_locale: "en".into(),
         },
+        pwned_passwords: PwnedPasswordsConfig {
+            enabled: false,
+            api_url: "https://api.pwnedpasswords.com".into(),
+            timeout_ms: 1500,
+            fail_open: true,
+        },
+        webauthn: WebAuthnConfig {
+            rp_id: "localhost".into(),
+            rp_name: "Auth API".into(),
+            origins: vec!["http://localhost:5173".into()],
+        },
+        identity_providers: Vec::new(),
+        external_login_uri: "http://localhost:5173/external-login".into(),
+        webhooks: WebhookConfig {
+            allow_http: false,
+            allow_private_networks: false,
+            timeout_ms: 5000,
+        },
         cleanup: CleanupConfig {
             interval_secs: 3600,
             sessions_grace_days: 7,
             tokens_grace_days: 1,
             login_attempts_retention_days: 90,
             recovery_codes_grace_days: 7,
+            unverified_accounts_retention_days: 7,
+            known_devices_retention_days: 90,
+            webhook_deliveries_retention_days: 7,
         },
         audit: AuditConfig {
             retention_months: 6,
+            ip_retention_days: 90,
         },
-        risk: RiskConfig {
-            geoip_db_path: String::new(),
-            geoip_required: false,
-            alert_threshold: 30,
-            challenge_threshold: 60,
-            block_threshold: 80,
-            history_days: 90,
+        telemetry: TelemetryConfig {
+            otlp_endpoint: None,
+            service_name: "auth-api".into(),
+            sample_ratio: 0.1,
         },
         log: LogConfig {
             level: "error".into(),
@@ -418,6 +450,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             ttl_secs: 300,
             poll_interval_secs: 5,
             verification_uri: "http://localhost:5173/device".into(),
+            consent_uri: "http://localhost:5173/authorize".into(),
         },
         metrics: MetricsConfig {
             enabled: false,

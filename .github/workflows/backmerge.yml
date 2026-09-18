@@ -1,0 +1,46 @@
+name: Back-merge
+
+# staging is the draft branch that pull requests to main come from. After a
+# merge, main holds a merge commit that staging lacks: fast-forward staging so
+# the next pull request starts from main. When draft commits were pushed to
+# staging in the meantime, the fast-forward is impossible: the job leaves
+# staging alone and warns, and staging is brought up to date by hand.
+#
+# Merge staging into main with a merge commit (not squash or rebase): staging
+# then stays an ancestor of main and the fast-forward works.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backmerge
+
+jobs:
+  fast-forward:
+    name: Fast-forward staging to main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward
+        run: |
+          if ! git fetch origin staging 2> /dev/null; then
+            echo "No staging branch: nothing to do."
+            exit 0
+          fi
+          if git merge-base --is-ancestor origin/staging HEAD; then
+            git push origin HEAD:refs/heads/staging
+            echo "staging fast-forwarded to $(git rev-parse --short HEAD)."
+          else
+            echo "::warning::staging has commits that are not on main; bring it up to date by hand."
+          fi

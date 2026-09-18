@@ -11,9 +11,7 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use auth_api::repositories::{
-    login_attempt, login_location, session as session_repo, user as user_repo,
-};
+use auth_api::repositories::{login_attempt, session as session_repo, user as user_repo};
 
 #[derive(Debug)]
 struct SqlSeedData {
@@ -23,11 +21,6 @@ struct SqlSeedData {
     hot_session_id: Uuid,
     hot_token_hash: Vec<u8>,
     hot_ip: IpNetwork,
-    hot_history_days: i32,
-    upsert_country: String,
-    upsert_city: String,
-    upsert_user_agent: String,
-    upsert_ip: IpNetwork,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -211,34 +204,6 @@ async fn main() -> Result<()> {
         )
         .await?,
         bench_sql_scenario(
-            "find_recent_for_risk",
-            "Risk-scoring history lookup over recent login locations.",
-            login_location::FIND_RECENT_FOR_RISK_SQL,
-            json!([seed.hot_user_id, seed.hot_history_days]),
-            iterations,
-            warmup,
-            || async {
-                sqlx::query(login_location::FIND_RECENT_FOR_RISK_SQL)
-                    .bind(seed.hot_user_id)
-                    .bind(seed.hot_history_days)
-                    .fetch_all(&db.pool)
-                    .await?;
-                Ok(())
-            },
-            || async {
-                sqlx::query_scalar::<_, Value>(&format!(
-                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {}",
-                    login_location::FIND_RECENT_FOR_RISK_SQL
-                ))
-                .bind(seed.hot_user_id)
-                .bind(seed.hot_history_days)
-                .fetch_one(&db.pool)
-                .await
-                .map_err(Into::into)
-            },
-        )
-        .await?,
-        bench_sql_scenario(
             "count_recent_failures_by_identifier",
             "Brute-force counter by identifier.",
             login_attempt::COUNT_RECENT_FAILURES_BY_IDENTIFIER_SQL,
@@ -334,50 +299,6 @@ async fn main() -> Result<()> {
             },
         )
         .await?,
-        bench_sql_scenario(
-            "login_location_upsert",
-            "Upsert of the login-location tuple after a successful login.",
-            login_location::UPSERT_LOGIN_LOCATION_SQL,
-            json!([
-                seed.hot_user_id,
-                seed.upsert_country,
-                seed.upsert_city,
-                seed.upsert_user_agent,
-                seed.upsert_ip.to_string()
-            ]),
-            iterations / 2,
-            warmup / 2,
-            || async {
-                sqlx::query(login_location::UPSERT_LOGIN_LOCATION_SQL)
-                    .bind(seed.hot_user_id)
-                    .bind(&seed.upsert_country)
-                    .bind(&seed.upsert_city)
-                    .bind(&seed.upsert_user_agent)
-                    .bind(seed.upsert_ip)
-                    .bind(Some(48.8566_f64))
-                    .bind(Some(2.3522_f64))
-                    .execute(&db.pool)
-                    .await?;
-                Ok(())
-            },
-            || async {
-                sqlx::query_scalar::<_, Value>(&format!(
-                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {}",
-                    login_location::UPSERT_LOGIN_LOCATION_SQL
-                ))
-                .bind(seed.hot_user_id)
-                .bind(&seed.upsert_country)
-                .bind(&seed.upsert_city)
-                .bind(&seed.upsert_user_agent)
-                .bind(seed.upsert_ip)
-                .bind(Some(48.8566_f64))
-                .bind(Some(2.3522_f64))
-                .fetch_one(&db.pool)
-                .await
-                .map_err(Into::into)
-            },
-        )
-        .await?,
     ];
 
     let report = SqlBenchmarkReport {
@@ -385,7 +306,7 @@ async fn main() -> Result<()> {
         notes: vec![
             "SQL benchmarks execute against an isolated benchmark database created from migrations.".into(),
             "Each scenario captures both repeated client-side latency and a single EXPLAIN ANALYZE plan in JSON.".into(),
-            "Read scenarios use realistic hot-spot rows plus background data; the login_location upsert scenario measures the steady-state update path.".into(),
+            "Read scenarios use realistic hot-spot rows plus background data.".into(),
         ],
         scenarios,
     };
@@ -465,31 +386,6 @@ async fn seed_sql_dataset(pool: &PgPool) -> Result<SqlSeedData> {
     .await
     .context("failed to seed benchmark login attempts")?;
 
-    sqlx::query(
-        "INSERT INTO login_locations
-            (user_id, country, city, user_agent, ip_address, latitude, longitude, last_seen, first_seen)
-         SELECT
-            u.id,
-            format('C%s', gs % 5),
-            format('City-%s-%s', u.seq, gs),
-            format('bulk-agent/%s', gs % 8),
-            format('198.19.%s.%s/32', ((u.seq % 200) + 1), ((gs % 200) + 1))::cidr,
-            40.0 + (gs::double precision / 10.0),
-            2.0 + (u.seq::double precision / 100.0),
-            NOW() - ((gs % 240) * INTERVAL '1 hour'),
-            NOW() - (((gs % 240) + 24) * INTERVAL '1 hour')
-         FROM (
-            SELECT id, row_number() OVER (ORDER BY created_at) AS seq
-            FROM users
-            ORDER BY created_at
-            LIMIT 1000
-         ) AS u
-         CROSS JOIN generate_series(1, 8) AS gs",
-    )
-    .execute(pool)
-    .await
-    .context("failed to seed benchmark login locations")?;
-
     let hot_email = "hot_login_user@example.com".to_string();
     let hot_username = "hot_login_user".to_string();
     let hot_user_id: Uuid = sqlx::query_scalar(
@@ -565,53 +461,6 @@ async fn seed_sql_dataset(pool: &PgPool) -> Result<SqlSeedData> {
         .context("failed to insert hot failed login attempt")?;
     }
 
-    let upsert_country = "FR".to_string();
-    let upsert_city = "Paris-Hot".to_string();
-    let upsert_user_agent = "hot-risk-agent/1.0".to_string();
-    let upsert_ip: IpNetwork = "198.51.100.55/32".parse().expect("valid upsert ip");
-
-    for offset in 0..36 {
-        let country = if offset == 0 {
-            upsert_country.clone()
-        } else {
-            "DE".to_string()
-        };
-        let city = if offset == 0 {
-            upsert_city.clone()
-        } else {
-            format!("City-Hot-{offset}")
-        };
-        let user_agent = if offset == 0 {
-            upsert_user_agent.clone()
-        } else {
-            format!("hot-agent/{offset}")
-        };
-        let ip = if offset == 0 {
-            upsert_ip
-        } else {
-            "198.51.100.99/32"
-                .parse::<IpNetwork>()
-                .expect("valid fallback ip")
-        };
-
-        sqlx::query(
-            "INSERT INTO login_locations
-                (user_id, country, city, user_agent, ip_address, latitude, longitude, last_seen, first_seen)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() - ($8 * INTERVAL '2 hours'), NOW() - (($8 + 24) * INTERVAL '2 hours'))",
-        )
-        .bind(hot_user_id)
-        .bind(country)
-        .bind(city)
-        .bind(user_agent)
-        .bind(ip)
-        .bind(Some(48.8566_f64 + (offset as f64 / 100.0)))
-        .bind(Some(2.3522_f64 + (offset as f64 / 100.0)))
-        .bind(offset)
-        .execute(pool)
-        .await
-        .context("failed to insert hot login location")?;
-    }
-
     sqlx::query("ANALYZE users")
         .execute(pool)
         .await
@@ -624,10 +473,6 @@ async fn seed_sql_dataset(pool: &PgPool) -> Result<SqlSeedData> {
         .execute(pool)
         .await
         .context("failed to analyze login_attempts benchmark table")?;
-    sqlx::query("ANALYZE login_locations")
-        .execute(pool)
-        .await
-        .context("failed to analyze login_locations benchmark table")?;
 
     Ok(SqlSeedData {
         hot_user_id,
@@ -636,11 +481,6 @@ async fn seed_sql_dataset(pool: &PgPool) -> Result<SqlSeedData> {
         hot_session_id,
         hot_token_hash,
         hot_ip,
-        hot_history_days: 90,
-        upsert_country,
-        upsert_city,
-        upsert_user_agent,
-        upsert_ip,
     })
 }
 

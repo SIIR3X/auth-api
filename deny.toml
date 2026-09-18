@@ -1,5 +1,8 @@
 [graph]
-all-features = true
+# Only the features actually built: `all-features` would pull sqlx-mysql and
+# its `rsa` dependency (RUSTSEC-2023-0071) into the graph, although neither is
+# ever compiled for this service.
+all-features = false
 
 [advisories]
 version = 2
@@ -7,18 +10,20 @@ yanked = "deny"
 ignore = []
 
 [bans]
+# Path dependencies inside this repository (the test harness) carry no
+# version; they are never published.
+allow-wildcard-paths = true
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
-# Reviewed, accepted duplicate versions. Most stem from the `postgres`
-# dev-dependency (older rand/getrandom ecosystem) and the Windows platform stub
-# crates (build-time only, never used on the Linux runtime target). Listed by
+# Reviewed, accepted duplicate versions. They stem from sqlx, proptest and
+# p256 pinning older rand/getrandom generations, and from the Windows platform
+# stub crates (build-time only, never used on the Linux runtime target). Listed by
 # name so that any *new*, unexpected duplicate still surfaces as a warning.
 skip = [
   { crate = "cpufeatures" },
   { crate = "getrandom" },
   { crate = "hashbrown" },
-  { crate = "ipnetwork" },
   { crate = "r-efi" },
   { crate = "rand" },
   { crate = "rand_chacha" },
@@ -46,6 +51,8 @@ allow = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "MIT",
+  # MIT without the attribution clause; pulled by the test harness (jsonschema).
+  "MIT-0",
   "0BSD",
   "BSD-2-Clause",
   "BSD-3-Clause",

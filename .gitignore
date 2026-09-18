@@ -8,3 +8,8 @@ reports/
 docs/report/*
 !docs/report/*.tex
 !docs/report/*.pdf
+dist/
+__pycache__/
+
+# Broker token written from pass on the server (docker-compose.api.yml secret)
+nats-auth.conf

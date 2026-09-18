@@ -14,7 +14,7 @@ use crate::{
     state::AppState,
 };
 
-use super::{auth as auth_svc, reauth as reauth_svc};
+use super::{auth as auth_svc, events, reauth as reauth_svc};
 
 pub async fn list_active(
     state: &AppState,
@@ -31,6 +31,7 @@ pub async fn revoke(
     user_id: Uuid,
     current_session_id: Uuid,
     session_id: Uuid,
+    current_password: Option<&str>,
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
@@ -38,7 +39,7 @@ pub async fn revoke(
         state,
         user_id,
         current_session_id,
-        None,
+        current_password,
         ip,
         request_id,
         "revoke_session",
@@ -87,6 +88,7 @@ pub async fn revoke_all(
     user_id: Uuid,
     current_session_id: Uuid,
     current_password: Option<&str>,
+    keep_current_session: bool,
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<u64, AppError> {
@@ -104,32 +106,49 @@ pub async fn revoke_all(
     // Collect active sessions before revoking so we can blacklist their tokens.
     let active = session_repo::find_active_by_user(&state.db, user_id)
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        .map_err(|e| AppError::Internal(e.into()))?
+        .into_iter()
+        .filter(|s| !keep_current_session || s.id != current_session_id)
+        .collect::<Vec<_>>();
 
-    let count = session_repo::revoke_all_by_user(&state.db, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    // The revocation, its audit entry and its event commit together.
+    let mut tx = state.db.begin().await?;
 
-    let session_ids = active.iter().map(|s| s.id).collect::<Vec<_>>();
-    auth_svc::invalidate_session_caches(state, &session_ids).await;
-
-    for s in &active {
-        auth_svc::blocklist_refresh_token(state, &s.token_hash, s.expires_at).await;
-        reauth_svc::clear_recent_reauth(state, s.id).await;
-    }
+    let count = if keep_current_session {
+        session_repo::revoke_others(&mut *tx, user_id, current_session_id).await?
+    } else {
+        session_repo::revoke_all_by_user(&mut *tx, user_id).await?
+    };
 
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
             action: AuditAction::SessionRevoked,
             ip_address: ip,
-            metadata: json!({"count": count, "all": true}),
+            metadata: json!({"count": count, "all": !keep_current_session}),
         },
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+
+    events::enqueue(
+        &mut *tx,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked { user_id },
+    )
+    .await?;
+
+    tx.commit().await?;
+    events::wake();
+
+    let session_ids = active.iter().map(|s| s.id).collect::<Vec<_>>();
+    auth_svc::invalidate_session_caches(state, &session_ids).await;
+    for s in &active {
+        auth_svc::blocklist_refresh_token(state, &s.token_hash, s.expires_at).await;
+        reauth_svc::clear_recent_reauth(state, s.id).await;
+    }
 
     Ok(count)
 }

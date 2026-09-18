@@ -24,6 +24,8 @@ pub enum CryptoError {
     InvalidKey,
     #[error("invalid input")]
     InvalidInput,
+    #[error("ciphertext names a key that is not configured")]
+    UnknownKey,
 }
 
 // Hashing
@@ -39,6 +41,24 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 
 /// Generates a 32-byte cryptographically secure random token, base64url-encoded.
 /// Used for email verification and password reset tokens.
+/// A 6-digit numeric one-time code (000000..999999, ~20 bits).
+///
+/// Its strength is not the entropy alone: every flow using it pairs the code
+/// with an attempt budget, backoff and a short TTL.
+pub fn generate_otp() -> String {
+    use rand::RngExt;
+
+    let code: u32 = rand::rng().random_range(0..1_000_000);
+    format!("{code:06}")
+}
+
+/// `N` bytes from the OS CSPRNG.
+pub fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut bytes = [0u8; N];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
+}
+
 pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
@@ -73,6 +93,102 @@ pub fn generate_recovery_codes(n: usize) -> Vec<String> {
 pub fn decode_encryption_key(b64: &str) -> Result<[u8; 32], CryptoError> {
     let bytes = B64.decode(b64).map_err(|_| CryptoError::InvalidKey)?;
     bytes.try_into().map_err(|_| CryptoError::InvalidKey)
+}
+
+// Keyring
+
+/// Prefix of versioned ciphertexts: `v1:{kid}:{base64(nonce || ciphertext)}`.
+const V1_PREFIX: &str = "v1:";
+
+/// Keys for data encrypted at rest: the current key, which encrypts, and the
+/// previous one, still accepted for reading while a rotation runs.
+///
+/// Ciphertexts name their key (`v1:{kid}:...`), so a read goes straight to the
+/// right key and a rotation can tell which rows are done: it can stop and pick
+/// up where it left off. Values written before versioning (bare base64) are
+/// read with the current key, then the previous one.
+#[derive(Clone)]
+pub struct Keyring {
+    current: KeyEntry,
+    previous: Option<KeyEntry>,
+}
+
+#[derive(Clone)]
+struct KeyEntry {
+    kid: String,
+    key: [u8; 32],
+}
+
+impl KeyEntry {
+    fn new(key: [u8; 32]) -> Self {
+        // First 8 bytes of the key's SHA-256: identifies it without revealing it.
+        let kid = sha256(&key)[..8]
+            .iter()
+            .fold(String::with_capacity(16), |mut out, byte| {
+                let _ = write!(out, "{byte:02x}");
+                out
+            });
+        Self { kid, key }
+    }
+}
+
+impl Keyring {
+    pub fn new(current: [u8; 32], previous: Option<[u8; 32]>) -> Self {
+        Self {
+            current: KeyEntry::new(current),
+            previous: previous.map(KeyEntry::new),
+        }
+    }
+
+    /// Build from the base64 keys of the configuration.
+    pub fn from_base64(current: &str, previous: Option<&str>) -> Result<Self, CryptoError> {
+        Ok(Self::new(
+            decode_encryption_key(current)?,
+            previous.map(decode_encryption_key).transpose()?,
+        ))
+    }
+
+    /// Identifier of the key new ciphertexts are written with.
+    pub fn current_kid(&self) -> &str {
+        &self.current.kid
+    }
+
+    pub fn encrypt(&self, plaintext: &str) -> Result<String, CryptoError> {
+        Ok(format!(
+            "{V1_PREFIX}{}:{}",
+            self.current.kid,
+            encrypt(plaintext, &self.current.key)?
+        ))
+    }
+
+    pub fn decrypt(&self, stored: &str) -> Result<String, CryptoError> {
+        match stored.strip_prefix(V1_PREFIX) {
+            Some(rest) => {
+                let (kid, body) = rest.split_once(':').ok_or(CryptoError::InvalidInput)?;
+                decrypt(body, self.key_for(kid).ok_or(CryptoError::UnknownKey)?)
+            }
+            // Legacy value: no key name, so try the keys in order.
+            None => decrypt(stored, &self.current.key).or_else(|err| match &self.previous {
+                Some(previous) => decrypt(stored, &previous.key),
+                None => Err(err),
+            }),
+        }
+    }
+
+    /// Whether `stored` still has to be rewritten under the current key.
+    pub fn needs_rotation(&self, stored: &str) -> bool {
+        stored
+            .strip_prefix(V1_PREFIX)
+            .and_then(|rest| rest.split_once(':'))
+            .is_none_or(|(kid, _)| kid != self.current.kid)
+    }
+
+    fn key_for(&self, kid: &str) -> Option<&[u8; 32]> {
+        std::iter::once(&self.current)
+            .chain(self.previous.as_ref())
+            .find(|entry| entry.kid == kid)
+            .map(|entry| &entry.key)
+    }
 }
 
 // AES-256-GCM
@@ -228,5 +344,110 @@ mod tests {
             decode_encryption_key(&b64),
             Err(CryptoError::InvalidKey)
         ));
+    }
+
+    #[test]
+    fn keyring_writes_versioned_ciphertexts_it_can_read() {
+        let keyring = Keyring::new([1u8; 32], None);
+        let stored = keyring.encrypt("JBSWY3DPEHPK3PXP").unwrap();
+        assert!(stored.starts_with(&format!("v1:{}:", keyring.current_kid())));
+        assert_eq!(keyring.decrypt(&stored).unwrap(), "JBSWY3DPEHPK3PXP");
+        assert!(!keyring.needs_rotation(&stored));
+    }
+
+    #[test]
+    fn keyring_reads_the_previous_key_and_the_legacy_format() {
+        let old = Keyring::new([1u8; 32], None);
+        let versioned_old = old.encrypt("secret").unwrap();
+        let legacy_old = encrypt("secret", &[1u8; 32]).unwrap();
+
+        let rotating = Keyring::new([2u8; 32], Some([1u8; 32]));
+        assert_eq!(rotating.decrypt(&versioned_old).unwrap(), "secret");
+        assert_eq!(rotating.decrypt(&legacy_old).unwrap(), "secret");
+        assert!(rotating.needs_rotation(&versioned_old));
+        assert!(rotating.needs_rotation(&legacy_old));
+    }
+
+    #[test]
+    fn keyring_refuses_a_key_it_does_not_hold() {
+        let stored = Keyring::new([1u8; 32], None).encrypt("secret").unwrap();
+        let other = Keyring::new([2u8; 32], None);
+        assert!(matches!(
+            other.decrypt(&stored),
+            Err(CryptoError::UnknownKey)
+        ));
+    }
+
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::super::Keyring;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            #[test]
+            fn any_secret_survives_encryption_and_a_key_rotation(
+                secret in "\\PC{0,200}",
+                old in any::<[u8; 32]>(),
+                new in any::<[u8; 32]>(),
+            ) {
+                prop_assume!(old != new);
+                let before = Keyring::new(old, None);
+                let stored = before.encrypt(&secret).unwrap();
+                prop_assert_eq!(before.decrypt(&stored).unwrap(), secret.clone());
+                prop_assert!(!before.needs_rotation(&stored));
+
+                // During a rotation the old ciphertext stays readable...
+                let during = Keyring::new(new, Some(old));
+                prop_assert!(during.needs_rotation(&stored));
+                prop_assert_eq!(during.decrypt(&stored).unwrap(), secret.clone());
+
+                // ...and once rewritten, no longer needs the old key.
+                let rewritten = during.encrypt(&secret).unwrap();
+                prop_assert!(!during.needs_rotation(&rewritten));
+                prop_assert_eq!(Keyring::new(new, None).decrypt(&rewritten).unwrap(), secret);
+                prop_assert!(before.decrypt(&rewritten).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn one_time_codes_are_six_ascii_digits() {
+        for _ in 0..64 {
+            let otp = generate_otp();
+            assert_eq!(otp.len(), 6, "{otp:?}");
+            assert!(otp.bytes().all(|b| b.is_ascii_digit()), "{otp:?}");
+        }
+    }
+
+    #[test]
+    fn tokens_carry_32_fresh_random_bytes() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let (a, b) = (generate_token(), generate_token());
+        assert_eq!(URL_SAFE_NO_PAD.decode(&a).unwrap().len(), 32);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn re_encryption_moves_a_secret_to_the_new_key() {
+        let stored = encrypt("JBSWY3DPEHPK3PXP", KEY).unwrap();
+        let moved = re_encrypt(&stored, KEY, OTHER_KEY).unwrap();
+        assert_eq!(decrypt(&moved, OTHER_KEY).unwrap(), "JBSWY3DPEHPK3PXP");
+        assert!(decrypt(&moved, KEY).is_err());
+    }
+
+    #[test]
+    fn an_empty_secret_round_trips() {
+        // Nonce and tag only: the shortest ciphertext there is.
+        let stored = encrypt("", KEY).unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&stored)
+                .unwrap()
+                .len(),
+            28
+        );
+        assert_eq!(decrypt(&stored, KEY).unwrap(), "");
     }
 }

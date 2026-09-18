@@ -1,0 +1,62 @@
+# Prometheus of the monitoring host (docker-compose.monitoring.yml).
+# Every internal target is a WireGuard address: exporters never listen on a
+# public interface. Replace api.example.com with the public name of the API.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["127.0.0.1:9093"]
+
+scrape_configs:
+  # The API instances (metrics listener of docker-compose.api.yml). Each one
+  # also publishes its container's memory, limit and CPU throttling.
+  - job_name: auth-api
+    static_configs:
+      # Profile L: add 10.0.0.1:9467 and 10.0.0.1:9468.
+      - targets: ["10.0.0.1:9465", "10.0.0.1:9466"]
+        labels: { vps: api }
+
+  # The broker, through prometheus-nats-exporter (docker-compose.api.yml).
+  - job_name: nats
+    static_configs:
+      - targets: ["10.0.0.1:7777"]
+        labels: { vps: api }
+
+  - job_name: node
+    static_configs:
+      - targets: ["10.0.0.1:9100"]
+        labels: { vps: api }
+      - targets: ["10.0.0.2:9100"]
+        labels: { vps: db }
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["10.0.0.2:9187"]
+        labels: { vps: db }
+
+  - job_name: redis
+    static_configs:
+      - targets: ["10.0.0.2:9121"]
+        labels: { vps: db }
+
+  # The public endpoint as a client sees it: DNS, TLS, nginx, an instance ready.
+  - job_name: blackbox-https
+    metrics_path: /probe
+    params:
+      module: [https_ready]
+    static_configs:
+      - targets: ["https://api.example.com/ready"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115

@@ -1,0 +1,22 @@
+{
+  "name": "@auth-api/verifier",
+  "version": "0.1.0",
+  "description": "Verify auth-api access tokens in Node.js resource servers: JWKS, issuer, audience, permissions, optional revocation checks.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "types": "./src/index.d.ts",
+  "files": ["src"],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,206 @@
+# Infrastructure alerts: the public endpoint, the hosts, the containers and the
+# dependencies of the API. The application's own alerts live in auth-api.yml.
+# Unit tests: promtool test rules infrastructure.test.yml
+
+groups:
+  - name: auth-api-edge
+    rules:
+      - alert: Watchdog
+        # Always firing: Alertmanager forwards it to a dead man's switch, which
+        # pages when it stops arriving (Prometheus or Alertmanager is down).
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "monitoring pipeline alive"
+
+      - alert: AuthApiPublicProbeFailing
+        expr: probe_success{job="blackbox-https"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "https /ready fails from outside"
+          description: >-
+            DNS, the certificate, nginx or every API instance: check
+            `curl -v https://<host>/ready`, then nginx and `docker compose ps` on
+            the API VPS.
+
+      - alert: TlsCertificateExpiresSoon
+        expr: probe_ssl_earliest_cert_expiry{job="blackbox-https"} - time() < 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "the public certificate expires in less than 14 days"
+          description: "certbot renewal is failing: `sudo certbot renew --dry-run` on the API VPS."
+
+  - name: hosts
+    rules:
+      - alert: HostDown
+        expr: up{job="node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.vps }} VPS unreachable over WireGuard"
+
+      - alert: DiskSpaceLow
+        expr: >-
+          node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"} < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "less than 15% free on {{ $labels.mountpoint }} ({{ $labels.vps }} VPS)"
+
+  - name: containers
+    # Each API instance reads its own cgroup and publishes it: this works with
+    # any container runtime and needs no privileged exporter on the host.
+    rules:
+      - alert: ContainerRestarting
+        expr: changes(auth_process_start_time_seconds[15m]) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} restarted more than 3 times in 15 minutes"
+          description: "Check `docker compose logs` on the API VPS: a crash loop, or an out-of-memory kill."
+
+      - alert: ContainerMemoryNearLimit
+        expr: >-
+          auth_container_memory_working_set_bytes
+            / (auth_container_memory_limit_bytes > 0) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} uses more than 90% of its memory limit"
+          description: "An out-of-memory kill is close: move to the next profile or look for a leak."
+
+      - alert: ContainerCpuThrottled
+        expr: >-
+          rate(auth_container_cpu_throttled_periods_total[5m])
+            / rate(auth_container_cpu_periods_total[5m]) > 0.25
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} is throttled in more than 25% of CPU periods"
+          description: "The instance needs more CPU than its profile gives it."
+
+  - name: dependencies
+    rules:
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL does not answer its exporter"
+
+      - alert: PostgresConnectionsHigh
+        expr: sum(pg_stat_activity_count) / max(pg_settings_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL uses more than 80% of max_connections"
+
+      - alert: AuthApiDbPoolSaturated
+        expr: >-
+          auth_db_pool_connections{state="in_use"}
+            >= ignoring(state) auth_db_pool_connections{state="max"}
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} uses every database connection of its pool"
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis does not answer its exporter; the API answers 503"
+
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / (redis_memory_max_bytes > 0) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis uses more than 80% of maxmemory"
+          description: "With noeviction, writes fail once it is full: raise maxmemory (profile) now."
+
+      - alert: RedisRejectingWrites
+        expr: increase(redis_errors_total{err="OOM"}[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis refuses writes: maxmemory reached"
+
+      - alert: AuthApiRedisErrors
+        expr: sum by (instance) (rate(auth_redis_errors_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} fails Redis operations"
+
+      - alert: AuthApiRedisPoolWaiting
+        expr: auth_redis_pool_waiting > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} waits for Redis connections"
+
+      - alert: NatsDown
+        expr: up{job="nats"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "the NATS broker or its exporter is down; domain events wait in the outbox"
+
+      - alert: AuthApiEventsStalled
+        expr: max(auth_outbox_oldest_pending_age_seconds) > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "domain events have waited more than 5 minutes to reach NATS"
+
+  - name: background
+    rules:
+      - alert: AuthApiNotificationsFailing
+        expr: sum by (instance) (increase(auth_notifications_failed_total[15m])) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} fails to send e-mails"
+          description: "Check the SMTP relay and credentials; verification and reset e-mails are not reaching users."
+
+      - alert: AuthApiNotificationsDropped
+        expr: sum by (instance) (increase(auth_notifications_dropped_total[15m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} dropped e-mails: 1 000 were already pending"
+
+      - alert: AuthApiWebhooksFailing
+        expr: sum(increase(auth_webhook_deliveries_total{outcome="failed"}[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "webhook deliveries were given up after every retry"
+          description: "An endpoint stayed unreachable or refused deliveries for hours: see GET /admin/webhooks/{id}/deliveries, fix it, then retry."
+
+      - alert: AuthApiCleanupFailing
+        expr: sum by (job, instance) (increase(auth_cleanup_failures_total[2h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "a retention job failed on {{ $labels.instance }}"

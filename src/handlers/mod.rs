@@ -10,7 +10,7 @@ use axum::{
     extract::DefaultBodyLimit,
     http::{Method, header},
     middleware,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
 };
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -19,24 +19,131 @@ use tower_http::{
 
 use crate::{
     middleware::{
-        rate_limit::{self, RateLimitState},
+        access_log, error_body,
+        rate_limit::{self, Bucket, RateLimitState},
         request_id, security_headers,
     },
     state::AppState,
 };
 
+pub mod admin;
+pub mod audit;
 pub mod auth;
-pub mod device;
+pub mod external_identity;
 pub mod extractors;
+pub mod oauth;
+pub mod passkey;
+pub mod personal_access_token;
 pub mod session;
 pub mod two_factor;
 pub mod user;
 
-async fn health() -> &'static str {
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "Serving", body = String, content_type = "text/plain"),
+    ),
+)]
+pub async fn health() -> &'static str {
     "ok"
 }
 
-async fn jwks(
+#[utoipa::path(
+    get,
+    path = "/live",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "The process serves requests; dependencies are not checked", body = String, content_type = "text/plain"),
+    ),
+)]
+/// Liveness: answers as long as the process serves HTTP. Restarting the
+/// container cannot fix a dependency, so this never checks one.
+pub async fn live() -> &'static str {
+    "ok"
+}
+
+/// What `/ready` found for each dependency.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ReadyResponse {
+    /// `ready` when every dependency answered, `unavailable` otherwise.
+    pub status: &'static str,
+    /// `up` or `down`.
+    pub database: &'static str,
+    pub redis: &'static str,
+    pub nats: &'static str,
+}
+
+/// How long a readiness check waits for one dependency.
+const READY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[utoipa::path(
+    get,
+    path = "/ready",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "Every dependency answered", body = ReadyResponse),
+        (status = 503, description = "A dependency did not answer", body = ReadyResponse),
+    ),
+)]
+/// Readiness: whether this instance can serve traffic now. The reverse proxy
+/// and the rolling update send traffic only to a ready instance.
+pub async fn ready(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, axum::Json<ReadyResponse>) {
+    let database = async {
+        matches!(
+            tokio::time::timeout(
+                READY_PROBE_TIMEOUT,
+                sqlx::query("SELECT 1").execute(&state.db)
+            )
+            .await,
+            Ok(Ok(_))
+        )
+    };
+    let redis = async {
+        let ping = async {
+            let mut conn = state.redis.get().await.ok()?;
+            deadpool_redis::redis::cmd("PING")
+                .query_async::<String>(&mut *conn)
+                .await
+                .ok()
+        };
+        matches!(
+            tokio::time::timeout(READY_PROBE_TIMEOUT, ping).await,
+            Ok(Some(_))
+        )
+    };
+    let (database, redis) = tokio::join!(database, redis);
+    let nats = state.nats.connection_state() == async_nats::connection::State::Connected;
+
+    let up = |ok: bool| if ok { "up" } else { "down" };
+    let all = database && redis && nats;
+    (
+        if all {
+            axum::http::StatusCode::OK
+        } else {
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        },
+        axum::Json(ReadyResponse {
+            status: if all { "ready" } else { "unavailable" },
+            database: up(database),
+            redis: up(redis),
+            nats: up(nats),
+        }),
+    )
+}
+
+#[utoipa::path(
+    get,
+    path = "/.well-known/jwks.json",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "JSON Web Key Set of the current and previous signing keys", body = Object),
+    ),
+)]
+pub async fn jwks(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> impl axum::response::IntoResponse {
     // Public key material is safe to cache: a short max-age lets downstream
@@ -81,26 +188,26 @@ fn build_router(
     state: AppState,
     prometheus_layer: Option<axum_prometheus::PrometheusMetricLayer<'static>>,
 ) -> Router {
-    let rl_general = RateLimitState {
-        redis: state.redis.clone(),
+    // Every route passes exactly one rate-limit layer, which checks all of its
+    // buckets in a single Redis call. Auth and reauth routes count against the
+    // general bucket and a stricter one of their own.
+    let general = Bucket {
+        prefix: "rl",
         limit: state.config.rate_limit.requests_per_minute,
-        trusted_proxy_cidrs: state.config.server.trusted_proxy_cidrs.clone(),
-        fail_open_on_redis_error: state.config.rate_limit.fail_open_on_redis_error,
-        allow_requests_without_ip: state.config.rate_limit.allow_requests_without_ip,
-        key_prefix: "rl",
     };
-    // Auth and reauth routes use a separate, stricter bucket ("rl_auth:{ip}") so
-    // their limit is independent of the general bucket.  If both shared "rl:{ip}",
-    // each auth request would consume two tokens (once per layer) and the effective
-    // limit would be halved.
-    let rl_auth = RateLimitState {
-        redis: state.redis.clone(),
+    let strict = Bucket {
+        prefix: "rl_auth",
         limit: state.config.rate_limit.auth_requests_per_minute,
+    };
+    let limiter = |buckets: Vec<Bucket>| RateLimitState {
+        redis: state.redis.clone(),
+        buckets,
         trusted_proxy_cidrs: state.config.server.trusted_proxy_cidrs.clone(),
         fail_open_on_redis_error: state.config.rate_limit.fail_open_on_redis_error,
         allow_requests_without_ip: state.config.rate_limit.allow_requests_without_ip,
-        key_prefix: "rl_auth",
     };
+    let rl_general = limiter(vec![general]);
+    let rl_auth = limiter(vec![general, strict]);
     let security_headers_state = security_headers::SecurityHeadersState {
         enable_hsts: state.config.is_production()
             && state.config.server.public_url.starts_with("https://"),
@@ -117,33 +224,62 @@ fn build_router(
             rl_auth.clone(),
             rate_limit::layer_with_state,
         ))
-        .merge(me_router());
+        .merge(me_router().layer(middleware::from_fn_with_state(
+            rl_general.clone(),
+            rate_limit::layer_with_state,
+        )));
 
-    let router = Router::new()
+    // Probes skip the rate limiter: an orchestrator or the reverse proxy polls
+    // them, and a Redis outage must not turn every instance unhealthy at once.
+    let probes = Router::new()
         .route("/health", get(health))
+        .route("/live", get(live))
+        .route("/ready", get(ready));
+
+    let admin = admin_router().layer(middleware::from_fn_with_state(
+        rl_general.clone(),
+        rate_limit::layer_with_state,
+    ));
+
+    let public = Router::new()
         .route("/.well-known/jwks.json", get(jwks))
-        .nest(
-            "/auth",
-            auth_router().layer(middleware::from_fn_with_state(
-                rl_auth,
-                rate_limit::layer_with_state,
-            )),
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(oauth::metadata),
+        )
+        .route(
+            "/.well-known/openid-configuration",
+            get(oauth::openid_configuration),
         )
         // Logout is authenticated (requires a valid JWT via AuthUser) but intentionally
         // placed outside the auth rate-limit bucket. Exhausting that bucket during a
         // brute-force attack must not prevent the legitimate user from ending their session.
         .route("/auth/logout", post(auth::logout))
-        .nest("/users/me", me_with_strict_reauth)
-        .layer(cors)
         .layer(middleware::from_fn_with_state(
             rl_general,
             rate_limit::layer_with_state,
-        ))
-        .layer(middleware::from_fn_with_state(
-            security_headers_state,
-            security_headers::layer,
-        ))
-        .layer(middleware::from_fn(request_id::layer))
+        ));
+
+    let router = probes
+        .merge(public)
+        .nest(
+            "/auth",
+            auth_router().layer(middleware::from_fn_with_state(
+                rl_auth.clone(),
+                rate_limit::layer_with_state,
+            )),
+        )
+        .nest(
+            "/oauth",
+            oauth_router().layer(middleware::from_fn_with_state(
+                rl_auth,
+                rate_limit::layer_with_state,
+            )),
+        )
+        .nest("/users/me", me_with_strict_reauth)
+        .nest("/admin", admin)
+        .layer(cors)
+        .layer(middleware::from_fn(access_log::layer))
         // 64 KB is more than sufficient for any JSON payload this API accepts.
         // Overrides Axum's default 2 MB limit to reduce DoS exposure.
         .layer(DefaultBodyLimit::max(65_536))
@@ -156,7 +292,15 @@ fn build_router(
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             std::time::Duration::from_secs(30),
-        ));
+        ))
+        // Outside the timeout, the body limit and the rate limiters, whose
+        // refusals are plain text: every error leaves with the documented body.
+        .layer(middleware::from_fn(error_body::layer))
+        .layer(middleware::from_fn_with_state(
+            security_headers_state,
+            security_headers::layer,
+        ))
+        .layer(middleware::from_fn(request_id::layer));
 
     // Outermost layer so HTTP metrics include time spent in every middleware.
     let router = match prometheus_layer {
@@ -184,6 +328,7 @@ fn build_cors(cfg: &crate::config::CorsConfig) -> CorsLayer {
         .allow_methods([
             Method::GET,
             Method::POST,
+            Method::PUT,
             Method::PATCH,
             Method::DELETE,
             Method::OPTIONS,
@@ -208,7 +353,29 @@ fn auth_router() -> Router<AppState> {
         // Token delivered in the body (POST) to keep it out of access logs and
         // browser history. Switched from GET /verify-email?token= for this reason.
         .route("/verify-email", post(auth::verify_email))
+        .route("/verify-email/resend", post(auth::resend_verification))
         .route("/forgot-password", post(auth::forgot_password))
+        .route("/magic-link", post(auth::request_magic_link))
+        .route("/magic-link/complete", post(auth::complete_magic_link))
+        .route("/external/providers", get(external_identity::providers))
+        .route(
+            "/external/complete",
+            post(external_identity::complete_sign_in),
+        )
+        .route(
+            "/external/{provider}/start",
+            post(external_identity::start_sign_in),
+        )
+        .route(
+            "/external/{provider}/callback",
+            get(external_identity::callback),
+        )
+        .route("/passkeys/options", post(passkey::authentication_options))
+        .route("/passkeys/sign-in", post(passkey::sign_in))
+        .route(
+            "/personal-access-tokens/exchange",
+            post(personal_access_token::exchange),
+        )
         .route("/reset-password", post(auth::reset_password))
         .route("/two-factor/complete", post(auth::complete_two_factor))
         .route("/two-factor/recovery", post(auth::recovery_login))
@@ -220,10 +387,89 @@ fn auth_router() -> Router<AppState> {
             "/two-factor/email/resend",
             post(auth::resend_email_two_factor),
         )
-        // Device authorization flow (RFC 8628)
-        .route("/device", post(device::authorize))
-        .route("/device/token", post(device::token))
-        .route("/device/verify", post(device::verify))
+}
+
+// Administration: every route checks its own permission.
+
+fn admin_router() -> Router<AppState> {
+    Router::new()
+        .route("/users", get(admin::users::search))
+        .route("/users/{id}", get(admin::users::detail))
+        .route("/users/{id}", delete(admin::users::delete))
+        .route("/users/{id}/suspend", post(admin::users::suspend))
+        .route("/users/{id}/reactivate", post(admin::users::reactivate))
+        .route("/users/{id}/unlock", post(admin::users::unlock))
+        .route(
+            "/users/{id}/sessions",
+            delete(admin::users::revoke_sessions),
+        )
+        .route(
+            "/users/{id}/password-reset",
+            post(admin::users::force_password_reset),
+        )
+        .route("/users/{id}/roles", post(admin::roles::assign))
+        .route("/users/{id}/roles/{name}", delete(admin::roles::unassign))
+        .route("/permissions", get(admin::roles::permissions))
+        .route("/roles", get(admin::roles::list))
+        .route("/roles", post(admin::roles::create))
+        .route("/roles/{name}", delete(admin::roles::delete))
+        .route(
+            "/roles/{name}/permissions",
+            put(admin::roles::set_permissions),
+        )
+        .route("/clients", get(admin::clients::list))
+        .route("/clients/{client_id}", put(admin::clients::save))
+        .route("/clients/{client_id}", delete(admin::clients::delete))
+        .route(
+            "/clients/{client_id}/secret",
+            post(admin::clients::rotate_secret),
+        )
+        .route(
+            "/clients/{client_id}/secret",
+            delete(admin::clients::remove_secret),
+        )
+        .route("/audit", get(admin::audit::list))
+        .route("/webhooks", get(admin::webhooks::list))
+        .route("/webhooks", post(admin::webhooks::create))
+        .route("/webhooks/{id}", put(admin::webhooks::update))
+        .route("/webhooks/{id}", delete(admin::webhooks::delete))
+        .route(
+            "/webhooks/{id}/secret",
+            post(admin::webhooks::rotate_secret),
+        )
+        .route(
+            "/webhooks/{id}/deliveries",
+            get(admin::webhooks::deliveries),
+        )
+        .route(
+            "/webhooks/{id}/deliveries/{delivery_id}/retry",
+            post(admin::webhooks::retry),
+        )
+}
+
+// OAuth 2.1 (RFC 6749, 7636, 8252, 8628). Every route shares the strict bucket:
+// the token endpoint answers unauthenticated guesses, and the approval routes
+// mint long-lived sessions.
+
+fn oauth_router() -> Router<AppState> {
+    Router::new()
+        .route("/authorize", get(oauth::authorize))
+        .route("/token", post(oauth::token))
+        .route("/device_authorization", post(oauth::device_authorization))
+        .route("/introspect", post(oauth::introspect))
+        .route("/userinfo", get(oauth::userinfo))
+        .route("/revoke", post(oauth::revoke))
+        .route("/device/verify", post(oauth::verify_device))
+        .route("/device/{user_code}", get(oauth::describe_device))
+        .route("/authorization-requests/{id}", get(oauth::describe_request))
+        .route(
+            "/authorization-requests/{id}/approve",
+            post(oauth::approve_request),
+        )
+        .route(
+            "/authorization-requests/{id}/deny",
+            post(oauth::deny_request),
+        )
 }
 
 // Sensitive authenticated routes placed under the strict auth rate-limit bucket.
@@ -233,6 +479,8 @@ fn auth_router() -> Router<AppState> {
 fn me_strict_router() -> Router<AppState> {
     Router::new()
         .route("/reauth", post(user::reauthenticate))
+        // A download of everything stored: as costly as it is sensitive.
+        .route("/export", get(user::export_data))
         .route("/email/start", post(user::start_email_change))
         .route("/email/verify-current", post(user::verify_current_email))
         .route("/email/submit", post(user::submit_new_email))
@@ -246,10 +494,35 @@ fn me_router() -> Router<AppState> {
     Router::new()
         // Profile
         .route("/", get(user::me))
+        .route("/audit", get(audit::list))
+        .route("/two-factor", get(two_factor::list))
         .route("/username", patch(user::change_username))
         .route("/password", patch(user::change_password))
         .route("/locale", patch(user::change_locale))
         .route("/", delete(user::delete_account))
+        // External identities
+        .route("/external-identities", get(external_identity::list))
+        .route(
+            "/external-identities/complete",
+            post(external_identity::complete_link),
+        )
+        .route(
+            "/external-identities/{provider}/start",
+            post(external_identity::start_link),
+        )
+        .route(
+            "/external-identities/{id}",
+            delete(external_identity::unlink),
+        )
+        // Passkeys
+        .route("/passkeys", get(passkey::list))
+        .route("/passkeys", post(passkey::register))
+        .route("/passkeys/options", post(passkey::registration_options))
+        .route("/passkeys/{id}", delete(passkey::remove))
+        // Personal access tokens
+        .route("/tokens", get(personal_access_token::list))
+        .route("/tokens", post(personal_access_token::create))
+        .route("/tokens/{id}", delete(personal_access_token::revoke))
         // Sessions
         .route("/sessions", get(session::list))
         .route("/sessions", delete(session::revoke_all))

@@ -1,11 +1,17 @@
-//! Pure utility functions with no I/O or application state.
+//! Self-contained utilities shared by the services.
 //!
-//! Each module is self-contained and can be used by any service.
+//! Everything here is free of application state; only `redis_counter` performs
+//! I/O, against the Redis pool it is handed, and `redis_pool` builds that pool.
 
+pub mod background;
 pub mod backoff;
+pub mod container_metrics;
 pub mod crypto;
-pub mod geoip;
 pub mod jwt;
+pub mod nats;
 pub mod password;
+pub mod pool_metrics;
+pub mod redis_counter;
+pub mod redis_pool;
 pub mod time;
 pub mod totp;

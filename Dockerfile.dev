@@ -1,16 +1,18 @@
+# Base images pinned by digest, as in the production Dockerfile. TLS is rustls
+# throughout (sqlx-cli included): no OpenSSL at build or run time.
+
 # =============================================================================
 # Stage 1: Chef - install cargo-chef and sqlx-cli
 # =============================================================================
-FROM rust:1.96-slim-bookworm AS chef
+FROM rust:1.96-slim-bookworm@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3 AS chef
 
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
-    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-chef --locked
-RUN cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
+RUN cargo install cargo-chef --version 0.1.78 --locked \
+    && cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
 
 WORKDIR /app
 
@@ -39,12 +41,11 @@ RUN cargo build --release --bin auth-api
 # =============================================================================
 # Stage 4: Runtime dev - includes migrations, sqlx-cli and postgresql-client
 # =============================================================================
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
 
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --uid 1001 --no-create-home --shell /bin/false appuser
@@ -58,8 +59,9 @@ COPY --from=builder /app/templates ./templates
 
 RUN chown -R appuser:appuser /app
 
-USER appuser
+USER 1001:1001
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "sqlx migrate run --database-url $DATABASE_URL && ./auth-api"]
+# `exec` makes the service PID 1, so `docker stop` reaches it as SIGTERM.
+CMD ["sh", "-c", "sqlx migrate run --database-url \"$DATABASE_URL\" && exec ./auth-api"]

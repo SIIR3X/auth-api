@@ -1,0 +1,100 @@
+//! Audit repository read-function tests.
+//!
+//! `append` is exercised by every HTTP integration test that triggers an
+//! auditable action; these tests cover the read paths that are not reached
+//! via the HTTP layer.
+
+use auth_api::{
+    domain::audit::AuditAction,
+    repositories::audit::{self, NewAuditEntry},
+};
+use uuid::Uuid;
+
+use crate::common::{app::TestApp, fixtures};
+
+// Helpers
+
+async fn append_entry(
+    app: &TestApp,
+    user_id: Option<Uuid>,
+    action: AuditAction,
+    request_id: Option<Uuid>,
+) {
+    audit::append(
+        &app.db,
+        &NewAuditEntry {
+            user_id,
+            request_id,
+            action,
+            ip_address: None,
+            metadata: serde_json::json!({}),
+        },
+    )
+    .await
+    .expect("audit::append failed");
+}
+
+// find_by_user
+
+#[tokio::test]
+async fn find_by_user_returns_entries_for_that_user() {
+    let app = TestApp::spawn().await;
+
+    let user = fixtures::register_user(&app, 940).await;
+    let other = fixtures::register_user(&app, 941).await;
+
+    // Snapshot count before we add our own entries (register_user itself creates
+    // audit entries, so we measure the delta rather than an absolute count).
+    let before = audit::find_by_user(&app.db, user.id, 100, 0)
+        .await
+        .expect("find_by_user (before) failed")
+        .len();
+
+    append_entry(&app, Some(user.id), AuditAction::Login, None).await;
+    append_entry(&app, Some(user.id), AuditAction::PasswordChanged, None).await;
+    append_entry(&app, Some(other.id), AuditAction::Login, None).await;
+
+    let entries = audit::find_by_user(&app.db, user.id, 100, 0)
+        .await
+        .expect("find_by_user failed");
+
+    assert_eq!(
+        entries.len(),
+        before + 2,
+        "must return exactly 2 new entries for this user"
+    );
+    assert!(entries.iter().all(|e| e.user_id == Some(user.id)));
+}
+
+#[tokio::test]
+async fn find_by_user_respects_limit_and_offset() {
+    let app = TestApp::spawn().await;
+
+    let user = fixtures::register_user(&app, 942).await;
+
+    // Snapshot existing entries then add 5 more so total = initial + 5.
+    let initial = audit::find_by_user(&app.db, user.id, 100, 0)
+        .await
+        .expect("initial count failed")
+        .len();
+
+    for _ in 0..5 {
+        append_entry(&app, Some(user.id), AuditAction::Login, None).await;
+    }
+
+    let total = initial + 5;
+
+    let page1 = audit::find_by_user(&app.db, user.id, 3, 0)
+        .await
+        .expect("page1 failed");
+    let page2 = audit::find_by_user(&app.db, user.id, 3, 3)
+        .await
+        .expect("page2 failed");
+
+    assert_eq!(page1.len(), 3, "page1 must have 3 entries");
+    assert_eq!(
+        page2.len(),
+        total - 3,
+        "page2 must have the remaining entries"
+    );
+}

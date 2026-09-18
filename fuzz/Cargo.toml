@@ -1,0 +1,111 @@
+[package]
+name = "auth-api-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# A workspace of its own: the fuzz targets build with nightly and sanitizers,
+# apart from the service.
+[workspace]
+members = ["."]
+
+[dependencies]
+auth-api = { path = "..", features = ["fuzzing"] }
+libfuzzer-sys = "0.4"
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "access_token"
+path = "fuzz_targets/access_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audit_cursor"
+path = "fuzz_targets/audit_cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_ip"
+path = "fuzz_targets/client_ip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_registration"
+path = "fuzz_targets/client_registration.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keyring"
+path = "fuzz_targets/keyring.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pkce"
+path = "fuzz_targets/pkce.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pre_auth_state"
+path = "fuzz_targets/pre_auth_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pwned_range"
+path = "fuzz_targets/pwned_range.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redirect_uri"
+path = "fuzz_targets/redirect_uri.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "totp_code"
+path = "fuzz_targets/totp_code.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "validators"
+path = "fuzz_targets/validators.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webhook_url"
+path = "fuzz_targets/webhook_url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webauthn"
+path = "fuzz_targets/webauthn.rs"
+test = false
+doc = false
+bench = false

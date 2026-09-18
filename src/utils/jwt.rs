@@ -49,8 +49,8 @@ pub struct Claims {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iss: Option<String>,
     /// Audience (the `aud` standard claim, RFC 7519 section 4.1.3).
-    /// Emitted as a JSON array of strings so multiple downstream services
-    /// (core-api, billing-api, ...) can each accept the same token.
+    /// Emitted as a JSON array of strings so several downstream resource servers
+    /// can each accept the same token.
     /// Defaults to empty for tests / backward compat; production tokens
     /// always carry at least one entry (enforced by config validation).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -58,25 +58,30 @@ pub struct Claims {
     /// Role names assigned to the user (e.g. ["user", "admin"]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<String>,
-    /// Permission names granted through roles (e.g. ["billing:read", "billing:create"]).
+    /// Permission names granted through roles (e.g. ["users:read", "users:manage"]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permissions: Vec<String>,
+    /// The client a client credentials token was issued to (RFC 9068). Such a
+    /// token belongs to no user and no session: `sid` is nil.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 impl Claims {
-    pub fn new(user_id: Uuid, session_id: Uuid, exp: i64) -> Self {
-        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    /// Claims issued at `issued_at` (Unix timestamp), valid from then until `exp`.
+    pub fn new(user_id: Uuid, session_id: Uuid, issued_at: i64, exp: i64) -> Self {
         Self {
             sub: user_id,
             sid: session_id,
             jti: Uuid::new_v4(),
             exp,
-            iat: now,
-            nbf: Some(now),
+            iat: issued_at,
+            nbf: Some(issued_at),
             iss: None,
             aud: Vec::new(),
             roles: Vec::new(),
             permissions: Vec::new(),
+            client_id: None,
         }
     }
 
@@ -87,22 +92,33 @@ impl Claims {
     }
 }
 
+/// Sign any claims set with the access token key (ID tokens).
+pub fn encode_claims(
+    claims: &impl serde::Serialize,
+    key: &EncodingKey,
+    kid: Option<&str>,
+) -> Result<String, JwtError> {
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = kid.map(str::to_owned);
+    jsonwebtoken::encode(&header, claims, key).map_err(|e| JwtError::Encode(e.to_string()))
+}
+
 pub fn encode_token(
     claims: &Claims,
     key: &EncodingKey,
     kid: Option<&str>,
 ) -> Result<String, JwtError> {
     let mut header = Header::new(Algorithm::ES256);
-    // Optional key identifier. When present, JWKS-based verifiers (core-api,
-    // billing-api, ...) can pin verification to a specific key, allowing
-    // safe key rotation.
+    // Optional key identifier. When present, JWKS-based verifiers can pin
+    // verification to a specific key, allowing safe key rotation.
     header.kid = kid.map(str::to_owned);
 
     jsonwebtoken::encode(&header, claims, key).map_err(|e| JwtError::Encode(e.to_string()))
 }
 
-pub fn decode_token(token: &str, key: &DecodingKey) -> Result<Claims, JwtError> {
-    decode_token_with_fallback(token, key, None)
+/// Decode a token and check its time claims against `now` (Unix timestamp).
+pub fn decode_token(token: &str, key: &DecodingKey, now: i64) -> Result<Claims, JwtError> {
+    decode_token_with_fallback(token, key, None, now)
 }
 
 /// Defense-in-depth post-decode validation of the `iss` and `aud` claims.
@@ -111,8 +127,8 @@ pub fn decode_token(token: &str, key: &DecodingKey) -> Result<Claims, JwtError> 
 /// and the time-based claims (exp/nbf): they do NOT pin the issuer or the
 /// audience, mostly so legacy tests that produce tokens without those fields
 /// keep passing. Callers that mint and consume tokens within the same trust
-/// boundary (the `AuthenticatedUser` extractor here in auth-api, downstream
-/// resource servers like core-api / billing-api) MUST run this check after
+/// boundary (the `AuthUser` extractor here in auth-api, downstream
+/// resource servers) MUST run this check after
 /// decoding to make sure a token issued by another deployment, or addressed
 /// to another service, is rejected.
 ///
@@ -140,16 +156,19 @@ pub fn validate_iss_aud(
 
 /// Decodes a JWT, trying `key` first and then `previous_key` if provided.
 /// Used to accept tokens signed with the previous key during a rotation window.
+/// The time claims are checked against `now` (Unix timestamp), read from the
+/// application clock.
 pub fn decode_token_with_fallback(
     token: &str,
     key: &DecodingKey,
     previous_key: Option<&DecodingKey>,
+    now: i64,
 ) -> Result<Claims, JwtError> {
-    match decode_token_inner(token, key) {
+    match decode_token_inner(token, key, now) {
         Ok(claims) => Ok(claims),
         Err(primary_error) => {
             if let Some(previous_key) = previous_key {
-                decode_token_inner(token, previous_key).map_err(|_| primary_error)
+                decode_token_inner(token, previous_key, now).map_err(|_| primary_error)
             } else {
                 Err(primary_error)
             }
@@ -157,19 +176,81 @@ pub fn decode_token_with_fallback(
     }
 }
 
-fn decode_token_inner(token: &str, key: &DecodingKey) -> Result<Claims, JwtError> {
+/// The keys an access token may be verified with, by `kid`: the signing key's,
+/// the next key published ahead of a rotation, and the previous key after one.
+pub struct VerifyingKeys {
+    keys: Vec<(String, DecodingKey)>,
+}
+
+impl VerifyingKeys {
+    pub fn new(keys: Vec<(String, DecodingKey)>) -> Self {
+        Self { keys }
+    }
+
+    /// The `kid`s held, in the order given.
+    pub fn kids(&self) -> impl Iterator<Item = &str> {
+        self.keys.iter().map(|(kid, _)| kid.as_str())
+    }
+}
+
+/// Decode a token with the key its `kid` names, and check its time claims
+/// against `now`.
+///
+/// A token without a `kid`, or naming none of the keys, is tried against every
+/// key: tokens signed before the header carried a `kid` keep verifying until
+/// they expire, and a made-up `kid` gains nothing since the signature must
+/// still match one of the keys.
+pub fn decode_token_with_keys(
+    token: &str,
+    keys: &VerifyingKeys,
+    now: i64,
+) -> Result<Claims, JwtError> {
+    let header = jsonwebtoken::decode_header(token).map_err(|e| JwtError::Decode(e.to_string()))?;
+    if let Some(kid) = header.kid.as_deref()
+        && let Some((_, key)) = keys.keys.iter().find(|(held, _)| held == kid)
+    {
+        return decode_token_inner(token, key, now);
+    }
+
+    let mut last = JwtError::Decode("no verification key".into());
+    for (_, key) in &keys.keys {
+        match decode_token_inner(token, key, now) {
+            Ok(claims) => return Ok(claims),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
+fn decode_token_inner(token: &str, key: &DecodingKey, now: i64) -> Result<Claims, JwtError> {
     let mut validation = Validation::new(Algorithm::ES256);
-    // Match the historical in-house behaviour: strict time-based validation
-    // with no leeway, `nbf` checked when present, and `iss`/`aud` left to the
-    // explicit `validate_iss_aud` call so trust-boundary pinning stays visible
-    // at the call sites (extractor, downstream resource servers).
+    // The signature and the algorithm are checked by `jsonwebtoken`; the time
+    // claims are checked by `check_time_claims` against the application clock
+    // rather than the library's own reading of the wall clock. `exp` stays a
+    // required claim. `iss`/`aud` are left to the explicit `validate_iss_aud`
+    // call so trust-boundary pinning stays visible at the call sites.
     validation.leeway = 0;
-    validation.validate_nbf = true;
+    validation.validate_exp = false;
+    validation.validate_nbf = false;
     validation.validate_aud = false;
 
-    jsonwebtoken::decode::<Claims>(token, key, &validation)
+    let claims = jsonwebtoken::decode::<Claims>(token, key, &validation)
         .map(|data| data.claims)
-        .map_err(|e| JwtError::Decode(e.to_string()))
+        .map_err(|e| JwtError::Decode(e.to_string()))?;
+    check_time_claims(&claims, now)?;
+    Ok(claims)
+}
+
+/// Refuse a token at or after its expiry, or before its `nbf`. No leeway: the
+/// issuer and this check read the same clock.
+pub fn check_time_claims(claims: &Claims, now: i64) -> Result<(), JwtError> {
+    if now >= claims.exp {
+        return Err(JwtError::Decode("token expired".into()));
+    }
+    if claims.nbf.is_some_and(|nbf| nbf > now) {
+        return Err(JwtError::Decode("token not yet valid".into()));
+    }
+    Ok(())
 }
 
 // Key parsing helpers
@@ -251,12 +332,42 @@ mod tests {
         (private_pem, public_pem)
     }
 
+    fn current_time() -> i64 {
+        time::OffsetDateTime::now_utc().unix_timestamp()
+    }
+
     fn valid_claims() -> Claims {
-        Claims::new(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            time::OffsetDateTime::now_utc().unix_timestamp() + 3600,
-        )
+        let now = current_time();
+        Claims::new(Uuid::new_v4(), Uuid::new_v4(), now, now + 3600)
+    }
+
+    #[test]
+    fn time_claims_follow_the_supplied_clock() {
+        let (sk, vk) = test_keys();
+        let claims = Claims::new(Uuid::new_v4(), Uuid::new_v4(), 1_000, 1_900);
+        let token = encode_token(&claims, &sk, None).unwrap();
+
+        assert!(
+            decode_token(&token, &vk, 999).is_err(),
+            "accepted before nbf"
+        );
+        assert!(decode_token(&token, &vk, 1_000).is_ok());
+        assert!(decode_token(&token, &vk, 1_899).is_ok());
+        assert!(decode_token(&token, &vk, 1_900).is_err(), "accepted at exp");
+    }
+
+    #[test]
+    fn token_without_expiry_is_rejected() {
+        let (sk, vk) = test_keys();
+        let now = current_time();
+        let payload = serde_json::json!({
+            "sub": Uuid::new_v4(),
+            "sid": Uuid::new_v4(),
+            "jti": Uuid::new_v4(),
+            "iat": now,
+        });
+        let token = jsonwebtoken::encode(&Header::new(Algorithm::ES256), &payload, &sk).unwrap();
+        assert!(decode_token(&token, &vk, now).is_err());
     }
 
     #[test]
@@ -264,7 +375,7 @@ mod tests {
         let (sk, vk) = test_keys();
         let claims = valid_claims();
         let token = encode_token(&claims, &sk, None).unwrap();
-        let decoded = decode_token(&token, &vk).unwrap();
+        let decoded = decode_token(&token, &vk, current_time()).unwrap();
 
         assert_eq!(decoded.sub, claims.sub);
         assert_eq!(decoded.sid, claims.sid);
@@ -277,8 +388,8 @@ mod tests {
         let user_id = Uuid::new_v4();
         let session_id = Uuid::new_v4();
         let exp = time::OffsetDateTime::now_utc().unix_timestamp() + 3600;
-        let c1 = Claims::new(user_id, session_id, exp);
-        let c2 = Claims::new(user_id, session_id, exp);
+        let c1 = Claims::new(user_id, session_id, 0, exp);
+        let c2 = Claims::new(user_id, session_id, 0, exp);
         assert_ne!(c1.jti, c2.jti);
     }
 
@@ -288,7 +399,7 @@ mod tests {
         let (_sk2, vk2) = test_keys();
         let token = encode_token(&valid_claims(), &sk, None).unwrap();
         assert!(matches!(
-            decode_token(&token, &vk2),
+            decode_token(&token, &vk2, current_time()),
             Err(JwtError::Decode(_))
         ));
     }
@@ -307,10 +418,11 @@ mod tests {
             aud: Vec::new(),
             roles: Vec::new(),
             permissions: Vec::new(),
+            client_id: None,
         };
         let token = encode_token(&claims, &sk, None).unwrap();
         assert!(matches!(
-            decode_token(&token, &vk),
+            decode_token(&token, &vk, current_time()),
             Err(JwtError::Decode(_))
         ));
     }
@@ -330,10 +442,11 @@ mod tests {
             aud: Vec::new(),
             roles: Vec::new(),
             permissions: Vec::new(),
+            client_id: None,
         };
         let token = encode_token(&claims, &sk, None).unwrap();
         assert!(matches!(
-            decode_token(&token, &vk),
+            decode_token(&token, &vk, current_time()),
             Err(JwtError::Decode(_))
         ));
     }
@@ -342,7 +455,7 @@ mod tests {
     fn decode_malformed_token_fails() {
         let (_sk, vk) = test_keys();
         assert!(matches!(
-            decode_token("not.a.token", &vk),
+            decode_token("not.a.token", &vk, current_time()),
             Err(JwtError::Decode(_))
         ));
     }
@@ -357,7 +470,7 @@ mod tests {
             .encode(serde_json::to_vec(&valid_claims()).expect("claims must serialize"));
         let token = format!("{header}.{payload}.AAAA");
         assert!(matches!(
-            decode_token(&token, &vk),
+            decode_token(&token, &vk, current_time()),
             Err(JwtError::Decode(_))
         ));
     }
@@ -369,7 +482,8 @@ mod tests {
         let claims = valid_claims();
         let token = encode_token(&claims, &old_sk, None).unwrap();
 
-        let decoded = decode_token_with_fallback(&token, &new_vk, Some(&old_vk)).unwrap();
+        let decoded =
+            decode_token_with_fallback(&token, &new_vk, Some(&old_vk), current_time()).unwrap();
 
         assert_eq!(decoded.sub, claims.sub);
         assert_eq!(decoded.sid, claims.sid);
@@ -487,7 +601,7 @@ mod tests {
 
         let claims = valid_claims();
         let token = encode_token(&claims, &encoding_key, None).unwrap();
-        let decoded = decode_token(&token, &decoding_key).unwrap();
+        let decoded = decode_token(&token, &decoding_key, current_time()).unwrap();
         assert_eq!(decoded.sub, claims.sub);
     }
 
@@ -522,10 +636,11 @@ mod tests {
                 aud: Vec::new(),
                 roles: Vec::new(),
                 permissions: Vec::new(),
+                client_id: None,
             };
 
             let token = encode_token(&claims, &sk, None).unwrap();
-            let decoded = decode_token(&token, &vk).unwrap();
+            let decoded = decode_token(&token, &vk, current_time()).unwrap();
 
             prop_assert_eq!(decoded.sub, claims.sub);
             prop_assert_eq!(decoded.sid, claims.sid);
@@ -554,6 +669,7 @@ mod tests {
                 aud: Vec::new(),
                 roles: Vec::new(),
                 permissions: Vec::new(),
+                client_id: None,
             };
 
             let token = encode_token(&claims, &sk, None).unwrap();
@@ -562,9 +678,108 @@ mod tests {
             let tampered = parts.join(".");
 
             prop_assert!(matches!(
-                decode_token(&tampered, &vk),
+                decode_token(&tampered, &vk, current_time()),
                 Err(JwtError::Decode(_))
             ));
         }
+    }
+
+    #[test]
+    fn a_kid_is_eight_lowercase_hex_digits_stable_per_key() {
+        let (_, public) = test_key_pems();
+        let key = parse_p256_verifying_key(&public).unwrap();
+        let kid = compute_kid(&key);
+        assert_eq!(kid.len(), 8);
+        assert!(
+            kid.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "{kid}"
+        );
+        assert_eq!(compute_kid(&key), kid);
+        let (_, other) = test_key_pems();
+        assert_ne!(compute_kid(&parse_p256_verifying_key(&other).unwrap()), kid);
+    }
+}
+
+#[cfg(test)]
+mod key_selection {
+    use p256::{
+        ecdsa::SigningKey,
+        pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding},
+    };
+
+    use super::*;
+
+    struct Pair {
+        encoding: jsonwebtoken::EncodingKey,
+        decoding: DecodingKey,
+        kid: String,
+    }
+
+    fn pair() -> Pair {
+        let signing = SigningKey::random(&mut rand_core::OsRng);
+        let private = signing.to_pkcs8_pem(LineEnding::LF).unwrap();
+        let public = signing
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .unwrap();
+        Pair {
+            encoding: parse_encoding_key(&private).unwrap(),
+            decoding: parse_verifying_key(&public).unwrap(),
+            kid: compute_kid(&parse_p256_verifying_key(&public).unwrap()),
+        }
+    }
+
+    fn keys(pairs: &[&Pair]) -> VerifyingKeys {
+        VerifyingKeys::new(
+            pairs
+                .iter()
+                .map(|pair| (pair.kid.clone(), pair.decoding.clone()))
+                .collect(),
+        )
+    }
+
+    fn claims() -> Claims {
+        Claims::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), 1_000, 2_000)
+    }
+
+    #[test]
+    fn the_kid_selects_the_key() {
+        let (current, next) = (pair(), pair());
+        let held = keys(&[&current, &next]);
+        assert_eq!(
+            held.kids().collect::<Vec<_>>(),
+            [current.kid.as_str(), next.kid.as_str()]
+        );
+        for signer in [&current, &next] {
+            let token = encode_token(&claims(), &signer.encoding, Some(&signer.kid)).unwrap();
+            assert!(decode_token_with_keys(&token, &held, 1_500).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_token_without_a_known_kid_is_tried_against_every_key() {
+        let (current, previous) = (pair(), pair());
+        let held = keys(&[&current, &previous]);
+        let untagged = encode_token(&claims(), &previous.encoding, None).unwrap();
+        assert!(decode_token_with_keys(&untagged, &held, 1_500).is_ok());
+        let mislabelled = encode_token(&claims(), &previous.encoding, Some("unknown")).unwrap();
+        assert!(decode_token_with_keys(&mislabelled, &held, 1_500).is_ok());
+    }
+
+    #[test]
+    fn a_kid_does_not_lend_its_key_to_another_signature() {
+        let (current, foreign) = (pair(), pair());
+        let held = keys(&[&current]);
+        let forged = encode_token(&claims(), &foreign.encoding, Some(&current.kid)).unwrap();
+        assert!(decode_token_with_keys(&forged, &held, 1_500).is_err());
+        let untagged_foreign = encode_token(&claims(), &foreign.encoding, None).unwrap();
+        assert!(decode_token_with_keys(&untagged_foreign, &held, 1_500).is_err());
+        let genuine = encode_token(&claims(), &current.encoding, Some(&current.kid)).unwrap();
+        assert!(
+            decode_token_with_keys(&genuine, &held, 2_000).is_err(),
+            "time claims still apply"
+        );
+        assert!(decode_token_with_keys("not.a.token", &held, 1_500).is_err());
     }
 }

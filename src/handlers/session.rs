@@ -17,7 +17,7 @@ use super::extractors::{AuthUser, ClientIp};
 
 // Response types
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SessionResponse {
     pub id: Uuid,
     pub session_type: SessionType,
@@ -38,13 +38,26 @@ pub struct SessionResponse {
 
 // Request types
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RevokeAllRequest {
     pub current_password: Option<String>,
+    /// Keep the session making the request signed in. Default: false.
+    #[serde(default)]
+    pub keep_current_session: bool,
 }
 
 // Handlers
 
+#[utoipa::path(
+    get,
+    path = "/users/me/sessions",
+    tag = "sessions",
+    responses(
+        (status = 200, description = "Active sessions", body = [SessionResponse]),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -73,17 +86,34 @@ pub async fn list(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/users/me/sessions/{id}",
+    tag = "sessions",
+    params(("id" = Uuid, Path, description = "Method or session id")),
+    request_body = Option<RevokeAllRequest>,
+    responses(
+        (status = 204, description = "Session revoked"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+        (status = 404, description = "No such session", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn revoke(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     auth: AuthUser,
     Path(session_id): Path<Uuid>,
+    body: Option<Json<RevokeAllRequest>>,
 ) -> Result<StatusCode, AppError> {
+    let current_password = body.and_then(|Json(b)| b.current_password);
     session_svc::revoke(
         &state,
         auth.user_id,
         auth.session_id,
         session_id,
+        current_password.as_deref(),
         ip,
         auth.request_id,
     )
@@ -91,17 +121,33 @@ pub async fn revoke(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    delete,
+    path = "/users/me/sessions",
+    tag = "sessions",
+    request_body = Option<RevokeAllRequest>,
+    responses(
+        (status = 204, description = "Every other session revoked, and the current one too unless `keep_current_session`"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
 pub async fn revoke_all(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     auth: AuthUser,
-    Json(body): Json<RevokeAllRequest>,
+    body: Option<Json<RevokeAllRequest>>,
 ) -> Result<StatusCode, AppError> {
+    let (current_password, keep_current_session) = body
+        .map(|Json(b)| (b.current_password, b.keep_current_session))
+        .unwrap_or_default();
     session_svc::revoke_all(
         &state,
         auth.user_id,
         auth.session_id,
-        body.current_password.as_deref(),
+        current_password.as_deref(),
+        keep_current_session,
         ip,
         auth.request_id,
     )

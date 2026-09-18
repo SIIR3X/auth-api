@@ -2,13 +2,8 @@
 <html>
 <body>
 <p>Hello {{ username }},</p>
-<p>We noticed a new login to your account from a device we haven't seen before.</p>
-<ul>
-  {% if ip %}<li><strong>IP address:</strong> {{ ip }}</li>{% endif %}
-  {% if country %}<li><strong>Country:</strong> {{ country }}</li>{% endif %}
-  {% if city %}<li><strong>City:</strong> {{ city }}</li>{% endif %}
-  {% if user_agent %}<li><strong>Device:</strong> {{ user_agent }}</li>{% endif %}
-</ul>
-<p>If this was you, no action is needed. If you do not recognise this activity, please change your password immediately and enable two-factor authentication.</p>
+<p>Your {{ app_name }} account was just signed in to from {{ device }}{% if ip %}, from the address {{ ip }}{% endif %}, on {{ time }} (UTC).</p>
+<p>If this was you, there is nothing to do.</p>
+<p>If it was not, reset your password right away and sign out every session from your account settings.</p>
 </body>
 </html>

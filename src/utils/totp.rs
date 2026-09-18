@@ -7,7 +7,7 @@
 
 use totp_rs::{Algorithm, Secret, TOTP};
 
-use crate::utils::crypto::{self, CryptoError};
+use crate::utils::crypto::{CryptoError, Keyring};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TotpError {
@@ -37,14 +37,25 @@ pub fn qr_uri(base32_secret: &str, email: &str, issuer: &str) -> String {
 }
 
 /// Verifies a 6-digit TOTP code against the encrypted secret stored in the database.
-/// `skew` controls how many 30-second steps before/after the current one are accepted.
+/// `skew` controls how many 30-second steps before/after the one containing
+/// `now` (Unix timestamp, from the application clock) are accepted.
 pub fn verify_code(
     encrypted_secret: &str,
     code: &str,
-    key: &[u8; 32],
+    keyring: &Keyring,
     skew: u8,
+    now: i64,
 ) -> Result<bool, TotpError> {
-    let plaintext = crypto::decrypt(encrypted_secret, key)?;
+    let now = u64::try_from(now).map_err(|_| TotpError::TimeError)?;
+    // totp-rs subtracts the skew from the current step, which underflows within
+    // `skew` steps of the epoch: refuse such a time rather than panic.
+    if now < u64::from(skew) * 30 {
+        return Err(TotpError::TimeError);
+    }
+    if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(false);
+    }
+    let plaintext = keyring.decrypt(encrypted_secret)?;
 
     let secret_bytes = Secret::Encoded(plaintext)
         .to_bytes()
@@ -53,7 +64,7 @@ pub fn verify_code(
     let totp = TOTP::new(Algorithm::SHA1, 6, skew, 30, secret_bytes)
         .map_err(|_| TotpError::InvalidSecret)?;
 
-    totp.check_current(code).map_err(|_| TotpError::TimeError)
+    Ok(totp.check(code, now))
 }
 
 // Percent-encodes a string for use in a URI (RFC 3986 unreserved chars pass through).
@@ -77,9 +88,14 @@ fn percent_encode(input: &str) -> String {
 mod tests {
     use super::*;
     use crate::utils::crypto;
+
+    fn keyring() -> Keyring {
+        Keyring::new(*KEY, None)
+    }
     use totp_rs::{Algorithm, Secret, TOTP};
 
     const KEY: &[u8; 32] = &[7u8; 32];
+    const NOW: i64 = 1_700_000_000;
 
     #[test]
     fn generate_secret_is_valid_base32() {
@@ -107,31 +123,115 @@ mod tests {
         assert!(uri.contains("user%40example.com"));
     }
 
+    /// The RFC 6238 test secret ("12345678901234567890"), base32-encoded.
+    const RFC_SECRET: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+
+    /// Code of the step containing `at`.
+    fn code_at(at: i64) -> String {
+        let bytes = Secret::Encoded(RFC_SECRET.into()).to_bytes().unwrap();
+        TOTP::new(Algorithm::SHA1, 6, 0, 30, bytes)
+            .unwrap()
+            .generate(at as u64)
+    }
+
+    fn encrypted_rfc_secret() -> String {
+        crypto::encrypt(RFC_SECRET, KEY).unwrap()
+    }
+
+    #[test]
+    fn codes_match_the_rfc_6238_vectors() {
+        // RFC 6238 appendix B, SHA-1, truncated to 6 digits.
+        assert_eq!(code_at(59), "287082");
+        assert_eq!(code_at(1_111_111_109), "081804");
+        assert_eq!(code_at(2_000_000_000), "279037");
+    }
+
     #[test]
     fn verify_correct_code_returns_true() {
-        let secret_b32 = generate_secret();
-        let encrypted = crypto::encrypt(&secret_b32, KEY).unwrap();
+        let code = code_at(NOW);
+        assert!(verify_code(&encrypted_rfc_secret(), &code, &keyring(), 1, NOW).unwrap());
+    }
 
-        // Generate the current valid code using the same secret
-        let secret_bytes = Secret::Encoded(secret_b32).to_bytes().unwrap();
-        let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes).unwrap();
-        let code = totp.generate_current().unwrap();
+    #[test]
+    fn skew_bounds_the_accepted_steps() {
+        let encrypted = encrypted_rfc_secret();
+        let (previous, next, two_back) = (code_at(NOW - 30), code_at(NOW + 30), code_at(NOW - 60));
+        assert_ne!(previous, code_at(NOW));
+        assert_ne!(two_back, previous);
 
-        assert!(verify_code(&encrypted, &code, KEY, 1).unwrap());
+        assert!(verify_code(&encrypted, &previous, &keyring(), 1, NOW).unwrap());
+        assert!(verify_code(&encrypted, &next, &keyring(), 1, NOW).unwrap());
+        assert!(!verify_code(&encrypted, &previous, &keyring(), 0, NOW).unwrap());
+        assert!(!verify_code(&encrypted, &two_back, &keyring(), 1, NOW).unwrap());
+    }
+
+    #[test]
+    fn a_time_before_the_epoch_is_an_error() {
+        assert!(matches!(
+            verify_code(&encrypted_rfc_secret(), "123456", &keyring(), 1, -1),
+            Err(TotpError::TimeError)
+        ));
     }
 
     #[test]
     fn verify_wrong_code_returns_false() {
-        let secret_b32 = generate_secret();
-        let encrypted = crypto::encrypt(&secret_b32, KEY).unwrap();
-        assert!(!verify_code(&encrypted, "000000", KEY, 1).unwrap());
+        let encrypted = encrypted_rfc_secret();
+        let wrong = if code_at(NOW) == "000000" {
+            "000001"
+        } else {
+            "000000"
+        };
+        assert!(!verify_code(&encrypted, wrong, &keyring(), 0, NOW).unwrap());
     }
 
     #[test]
     fn verify_with_wrong_key_fails() {
-        let secret_b32 = generate_secret();
-        let encrypted = crypto::encrypt(&secret_b32, KEY).unwrap();
-        let wrong_key = &[99u8; 32];
-        assert!(verify_code(&encrypted, "123456", wrong_key, 1).is_err());
+        let wrong_key = Keyring::new([99u8; 32], None);
+        assert!(verify_code(&encrypted_rfc_secret(), &code_at(NOW), &wrong_key, 1, NOW).is_err());
+    }
+
+    #[test]
+    fn times_within_the_skew_of_the_epoch_are_refused_without_panicking() {
+        for now in [0, 29, 59] {
+            assert!(matches!(
+                verify_code(&encrypted_rfc_secret(), "287082", &keyring(), 2, now),
+                Err(TotpError::TimeError)
+            ));
+        }
+        assert!(verify_code(&encrypted_rfc_secret(), &code_at(60), &keyring(), 2, 60).unwrap());
+    }
+
+    #[test]
+    fn only_six_ascii_digits_can_match() {
+        let code = code_at(NOW);
+        let fullwidth: String = code
+            .chars()
+            .map(|c| char::from_u32(c as u32 - '0' as u32 + '\u{FF10}' as u32).unwrap())
+            .collect();
+        for candidate in [
+            format!("{code} "),
+            format!("0{code}"),
+            code[..5].to_owned(),
+            fullwidth,
+        ] {
+            assert!(!verify_code(&encrypted_rfc_secret(), &candidate, &keyring(), 1, NOW).unwrap());
+        }
+    }
+
+    #[test]
+    fn a_malformed_code_is_refused_before_the_secret_is_decrypted() {
+        // With a key that cannot decrypt the secret, only a code that reached
+        // the decryption fails with an error: malformed codes stop before it.
+        let wrong_key = Keyring::new([99u8; 32], None);
+        for code in ["12345", "abcdef", "1234567", ""] {
+            assert!(
+                matches!(
+                    verify_code(&encrypted_rfc_secret(), code, &wrong_key, 1, NOW),
+                    Ok(false)
+                ),
+                "{code:?}"
+            );
+        }
+        assert!(verify_code(&encrypted_rfc_secret(), "123456", &wrong_key, 1, NOW).is_err());
     }
 }

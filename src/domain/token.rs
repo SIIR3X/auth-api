@@ -33,7 +33,28 @@ pub struct PasswordResetToken {
     pub request_user_agent: Option<String>,
 }
 
-// Shared helpers for both token types
+/// A sign-in link sent by email.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MagicLinkToken {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub token_hash: Vec<u8>,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
+    pub used_at: Option<OffsetDateTime>,
+    pub request_ip: Option<IpNetwork>,
+    pub request_user_agent: Option<String>,
+}
+
+// Shared helpers for every token type
+
+/// What a submitted one-time token turned out to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenVerdict {
+    Valid,
+    Expired,
+    Used,
+}
 
 pub trait OneTimeToken {
     fn used_at(&self) -> Option<OffsetDateTime>;
@@ -43,12 +64,23 @@ pub trait OneTimeToken {
         self.used_at().is_some()
     }
 
-    fn is_expired(&self) -> bool {
-        self.expires_at() < OffsetDateTime::now_utc()
+    fn is_expired(&self, now: OffsetDateTime) -> bool {
+        self.expires_at() < now
     }
 
-    fn is_valid(&self) -> bool {
-        !self.is_used() && !self.is_expired()
+    fn is_valid(&self, now: OffsetDateTime) -> bool {
+        !self.is_used() && !self.is_expired(now)
+    }
+
+    /// Expiry is reported first: an expired link says so, used or not.
+    fn verdict(&self, now: OffsetDateTime) -> TokenVerdict {
+        if self.is_expired(now) {
+            TokenVerdict::Expired
+        } else if self.is_used() {
+            TokenVerdict::Used
+        } else {
+            TokenVerdict::Valid
+        }
     }
 }
 
@@ -72,12 +104,26 @@ impl OneTimeToken for PasswordResetToken {
     }
 }
 
+impl OneTimeToken for MagicLinkToken {
+    fn used_at(&self) -> Option<OffsetDateTime> {
+        self.used_at
+    }
+
+    fn expires_at(&self) -> OffsetDateTime {
+        self.expires_at
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn now() -> OffsetDateTime {
+        OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000)
+    }
+
     fn make_reset_token(used: bool, expires_in_secs: i64) -> PasswordResetToken {
-        let now = OffsetDateTime::now_utc();
+        let now = now();
         PasswordResetToken {
             id: uuid::Uuid::new_v4(),
             user_id: uuid::Uuid::new_v4(),
@@ -102,26 +148,74 @@ mod tests {
 
     #[test]
     fn is_expired_true_when_past() {
-        assert!(make_reset_token(false, -1).is_expired());
+        assert!(make_reset_token(false, -1).is_expired(now()));
     }
 
     #[test]
     fn is_expired_false_when_future() {
-        assert!(!make_reset_token(false, 3600).is_expired());
+        assert!(!make_reset_token(false, 3600).is_expired(now()));
+    }
+
+    #[test]
+    fn is_expired_only_after_the_expiry_instant() {
+        let token = make_reset_token(false, 60);
+        assert!(!token.is_expired(token.expires_at));
+        assert!(token.is_expired(token.expires_at + time::Duration::nanoseconds(1)));
     }
 
     #[test]
     fn is_valid_true_when_unused_and_not_expired() {
-        assert!(make_reset_token(false, 3600).is_valid());
+        assert!(make_reset_token(false, 3600).is_valid(now()));
     }
 
     #[test]
     fn is_valid_false_when_used() {
-        assert!(!make_reset_token(true, 3600).is_valid());
+        assert!(!make_reset_token(true, 3600).is_valid(now()));
     }
 
     #[test]
     fn is_valid_false_when_expired() {
-        assert!(!make_reset_token(false, -1).is_valid());
+        assert!(!make_reset_token(false, -1).is_valid(now()));
+    }
+
+    #[test]
+    fn verdict_reports_expiry_before_use() {
+        assert_eq!(
+            make_reset_token(false, 3600).verdict(now()),
+            TokenVerdict::Valid
+        );
+        assert_eq!(
+            make_reset_token(true, 3600).verdict(now()),
+            TokenVerdict::Used
+        );
+        assert_eq!(
+            make_reset_token(false, -1).verdict(now()),
+            TokenVerdict::Expired
+        );
+        assert_eq!(
+            make_reset_token(true, -1).verdict(now()),
+            TokenVerdict::Expired
+        );
+        let token = make_reset_token(false, 60);
+        assert_eq!(token.verdict(token.expires_at), TokenVerdict::Valid);
+    }
+
+    #[test]
+    fn email_verification_tokens_follow_the_same_rules() {
+        let now = now();
+        let token = |used: bool| EmailVerificationToken {
+            id: uuid::Uuid::new_v4(),
+            user_id: uuid::Uuid::new_v4(),
+            token_hash: vec![0u8; 32],
+            created_at: now,
+            expires_at: now + time::Duration::hours(24),
+            used_at: used.then_some(now),
+            request_ip: None,
+            request_user_agent: None,
+            target_email: "jane@example.com".into(),
+        };
+        assert!(token(false).is_valid(now));
+        assert!(token(true).is_used());
+        assert!(!token(true).is_valid(now));
     }
 }

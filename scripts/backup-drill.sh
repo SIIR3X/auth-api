@@ -1,20 +1,23 @@
 #!/bin/bash
 # backup-drill.sh - End-to-end test of the backup/restore mechanism.
 #
-# Validates the full pipeline used in production (pg_dump | gzip | age, then
-# restore-db.sh) against throwaway Postgres containers:
+# Reproduces production against throwaway Postgres containers:
 #
-#   1. start a source Postgres, apply all migrations, insert witness rows
-#   2. back it up with a throwaway age key (same pipeline as backup-db.sh)
-#   3. start a fresh destination Postgres, restore with restore-db.sh
-#   4. compare row counts and spot-check a witness value; exit non-zero on
-#      any mismatch
+#   1. a source database owned by a non-superuser `auth_api` role, migrated as
+#      that role, with witness rows
+#   2. a failed backup (unusable key), which must leave neither a file nor a
+#      metric, then a backup through backup-db.sh itself (pg_dump as a
+#      superuser | gzip | age, atomic write, textfile metrics)
+#   3. a restore with restore-db.sh, connected as a non-superuser `auth_api`,
+#      into a fresh database; a second restore without --force, which must be
+#      refused; a third with --force over the restored database
+#   4. after each restore, the row count of every table compared with the source
 #
 # This proves the MECHANISM works. It does not prove production backups are
-# usable - that requires the quarterly manual drill with a real backup and
-# the offline key (see docs/deploy/guides/operations.md section 3).
+# usable: that takes the quarterly drill with a real backup and the offline key
+# (docs/deploy/database/deployment.md, section 4).
 #
-# Requirements: docker, age, psql. Run from anywhere inside the repo.
+# Requirements: docker, age, age-keygen, psql. Run from anywhere inside the repo.
 
 set -euo pipefail
 
@@ -24,14 +27,13 @@ SRC="auth-backup-${DRILL_ID}-src"
 DST="auth-backup-${DRILL_ID}-dst"
 WORK_DIR="$(mktemp -d)"
 PG_IMAGE="${DRILL_PG_IMAGE:-postgres:17}"
-PGUSER=drill
-PGPASSWORD=drill
-PGDATABASE=drill
+SUPERUSER=drill
+SUPERPASS=drill
+APP_PASS=drill-app
 
-command -v docker >/dev/null || { echo "ERROR: docker is required" >&2; exit 1; }
-command -v age >/dev/null || { echo "ERROR: age is required" >&2; exit 1; }
-command -v age-keygen >/dev/null || { echo "ERROR: age-keygen is required" >&2; exit 1; }
-command -v psql >/dev/null || { echo "ERROR: psql is required" >&2; exit 1; }
+for tool in docker age age-keygen psql; do
+    command -v "$tool" >/dev/null || { echo "ERROR: $tool is required" >&2; exit 1; }
+done
 
 cleanup() {
     docker rm -f "$SRC" "$DST" >/dev/null 2>&1 || true
@@ -41,15 +43,20 @@ trap cleanup EXIT
 
 log() { echo "$(date -Iseconds) [drill] $*"; }
 
+pg_url() { # $1 = container, $2 = user, $3 = password, $4 = database
+    local port
+    port=$(docker port "$1" 5432/tcp | head -1 | awk -F: '{print $NF}')
+    echo "postgres://$2:$3@127.0.0.1:$port/$4"
+}
+
 start_postgres() { # $1 = container name
     docker run -d --name "$1" \
-        -e POSTGRES_USER="$PGUSER" -e POSTGRES_PASSWORD="$PGPASSWORD" -e POSTGRES_DB="$PGDATABASE" \
+        -e POSTGRES_USER="$SUPERUSER" -e POSTGRES_PASSWORD="$SUPERPASS" -e POSTGRES_DB=postgres \
         -p 127.0.0.1::5432 "$PG_IMAGE" >/dev/null
     # Wait for a real host connection, not `pg_isready` inside the container:
-    # during initdb Postgres briefly accepts connections, then restarts, so a
-    # single in-container probe can pass right before the server goes away.
+    # during initdb Postgres briefly accepts connections, then restarts.
     local url
-    url=$(pg_url "$1")
+    url=$(pg_url "$1" "$SUPERUSER" "$SUPERPASS" postgres)
     for _ in $(seq 1 60); do
         if psql "$url" -c 'SELECT 1' >/dev/null 2>&1; then
             return 0
@@ -60,19 +67,47 @@ start_postgres() { # $1 = container name
     return 1
 }
 
-pg_url() { # $1 = container name
-    local port
-    port=$(docker port "$1" 5432/tcp | head -1 | awk -F: '{print $NF}')
-    echo "postgres://$PGUSER:$PGPASSWORD@127.0.0.1:$port/$PGDATABASE"
+create_app_database() { # $1 = container: the role and database of section 2.1
+    psql "$(pg_url "$1" "$SUPERUSER" "$SUPERPASS" postgres)" --set ON_ERROR_STOP=1 --quiet \
+        -c "CREATE ROLE auth_api LOGIN PASSWORD '$APP_PASS'" \
+        -c "CREATE DATABASE auth_api OWNER auth_api"
 }
 
-# -- 1. Source database: migrations + witness data ------------------------------
+tables() { # $1 = url
+    psql "$1" -tAc "SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1"
+}
+
+FAIL=0
+verify() { # $1 = label, $2 = expected, $3 = actual
+    if [[ "$2" == "$3" ]]; then
+        log "OK   $1: $3"
+    else
+        log "FAIL $1: expected $2, got $3"
+        FAIL=1
+    fi
+}
+
+verify_counts() { # $1 = label, $2 = destination url
+    local table
+    verify "$1: tables" "$(tables "$SRC_URL" | tr '\n' ' ')" "$(tables "$2" | tr '\n' ' ')"
+    for table in $(tables "$SRC_URL"); do
+        verify "$1: rows in $table" \
+            "$(psql "$SRC_URL" -tAc "SELECT count(*) FROM \"$table\"")" \
+            "$(psql "$2" -tAc "SELECT count(*) FROM \"$table\"")"
+    done
+    verify "$1: witness row" "drill1@example.com" \
+        "$(psql "$2" -tAc "SELECT email FROM users WHERE username = 'drill_user_1'")"
+}
+
+# -- 1. Source database ---------------------------------------------------------
 
 log "starting source postgres ($PG_IMAGE)"
 start_postgres "$SRC"
-SRC_URL=$(pg_url "$SRC")
+create_app_database "$SRC"
+SRC_URL=$(pg_url "$SRC" auth_api "$APP_PASS" auth_api)
 
-log "applying migrations"
+log "applying migrations as auth_api"
 for migration in "$ROOT_DIR"/migrations/*.sql; do
     psql "$SRC_URL" --set ON_ERROR_STOP=1 --quiet -f "$migration" >/dev/null
 done
@@ -85,55 +120,50 @@ VALUES
   ('drill_user_2', 'drill2@example.com', repeat('y', 60), 'active', NOW());
 SQL
 
-count_rows() { # $1 = url, $2 = table
-    psql "$1" -tAc "SELECT count(*) FROM $2"
-}
+# -- 2. Backups through backup-db.sh --------------------------------------------
 
-SRC_USERS=$(count_rows "$SRC_URL" users)
-SRC_ROLES=$(count_rows "$SRC_URL" roles)
-SRC_PERMS=$(count_rows "$SRC_URL" permissions)
-log "source counts: users=$SRC_USERS roles=$SRC_ROLES permissions=$SRC_PERMS"
-
-# -- 2. Backup with a throwaway age key (same pipeline as backup-db.sh) ---------
-
-log "generating throwaway age key"
 age-keygen -o "$WORK_DIR/backup.key" 2>/dev/null
 AGE_PUBLIC_KEY=$(age-keygen -y "$WORK_DIR/backup.key")
+mkdir -p "$WORK_DIR/textfile"
+backup() { # $1 = age public key
+    BACKUP_CONFIG=/nonexistent DB_NAME=auth_api AGE_PUBLIC_KEY="$1" \
+        BACKUP_DIR="$WORK_DIR/backups" TEXTFILE_DIR="$WORK_DIR/textfile" \
+        PG_DUMP="docker exec $SRC pg_dump -U $SUPERUSER" \
+        "$ROOT_DIR/scripts/backup-db.sh"
+}
 
-BACKUP_FILE="$WORK_DIR/drill.sql.gz.age"
-log "backing up (pg_dump | gzip | age)"
-docker exec "$SRC" pg_dump -U "$PGUSER" "$PGDATABASE" \
-    | gzip \
-    | age --recipient "$AGE_PUBLIC_KEY" \
-    > "$BACKUP_FILE"
-log "backup written: $(du -h "$BACKUP_FILE" | cut -f1)"
+log "a backup that cannot be encrypted must leave nothing behind"
+if backup "age1notavalidrecipient" >/dev/null 2>&1; then
+    verify "failed backup exit status" "non-zero" "0"
+fi
+verify "failed backup files" "0" "$(find "$WORK_DIR/backups" -type f 2>/dev/null | wc -l | tr -d ' ')"
+verify "failed backup metrics" "0" "$(find "$WORK_DIR/textfile" -type f | wc -l | tr -d ' ')"
 
-# -- 3. Restore into a fresh database via the real restore script ---------------
+log "backing up with scripts/backup-db.sh"
+backup "$AGE_PUBLIC_KEY"
+BACKUP_FILE=$(find "$WORK_DIR/backups" -name '*.sql.gz.age' | head -1)
+verify "backup files" "1" "$(find "$WORK_DIR/backups" -type f | wc -l | tr -d ' ')"
+verify "success metric written" "1" "$(grep -c '^auth_backup_last_success_timestamp ' "$WORK_DIR/textfile/auth_backup.prom")"
+
+# -- 3. Restores into a fresh database, as a non-superuser ----------------------
 
 log "starting destination postgres"
 start_postgres "$DST"
-DST_URL=$(pg_url "$DST")
+create_app_database "$DST"
+DST_URL=$(pg_url "$DST" auth_api "$APP_PASS" auth_api)
 
-log "restoring with scripts/restore-db.sh"
+log "restoring with scripts/restore-db.sh as auth_api"
 "$ROOT_DIR/scripts/restore-db.sh" -i "$WORK_DIR/backup.key" -f "$BACKUP_FILE" -d "$DST_URL"
+verify_counts "restore" "$DST_URL"
 
-# -- 4. Verify -------------------------------------------------------------------
+log "a second restore without --force must be refused"
+if "$ROOT_DIR/scripts/restore-db.sh" -i "$WORK_DIR/backup.key" -f "$BACKUP_FILE" -d "$DST_URL" >/dev/null 2>&1; then
+    verify "restore over a database without --force" "refused" "accepted"
+fi
 
-FAIL=0
-verify() { # $1 = label, $2 = expected, $3 = actual
-    if [[ "$2" == "$3" ]]; then
-        log "OK   $1: $3"
-    else
-        log "FAIL $1: expected $2, got $3"
-        FAIL=1
-    fi
-}
-
-verify "users count"       "$SRC_USERS" "$(count_rows "$DST_URL" users)"
-verify "roles count"       "$SRC_ROLES" "$(count_rows "$DST_URL" roles)"
-verify "permissions count" "$SRC_PERMS" "$(count_rows "$DST_URL" permissions)"
-verify "witness row" "drill1@example.com" \
-    "$(psql "$DST_URL" -tAc "SELECT email FROM users WHERE username = 'drill_user_1'")"
+log "restoring again with --force"
+"$ROOT_DIR/scripts/restore-db.sh" -i "$WORK_DIR/backup.key" -f "$BACKUP_FILE" -d "$DST_URL" --force
+verify_counts "forced restore" "$DST_URL"
 
 if [[ "$FAIL" != "0" ]]; then
     log "DRILL FAILED"

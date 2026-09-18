@@ -1,105 +1,345 @@
 # API Routes
 
+The machine-readable contract is [`openapi.yaml`](openapi.yaml). This page is
+the overview.
+
 ## Legend
 
 | Auth | Meaning |
 |------|---------|
-| - | No authentication required |
-| JWT | Valid access token required |
+| - | No authentication |
+| JWT | Access token in `Authorization: Bearer` |
+| Admin | Access token carrying the named permission, still granted in the database, from an account with a second factor |
+| JWT + reauth | Access token, and a recent re-authentication: `POST /users/me/reauth` within `SENSITIVE_ACTION_REAUTH_SECS`, or `current_password` in the body. A fresh sign-in does not count |
 
 | Rate limit | Meaning |
 |------------|---------|
-| General | Shared bucket - `RATE_LIMIT_RPM` requests/min per IP |
-| Auth | Strict bucket - `RATE_LIMIT_AUTH_RPM` requests/min per IP |
+| General | `RATE_LIMIT_RPM` per client per minute |
+| Strict | Counts against the general budget **and** `RATE_LIMIT_AUTH_RPM` |
 
-## Discovery & Health
+Each request passes one limiter, which checks all of its buckets in a single
+Redis call; a refused request consumes nothing. A `429` carries `Retry-After`.
+
+Timestamps are Unix seconds. Errors are `{"code": "...", "message": "..."}`
+with a stable `code`.
+
+## Discovery
 
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
-| GET | `/health` | - | General |
+| GET | `/health`, `/live` | - | None (liveness) |
+| GET | `/ready` | - | None (readiness: database, Redis, NATS) |
 | GET | `/.well-known/jwks.json` | - | General |
 
-The JWKS endpoint publishes the ES256 public key(s) (current + previous during
-a rotation window) and is served with `cache-control: public, max-age=300` so
-downstream verifiers can cache it.
+The JWKS lists the current signing key, and the previous one during a
+rotation, with `cache-control: public, max-age=300`.
 
-Prometheus metrics (`GET /metrics`) are **not** served on the public port:
-they live on a separate internal listener (`METRICS_PORT`, default 9464),
-published on loopback only and never routed through the reverse proxy.
+Prometheus metrics are not on this listener: `METRICS_PORT` (default 9464),
+loopback only.
 
-## Authentication
+## Sign-in
 
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
-| POST | `/auth/register` | - | Auth |
-| POST | `/auth/login` | - | Auth |
-| POST | `/auth/refresh` | - | Auth |
+| POST | `/auth/register` | - | Strict |
+| POST | `/auth/verify-email` | - | Strict |
+| POST | `/auth/verify-email/resend` | - | Strict |
+| POST | `/auth/login` | - | Strict |
+| POST | `/auth/two-factor/complete` | pre-auth token | Strict |
+| POST | `/auth/two-factor/email/complete` | pre-auth token | Strict |
+| POST | `/auth/two-factor/email/resend` | pre-auth token | Strict |
+| POST | `/auth/two-factor/recovery` | pre-auth token | Strict |
+| POST | `/auth/refresh` | refresh token | Strict |
 | POST | `/auth/logout` | JWT | General |
-| POST | `/auth/verify-email` | - | Auth |
-| POST | `/auth/forgot-password` | - | Auth |
-| POST | `/auth/reset-password` | - | Auth |
-| POST | `/auth/two-factor/complete` | - | Auth |
-| POST | `/auth/two-factor/recovery` | - | Auth |
-| POST | `/auth/two-factor/email/complete` | - | Auth |
-| POST | `/auth/two-factor/email/resend` | - | Auth |
+| POST | `/auth/magic-link` | - | Strict |
+| POST | `/auth/magic-link/complete` | sign-in link | Strict |
+| POST | `/auth/personal-access-tokens/exchange` | personal access token | Strict |
+| POST | `/auth/forgot-password` | - | Strict |
+| POST | `/auth/reset-password` | - | Strict |
 
-## Device authorization (RFC 8628)
+- `register` answers `202` the same way whether or not the address is taken;
+  the owner of a taken address gets an email instead.
+- `login` answers tokens, or `{ "two_factor_required": ..., "pre_auth_token", "method" }`.
+  Each pre-auth token is bound to the method it was issued for.
+- `refresh` rotates the refresh token. Presenting a rotated token again revokes
+  the whole session family, except within 2 seconds of the rotation (two tabs,
+  a retried request).
+- Logout stays outside the strict bucket so an exhausted budget never prevents
+  ending a session.
+- `magic-link` (when `MAGIC_LINK_ENABLED`) mails a sign-in link valid 15 minutes
+  and once, answering alike for every address; `magic-link/complete` answers
+  like `login`, including the two-factor challenge. A new link replaces the
+  previous one.
+
+## Client applications (OAuth 2.1)
+
+Standard endpoints: RFC 6749, 7636 (PKCE), 8252 (native apps), 8414 (metadata)
+and 8628 (device authorization). Token and device authorization requests are
+`application/x-www-form-urlencoded`; their errors are
+`{ "error", "error_description" }` with `Cache-Control: no-store`.
 
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
-| POST | `/auth/device` | - | Auth |
-| POST | `/auth/device/token` | - | Auth |
-| POST | `/auth/device/verify` | JWT | Auth |
+| GET | `/.well-known/oauth-authorization-server` | - | General |
+| GET | `/.well-known/openid-configuration` | - | General |
+| GET | `/oauth/userinfo` | JWT of a session granted `openid` | Strict |
+| GET | `/oauth/authorize` | - | Strict |
+| GET | `/oauth/authorization-requests/{id}` | JWT | Strict |
+| POST | `/oauth/authorization-requests/{id}/approve` | JWT (+ reauth for non-primary clients) | Strict |
+| POST | `/oauth/authorization-requests/{id}/deny` | JWT | Strict |
+| POST | `/oauth/token` | client | Strict |
+| POST | `/oauth/device_authorization` | client | Strict |
+| POST | `/oauth/introspect` | confidential client | Strict |
+| POST | `/oauth/revoke` | client | Strict |
+| GET | `/oauth/device/{user_code}` | JWT | Strict |
+| POST | `/oauth/device/verify` | JWT | Strict |
 
-`/auth/device` starts the flow (returns `device_code` + `user_code`),
-`/auth/device/token` is polled by the device until approval, and
-`/auth/device/verify` is called by the already-authenticated user to approve
-or deny the `user_code`. Registered clients and per-user device session
-quotas are enforced (`registered_clients`, `user_client_quotas`).
+**Client authentication.** A public client sends `client_id`. A confidential
+client (one given a secret with `POST /admin/clients/{client_id}/secret`)
+authenticates with `Authorization: Basic` (`client_secret_basic`) or
+`client_id` and `client_secret` in the body (`client_secret_post`), never both;
+a failure answers `401 invalid_client`.
 
-## Profile
+**Authorization code.** `GET /oauth/authorize` takes `response_type=code`,
+`client_id`, `redirect_uri` (optional when the client has exactly one),
+`code_challenge` with `code_challenge_method=S256`, `scope` and `state`.
+
+- An unknown client or an unregistered redirect URI answers directly with an
+  error, never through the redirect.
+- Other errors (`unsupported_response_type`, `invalid_request`,
+  `invalid_scope`) go back to the redirect URI with `error` and `state`.
+- A valid request is stored for 10 minutes and the browser is sent (`303`) to
+  `OAUTH_CONSENT_URI?request_id=...`. The consent page reads it with
+  `GET /oauth/authorization-requests/{id}` (client, scopes, session limits,
+  whether a re-authentication is needed) and approves or denies it; the answer
+  holds `redirect_to`, the client redirect carrying `code` and `state`, or
+  `error=access_denied`. A request is decided once.
+- The redirect URI must be registered exactly, or be a loopback
+  `http://127.0.0.1:{port}/path` / `http://[::1]:{port}/path` for a registered
+  path when the client allows it. `localhost` is refused.
+- The client redeems the code at `POST /oauth/token` with
+  `grant_type=authorization_code`, `code`, `code_verifier` and `redirect_uri`.
+  A code is single use: a failed redemption burns it, and a replayed code
+  revokes the session it produced.
+
+**Scopes.** `scope` lists permissions. A client registered with scopes may ask
+for a subset of them; without `scope`, its registered scopes apply. Tokens carry
+the consented scopes the user holds, on issue and on every refresh, and no
+roles. The token response echoes `scope` when the session is restricted.
+
+**Refresh.** A client refreshes its sessions at `POST /oauth/token` with
+`grant_type=refresh_token`; `/auth/refresh` refuses them. The session must
+belong to the authenticated client.
+
+**Client credentials.** A confidential client registered with scopes and
+`allows_client_credentials` (`PUT /admin/clients/{client_id}`) posts
+`grant_type=client_credentials` and optional `scope` to `POST /oauth/token`. The
+token carries no user and no refresh token: `sub` is a UUID derived from the
+client id, `client_id` names the client, `sid` is nil, and `permissions` are the
+granted scopes. Account routes refuse it; resource servers accept it like any
+access token. Removing the client's secret or turning the grant off ends the
+tokens already issued, as introspection reports.
+
+**OpenID Connect.** The provider supports the authorization code flow:
+`GET /.well-known/openid-configuration`, the `openid`, `profile` and `email`
+scopes (any client may ask for them; they grant no permission), `nonce`, an
+`id_token` (ES256, `aud` the client, `at_hash`, `auth_time`, and the claims of
+the granted scopes) in token responses of sessions granted `openid`, refreshes
+included, and `GET /oauth/userinfo` for their access tokens. `profile` releases
+`preferred_username`, `locale` and `updated_at`; `email` releases `email` and
+`email_verified`. Not supported: implicit and hybrid flows, request objects,
+`prompt`, `max_age`, dynamic registration.
+
+**Introspection (RFC 7662).** A confidential client (a resource server)
+posts `token` and learns `active`, and for an active token its `token_type`
+(`access_token`, `refresh_token`, `personal_access_token`), `scope`,
+`client_id`, `sub`, `exp`, `iat` and, for access tokens, `iss`, `aud` and `jti`.
+Anything unknown, expired or revoked is `{ "active": false }`.
+
+**Revocation (RFC 7009).** A client posts one of its tokens. A refresh token
+ends its session and every access token of it; an access token stops working
+until it expires. Unknown tokens and tokens of other clients get the same `200`
+and are left alone.
+
+**Device authorization.** `POST /oauth/device_authorization` (`client_id`,
+`scope`) answers `device_code`, `user_code`, `verification_uri`,
+`verification_uri_complete`, `expires_in` and `interval`. The device polls
+`POST /oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:device_code`:
+`authorization_pending`, `slow_down` when polling faster than the interval,
+`access_denied`, `expired_token`, or tokens. The signed-in user previews the
+request (`GET /oauth/device/{user_code}`) and approves or denies it
+(`POST /oauth/device/verify`). An approval is collected once, by the client that
+started the flow; account status and the client's session limit are checked
+when tokens are issued (`invalid_grant` otherwise).
+
+## Account
 
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
 | GET | `/users/me` | JWT | General |
-| PATCH | `/users/me/username` | JWT | General |
-| PATCH | `/users/me/password` | JWT | General |
+| GET | `/users/me/audit` | JWT | General |
+| POST | `/users/me/reauth` | JWT | Strict |
+| GET | `/users/me/export` | JWT + reauth (recent only) | Strict |
+| GET | `/users/me/tokens` | JWT | General |
+| POST | `/users/me/tokens` | JWT + reauth (recent only) | General |
+| DELETE | `/users/me/tokens/{id}` | JWT | General |
+| PATCH | `/users/me/username` | JWT + reauth | General |
+| PATCH | `/users/me/password` | JWT + reauth | General |
 | PATCH | `/users/me/locale` | JWT | General |
-| DELETE | `/users/me` | JWT | General |
-| POST | `/users/me/reauth` | JWT | Auth |
+| DELETE | `/users/me` | JWT + reauth | General |
+
+`/users/me/audit?limit=&cursor=` returns the caller's own security history,
+newest first: `{ "entries": [...], "next_cursor" }`. Pass `next_cursor` back as
+`cursor`; it is absent on the last page. `limit` is clamped to 1-200.
+
+Personal access tokens (`aapat_...`) are shown once, at creation. Their
+exchange returns `{ "access_token", "token_type": "Bearer", "expires_in" }`: an
+access token carrying the token's scopes (intersected with the account's
+current permissions) and no roles. A token lives in a session of type
+`personal_access_token`: revoking either ends both.
+
+`/users/me/export` downloads everything stored about the account as one JSON
+document (`account-data.json`): profile, roles, sessions, second factors,
+recovery code counts, known devices, client quotas, sign-in attempts and the
+security history. No password hash, secret or token digest is included. As a
+`GET` it takes no body: re-authenticate with `POST /users/me/reauth` first.
 
 ## Email change
 
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
-| POST | `/users/me/email/start` | JWT | Auth |
-| POST | `/users/me/email/verify-current` | JWT | Auth |
-| POST | `/users/me/email/submit` | JWT | Auth |
-| POST | `/users/me/email/confirm` | JWT | Auth |
+| POST | `/users/me/email/start` | JWT + reauth | Strict |
+| POST | `/users/me/email/verify-current` | JWT | Strict |
+| POST | `/users/me/email/submit` | JWT | Strict |
+| POST | `/users/me/email/confirm` | JWT | Strict |
+
+A code is sent to the current address, then to the new one. Confirming revokes
+every other session and notifies the previous address.
 
 ## Sessions
 
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
 | GET | `/users/me/sessions` | JWT | General |
-| DELETE | `/users/me/sessions` | JWT | General |
-| DELETE | `/users/me/sessions/{id}` | JWT | General |
+| DELETE | `/users/me/sessions` | JWT + reauth | General |
+| DELETE | `/users/me/sessions/{id}` | JWT + reauth | General |
 
-## Two-factor - TOTP
+## External identities
 
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
-| POST | `/users/me/two-factor/totp/setup` | JWT | General |
+| GET | `/auth/external/providers` | - | Strict |
+| POST | `/auth/external/{provider}/start` | - | Strict |
+| GET | `/auth/external/{provider}/callback` | - | Strict |
+| POST | `/auth/external/complete` | outcome code + binding | Strict |
+| GET | `/users/me/external-identities` | JWT | General |
+| POST | `/users/me/external-identities/{provider}/start` | JWT + reauth (recent only) | General |
+| POST | `/users/me/external-identities/complete` | JWT | General |
+| DELETE | `/users/me/external-identities/{id}` | JWT + reauth | General |
+
+Providers (`IDENTITY_PROVIDERS`): Google, GitHub, or any OpenID Connect issuer.
+
+1. `start` answers `{ "authorization_url", "binding" }`. Keep `binding` in the
+   browser (session storage) and send the browser to `authorization_url`
+   (authorization code with PKCE; state and nonce).
+2. The provider sends the browser back to `/auth/external/{provider}/callback`,
+   which exchanges the code, verifies the ID token (signature from the
+   provider's JWKS, issuer, audience, nonce, expiry) or reads the GitHub user,
+   then redirects (`303`) to `EXTERNAL_LOGIN_URI?code=...`.
+3. The frontend sends `{ "code", "binding" }` to `/auth/external/complete` (a
+   sign-in: tokens or the account's two-factor challenge, like `login`) or to
+   `/users/me/external-identities/complete` (a link: `201`). An outcome is used
+   once, within two minutes, by the browser holding its binding.
+
+An identity signs in only once linked by the signed-in owner of the account:
+nothing is matched or created from an email address
+(`409 external_identity_not_linked`). One identity links to one account, and an
+account links one identity per provider
+(`409 external_identity_already_linked`).
+
+## Passkeys
+
+| Method | Route | Auth | Rate limit |
+|--------|-------|------|------------|
+| GET | `/users/me/passkeys` | JWT | General |
+| POST | `/users/me/passkeys/options` | JWT + reauth (recent only) | General |
+| POST | `/users/me/passkeys` | JWT | General |
+| DELETE | `/users/me/passkeys/{id}` | JWT + reauth | General |
+| POST | `/auth/passkeys/options` | - | Strict |
+| POST | `/auth/passkeys/sign-in` | passkey | Strict |
+
+Registration: `options` returns the `PublicKeyCredentialCreationOptions` (JSON
+form) to pass to `navigator.credentials.create()`, then `POST /users/me/passkeys`
+sends `{ "name", "credential" }` with the credential's `toJSON()`. Passkeys are
+discoverable, require user verification, and use ES256, EdDSA or RS256;
+attestation is not requested. The first passkey of an account without recovery
+codes returns ten, once.
+
+Sign-in: `POST /auth/passkeys/options` returns request options with no allowed
+credentials (the browser offers the user's passkeys), then
+`POST /auth/passkeys/sign-in` sends `{ "credential", "device_name", "remember_me" }`
+and gets `{ "access_token", "refresh_token" }`. A passkey with user verification
+is two factors: no second-factor challenge follows. A passkey also counts as the
+second factor `/admin` requires.
+
+## Two-factor
+
+| Method | Route | Auth | Rate limit |
+|--------|-------|------|------------|
+| GET | `/users/me/two-factor` | JWT | General |
+| POST | `/users/me/two-factor/totp/setup` | JWT + reauth | General |
 | POST | `/users/me/two-factor/totp/{id}/verify` | JWT | General |
-| DELETE | `/users/me/two-factor/totp/{id}` | JWT | General |
-| POST | `/users/me/two-factor/recovery-codes` | JWT | General |
-| POST | `/users/me/two-factor/recovery-codes/use` | JWT | General |
-
-## Two-factor - Email OTP
-
-| Method | Route | Auth | Rate limit |
-|--------|-------|------|------------|
-| POST | `/users/me/two-factor/email/setup` | JWT | General |
+| DELETE | `/users/me/two-factor/totp/{id}` | JWT + reauth | General |
+| POST | `/users/me/two-factor/email/setup` | JWT + reauth | General |
 | POST | `/users/me/two-factor/email/send` | JWT | General |
 | POST | `/users/me/two-factor/email/{id}/verify` | JWT | General |
-| DELETE | `/users/me/two-factor/email/{id}` | JWT | General |
+| DELETE | `/users/me/two-factor/email/{id}` | JWT + reauth | General |
+| POST | `/users/me/two-factor/recovery-codes` | JWT + reauth | General |
+| POST | `/users/me/two-factor/recovery-codes/use` | JWT | General |
+
+`GET /users/me/two-factor` lists the configured methods (with the ids the other
+routes need) and `recovery_codes_remaining`, the unused and unexpired codes.
+Recovery codes are shown once, when a method is first verified or when they
+are regenerated.
+
+## Administration
+
+| Method | Route | Auth | Rate limit |
+|--------|-------|------|------------|
+| GET | `/admin/users` | Admin `users:read` | General |
+| GET | `/admin/users/{id}` | Admin `users:read` | General |
+| POST | `/admin/users/{id}/suspend` | Admin `users:manage` | General |
+| POST | `/admin/users/{id}/reactivate` | Admin `users:manage` | General |
+| POST | `/admin/users/{id}/unlock` | Admin `users:manage` | General |
+| DELETE | `/admin/users/{id}/sessions` | Admin `users:manage` | General |
+| POST | `/admin/users/{id}/password-reset` | Admin `users:manage` | General |
+| DELETE | `/admin/users/{id}` | Admin `users:manage` + reauth | General |
+| POST | `/admin/users/{id}/roles` | Admin `roles:manage` + reauth | General |
+| DELETE | `/admin/users/{id}/roles/{name}` | Admin `roles:manage` | General |
+| GET | `/admin/permissions` | Admin `roles:manage` | General |
+| GET | `/admin/roles` | Admin `roles:manage` | General |
+| POST | `/admin/roles` | Admin `roles:manage` + reauth | General |
+| PUT | `/admin/roles/{name}/permissions` | Admin `roles:manage` + reauth | General |
+| DELETE | `/admin/roles/{name}` | Admin `roles:manage` | General |
+| GET | `/admin/clients` | Admin `clients:manage` | General |
+| PUT | `/admin/clients/{client_id}` | Admin `clients:manage` + reauth | General |
+| DELETE | `/admin/clients/{client_id}` | Admin `clients:manage` | General |
+| POST | `/admin/clients/{client_id}/secret` | Admin `clients:manage` + reauth | General |
+| DELETE | `/admin/clients/{client_id}/secret` | Admin `clients:manage` | General |
+| GET | `/admin/audit` | Admin `audit:read` | General |
+
+`GET /admin/users` takes `query` (start of the address or username), `status`,
+`limit` and `cursor`, and pages newest first. Administrators cannot suspend,
+sign out, reset or delete their own account here; they use `/users/me`.
+
+A change to roles that would leave no account with `roles:manage` answers
+`409 last_administrator`; the default role cannot be deleted
+(`409 default_role`). Access tokens carry the permissions of their issuance
+until refreshed; `/admin` routes read them from the database on every request.
+Webhooks (`webhooks:manage`): `GET`/`POST /admin/webhooks`,
+`PUT`/`DELETE /admin/webhooks/{id}`, `POST /admin/webhooks/{id}/secret`,
+`GET /admin/webhooks/{id}/deliveries` and
+`POST /admin/webhooks/{id}/deliveries/{delivery_id}/retry`. See the
+[webhook guide](../guides/webhooks.md).
+
+`GET /admin/audit` takes `user_id`, `action`, `limit` and `cursor`.

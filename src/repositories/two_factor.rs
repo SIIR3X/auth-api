@@ -32,6 +32,26 @@ pub async fn create(
     .await
 }
 
+/// Restart an abandoned enrolment: give the user's unverified method of this
+/// type a new secret instead of refusing a second setup. Returns `None` when no
+/// pending method exists (the caller then inserts one).
+pub async fn replace_pending(
+    pool: &PgPool,
+    input: &NewTwoFactorMethod<'_>,
+) -> Result<Option<TwoFactorMethod>, sqlx::Error> {
+    sqlx::query_as::<_, TwoFactorMethod>(
+        "UPDATE two_factor_methods
+            SET totp_secret = $3, created_at = NOW()
+          WHERE user_id = $1 AND method_type = $2 AND is_verified = FALSE
+         RETURNING *",
+    )
+    .bind(input.user_id)
+    .bind(&input.method_type)
+    .bind(input.totp_secret)
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn mark_verified(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE two_factor_methods SET is_verified = TRUE WHERE id = $1")
         .bind(id)
@@ -62,13 +82,80 @@ pub async fn set_primary(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<(), s
     Ok(())
 }
 
-pub async fn delete(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM two_factor_methods WHERE id = $1 AND user_id = $2")
-        .bind(id)
+/// What removing a second factor left behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemovedMethod {
+    pub was_primary: bool,
+    /// Verified methods still enabled on the account.
+    pub remaining_verified: i64,
+}
+
+/// Remove one method of the given type and keep the account's 2FA coherent, in
+/// one transaction.
+///
+/// Login only looks at the primary method, so removing the primary while another
+/// verified method remains would silently switch 2FA off: the oldest remaining
+/// verified method is promoted instead. Recovery codes back up the account as a
+/// whole and are dropped only once no verified method is left.
+///
+/// Returns `None` when the user has no method with this id and type.
+pub async fn remove_method(
+    pool: &PgPool,
+    id: Uuid,
+    user_id: Uuid,
+    method_type: TwoFactorType,
+) -> Result<Option<RemovedMethod>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let removed: Option<(bool,)> = sqlx::query_as(
+        "DELETE FROM two_factor_methods
+         WHERE id = $1 AND user_id = $2 AND method_type = $3
+         RETURNING is_primary",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(method_type)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some((was_primary,)) = removed else {
+        return Ok(None);
+    };
+
+    if was_primary {
+        sqlx::query(
+            "UPDATE two_factor_methods SET is_primary = TRUE
+             WHERE id = (
+                 SELECT id FROM two_factor_methods
+                 WHERE user_id = $1 AND is_verified = TRUE
+                 ORDER BY created_at
+                 LIMIT 1
+             )",
+        )
         .bind(user_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-    Ok(())
+    }
+
+    let (remaining_verified,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM two_factor_methods WHERE user_id = $1 AND is_verified = TRUE",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    if remaining_verified == 0 {
+        sqlx::query("DELETE FROM recovery_codes WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+    Ok(Some(RemovedMethod {
+        was_primary,
+        remaining_verified,
+    }))
 }
 
 // Reads
@@ -124,18 +211,24 @@ pub async fn find_all_totp_secrets(pool: &PgPool) -> Result<Vec<(Uuid, String)>,
     Ok(rows)
 }
 
-/// Updates the encrypted TOTP secret for a single method row.
-pub async fn update_totp_secret(
+/// Replace a TOTP secret only if the row still holds `expected`: a rotation
+/// running beside live traffic never overwrites a secret re-created meanwhile.
+/// Returns whether the row was updated.
+pub async fn replace_totp_secret(
     pool: &PgPool,
     id: Uuid,
+    expected: &str,
     new_secret: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE two_factor_methods SET totp_secret = $2 WHERE id = $1")
-        .bind(id)
-        .bind(new_secret)
-        .execute(pool)
-        .await?;
-    Ok(())
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE two_factor_methods SET totp_secret = $3 WHERE id = $1 AND totp_secret = $2",
+    )
+    .bind(id)
+    .bind(expected)
+    .bind(new_secret)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 pub async fn find_by_type(

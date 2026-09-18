@@ -81,7 +81,7 @@ pub fn verify(password: &str, hash: &str) -> Result<bool, PasswordError> {
 /// the global Argon2 semaphore (see `argon2_semaphore`).
 pub async fn hash_async(password: &str, cfg: &CryptoConfig) -> Result<String, PasswordError> {
     let semaphore = argon2_semaphore(cfg);
-    let _permit = semaphore
+    let permit = semaphore
         .acquire()
         .await
         .map_err(|_| PasswordError::Queue)?;
@@ -90,8 +90,15 @@ pub async fn hash_async(password: &str, cfg: &CryptoConfig) -> Result<String, Pa
     let password = password.to_owned();
     let cfg = cfg.clone();
 
-    let result = tokio::task::spawn_blocking(move || hash(&password, &cfg)).await;
-    drop(_permit);
+    // The permit travels with the work: if the request is cancelled (client
+    // gone, HTTP timeout) the hash keeps running on the blocking pool, and so
+    // must its slot, or the bound on concurrent Argon2 memory stops holding.
+    let result = tokio::task::spawn_blocking(move || {
+        let outcome = hash(&password, &cfg);
+        drop(permit);
+        outcome
+    })
+    .await;
     record_argon2_permits(semaphore);
     result?
 }
@@ -104,7 +111,7 @@ pub async fn verify_async(
     cfg: &CryptoConfig,
 ) -> Result<bool, PasswordError> {
     let semaphore = argon2_semaphore(cfg);
-    let _permit = semaphore
+    let permit = semaphore
         .acquire()
         .await
         .map_err(|_| PasswordError::Queue)?;
@@ -113,8 +120,14 @@ pub async fn verify_async(
     let password = password.to_owned();
     let hash_value = hash_value.to_owned();
 
-    let result = tokio::task::spawn_blocking(move || verify(&password, &hash_value)).await;
-    drop(_permit);
+    // See `hash_async`: the permit is released when the work ends, not when the
+    // awaiting future is dropped.
+    let result = tokio::task::spawn_blocking(move || {
+        let outcome = verify(&password, &hash_value);
+        drop(permit);
+        outcome
+    })
+    .await;
     record_argon2_permits(semaphore);
     result?
 }
@@ -125,6 +138,61 @@ pub async fn verify_async(
 /// installed (tests, `METRICS_ENABLED=false`).
 fn record_argon2_permits(semaphore: &Semaphore) {
     metrics::gauge!("argon2_queue_available_permits").set(semaphore.available_permits() as f64);
+}
+
+/// Log the Argon2 capacity at startup, and warn when the container's memory
+/// limit cannot hold every concurrent hash beside the rest of the process.
+///
+/// Sign-ins are the first thing to saturate (about 11-13 per second per core
+/// with the production parameters, see docs/perf/performance-report.md), so
+/// the operator should see the bound the process actually runs with.
+pub fn log_capacity(cfg: &CryptoConfig) {
+    let (concurrency, per_hash_mib, budget_mib) = argon2_budget(cfg);
+    tracing::info!(
+        concurrency,
+        per_hash_mib,
+        budget_mib,
+        "argon2: at most {concurrency} concurrent hashes"
+    );
+    if let Some(limit_mib) = cgroup_memory_limit_mib()
+        && limit_too_tight(limit_mib, budget_mib)
+    {
+        tracing::warn!(
+            limit_mib,
+            budget_mib,
+            "memory limit leaves less than {BASELINE_MIB} MiB beside the Argon2 budget: \
+             lower ARGON2_MAX_CONCURRENCY or raise the limit"
+        );
+    }
+}
+
+/// Concurrent hashes, memory per hash and their total, in MiB.
+fn argon2_budget(cfg: &CryptoConfig) -> (u64, u64, u64) {
+    let concurrency = u64::from(cfg.argon2_max_concurrency.max(1));
+    let per_hash_mib = u64::from(cfg.argon2_memory_kib) / 1024;
+    (concurrency, per_hash_mib, concurrency * per_hash_mib)
+}
+
+/// Whether a memory limit leaves less than [`BASELINE_MIB`] beside the budget.
+fn limit_too_tight(limit_mib: u64, budget_mib: u64) -> bool {
+    limit_mib < budget_mib + BASELINE_MIB
+}
+
+/// Memory the process needs besides Argon2 (pools, caches, runtime).
+const BASELINE_MIB: u64 = 256;
+
+/// The cgroup v2 memory limit, when the process runs under one.
+fn cgroup_memory_limit_mib() -> Option<u64> {
+    parse_memory_max(&std::fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?)
+}
+
+/// `memory.max` in MiB; `max` (no limit) and anything unreadable give `None`.
+fn parse_memory_max(contents: &str) -> Option<u64> {
+    contents
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|bytes| bytes / 1024 / 1024)
 }
 
 #[cfg(test)]
@@ -182,5 +250,30 @@ mod tests {
 
         assert!(verify_async("hunter2", &h, &cfg).await.unwrap());
         assert!(!verify_async("wrong", &h, &cfg).await.unwrap());
+    }
+
+    #[test]
+    fn the_argon2_budget_is_concurrency_times_memory() {
+        let mut cfg = test_config();
+        cfg.argon2_memory_kib = 65_536;
+        cfg.argon2_max_concurrency = 4;
+        assert_eq!(argon2_budget(&cfg), (4, 64, 256));
+        cfg.argon2_max_concurrency = 0;
+        assert_eq!(argon2_budget(&cfg), (1, 64, 64));
+    }
+
+    #[test]
+    fn a_limit_is_too_tight_below_the_budget_plus_the_baseline() {
+        assert!(limit_too_tight(511, 256));
+        assert!(!limit_too_tight(512, 256));
+        assert!(!limit_too_tight(4096, 256));
+    }
+
+    #[test]
+    fn memory_max_is_read_in_mib_and_max_means_unlimited() {
+        assert_eq!(parse_memory_max("536870912\n"), Some(512));
+        assert_eq!(parse_memory_max("1048575"), Some(0));
+        assert_eq!(parse_memory_max("max\n"), None);
+        assert_eq!(parse_memory_max(""), None);
     }
 }

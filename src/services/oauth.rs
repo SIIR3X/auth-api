@@ -1,0 +1,925 @@
+//! OAuth 2.1 endpoints (RFC 6749, RFC 7636, RFC 8252, RFC 8414, RFC 8628):
+//! client authentication, authorization requests, the token endpoint and
+//! device authorization.
+//!
+//! The authorization endpoint validates a request, stores it for ten minutes
+//! and sends the browser to the auth frontend, where the signed-in user reviews
+//! it (`/oauth/authorization-requests/{id}`) and approves or denies it. Every
+//! answer then goes back to the client through its registered redirect URI.
+
+use deadpool_redis::redis::AsyncCommands;
+use ipnetwork::IpNetwork;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::{
+    domain::{
+        oauth::{self, ErrorCode},
+        registered_client::RegisteredClient,
+    },
+    error::AppError,
+    repositories::role as role_repo,
+    services::{
+        auth::{self as auth_svc, AuthTokens},
+        authorize as authorize_svc, device as device_svc,
+    },
+    state::AppState,
+    utils::crypto,
+};
+
+/// How long a user has to approve an authorization request.
+const REQUEST_TTL_SECS: u64 = 600;
+const REQUEST_PREFIX: &str = "oauth_request:";
+
+/// An OAuth error answer: `{ "error", "error_description" }`.
+#[derive(Debug)]
+pub struct OAuthError {
+    pub code: ErrorCode,
+    pub description: Option<String>,
+    /// Set when the client tried `client_secret_basic`: the answer then carries
+    /// `WWW-Authenticate` (RFC 6749 section 5.2).
+    pub basic_challenge: bool,
+}
+
+impl OAuthError {
+    pub fn new(code: ErrorCode, description: impl Into<String>) -> Self {
+        Self {
+            code,
+            description: Some(description.into()),
+            basic_challenge: false,
+        }
+    }
+
+    pub fn status(&self) -> u16 {
+        if self.code == ErrorCode::InvalidClient {
+            401
+        } else {
+            400
+        }
+    }
+}
+
+/// A failure of an OAuth endpoint: an OAuth error, or an outage and rate limit
+/// answered like everywhere else.
+#[derive(Debug)]
+pub enum EndpointError {
+    OAuth(OAuthError),
+    App(AppError),
+}
+
+impl From<OAuthError> for EndpointError {
+    fn from(error: OAuthError) -> Self {
+        Self::OAuth(error)
+    }
+}
+
+impl From<AppError> for EndpointError {
+    fn from(error: AppError) -> Self {
+        use AppError as E;
+        let code = match &error {
+            E::Validation(message) => {
+                return Self::OAuth(OAuthError::new(ErrorCode::InvalidRequest, message.clone()));
+            }
+            E::DeviceAuthPending => ErrorCode::AuthorizationPending,
+            E::DeviceSlowDown => ErrorCode::SlowDown,
+            E::DeviceCodeExpired => ErrorCode::ExpiredToken,
+            E::DeviceAccessDenied => ErrorCode::AccessDenied,
+            E::DeviceClientUnknown => ErrorCode::InvalidClient,
+            E::InvalidAuthorizationCode
+            | E::TokenInvalid
+            | E::TokenExpired
+            | E::Unauthorized
+            | E::AccountSuspended
+            | E::AccountInactive
+            | E::AccountLocked
+            | E::EmailNotVerified
+            | E::DeviceSessionLimitReached
+            | E::Forbidden => ErrorCode::InvalidGrant,
+            _ => return Self::App(error),
+        };
+        Self::OAuth(OAuthError::new(code, error.to_string()))
+    }
+}
+
+impl From<sqlx::Error> for EndpointError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::App(error.into())
+    }
+}
+
+// Client authentication
+
+/// The client making a token or device authorization request: authenticated
+/// with its secret when it has one (`client_secret_basic` or
+/// `client_secret_post`), identified by `client_id` when it is public.
+pub async fn authenticate_client(
+    state: &AppState,
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+) -> Result<RegisteredClient, EndpointError> {
+    let basic = authorization.filter(|h| h.to_ascii_lowercase().starts_with("basic "));
+    let invalid = |description: &str, basic_challenge: bool| {
+        EndpointError::OAuth(OAuthError {
+            code: ErrorCode::InvalidClient,
+            description: Some(description.to_owned()),
+            basic_challenge,
+        })
+    };
+
+    let (client_id, secret) = match basic {
+        Some(header) => {
+            let (id, secret) = oauth::basic_credentials(header)
+                .ok_or_else(|| invalid("malformed Basic credentials", true))?;
+            if oauth::parameter(parameters, "client_secret").is_some() {
+                return Err(OAuthError::new(
+                    ErrorCode::InvalidRequest,
+                    "client credentials must use a single method",
+                )
+                .into());
+            }
+            if oauth::parameter(parameters, "client_id").is_some_and(|param| param != id) {
+                return Err(OAuthError::new(
+                    ErrorCode::InvalidRequest,
+                    "client_id does not match the Basic credentials",
+                )
+                .into());
+            }
+            (id, Some(secret))
+        }
+        None => {
+            let id = oauth::parameter(parameters, "client_id").ok_or_else(|| {
+                OAuthError::new(ErrorCode::InvalidRequest, "client_id is required")
+            })?;
+            (
+                id.to_owned(),
+                oauth::parameter(parameters, "client_secret").map(str::to_owned),
+            )
+        }
+    };
+
+    let Some(client) =
+        crate::repositories::registered_client::find_by_id(&state.db, &client_id).await?
+    else {
+        return Err(invalid("unknown client", basic.is_some()));
+    };
+    match (&client.client_secret_hash, secret) {
+        (Some(expected), Some(secret)) => {
+            let presented = crypto::sha256(secret.as_bytes());
+            if !constant_time_eq(&presented, expected) {
+                return Err(invalid("client authentication failed", basic.is_some()));
+            }
+        }
+        (Some(_), None) => {
+            return Err(invalid("this client must authenticate", basic.is_some()));
+        }
+        (None, Some(_)) => {
+            return Err(invalid("this client has no secret", basic.is_some()));
+        }
+        (None, None) => {}
+    }
+    Ok(client)
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+// Authorization requests
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredRequest {
+    client_id: String,
+    redirect_uri: String,
+    code_challenge: String,
+    scopes: Option<Vec<String>>,
+    state: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
+}
+
+/// Where `GET /oauth/authorize` sends the browser.
+pub enum AuthorizeOutcome {
+    /// To the consent page, with the stored request's id.
+    Consent(String),
+    /// Back to the client, with an error.
+    Refused(String),
+}
+
+/// Validate an authorization request. Until the client and its redirect URI are
+/// known good, errors are answered directly (never redirected to an unchecked
+/// URI); after that, through the redirect.
+pub async fn start_authorization(
+    state: &AppState,
+    parameters: &[(String, String)],
+) -> Result<AuthorizeOutcome, EndpointError> {
+    let param = |name| oauth::parameter(parameters, name);
+    let client_id = param("client_id")
+        .ok_or_else(|| OAuthError::new(ErrorCode::InvalidRequest, "client_id is required"))?;
+    let client = authorize_svc::load_client(state, client_id).await?;
+    let redirect_uri = match param("redirect_uri") {
+        Some(uri) => uri.to_owned(),
+        // RFC 6749 section 3.1.2.3: optional when exactly one is registered.
+        None if client.redirect_uris.len() == 1 => client.redirect_uris[0].clone(),
+        None => {
+            return Err(
+                OAuthError::new(ErrorCode::InvalidRequest, "redirect_uri is required").into(),
+            );
+        }
+    };
+    authorize_svc::validate_redirect(&client, &redirect_uri)?;
+
+    let client_state = param("state").filter(|s| s.len() <= oauth::MAX_STATE_LEN);
+    let refuse = |code: ErrorCode, description: &str| {
+        let mut response = vec![("error", code.as_str()), ("error_description", description)];
+        if let Some(client_state) = client_state {
+            response.push(("state", client_state));
+        }
+        oauth::redirect_with(&redirect_uri, &response)
+            .map(AuthorizeOutcome::Refused)
+            .ok_or_else(|| {
+                EndpointError::OAuth(OAuthError::new(
+                    ErrorCode::InvalidRequest,
+                    "invalid redirect_uri",
+                ))
+            })
+    };
+
+    if param("state").is_some_and(|s| s.len() > oauth::MAX_STATE_LEN) {
+        return refuse(ErrorCode::InvalidRequest, "state is too long");
+    }
+    if param("nonce").is_some_and(|n| n.chars().count() > oauth::MAX_STATE_LEN) {
+        return refuse(ErrorCode::InvalidRequest, "nonce is too long");
+    }
+    if param("response_type") != Some("code") {
+        return refuse(
+            ErrorCode::UnsupportedResponseType,
+            "only the code response type is supported",
+        );
+    }
+    let Some(code_challenge) = param("code_challenge") else {
+        return refuse(ErrorCode::InvalidRequest, "code_challenge is required");
+    };
+    if let Err(AppError::Validation(message)) = authorize_svc::validate_challenge(
+        code_challenge,
+        param("code_challenge_method").unwrap_or("plain"),
+    ) {
+        return refuse(ErrorCode::InvalidRequest, &message);
+    }
+    let scopes = match check_scopes(state, &client, param("scope")).await? {
+        Ok(scopes) => scopes,
+        Err(message) => return refuse(ErrorCode::InvalidScope, &message),
+    };
+
+    let id = crypto::generate_token();
+    let stored = serde_json::to_string(&StoredRequest {
+        client_id: client.client_id,
+        redirect_uri,
+        code_challenge: code_challenge.to_owned(),
+        scopes,
+        state: client_state.map(str::to_owned),
+        nonce: param("nonce").map(str::to_owned),
+    })
+    .map_err(|e| AppError::Internal(e.into()))?;
+    let mut conn = state
+        .redis
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    conn.set_ex::<_, _, ()>(request_key(&id), stored, REQUEST_TTL_SECS)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(AuthorizeOutcome::Consent(id))
+}
+
+/// The scopes of a request, or a message for `invalid_scope`.
+async fn check_scopes(
+    state: &AppState,
+    client: &RegisteredClient,
+    scope: Option<&str>,
+) -> Result<Result<Option<Vec<String>>, String>, AppError> {
+    let requested = match oauth::parse_scope(scope) {
+        Ok(requested) => requested,
+        Err(message) => return Ok(Err(message)),
+    };
+    let scopes = match oauth::requested_scopes(requested, &client.scopes) {
+        Ok(scopes) => scopes,
+        Err(outside) => {
+            return Ok(Err(format!(
+                "scopes not allowed for this client: {}",
+                outside.join(" ")
+            )));
+        }
+    };
+    if let Some(scopes) = &scopes {
+        let permissions: Vec<String> = scopes
+            .iter()
+            .filter(|scope| !crate::domain::oidc::is_oidc_scope(scope))
+            .cloned()
+            .collect();
+        let unknown = role_repo::unknown_permissions(&state.db, &permissions).await?;
+        if !unknown.is_empty() {
+            return Ok(Err(format!("unknown scopes: {}", unknown.join(" "))));
+        }
+    }
+    Ok(Ok(scopes))
+}
+
+fn request_key(id: &str) -> String {
+    format!("{REQUEST_PREFIX}{}", hex(&crypto::sha256(id.as_bytes())))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+async fn load_request(
+    state: &AppState,
+    id: &str,
+) -> Result<(StoredRequest, RegisteredClient), AppError> {
+    let mut conn = state
+        .redis
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let raw: Option<String> = conn
+        .get(request_key(id))
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let request: StoredRequest = serde_json::from_str(&raw.ok_or(AppError::NotFound)?)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let client = authorize_svc::load_client(state, &request.client_id)
+        .await
+        .map_err(|_| AppError::NotFound)?;
+    Ok((request, client))
+}
+
+/// Remove the request: of concurrent decisions, only the one that removed it
+/// goes on.
+async fn take_request(state: &AppState, id: &str) -> Result<(), AppError> {
+    let mut conn = state
+        .redis
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let removed: i64 = conn
+        .del(request_key(id))
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    if removed == 1 {
+        Ok(())
+    } else {
+        Err(AppError::NotFound)
+    }
+}
+
+/// What the consent page shows.
+pub struct RequestDescription {
+    pub request: authorize_svc::AuthorizationRequest,
+    pub redirect_uri: String,
+    pub reauthentication_required: bool,
+}
+
+pub async fn describe_request(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
+    id: &str,
+) -> Result<RequestDescription, AppError> {
+    let (request, client) = load_request(state, id).await?;
+    let description =
+        authorize_svc::describe(state, user_id, &client, request.scopes.as_deref()).await?;
+    Ok(RequestDescription {
+        request: description,
+        redirect_uri: request.redirect_uri,
+        reauthentication_required: authorize_svc::requires_reauthentication(
+            state, session_id, &client,
+        )
+        .await,
+    })
+}
+
+/// Approve a request: the redirect carrying the code and state.
+pub async fn approve_request(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
+    id: &str,
+    current_password: Option<&str>,
+    ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
+) -> Result<String, AppError> {
+    let (request, client) = load_request(state, id).await?;
+    // The password is checked before the request is taken: a missing or wrong
+    // one leaves the request to approve once the user has confirmed it.
+    if !client.is_primary {
+        crate::services::reauth::require_recent_reauth_or_password(
+            state,
+            user_id,
+            session_id,
+            current_password,
+            ip,
+            request_id,
+            "authorize_client",
+        )
+        .await?;
+    }
+    take_request(state, id).await?;
+    let approval = authorize_svc::Approval {
+        user_id,
+        session_id,
+        client: &client,
+        redirect_uri: &request.redirect_uri,
+        code_challenge: &request.code_challenge,
+        requested: request.scopes.as_deref(),
+        nonce: request.nonce.as_deref(),
+        // Proven above: the recent re-authentication marker now stands for it.
+        current_password: None,
+        ip,
+        request_id,
+    };
+    let code = authorize_svc::approve(state, &approval).await?;
+
+    let mut response = vec![("code", code.as_str())];
+    if let Some(client_state) = request.state.as_deref() {
+        response.push(("state", client_state));
+    }
+    oauth::redirect_with(&request.redirect_uri, &response)
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("stored redirect_uri does not parse")))
+}
+
+/// Deny a request: the redirect carrying `access_denied`.
+pub async fn deny_request(state: &AppState, id: &str) -> Result<String, AppError> {
+    let (request, _) = load_request(state, id).await?;
+    take_request(state, id).await?;
+    let mut response = vec![
+        ("error", ErrorCode::AccessDenied.as_str()),
+        ("error_description", "the user denied the request"),
+    ];
+    if let Some(client_state) = request.state.as_deref() {
+        response.push(("state", client_state));
+    }
+    oauth::redirect_with(&request.redirect_uri, &response)
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("stored redirect_uri does not parse")))
+}
+
+// Token endpoint
+
+/// RFC 6749 section 5.1.
+pub struct TokenResponse {
+    pub access_token: String,
+    /// Absent for the client credentials grant.
+    pub refresh_token: Option<String>,
+    pub scopes: Option<Vec<String>>,
+    pub expires_in: u64,
+    /// Present when the session was granted the `openid` scope.
+    pub id_token: Option<String>,
+}
+
+pub async fn token(
+    state: &AppState,
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+) -> Result<TokenResponse, EndpointError> {
+    let param = |name: &'static str| oauth::parameter(parameters, name);
+    let grant_type = param("grant_type")
+        .ok_or_else(|| OAuthError::new(ErrorCode::InvalidRequest, "grant_type is required"))?;
+    if ![
+        oauth::GRANT_AUTHORIZATION_CODE,
+        oauth::GRANT_REFRESH_TOKEN,
+        oauth::GRANT_DEVICE_CODE,
+        oauth::GRANT_CLIENT_CREDENTIALS,
+    ]
+    .contains(&grant_type)
+    {
+        return Err(OAuthError::new(
+            ErrorCode::UnsupportedGrantType,
+            format!("unsupported grant_type {grant_type}"),
+        )
+        .into());
+    }
+    let client = authenticate_client(state, authorization, parameters).await?;
+    let required = |name: &'static str| {
+        param(name).ok_or_else(|| {
+            EndpointError::OAuth(OAuthError::new(
+                ErrorCode::InvalidRequest,
+                format!("{name} is required"),
+            ))
+        })
+    };
+    let device_name = param("device_name");
+    let expires_in = state.config.jwt.access_expiry_secs;
+
+    if grant_type == oauth::GRANT_CLIENT_CREDENTIALS {
+        return client_credentials(state, &client, param("scope")).await;
+    }
+
+    let (tokens, nonce) = match grant_type {
+        oauth::GRANT_AUTHORIZATION_CODE => {
+            let redirect_uri = match param("redirect_uri") {
+                Some(uri) => uri.to_owned(),
+                None if client.redirect_uris.len() == 1 => client.redirect_uris[0].clone(),
+                None => required("redirect_uri")?.to_owned(),
+            };
+            authorize_svc::redeem(
+                state,
+                &authorize_svc::Redemption {
+                    code: required("code")?,
+                    verifier: required("code_verifier")?,
+                    client_id: &client.client_id,
+                    redirect_uri: &redirect_uri,
+                    ip,
+                    user_agent,
+                    device_name,
+                },
+            )
+            .await?
+        }
+        oauth::GRANT_REFRESH_TOKEN => (
+            auth_svc::refresh_token(
+                state,
+                required("refresh_token")?,
+                Some(&client.client_id),
+                ip,
+                user_agent,
+                None,
+            )
+            .await?,
+            None,
+        ),
+        _ => (
+            device_svc::poll(
+                state,
+                required("device_code")?,
+                &client.client_id,
+                ip,
+                user_agent,
+                device_name,
+            )
+            .await?,
+            None,
+        ),
+    };
+
+    let id_token = if crate::domain::oidc::requests_identity(tokens.session.scopes.as_deref()) {
+        Some(id_token(state, &client, &tokens, nonce).await?)
+    } else {
+        None
+    };
+    Ok(TokenResponse {
+        access_token: tokens.access_token,
+        refresh_token: Some(tokens.refresh_token),
+        scopes: tokens.session.scopes,
+        expires_in,
+        id_token,
+    })
+}
+
+/// An OpenID Connect ID token for the session's user and this client.
+async fn id_token(
+    state: &AppState,
+    client: &RegisteredClient,
+    tokens: &AuthTokens,
+    nonce: Option<String>,
+) -> Result<String, AppError> {
+    let user = crate::repositories::user::find_by_id(&state.db, tokens.session.user_id)
+        .await?
+        .ok_or(AppError::TokenInvalid)?;
+    let scopes = tokens.session.scopes.clone().unwrap_or_default();
+    let now = state.clock.now().unix_timestamp();
+    let claims = crate::domain::oidc::IdTokenClaims {
+        iss: state.config.server.public_url.clone(),
+        sub: user.id,
+        aud: client.client_id.clone(),
+        azp: client.client_id.clone(),
+        exp: now
+            .saturating_add(i64::try_from(state.config.jwt.access_expiry_secs).unwrap_or(i64::MAX)),
+        iat: now,
+        auth_time: tokens.session.family_created_at.unix_timestamp(),
+        nonce,
+        at_hash: crate::domain::oidc::at_hash(&tokens.access_token),
+        profile: crate::domain::oidc::user_claims(&user, &scopes),
+    };
+    crate::utils::jwt::encode_claims(&claims, &state.jwt_signing_key, Some(&state.jwt_kid))
+        .map_err(|e| AppError::Internal(e.into()))
+}
+
+/// The UserInfo response (OIDC Core 5.3) for an access token of a session
+/// granted `openid`.
+pub async fn userinfo(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
+) -> Result<serde_json::Value, AppError> {
+    let session = crate::repositories::session::find_by_id(&state.db, session_id)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    if !crate::domain::oidc::requests_identity(session.scopes.as_deref()) {
+        return Err(AppError::Forbidden);
+    }
+    let user = crate::repositories::user::find_by_id(&state.db, user_id)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    let claims =
+        crate::domain::oidc::user_claims(&user, session.scopes.as_deref().unwrap_or_default());
+    let mut response = serde_json::to_value(claims).map_err(|e| AppError::Internal(e.into()))?;
+    if let serde_json::Value::Object(object) = &mut response {
+        object.insert("sub".into(), serde_json::Value::String(user.id.to_string()));
+    }
+    Ok(response)
+}
+
+/// A token for the client itself (RFC 6749 section 4.4): no user, no session,
+/// no refresh token; the permissions of its scopes, narrowed by `scope`.
+async fn client_credentials(
+    state: &AppState,
+    client: &RegisteredClient,
+    scope: Option<&str>,
+) -> Result<TokenResponse, EndpointError> {
+    if !client.is_confidential() || !client.allows_client_credentials {
+        return Err(OAuthError::new(
+            ErrorCode::UnauthorizedClient,
+            "this client may not use the client credentials grant",
+        )
+        .into());
+    }
+    let scopes = check_scopes(state, client, scope)
+        .await?
+        .map_err(|message| OAuthError::new(ErrorCode::InvalidScope, message))?
+        .unwrap_or_default();
+
+    let issuer = state.config.server.public_url.clone();
+    let now = state.clock.now().unix_timestamp();
+    let expires_in = state.config.jwt.access_expiry_secs;
+    let mut claims = crate::utils::jwt::Claims::new(
+        oauth::client_subject(&issuer, &client.client_id),
+        Uuid::nil(),
+        now,
+        now.saturating_add(i64::try_from(expires_in).unwrap_or(i64::MAX)),
+    )
+    .with_rbac(Vec::new(), scopes.clone());
+    claims.client_id = Some(client.client_id.clone());
+    claims.iss = Some(issuer);
+    claims.aud = state.config.jwt.audience.clone();
+    let access_token =
+        crate::utils::jwt::encode_token(&claims, &state.jwt_signing_key, Some(&state.jwt_kid))
+            .map_err(|e| AppError::Internal(e.into()))?;
+    metrics::counter!("auth_client_credentials_tokens_total").increment(1);
+
+    Ok(TokenResponse {
+        access_token,
+        refresh_token: None,
+        scopes: Some(scopes),
+        expires_in,
+        id_token: None,
+    })
+}
+
+// Device authorization
+
+pub async fn device_authorization(
+    state: &AppState,
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+) -> Result<device_svc::DeviceInitResponse, EndpointError> {
+    let client = authenticate_client(state, authorization, parameters).await?;
+    let scopes = check_scopes(state, &client, oauth::parameter(parameters, "scope"))
+        .await?
+        .map_err(|message| OAuthError::new(ErrorCode::InvalidScope, message))?;
+    Ok(device_svc::initiate(state, ip, user_agent, &client, scopes).await?)
+}
+
+// Introspection (RFC 7662) and revocation (RFC 7009)
+
+/// What introspection says about a token. `None` fields are left out.
+#[derive(Debug, Default, Serialize, utoipa::ToSchema)]
+pub struct Introspection {
+    pub active: bool,
+    /// `access_token`, `refresh_token` or `personal_access_token`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_type: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sub: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iat: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aud: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jti: Option<Uuid>,
+}
+
+/// The kind of a presented token, from its shape.
+enum Presented<'a> {
+    Access(&'a str),
+    Personal(&'a str),
+    Refresh(&'a str),
+}
+
+fn classify(token: &str) -> Presented<'_> {
+    if crate::domain::personal_access_token::random_part(token).is_some() {
+        Presented::Personal(token)
+    } else if token.split('.').count() == 3 {
+        Presented::Access(token)
+    } else {
+        Presented::Refresh(token)
+    }
+}
+
+/// Introspect a token for a confidential client (a resource server). Anything
+/// unknown, expired or revoked is `{ "active": false }` and nothing more.
+pub async fn introspect(
+    state: &AppState,
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+) -> Result<Introspection, EndpointError> {
+    let client = authenticate_client(state, authorization, parameters).await?;
+    if !client.is_confidential() {
+        return Err(OAuthError::new(
+            ErrorCode::UnauthorizedClient,
+            "introspection is reserved to confidential clients",
+        )
+        .into());
+    }
+    let token = oauth::parameter(parameters, "token")
+        .ok_or_else(|| OAuthError::new(ErrorCode::InvalidRequest, "token is required"))?;
+    let now = state.clock.now();
+
+    let introspection = match classify(token) {
+        Presented::Access(jwt) => {
+            let Some(claims) = verified_claims(state, jwt) else {
+                return Ok(Introspection::default());
+            };
+            let active = match claims.client_id.as_deref() {
+                // A client credentials token: active while not revoked and the
+                // client may still use the grant.
+                Some(client_id) if claims.sid.is_nil() => {
+                    !auth_svc::is_jti_blocked(state, claims.jti).await?
+                        && crate::repositories::registered_client::find_by_id(&state.db, client_id)
+                            .await?
+                            .is_some_and(|c| c.allows_client_credentials)
+                }
+                _ => auth_svc::verify_token_state(state, claims.jti, claims.sid)
+                    .await
+                    .is_ok(),
+            };
+            if !active {
+                return Ok(Introspection::default());
+            }
+            let session_client = match claims.client_id.clone() {
+                Some(client_id) => Some(client_id),
+                None => crate::repositories::session::find_by_id(&state.db, claims.sid)
+                    .await?
+                    .and_then(|s| s.client_id),
+            };
+            Introspection {
+                active: true,
+                token_type: Some("access_token"),
+                scope: Some(claims.permissions.join(" ")).filter(|s| !s.is_empty()),
+                client_id: session_client,
+                sub: Some(claims.sub),
+                exp: Some(claims.exp),
+                iat: Some(claims.iat),
+                iss: claims.iss,
+                aud: Some(claims.aud).filter(|aud| !aud.is_empty()),
+                jti: Some(claims.jti),
+            }
+        }
+        Presented::Refresh(raw) => {
+            let Some(session) = crate::repositories::session::find_by_token_hash(
+                &state.db,
+                &crypto::sha256(raw.as_bytes()),
+            )
+            .await?
+            .filter(|s| s.is_active(now) && s.rotated_at.is_none()) else {
+                return Ok(Introspection::default());
+            };
+            Introspection {
+                active: true,
+                token_type: Some("refresh_token"),
+                scope: session.scopes.as_ref().map(|s| s.join(" ")),
+                client_id: session.client_id,
+                sub: Some(session.user_id),
+                exp: Some(session.expires_at.unix_timestamp()),
+                iat: Some(session.created_at.unix_timestamp()),
+                ..Introspection::default()
+            }
+        }
+        Presented::Personal(secret) => {
+            let random =
+                crate::domain::personal_access_token::random_part(secret).unwrap_or_default();
+            let Some(found) = crate::repositories::personal_access_token::find_by_hash(
+                &state.db,
+                &crypto::sha256(random.as_bytes()),
+            )
+            .await?
+            .filter(|f| f.session_revoked_at.is_none() && f.token.expires_at > now) else {
+                return Ok(Introspection::default());
+            };
+            Introspection {
+                active: true,
+                token_type: Some("personal_access_token"),
+                scope: Some(found.token.scopes.join(" ")),
+                sub: Some(found.token.user_id),
+                exp: Some(found.token.expires_at.unix_timestamp()),
+                iat: Some(found.token.created_at.unix_timestamp()),
+                ..Introspection::default()
+            }
+        }
+    };
+    Ok(introspection)
+}
+
+/// The claims of an access token this instance signed for itself, unexpired.
+fn verified_claims(state: &AppState, jwt: &str) -> Option<crate::utils::jwt::Claims> {
+    let claims = crate::utils::jwt::decode_token_with_keys(
+        jwt,
+        &state.jwt_verifying_keys,
+        state.clock.now().unix_timestamp(),
+    )
+    .ok()?;
+    let issuer = state.config.server.public_url.as_str();
+    crate::utils::jwt::validate_iss_aud(&claims, issuer, issuer).ok()?;
+    Some(claims)
+}
+
+/// Revoke a token issued to the requesting client. Unknown tokens, and tokens
+/// of other clients, are answered the same way and left alone (RFC 7009
+/// section 2.2): the answer reveals nothing.
+pub async fn revoke(
+    state: &AppState,
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+    ip: Option<IpNetwork>,
+) -> Result<(), EndpointError> {
+    let client = authenticate_client(state, authorization, parameters).await?;
+    let token = oauth::parameter(parameters, "token")
+        .ok_or_else(|| OAuthError::new(ErrorCode::InvalidRequest, "token is required"))?;
+    let owned = |session: &crate::domain::session::Session| {
+        session.client_id.as_deref() == Some(&client.client_id)
+    };
+
+    match classify(token) {
+        Presented::Access(jwt) => {
+            let Some(claims) = verified_claims(state, jwt) else {
+                return Ok(());
+            };
+            if claims.sid.is_nil() {
+                if claims.client_id.as_deref() == Some(&client.client_id) {
+                    auth_svc::blocklist_jti(state, claims.jti, claims.exp).await;
+                }
+                return Ok(());
+            }
+            if let Some(session) =
+                crate::repositories::session::find_by_id(&state.db, claims.sid).await?
+                && owned(&session)
+            {
+                auth_svc::blocklist_jti(state, claims.jti, claims.exp).await;
+            }
+        }
+        Presented::Refresh(raw) => {
+            if let Some(session) = crate::repositories::session::find_by_token_hash(
+                &state.db,
+                &crypto::sha256(raw.as_bytes()),
+            )
+            .await?
+                && owned(&session)
+                && session.revoked_at.is_none()
+            {
+                // The access tokens of the grant end with its session.
+                crate::repositories::session::revoke(&state.db, session.id).await?;
+                auth_svc::invalidate_session_caches(state, &[session.id]).await;
+                auth_svc::blocklist_refresh_token(state, &session.token_hash, session.expires_at)
+                    .await;
+                crate::repositories::audit::append(
+                    &state.db,
+                    &crate::repositories::audit::NewAuditEntry {
+                        user_id: Some(session.user_id),
+                        request_id: None,
+                        action: crate::domain::audit::AuditAction::SessionRevoked,
+                        ip_address: ip,
+                        metadata: serde_json::json!({
+                            "session_id": session.id,
+                            "by": "client",
+                            "client_id": client.client_id,
+                        }),
+                    },
+                )
+                .await?;
+            }
+        }
+        // Personal access tokens belong to accounts, not clients.
+        Presented::Personal(_) => {}
+    }
+    Ok(())
+}

@@ -1,0 +1,216 @@
+name: CI
+
+# Pull requests to main, and main after a merge. staging is the draft branch:
+# nothing runs on it until it is proposed to main.
+#
+# Branch protection requires one check, `ci-ok`, which gathers the jobs below.
+# A job the change does not concern is skipped, and a skipped job does not
+# block the merge: a documentation-only pull request passes in a minute.
+# The jobs call the Makefile and scripts/infra-check.sh, so the CI runs exactly
+# what `make ci` and `make infra-check` run locally.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # A new push to a pull request supersedes the running checks. Runs on main
+  # are kept: they write the cache the next pull requests read.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # No debug info: a smaller target directory and cache, same test results.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      infra: ${{ steps.filter.outputs.infra }}
+      image: ${{ steps.filter.outputs.image }}
+      js: ${{ steps.filter.outputs.js }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify the changed files
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            # The checkout is the pull request merged into main; its first
+            # parent is main.
+            files=$(git diff --name-only HEAD^1 HEAD)
+          elif [ "$EVENT" = push ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            files=$(git diff --name-only "$BEFORE" HEAD)
+          else
+            # Manual run, or a push whose previous commit is unknown: everything.
+            files=$(git ls-files)
+          fi
+          printf '%s\n' "$files"
+          matches() {
+            if printf '%s\n' "$files" | grep -E "$1" > /dev/null; then echo true; else echo false; fi
+          }
+          {
+            echo "rust=$(matches '^(src/|tests/|crates/|fuzz/|migrations/|templates/|benches/|\.config/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|deny\.toml$|Makefile$|docker-compose\.test\.yml$|docs/dev/api/openapi\.yaml$|\.github/workflows/ci\.yml$)')"
+            echo "infra=$(matches '^(Dockerfile|\.dockerignore$|docker-compose[^/]*\.ya?ml$|nats\.conf$|config\.prod\.env$|nginx/|deploy/|scripts/|perf/[^/]*\.sh$|docs/deploy/guides/prometheus-alerts\.yml$|Makefile$|\.github/workflows/ci\.yml$)')"
+            echo "js=$(matches '^(clients/js/|Makefile$|\.github/workflows/ci\.yml$)')"
+            echo "image=$(matches '^(Dockerfile$|\.dockerignore$|Cargo\.lock$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)')"
+          } >> "$GITHUB_OUTPUT"
+
+  hygiene:
+    name: Hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Workflow lint and repository secret scan
+        run: CHECKS=hygiene scripts/infra-check.sh
+
+  rust:
+    name: Rust
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain (rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustc -V
+
+      - name: Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Pull requests read the cache main wrote; only main writes it, so
+          # the 10 GB cache is not filled with one copy per pull request.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install nextest and cargo-deny
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-nextest,cargo-deny
+
+      # Cheapest first: formatting fails in seconds, before anything compiles.
+      - name: Formatting
+        run: make fmt-check
+
+      - name: Clippy
+        run: make clippy
+
+      - name: Dependency policy
+        run: make deny
+
+      - name: Test infrastructure
+        run: make test-infra-up
+
+      - name: Tests and fuzz corpus
+        run: make ci-test
+
+      - name: Test report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
+
+  infra:
+    name: Infrastructure
+    needs: changes
+    if: needs.changes.outputs.infra == 'true' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compose, Dockerfiles, nginx, Prometheus, shell scripts
+        run: CHECKS=static scripts/infra-check.sh
+
+  js:
+    name: JavaScript
+    needs: changes
+    if: needs.changes.outputs.js == 'true' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner's Node.js; the packages have no dependency to install.
+      - name: Tests
+        run: make js-test
+
+  image:
+    name: Image
+    needs: changes
+    if: needs.changes.outputs.image == 'true' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build, size and Trivy scan
+        run: CHECKS=image scripts/infra-check.sh
+
+  ci-ok:
+    name: ci-ok
+    needs: [changes, hygiene, rust, infra, js, image]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every required job passed or was not needed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          DRAFT: ${{ github.event.pull_request.draft == true }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          if jq -e 'to_entries | any(.value.result == "failure" or .value.result == "cancelled")' <<< "$RESULTS" > /dev/null; then
+            echo "::error::a job failed or was cancelled"
+            exit 1
+          fi
+          # A draft skips the heavy jobs: it must not look ready to merge.
+          if [ "$DRAFT" = true ]; then
+            echo "::error::draft pull request: mark it ready for review to run every check"
+            exit 1
+          fi

@@ -2,16 +2,11 @@ use std::hint::black_box;
 
 use auth_api::{
     config::CryptoConfig,
-    repositories::login_location::RiskHistoryEntry,
-    services::{
-        auth::{CachedRiskContext, CachedRiskEvaluation, PreAuthState},
-        risk_score::{self, LoginContext, RiskDecision, RiskResult},
-    },
-    utils::{geoip::GeoLocation, jwt, password, totp},
+    services::auth::{ChallengeMethod, PreAuthState},
+    utils::{jwt, password, totp},
 };
-use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
-use ipnetwork::IpNetwork;
-use time::{Duration, OffsetDateTime};
+use criterion::{Criterion, SamplingMode, criterion_group, criterion_main};
+use time::OffsetDateTime;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 
@@ -33,11 +28,8 @@ fn jwt_benches(c: &mut Criterion) {
     }
 
     let mut group = c.benchmark_group("jwt");
-    let claims = jwt::Claims::new(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        OffsetDateTime::now_utc().unix_timestamp() + 3600,
-    );
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let claims = jwt::Claims::new(Uuid::new_v4(), Uuid::new_v4(), now, now + 3600);
     let (signing_key, verifying_key) = generate_key_pair();
     let (old_signing_key, old_verifying_key) = generate_key_pair();
     let token = jwt::encode_token(&claims, &signing_key, None).expect("failed to encode token");
@@ -53,7 +45,8 @@ fn jwt_benches(c: &mut Criterion) {
 
     group.bench_function("decode_es256", |b| {
         b.iter(|| {
-            jwt::decode_token(black_box(&token), black_box(&verifying_key)).expect("decode failed")
+            jwt::decode_token(black_box(&token), black_box(&verifying_key), now)
+                .expect("decode failed")
         })
     });
 
@@ -63,6 +56,7 @@ fn jwt_benches(c: &mut Criterion) {
                 black_box(&rotated_token),
                 black_box(&verifying_key),
                 Some(black_box(&old_verifying_key)),
+                now,
             )
             .expect("decode with fallback failed")
         })
@@ -74,21 +68,7 @@ fn pre_auth_benches(c: &mut Criterion) {
     let state = PreAuthState {
         user_id: Uuid::new_v4(),
         remember_me: false,
-        risk: Some(CachedRiskEvaluation {
-            context: CachedRiskContext {
-                ip: "203.0.113.42/32".to_string(),
-                user_agent: "bench-agent/1.0".to_string(),
-                country: "FR".to_string(),
-                city: "Paris".to_string(),
-                latitude: Some(48.8566),
-                longitude: Some(2.3522),
-            },
-            result: Some(RiskResult {
-                score: 60,
-                decision: RiskDecision::Challenge,
-                signals: vec!["new_device".into(), "new_country:FR".into()],
-            }),
-        }),
+        method: Some(ChallengeMethod::Totp),
     };
     let json = serde_json::to_string(&state).expect("failed to serialize pre-auth state");
     let legacy_uuid = state.user_id.to_string();
@@ -108,35 +88,13 @@ fn pre_auth_benches(c: &mut Criterion) {
     });
 }
 
-fn risk_score_benches(c: &mut Criterion) {
-    let mut group = c.benchmark_group("risk_score");
-    let login_time = OffsetDateTime::now_utc();
-    let ctx = LoginContext {
-        user_id: Uuid::new_v4(),
-        ip: "198.51.100.20/32".parse::<IpNetwork>().expect("valid cidr"),
-        user_agent: "Mozilla/5.0 (Benchmark)".into(),
-        geo: Some(GeoLocation {
-            country: "FR".into(),
-            city: "Paris".into(),
-            latitude: Some(48.8566),
-            longitude: Some(2.3522),
-        }),
-        login_time,
-    };
-
-    for size in [0usize, 8, 64, 256] {
-        let history = make_risk_history(size, login_time);
-        group.bench_with_input(BenchmarkId::from_parameter(size), &history, |b, history| {
-            b.iter(|| risk_score::compute_score(black_box(&ctx), black_box(history)))
-        });
-    }
-}
-
 fn totp_benches(c: &mut Criterion) {
     let mut group = c.benchmark_group("totp");
     let secret = totp::generate_secret();
-    let encryption_key = [7u8; 32];
-    let encrypted = auth_api::utils::crypto::encrypt(&secret, &encryption_key)
+    // The production path: a keyring and a versioned ciphertext.
+    let keyring = auth_api::utils::crypto::Keyring::new([7u8; 32], None);
+    let encrypted = keyring
+        .encrypt(&secret)
         .expect("failed to encrypt benchmark secret");
     let secret_bytes = Secret::Encoded(secret.clone())
         .to_bytes()
@@ -159,8 +117,9 @@ fn totp_benches(c: &mut Criterion) {
             totp::verify_code(
                 black_box(&encrypted),
                 black_box(&code),
-                black_box(&encryption_key),
+                black_box(&keyring),
                 1,
+                OffsetDateTime::now_utc().unix_timestamp(),
             )
             .expect("verify")
         })
@@ -200,22 +159,9 @@ fn password_benches(c: &mut Criterion) {
     });
 }
 
-fn make_risk_history(size: usize, login_time: OffsetDateTime) -> Vec<RiskHistoryEntry> {
-    (0..size)
-        .map(|index| RiskHistoryEntry {
-            country: if index % 4 == 0 { "FR" } else { "DE" }.to_string(),
-            city: format!("city-{index}"),
-            user_agent: format!("agent/{}", index % 12),
-            latitude: Some(48.0 + (index as f64 / 100.0)),
-            longitude: Some(2.0 + (index as f64 / 100.0)),
-            last_seen: login_time - Duration::hours((index % 72) as i64 + 1),
-        })
-        .collect()
-}
-
 criterion_group!(
     name = benches;
     config = Criterion::default().configure_from_args();
-    targets = jwt_benches, pre_auth_benches, risk_score_benches, totp_benches, password_benches
+    targets = jwt_benches, pre_auth_benches, totp_benches, password_benches
 );
 criterion_main!(benches);

@@ -1,0 +1,278 @@
+# Security Model
+
+What the service protects, against whom, and how. Each control below is pinned
+by tests (the control catalog at the end) so that a regression fails the build.
+The [threat model](threat-model.md) maps threats to these controls.
+
+## Assets and adversaries
+
+| Asset | Worst outcome |
+|-------|---------------|
+| Passwords | Offline cracking after a database leak |
+| Sessions and tokens | Account takeover without the password |
+| Second factors | Bypass by someone who holds the password |
+| Account existence | Enumeration for phishing or credential stuffing |
+| Security history, addresses | Personal data exposure |
+
+Adversaries considered: an anonymous attacker on the network, an attacker
+holding a leaked password, an attacker holding a stolen access or refresh
+token, a malicious client application, and a read-only database leak.
+An attacker with code execution on the host, or with the `ENCRYPTION_KEY` and
+the database together, is out of scope.
+
+## Credentials
+
+- **Argon2id**, 64 MiB and 3 iterations by default; hashes run on a bounded
+  pool (`ARGON2_MAX_CONCURRENCY`) so a login storm queues instead of exhausting
+  memory.
+- **No account oracle.** An unknown identifier still pays a full hash against a
+  decoy. A locked account answers the same whatever the password. Registration
+  answers `202` identically whether or not the address is taken (the owner is
+  emailed instead; a pending one gets its verification again). Forgot-password
+  and verification resends take a constant minimum time and answer identically.
+- **Addresses cannot be squatted.** A password reset proves ownership of the
+  address: it verifies a pending account with the password its owner chose, so
+  an account someone else registered with the address is taken back. Accounts
+  never verified are deleted after `CLEANUP_UNVERIFIED_ACCOUNT_DAYS`.
+- **Breached passwords are refused** at registration, change and reset, through
+  the Pwned Passwords range API: only the first five characters of the SHA-1
+  leave the service, answers are padded, and the check runs before the address
+  is looked up so it costs the same whether the address is taken.
+- **Lockout** after `LOCKOUT_THRESHOLD` consecutive wrong passwords. Failed
+  second factors never count: whoever fails a second factor already holds the
+  password, and letting them lock the account would let them shut the owner out.
+- **Brute force** is bounded per identifier and per address (database counters),
+  across identifiers from one address (HyperLogLog), and per submitted token.
+  Budgets are consumed atomically in Redis before the guarded check runs, so
+  parallel requests cannot all pass; they fail closed when Redis is down.
+
+## Sessions and tokens
+
+- **New devices** are announced: a sign-in from a browser and operating system
+  family the account never used e-mails its owner and is audited as
+  `new_device_login`. The first sign-in of an account and browser updates do not
+  alert.
+- **Access tokens** are ES256 JWTs (15 minutes) carrying `iss`, `aud`, `sid` and
+  `jti`. Every authenticated request checks, in one Redis round trip, that the
+  `jti` was not revoked by a logout and that the session is still active. A
+  Redis failure refuses the request: revocation cannot be proven.
+- **Refresh tokens** are opaque, stored as SHA-256 digests, and rotated on every
+  use. Presenting a rotated token again revokes the whole session family;
+  within 2 seconds of the rotation it is treated as a concurrent refresh from
+  the same client (two tabs) and refused without revocation.
+- **Absolute lifetime.** A sign-in ends after `JWT_MAX_SESSION_LIFETIME_SECS`
+  however often it is refreshed, and no rotation dates a session past that
+  moment. `JWT_STRICT_SESSION_BINDING` refuses a refresh
+  from another address.
+- **Sensitive actions require a recent re-authentication**: changing the
+  password, username or email, deleting the account, revoking sessions, and
+  adding or removing a second factor. A fresh sign-in does not count - a stolen
+  refresh token or an approved device must not change the credentials.
+
+## Second factors
+
+- A pre-auth token (5 minutes) is bound to the method it was issued for: a TOTP
+  challenge cannot be completed with an email code or vice versa.
+- TOTP codes are accepted once (durable replay table), with per-challenge and
+  per-account failure budgets. Confirming a new TOTP method consumes its code
+  in the same table, under its own budget. Email codes have their own budgets;
+  recovery codes share one per-account budget between the sign-in challenge and
+  the authenticated route.
+- A second factor answers an account status exactly as the password sign-in
+  does.
+- Adding or removing a method notifies the account's address. Removing the last
+  method deletes the recovery codes; removing a primary method promotes another.
+- TOTP secrets are encrypted with AES-256-GCM. Ciphertexts name their key, so
+  the key can be rotated without downtime and the rotation can be resumed.
+
+## External identities
+
+- An external identity signs in only after the signed-in owner of an account
+  linked it, with a recent re-authentication. No account is found or created
+  from an email address, verified or not: an attacker controlling an address at
+  a provider gains nothing.
+- The flow uses PKCE, `state` and `nonce`; the ID token's signature is checked
+  against the provider's published keys, and its issuer, audience, authorized
+  party, expiry and nonce against the flow.
+- The callback's outcome is redeemed once, within two minutes, only with the
+  binding secret the starting browser kept: a callback URL forwarded to a victim
+  cannot sign the victim in to the attacker's account.
+- The identity stands for the password: a second factor enrolled on the account
+  is still required.
+
+## Passkeys
+
+- Registration needs a recent re-authentication. A response is accepted only
+  for the challenge issued to the session, from an allowed origin, for this
+  relying party, with user presence and verification; attestation is not
+  requested nor trusted.
+- A sign-in challenge is used once, whatever the outcome. The assertion must
+  verify against the stored key, come from an allowed origin with user
+  verification, carry the credential's user handle, and make a kept signature
+  counter grow; a counter that does not grow refuses the sign-in (possible
+  clone). Every refusal answers `invalid_credentials` and counts against the
+  client address.
+
+## Client applications
+
+- Only registered clients can obtain sessions, through the standard OAuth 2.1
+  endpoints. A confidential client proves its secret at every token and device
+  authorization request; the secret (256 random bits) is stored as a digest and
+  compared in constant time.
+- **Authorization endpoint:** an unknown client or an unregistered redirect URI
+  is answered directly, never redirected; the stored request lives ten minutes
+  and is decided once. Consenting to a third-party client requires a
+  re-authentication, checked before the request is used up.
+- **Device flow (RFC 8628):** user codes are reserved atomically, polling is
+  paced, an approval is collected exactly once and only by the client that
+  started the flow, and account status and session limits are rechecked when
+  tokens are issued.
+- **Authorization code with PKCE:** S256 only, exact redirect URIs (loopback on
+  any port only for a registered path, never `localhost`), single-use codes
+  consumed atomically, a replayed code revokes its session.
+- **Scopes:** a request may narrow the client's registered scopes, never widen
+  them; a client's tokens carry only the consented permissions, re-derived from
+  the user's current permissions on every refresh, and no roles.
+- **Refresh:** a client's session is refreshed only by that client at the token
+  endpoint, with its authentication; the first-party route refuses it.
+- **OpenID Connect:** identity scopes grant no permission and release only
+  their own claims; the ID token is bound to the client (`aud`), the request
+  (`nonce`) and the access token (`at_hash`).
+- **Client credentials:** only a confidential client with scopes that has the
+  grant turned on obtains tokens for itself; they carry no user, so account
+  routes refuse them, and they stop being active when the grant is turned off.
+- **Introspection and revocation:** only confidential clients introspect, and
+  an inactive token reveals nothing but `active: false`. A client revokes its
+  own tokens only; any other token gets the same answer and is left alone.
+
+## Administration
+
+- `/admin` routes require an administrative permission in the token, a second
+  factor enrolled on the administrator's account, and the permission of the
+  action still granted in the database: revoking a role takes effect on the
+  next request, not when the token expires.
+- Administrators cannot suspend, sign out, reset or delete their own account
+  from `/admin`, and deleting an account needs their recent re-authentication.
+- Every change is audited on the account it changed, with the administrator's
+  id, so owners see it in their own history; changes to roles and clients are
+  audited in the administrator's own history.
+- Granting a role, changing what a role grants and saving a client need a
+  recent re-authentication. No change may leave the deployment without an
+  account holding `roles:manage`.
+
+## Webhooks
+
+- Deliveries are recorded in the transaction of the change, like events: an
+  endpoint never hears of a change that rolled back.
+- Each delivery is signed with the endpoint's secret (HMAC-SHA256 over id,
+  timestamp and body); secrets are encrypted with the keyring and shown once.
+- Before each delivery the host is resolved and every address checked: loopback,
+  private, link-local, shared, documentation, multicast and reserved ranges,
+  and IPv6 forms embedding them, are refused. The connection is pinned to the
+  checked address and redirects are not followed, so a DNS answer or a
+  redirect cannot turn a webhook against the internal network.
+
+## Data
+
+- Every token, code and refresh token is stored as a digest.
+- The audit log is append-only (enforced by a trigger) and holds no personal
+  data such as addresses in its metadata. Its client addresses keep only their
+  network after 90 days and are removed when the account is deleted, with its
+  sign-in attempts ([personal data](privacy.md)). Users read their own history
+  through `GET /users/me/audit`.
+- An email change is confirmed on both addresses, revokes the other sessions,
+  and notifies the previous address.
+- Account deletion records `user.deleted` in the event outbox in the same
+  transaction as the deletion, so downstream erasure cannot be lost and is
+  never announced for an account that still exists; the relay delivers it to
+  JetStream, waiting for the broker when it is down.
+
+## Network edge
+
+- Client addresses come from forwarding headers only when the direct peer is a
+  trusted proxy (`TRUSTED_PROXY_CIDRS`); IPv6 clients are limited per `/64`.
+- Rate limits: a sliding-window estimate per client, one script per request,
+  fail closed in production.
+- Request bodies are capped at 64 KB and handlers at 30 seconds. Responses carry
+  HSTS, CSP `default-src 'none'`, `nosniff`, `DENY` framing and `no-store`.
+- Logs record route templates, never raw paths carrying codes. Metrics are served
+  on a loopback-only listener.
+
+## Configuration
+
+Production refuses to start with a configuration that disables a control: HTTP
+public or frontend URLs, no trusted proxy, committed development keys, a
+wildcard CORS origin, fail-open rate limiting or CAPTCHA, and more. The full
+list is in [Configuration](guides/configuration.md#production-checks).
+
+## Known limits
+
+- An administrative revocation outside the API (a direct database update) takes
+  effect within the 5-second session cache.
+- Email codes are 6 digits; their strength is the attempt budgets and short
+  lifetime, not their entropy.
+- Outside production, rate limiting and CAPTCHA fail open by default.
+- Anyone holding both `ENCRYPTION_KEY` and a database dump can read TOTP secrets.
+- A logout racing a refresh of the same session, more than 2 seconds after
+  its rotation, reads as a replay: the family is revoked and a replay audited.
+  Kept on purpose, since the audit signal outweighs this rare race.
+- Webhook signing secrets, like TOTP secrets, are readable by anyone holding
+  `ENCRYPTION_KEY` and a database dump.
+- Passkey attestation is not verified: the account's re-authentication vouches
+  for a new passkey, not the authenticator's make.
+- An access token revoked through `POST /oauth/revoke` is remembered in Redis
+  only, until it expires; a Redis failover can forget it.
+- Resource servers verifying tokens offline accept a revoked access token until
+  it expires, unless they introspect.
+- A refresh does not check the account lockout. A lockout can be triggered by
+  anyone who knows the identifier; cutting the owner's live sessions would
+  turn it into a way to sign them out. Suspending the account does end them.
+
+## Control catalog
+
+Each control names the tests that pin it; `tests/security/catalog.rs` fails
+when a cited test no longer exists.
+
+| ID | Control | Tests |
+|----|---------|-------|
+| SEC-01 | Passwords are hashed with Argon2id, salted per hash | `hash_and_verify_correct_password`, `same_password_produces_different_hashes`, `async_hash_and_verify_match_sync_behavior` |
+| SEC-02 | No account oracle: unknown identifiers, locked accounts, taken addresses, forgotten passwords and verification resends answer alike | `locked_account_answers_the_same_whatever_the_password`, `registering_a_taken_email_looks_like_a_new_signup`, `forgot_password_takes_the_same_minimum_time_either_way`, `forgot_password_returns_200_for_unknown_email`, `resending_the_verification_looks_the_same_for_every_address`, `login_unknown_user` |
+| SEC-03 | Lockout after consecutive wrong passwords, never after failed second factors | `account_locked_after_threshold_failures`, `account_unlocked_after_lockout_expires`, `second_factor_failures_do_not_lock_the_account`, `a_zero_threshold_never_locks`, `validate_rejects_zero_lockout_threshold` |
+| SEC-04 | Attempt budgets are consumed atomically and fail closed | `concurrent_attempts_never_exceed_the_budget`, `unreachable_redis_fails_closed`, `refresh_rate_limited_after_20_invalid_tokens`, `forgot_password_is_capped_per_account`, `concurrent_reauthentication_guesses_never_exceed_the_budget`, `rotating_ipv6_addresses_within_a_64_does_not_reset_the_failure_budget` |
+| SEC-05 | Access tokens: ES256 only, issuer, audience and time claims checked, revocation checked on every request | `missing_or_malformed_credentials_are_refused`, `forged_tokens_for_a_live_session_are_refused`, `a_token_outlives_neither_its_expiry_nor_its_logout`, `time_claims_follow_the_supplied_clock`, `decode_rejects_non_es256_alg`, `a_rotation_keeps_every_published_key_valid`, `a_kid_does_not_lend_its_key_to_another_signature` |
+| SEC-06 | Every operation outside a short public list requires an access token | `the_public_list_matches_the_document`, `a_valid_token_passes_authentication_everywhere` |
+| SEC-07 | Refresh tokens rotate; a replay revokes the family, a concurrent refresh does not | `refresh_token_replay_is_rejected`, `refresh_token_theft_invalidates_entire_session_family`, `concurrent_refreshes_keep_the_family_alive`, `rotated_within_accepts_the_grace_boundary_only` |
+| SEC-08 | Absolute session lifetime and optional address binding | `session_lifetime_counts_from_the_first_sign_in`, `a_rotation_inherits_the_family_start`, `refresh_rejects_mismatched_ip_with_strict_binding`, `rotations_never_outlive_the_absolute_lifetime`, `a_rotated_session_is_never_dated_past_its_absolute_lifetime` |
+| SEC-09 | Sensitive actions need a recent re-authentication; signing in does not count | `signing_in_does_not_grant_sensitive_actions`, `revoke_session_requires_recent_reauth`, `delete_account_without_password_and_no_recent_reauth_rejected`, `a_device_session_cannot_change_the_password_without_reauthentication`, `enrolling_a_second_factor_requires_reauthentication` |
+| SEC-10 | A pre-auth token completes only the method it was issued for | `totp_challenge_cannot_be_completed_with_an_email_code`, `a_pre_auth_state_without_a_method_cannot_complete_with_a_recovery_code`, `seeds_and_regressions_hold` |
+| SEC-11 | Second-factor codes are single-use and budgeted per challenge and per account | `totp_replay_within_window_rejected`, `totp_replay_rejected_even_after_redis_key_loss`, `concurrent_totp_guesses_never_exceed_the_token_budget`, `account_budget_blocks_fresh_pre_auth_tokens`, `recovery_challenge_rate_limited_after_max_failures`, `email_2fa_lockout_after_max_failures`, `recovery_login_replay_rejected`, `a_code_confirming_a_new_method_cannot_complete_a_sign_in`, `confirming_a_new_method_has_an_attempt_budget`, `recovery_code_guesses_share_one_budget_across_routes`, `a_challenge_owns_its_state_and_every_failure_budget` |
+| SEC-12 | Changes to second factors are notified and keep a usable configuration | `removing_the_last_method_drops_recovery_codes`, `removing_the_primary_method_promotes_the_remaining_one`, `disable_totp_sends_two_factor_disabled_email` |
+| SEC-13 | TOTP secrets are encrypted with named keys; rotation is resumable | `keyring_writes_versioned_ciphertexts_it_can_read`, `keyring_refuses_a_key_it_does_not_hold`, `encrypt_produces_different_output_each_call`, `rotate_is_idempotent_when_run_twice`, `rotate_re_encrypts_totp_secret_with_new_key` |
+| SEC-14 | Only registered clients obtain sessions through client flows | `a_flow_needs_a_registered_client` |
+| SEC-15 | Device flow: user codes reserved atomically, polling paced, approval collected once, account and session limit rechecked under lock | `a_live_user_code_is_never_handed_out_twice`, `polling_faster_than_the_interval_is_slowed_down`, `an_approval_is_collected_exactly_once_under_concurrent_polls`, `a_suspended_account_cannot_collect_approved_tokens`, `a_non_primary_client_is_capped_without_a_quota_row`, `unknown_user_codes_are_rate_limited`, `concurrent_approvals_never_exceed_the_session_limit`, `a_second_factor_answers_an_inactive_account_like_the_password_sign_in` |
+| SEC-16 | Authorization code: S256 only, exact or loopback redirects, single use, replay revokes, third-party consent re-authenticates | `only_s256_challenges_are_accepted`, `only_registered_or_loopback_redirects_are_accepted`, `loopback_redirects_accept_any_port_on_a_registered_path`, `a_replayed_code_is_refused_and_revokes_its_session`, `a_wrong_verifier_burns_the_code`, `a_code_is_bound_to_its_client_and_redirect`, `a_third_party_client_requires_a_fresh_reauthentication`, `challenges_and_verifiers_follow_rfc_7636` |
+| SEC-17 | Client tokens carry only consented permissions, re-derived on refresh | `tokens_carry_only_the_consented_scopes_even_after_refresh`, `granted_is_an_intersection_unless_unrestricted` |
+| SEC-18 | Tokens and codes are stored as digests | `sessions_require_32_byte_hashes`, `email_verification_tokens_are_fixed_length` |
+| SEC-19 | The audit log is append-only and holds no personal data | `audit_log_is_append_only`, `audit_log_delete_blocked_by_trigger`, `account_deletion_leaves_no_identity_in_the_audit_log`, `an_email_change_keeps_the_status_and_audits_no_address`, `a_forged_cursor_is_refused_and_the_history_needs_a_session`, `audit_addresses_can_only_be_forgotten_or_coarsened`, `a_deleted_account_leaves_no_address_or_sign_in_attempt_behind`, `old_audit_addresses_keep_only_their_network` |
+| SEC-20 | An email change is confirmed on both addresses by the user who started it | `email_change_full_flow_success`, `email_change_steps_cannot_be_skipped`, `email_change_token_bound_to_initiating_user` |
+| SEC-21 | Account deletion and its `user.deleted` event commit together, and the event goes out once the broker is back | `account_deletion_publishes_user_deleted_through_jetstream` |
+| SEC-22 | Forwarding headers count only from trusted proxies; IPv6 clients share their /64 | `direct_peer_ignores_forwarded_headers`, `trusted_proxy_uses_forwarded_client_ip`, `ipv6_addresses_share_their_64`, `every_forwarded_line_counts_as_one_list`, `an_unreadable_hop_stops_the_walk_at_the_proxy`, `sql_budgets_group_addresses_like_redis_budgets` |
+| SEC-23 | Rate limits per client, failing closed in production | `auth_rate_limit_blocks_requests_exceeding_limit`, `auth_routes_fail_closed_when_rate_limiter_backend_is_down`, `a_refused_request_consumes_nothing`, `validate_rejects_production_config_with_rate_limit_fail_open` |
+| SEC-24 | Bounded bodies, security headers, CORS allowlist, one error format | `an_oversized_body_is_refused_before_the_handler`, `security_headers_present_on_200_response`, `security_headers_enable_hsts_for_https_production`, `cross_origin_access_is_limited_to_the_allowlist`, `plain_text_errors_become_error_bodies_with_their_headers`, `parser_details_do_not_leak` |
+| SEC-25 | Logs carry route templates and never a secret | `access_logs_carry_route_templates_not_codes`, `account_flows_never_log_their_secrets` |
+| SEC-26 | Production refuses a configuration that disables a control | `validate_accepts_hardened_production_config`, `validate_rejects_committed_dev_key_in_production`, `validate_rejects_wildcard_cors_in_production`, `validate_rejects_non_https_public_url_in_production`, `validate_rejects_zero_device_poll_interval`, `validate_rejects_poll_interval_not_below_device_ttl`, `validate_rejects_zero_session_lifetime` |
+| SEC-27 | Code hygiene: bound SQL parameters, no unsafe code, no panics on request paths, released migrations frozen | `sql_is_never_assembled_from_strings`, `there_is_no_unsafe_code`, `request_paths_never_unwrap`, `released_migrations_are_never_edited` |
+| SEC-28 | Every response matches the published OpenAPI contract | `schemas_are_enforced_through_references`, `undocumented_statuses_and_bodies_are_violations`, `documented_schemas_have_unique_names` |
+| SEC-29 | Passwords found in known data breaches are refused, and only a hash prefix leaves the service | `registration_refuses_a_breached_password`, `only_the_hash_prefix_leaves_the_service_with_padding_asked`, `a_breached_password_is_refused_on_change_and_on_reset`, `the_range_key_splits_the_uppercase_sha1` |
+| SEC-30 | A sign-in from a new device is announced to the owner | `a_sign_in_from_a_new_device_alerts_the_owner`, `the_first_sign_in_and_a_browser_update_raise_no_alert`, `versions_do_not_make_a_new_device` |
+| SEC-31 | Administration needs the permission in the token and in the database, and a second factor | `an_account_without_administrative_permission_is_refused`, `an_administrator_without_a_second_factor_is_refused`, `a_permission_revoked_in_the_database_stops_working_before_the_token_expires`, `each_action_requires_its_own_permission`, `an_administrator_cannot_suspend_their_own_account_or_a_pending_one`, `deleting_an_account_needs_a_recent_reauthentication_and_announces_it`, `granting_a_role_needs_a_recent_reauthentication`, `nobody_can_remove_the_last_way_to_manage_roles_or_the_default_role` |
+| SEC-32 | The data export needs a recent re-authentication and holds no secret and no other account | `the_export_holds_the_account_its_history_and_no_secret`, `exporting_needs_a_recent_reauthentication` |
+| SEC-33 | Sign-in links are single-use, short-lived, replaced by the next one, off by default, and never skip the second factor | `a_link_signs_in_once`, `a_new_link_replaces_the_previous_one_and_an_old_link_expires`, `a_second_factor_is_still_required`, `unknown_pending_and_suspended_addresses_answer_alike_and_get_nothing`, `links_are_capped_per_account_and_off_unless_enabled` |
+| SEC-34 | Personal access tokens are stored as digests, shown once, scoped to permissions the account holds, and end with their session or account | `a_token_is_exchanged_for_access_tokens_carrying_its_scopes_only`, `a_revoked_token_and_its_access_tokens_stop_working`, `tokens_expire_and_follow_the_account_status`, `creation_is_checked`, `scopes_are_limited_to_the_permissions_held` |
+| SEC-35 | Webhooks are signed, never reach internal addresses or follow redirects, and deliver exactly the committed events | `a_subscribed_endpoint_receives_signed_events`, `internal_addresses_are_never_called`, `internal_addresses_are_refused`, `only_plain_https_urls_are_registered`, `endpoints_are_checked_updated_rotated_and_removed`, `validate_rejects_production_webhooks_to_http_or_internal_addresses` |
+| SEC-36 | Confidential clients authenticate at every token request, and client sessions are refreshed only by their client | `a_confidential_client_must_authenticate_with_its_secret`, `a_public_client_has_no_secret_to_present`, `a_device_code_works_for_its_client_only`, `tokens_carry_only_the_consented_scopes_even_after_refresh`, `basic_credentials_are_form_decoded`, `a_request_asks_for_a_subset_of_the_client_scopes` |
+| SEC-37 | Introspection is reserved to confidential clients and says nothing of inactive tokens; revocation reaches only the requesting client's tokens | `a_resource_server_learns_what_a_token_is_worth`, `revoking_a_refresh_token_ends_its_session`, `revoking_an_access_token_ends_that_token_only`, `a_client_cannot_revoke_the_tokens_of_another` |
+| SEC-38 | The client credentials grant is limited to confidential, scoped clients that enable it, and its tokens never act as a user | `a_client_obtains_a_token_for_itself_with_its_scopes`, `the_grant_is_reserved_to_confidential_clients_that_enable_it`, `a_client_token_is_introspected_and_revoked`, `a_client_subject_is_stable_and_never_a_user_id` |
+| SEC-39 | ID tokens are bound to their client, nonce and access token, and identity scopes release only their claims | `an_openid_request_gets_an_id_token_bound_to_its_nonce_and_access_token`, `userinfo_releases_the_claims_of_the_granted_scopes`, `scopes_release_their_claims_only` |
+| SEC-40 | Passkeys: registration re-authenticated and verified, sign-in challenges single use, signatures verified, cloned counters refused | `a_registration_is_verified_before_it_is_stored`, `forged_replayed_or_cloned_assertions_are_refused`, `a_passkey_signs_in_without_password_or_second_factor`, `a_removed_passkey_no_longer_signs_in`, `assertions_verify_against_the_stored_key_only`, `client_data_answers_the_challenge_from_an_allowed_origin`, `validate_rejects_production_passkey_origins_outside_the_relying_party` |
+| SEC-41 | External identities sign in only once linked by the owner, bound to the starting browser, with verified ID tokens | `a_linked_identity_signs_in_and_an_unlinked_one_never_does`, `an_outcome_is_used_once_by_the_browser_that_started_it`, `an_id_token_that_does_not_verify_identifies_nobody`, `a_token_for_something_else_is_refused` |

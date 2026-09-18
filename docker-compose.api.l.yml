@@ -1,0 +1,20 @@
+# Profile L: two more API instances. Add this file after docker-compose.api.yml
+# (`-f docker-compose.api.yml -f docker-compose.api.l.yml`) and list
+# 127.0.0.1:3003 and 127.0.0.1:3004 in the nginx upstream.
+
+services:
+  api-c:
+    extends:
+      file: docker-compose.api.yml
+      service: api-a
+    ports: !override
+      - "127.0.0.1:3003:3000"
+      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:9467:9464"
+
+  api-d:
+    extends:
+      file: docker-compose.api.yml
+      service: api-a
+    ports: !override
+      - "127.0.0.1:3004:3000"
+      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:9468:9464"

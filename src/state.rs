@@ -4,11 +4,12 @@
 //! via Axum's State extractor. All fields are cheap to clone since they
 //! are Arc-backed internally (PgPool, RedisPool, Mailer, Arc<Config>).
 //! Tera is wrapped in Arc because it does not implement Clone.
+//!
+//! The clock and the mail transport are trait objects: the service runs with
+//! the wall clock and SMTP, and the test suites replace both on a built state.
 
 use std::{sync::Arc, time::Duration};
 
-use deadpool_redis::{Config as RedisPoolConfig, Pool as RedisPool, Runtime};
-use lettre::{AsyncSmtpTransport, Tokio1Executor, transport::smtp::authentication::Credentials};
 use reqwest::Client;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -17,14 +18,16 @@ use tera::Tera;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 
 use crate::{
-    config::{
-        CaptchaConfig, Config, ConfigError, DatabaseConfig, MailConfig, RedisConfig, SmtpConfig,
+    config::{CaptchaConfig, Config, ConfigError, DatabaseConfig, MailConfig},
+    services::mailer::SmtpMailer,
+    utils::{
+        crypto, jwt,
+        redis_pool::{self, RedisPool},
+        time::{Clock, SystemClock},
     },
-    utils::{geoip::GeoIp, jwt},
 };
 
-// Convenience alias used across services
-pub type Mailer = AsyncSmtpTransport<Tokio1Executor>;
+pub use crate::services::mailer::Mailer;
 
 // Error
 
@@ -35,11 +38,13 @@ pub enum AppStateError {
     #[error("database pool error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("redis pool error: {0}")]
-    Redis(#[from] deadpool_redis::CreatePoolError),
+    Redis(String),
     #[error("smtp transport error: {0}")]
     Smtp(#[from] lettre::transport::smtp::Error),
     #[error("nats connection error: {0}")]
     Nats(#[from] async_nats::ConnectError),
+    #[error("nats stream setup error: {0}")]
+    NatsStream(String),
     #[error("http client error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("template engine error: {0}")]
@@ -51,16 +56,23 @@ pub enum AppStateError {
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// Reads that tolerate replication lag: the replica of `DATABASE_READ_URL`,
+    /// or the primary pool itself.
+    pub db_read: PgPool,
     pub redis: RedisPool,
     pub nats: async_nats::Client,
+    pub clock: Arc<dyn Clock>,
     pub mailer: Mailer,
     pub http_client: Client,
     pub templates: Arc<Tera>,
+    /// Keys for secrets encrypted at rest (TOTP seeds), decoded once.
+    pub keyring: Arc<crypto::Keyring>,
     pub config: Arc<Config>,
-    pub geoip: GeoIp,
     pub jwt_signing_key: EncodingKey,
     pub jwt_verifying_key: DecodingKey,
-    pub jwt_previous_verifying_key: Option<DecodingKey>,
+    /// Every key an access token may be verified with, by `kid`: current, next
+    /// (published ahead of a rotation) and previous.
+    pub jwt_verifying_keys: Arc<jwt::VerifyingKeys>,
     pub jwt_kid: String,
     /// JWKS document served at /.well-known/jwks.json, precomputed at startup
     /// (current key first, previous key appended during rotation windows).
@@ -71,7 +83,7 @@ pub struct AppState {
 struct JwtKeys {
     signing_key: EncodingKey,
     verifying_key: DecodingKey,
-    previous_verifying_key: Option<DecodingKey>,
+    verifying_keys: jwt::VerifyingKeys,
     kid: String,
     jwks: Arc<serde_json::Value>,
 }
@@ -80,45 +92,19 @@ impl AppState {
     /// Build the application state by initializing all connection pools and services.
     /// Fails fast if any dependency is unreachable or misconfigured.
     pub async fn from_config(mut config: Config) -> Result<Self, AppStateError> {
-        // Auto-include auth-api's own public URL in the audience list so the
-        // tokens it mints carry it. The `AuthenticatedUser` extractor then
-        // pins `aud == public_url` defense-in-depth, rejecting tokens that
-        // were addressed only to downstream resource servers.
-        ensure_self_in_audience(&mut config);
-        config.validate()?;
-
+        prepare_config(&mut config)?;
         let db = build_pg_pool(&config.database).await?;
-        let redis = build_redis_pool(&config.redis)?;
-        let nats = async_nats::connect(&config.nats.url).await?;
-        let mailer = build_mailer(&config.mail.smtp)?;
-        let http_client = build_http_client(&config.captcha)?;
-        let templates = Arc::new(build_templates(&config.mail)?);
-        let geoip = GeoIp::open(&config.risk.geoip_db_path);
-
-        if config.risk.geoip_required && !geoip.is_available() {
-            return Err(AppStateError::Config(ConfigError::Invalid {
-                key: "GEOIP_DB_PATH".into(),
-                reason: "GeoIP database is required but could not be loaded".into(),
-            }));
-        }
-
-        let jwt_keys = parse_jwt_keys(&config)?;
-
-        Ok(Self {
-            db,
-            redis,
-            nats,
-            mailer,
-            http_client,
-            templates,
-            geoip,
-            jwt_signing_key: jwt_keys.signing_key,
-            jwt_verifying_key: jwt_keys.verifying_key,
-            jwt_previous_verifying_key: jwt_keys.previous_verifying_key,
-            jwt_kid: jwt_keys.kid,
-            jwt_jwks: jwt_keys.jwks,
-            config: Arc::new(config),
-        })
+        let db_read = match config.database.read_url.as_deref() {
+            Some(url) => {
+                build_pg_pool(&DatabaseConfig {
+                    url: url.to_owned(),
+                    ..config.database.clone()
+                })
+                .await?
+            }
+            None => db.clone(),
+        };
+        Self::assemble(config, db, db_read).await
     }
 
     /// Build the application state with an existing database pool.
@@ -127,36 +113,57 @@ impl AppState {
         mut config: Config,
         db: PgPool,
     ) -> Result<Self, AppStateError> {
-        ensure_self_in_audience(&mut config);
-        config.validate()?;
+        prepare_config(&mut config)?;
+        let db_read = db.clone();
+        Self::assemble(config, db, db_read).await
+    }
 
-        let redis = build_redis_pool(&config.redis)?;
-        let nats = async_nats::connect(&config.nats.url).await?;
-        let mailer = build_mailer(&config.mail.smtp)?;
+    /// Connect every remaining dependency around a prepared, validated config.
+    async fn assemble(config: Config, db: PgPool, db_read: PgPool) -> Result<Self, AppStateError> {
+        let redis = redis_pool::build(&config.redis).map_err(AppStateError::Redis)?;
+        crate::services::events::set_stream_replicas(config.nats.stream_replicas);
+        let nats = connect_nats(&config.nats.url).await?;
+        // Declared now when the broker is up; otherwise before the first
+        // durable publish (account deletion).
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            crate::services::events::ensure_user_stream_once(&nats),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, "user event stream not declared at startup"),
+            Err(_) => tracing::warn!("user event stream declaration timed out at startup"),
+        }
+        let mailer = Mailer::new(SmtpMailer::from_config(&config.mail.smtp)?);
         let http_client = build_http_client(&config.captcha)?;
         let templates = Arc::new(build_templates(&config.mail)?);
-        let geoip = GeoIp::open(&config.risk.geoip_db_path);
-
-        if config.risk.geoip_required && !geoip.is_available() {
-            return Err(AppStateError::Config(ConfigError::Invalid {
-                key: "GEOIP_DB_PATH".into(),
-                reason: "GeoIP database is required but could not be loaded".into(),
-            }));
-        }
-
         let jwt_keys = parse_jwt_keys(&config)?;
+        let keyring = crypto::Keyring::from_base64(
+            &config.crypto.encryption_key,
+            config.crypto.previous_encryption_key.as_deref(),
+        )
+        .map(Arc::new)
+        .map_err(|e| {
+            AppStateError::Config(ConfigError::Invalid {
+                key: "ENCRYPTION_KEY".into(),
+                reason: e.to_string(),
+            })
+        })?;
 
         Ok(Self {
             db,
+            db_read,
             redis,
             nats,
+            clock: Arc::new(SystemClock),
             mailer,
             http_client,
             templates,
-            geoip,
+            keyring,
             jwt_signing_key: jwt_keys.signing_key,
             jwt_verifying_key: jwt_keys.verifying_key,
-            jwt_previous_verifying_key: jwt_keys.previous_verifying_key,
+            jwt_verifying_keys: Arc::new(jwt_keys.verifying_keys),
             jwt_kid: jwt_keys.kid,
             jwt_jwks: jwt_keys.jwks,
             config: Arc::new(config),
@@ -164,24 +171,55 @@ impl AppState {
     }
 }
 
-/// Make sure auth-api's own `public_url` is part of the JWT audience list.
+/// Connect to NATS.
 ///
-/// auth-api emits `aud=[downstream_url, ...]` so tokens can be accepted by
-/// downstream resource servers (core-api, billing-api, ...). But auth-api
-/// also consumes its own tokens for `/users/me/*` routes, and we now pin
-/// `aud == public_url` defense-in-depth in the `AuthenticatedUser` extractor.
-/// Without this auto-injection the token wouldn't satisfy that check.
+/// A broker that refuses the credentials stops the start: that is a
+/// configuration error. A broker that cannot be reached does not: only account
+/// deletion needs it, so the client keeps connecting in the background and
+/// `/ready` reports it. async-nats ignores credentials inside the URL, so they
+/// are given apart.
+async fn connect_nats(url: &str) -> Result<async_nats::Client, AppStateError> {
+    use crate::utils::nats;
+
+    let (addresses, credentials) = nats::split_cluster(url).map_err(|reason| {
+        AppStateError::Config(ConfigError::Invalid {
+            key: "NATS_URL".into(),
+            reason,
+        })
+    })?;
+
+    let address = addresses.join(",");
+    match nats::connect_options(credentials.clone())
+        .connect(addresses.as_slice())
+        .await
+    {
+        Ok(client) => Ok(client),
+        Err(e)
+            if matches!(
+                e.kind(),
+                async_nats::ConnectErrorKind::Authentication
+                    | async_nats::ConnectErrorKind::AuthorizationViolation
+            ) =>
+        {
+            Err(AppStateError::Nats(e))
+        }
+        Err(e) => {
+            tracing::warn!(address, error = %e, "NATS unreachable at startup; connecting in the background");
+            Ok(nats::connect_options(credentials)
+                .retry_on_initial_connect()
+                .connect(addresses.as_slice())
+                .await?)
+        }
+    }
+}
+
+/// Derive computed values, then validate the configuration exactly once.
 ///
-/// Idempotent: if `public_url` is already configured in `JWT_AUDIENCE`,
-/// nothing changes.
-fn ensure_self_in_audience(config: &mut Config) {
-    let self_url = config.server.public_url.clone();
-    if self_url.is_empty() {
-        return;
-    }
-    if !config.jwt.audience.iter().any(|a| a == &self_url) {
-        config.jwt.audience.push(self_url);
-    }
+/// auth-api's own public URL is added to the JWT audience before validation so
+/// a production deployment without downstream audiences still boots.
+fn prepare_config(config: &mut Config) -> Result<(), ConfigError> {
+    config.ensure_self_in_audience();
+    config.validate()
 }
 
 // JWT key parsing
@@ -204,26 +242,33 @@ fn parse_jwt_keys(config: &Config) -> Result<JwtKeys, AppStateError> {
     let p256_key = jwt::parse_p256_verifying_key(&config.jwt.public_key)
         .map_err(|e| invalid("JWT_PUBLIC_KEY", e))?;
     let kid = jwt::compute_kid(&p256_key);
+    // The JWKS lists the current key, then the next one (published ahead of a
+    // rotation, before anything is signed with it), then the previous one
+    // (until the tokens it signed have expired).
     let mut jwks_keys = vec![jwt::public_key_to_jwk(&p256_key, &kid)];
-
-    let previous_verifying_key = if let Some(ref prev_pem) = config.jwt.previous_public_key {
-        let prev_key = jwt::parse_verifying_key(prev_pem)
-            .map_err(|e| invalid("JWT_PREVIOUS_PUBLIC_KEY", e))?;
-        let prev_p256 = jwt::parse_p256_verifying_key(prev_pem)
-            .map_err(|e| invalid("JWT_PREVIOUS_PUBLIC_KEY", e))?;
-        jwks_keys.push(jwt::public_key_to_jwk(
-            &prev_p256,
-            &jwt::compute_kid(&prev_p256),
-        ));
-        Some(prev_key)
-    } else {
-        None
-    };
+    let mut verifying = vec![(kid.clone(), verifying_key.clone())];
+    for (variable, pem) in [
+        ("JWT_NEXT_PUBLIC_KEY", config.jwt.next_public_key.as_deref()),
+        (
+            "JWT_PREVIOUS_PUBLIC_KEY",
+            config.jwt.previous_public_key.as_deref(),
+        ),
+    ] {
+        let Some(pem) = pem else { continue };
+        let key = jwt::parse_verifying_key(pem).map_err(|e| invalid(variable, e))?;
+        let p256 = jwt::parse_p256_verifying_key(pem).map_err(|e| invalid(variable, e))?;
+        let extra_kid = jwt::compute_kid(&p256);
+        if verifying.iter().any(|(held, _)| *held == extra_kid) {
+            continue;
+        }
+        jwks_keys.push(jwt::public_key_to_jwk(&p256, &extra_kid));
+        verifying.push((extra_kid, key));
+    }
 
     Ok(JwtKeys {
         signing_key,
         verifying_key,
-        previous_verifying_key,
+        verifying_keys: jwt::VerifyingKeys::new(verifying),
         kid,
         jwks: Arc::new(serde_json::json!({ "keys": jwks_keys })),
     })
@@ -238,38 +283,6 @@ async fn build_pg_pool(cfg: &DatabaseConfig) -> Result<PgPool, sqlx::Error> {
         .acquire_timeout(Duration::from_secs(cfg.acquire_timeout_secs))
         .connect(&cfg.url)
         .await
-}
-
-fn build_redis_pool(cfg: &RedisConfig) -> Result<RedisPool, deadpool_redis::CreatePoolError> {
-    let mut pool_cfg = RedisPoolConfig::from_url(&cfg.url);
-
-    let mut pool_config = deadpool_redis::PoolConfig {
-        max_size: cfg.pool_size as usize,
-        ..Default::default()
-    };
-    pool_config.timeouts.wait = Some(Duration::from_millis(cfg.wait_timeout_ms));
-
-    pool_cfg.pool = Some(pool_config);
-    pool_cfg.create_pool(Some(Runtime::Tokio1))
-}
-
-fn build_mailer(cfg: &SmtpConfig) -> Result<Mailer, lettre::transport::smtp::Error> {
-    let creds = Credentials::new(cfg.username.clone(), cfg.password.clone());
-
-    // Use plain (no TLS) transport for local dev (e.g. Mailpit on port 1025)
-    // and STARTTLS for production SMTP servers
-    let transport = if cfg.username.is_empty() {
-        AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&cfg.host)
-            .port(cfg.port)
-            .build()
-    } else {
-        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&cfg.host)?
-            .port(cfg.port)
-            .credentials(creds)
-            .build()
-    };
-
-    Ok(transport)
 }
 
 fn build_http_client(cfg: &CaptchaConfig) -> Result<Client, reqwest::Error> {

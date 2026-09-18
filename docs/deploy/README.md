@@ -5,7 +5,7 @@ Follow the steps in this order for a complete deployment.
 ## Initial Deployment
 
 1. [Secrets](api/secrets.md) - Insert all secrets into `pass` on the API VPS
-2. [Database Deployment](database/deployment.md) - Set up PostgreSQL, Redis and Appsmith on the DB VPS
+2. [Database Deployment](database/deployment.md) - Set up PostgreSQL and Redis on the DB VPS
 3. [API Deployment](api/deployment.md) - Deploy the API (the NATS broker ships in the same compose file)
 4. [Nginx](api/nginx.md) - Reverse proxy configuration on the API VPS
 
@@ -15,4 +15,6 @@ Follow the steps in this order for a complete deployment.
 
 ## Operations
 
+- [Monitoring](guides/monitoring.md) - Prometheus, Alertmanager and the external probe on a separate host, exporters and alerts
+- [High Availability](guides/high-availability.md) - Surviving the loss of any host: load balancers, Patroni, Redis Sentinel, a NATS cluster, and failover drills
 - [Operations Runbook](guides/operations.md) - Key rotations, backup/restore, Redis outage response, manual interventions, metrics

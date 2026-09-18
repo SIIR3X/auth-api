@@ -1,10 +1,10 @@
 //! Repository for the `users` table.
 
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::domain::user::User;
+use crate::domain::user::{User, UserStatus};
 
 pub const FIND_BY_EMAIL_SQL: &str = "SELECT * FROM users WHERE email = $1::citext";
 pub const FIND_BY_USERNAME_SQL: &str = "SELECT * FROM users WHERE username = $1::citext";
@@ -20,7 +20,10 @@ pub struct NewUser<'a> {
 
 // Writes
 
-pub async fn create(pool: &PgPool, input: &NewUser<'_>) -> Result<User, sqlx::Error> {
+pub async fn create<'e>(
+    executor: impl PgExecutor<'e>,
+    input: &NewUser<'_>,
+) -> Result<User, sqlx::Error> {
     sqlx::query_as::<_, User>(
         "INSERT INTO users (username, email, password_hash, preferred_locale)
          VALUES ($1, $2, $3, $4)
@@ -30,19 +33,19 @@ pub async fn create(pool: &PgPool, input: &NewUser<'_>) -> Result<User, sqlx::Er
     .bind(input.email)
     .bind(input.password_hash)
     .bind(input.preferred_locale)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 
-pub async fn update_password_hash(
-    pool: &PgPool,
+pub async fn update_password_hash<'e>(
+    executor: impl PgExecutor<'e>,
     id: Uuid,
     password_hash: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
         .bind(id)
         .bind(password_hash)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }
@@ -78,34 +81,83 @@ pub async fn set_locked_until(
     Ok(())
 }
 
-pub async fn clear_lockout(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE users SET locked_until = NULL WHERE id = $1")
+/// Stamp a completed sign-in: last login time, and the end of any expired lockout.
+pub async fn record_sign_in<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET last_login_at = NOW(), locked_until = NULL WHERE id = $1")
         .bind(id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }
 
-pub async fn update_last_login(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE users SET last_login_at = NOW() WHERE id = $1")
+/// Whether another account already uses `email`.
+pub async fn email_taken<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    email: &str,
+    except: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE email = $1::citext AND id <> $2)")
+        .bind(email)
+        .bind(except)
+        .fetch_one(executor)
+        .await
+}
+
+/// Move an account to an address whose ownership was just proven. The status
+/// is left alone: confirming an address must never reactivate a suspended or
+/// inactive account.
+pub async fn change_email<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+    email: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET email = $2, email_verified_at = NOW() WHERE id = $1")
         .bind(id)
-        .execute(pool)
+        .bind(email)
+        .execute(executor)
         .await?;
     Ok(())
 }
 
-/// Sets email_verified_at and transitions status to active.
-pub async fn mark_email_verified(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+/// Sets email_verified_at and activates an account that was pending
+/// verification. Any other status (suspended, inactive) is left untouched.
+pub async fn mark_email_verified<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE users
          SET email_verified_at = NOW(),
-             status = 'active'::user_status
+             status = CASE
+                 WHEN status = 'pending_verification' THEN 'active'::user_status
+                 ELSE status
+             END
          WHERE id = $1",
     )
     .bind(id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
+}
+
+/// Verify the address of a pending account and activate it; any other account
+/// is left untouched. Returns whether the account was pending.
+pub async fn verify_if_pending<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE users
+         SET email_verified_at = NOW(), status = 'active'::user_status
+         WHERE id = $1 AND status = 'pending_verification'",
+    )
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 // Reads
@@ -135,12 +187,22 @@ pub async fn find_by_identifier(
     }
 }
 
+/// Forget what the account leaves outside its own rows: client addresses in its
+/// audit entries and its sign-in attempts. Call it in the deletion's transaction.
+pub async fn forget_traces<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT forget_account_traces($1)")
+        .bind(id)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
 /// Permanently deletes a user and all associated data via CASCADE.
 /// This is irreversible and fulfills GDPR right-to-erasure requests.
-pub async fn delete(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn delete<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }
@@ -150,4 +212,69 @@ pub async fn find_by_username(pool: &PgPool, username: &str) -> Result<Option<Us
         .bind(username)
         .fetch_optional(pool)
         .await
+}
+
+// Administration
+
+/// One page of accounts, newest first, strictly older than `before` when given.
+/// `pattern` is a `LIKE` pattern matched against the lower-cased address and
+/// username (see `domain::user::prefix_pattern`).
+pub async fn search(
+    pool: &PgPool,
+    pattern: Option<&str>,
+    status: Option<&UserStatus>,
+    before: Option<(OffsetDateTime, Uuid)>,
+    limit: i64,
+) -> Result<Vec<User>, sqlx::Error> {
+    let (before_at, before_id) = before.unzip();
+    sqlx::query_as::<_, User>(
+        "SELECT * FROM users
+         WHERE ($1::text IS NULL
+                OR lower(email::text) LIKE $1
+                OR lower(username::text) LIKE $1)
+           AND ($2::user_status IS NULL OR status = $2)
+           AND ($3::timestamptz IS NULL OR (created_at, id) < ($3, $4))
+         ORDER BY created_at DESC, id DESC
+         LIMIT $5",
+    )
+    .bind(pattern)
+    .bind(status)
+    .bind(before_at)
+    .bind(before_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+/// Suspend an active or inactive account. Returns whether it changed.
+pub async fn suspend<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE users SET status = 'suspended'
+         WHERE id = $1 AND status IN ('active', 'inactive')",
+    )
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Reactivate a suspended or inactive account. Returns whether it changed.
+pub async fn reactivate<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE users SET status = 'active'
+         WHERE id = $1 AND status IN ('suspended', 'inactive')",
+    )
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// End a lockout and forgive the failed sign-ins that caused it.
+pub async fn clear_lockout(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET locked_until = NULL, lockout_cleared_at = NOW() WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }

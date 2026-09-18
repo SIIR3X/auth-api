@@ -2,24 +2,20 @@
 //!
 //! AuthUser validates the Bearer token and makes user_id + session_id available
 //! to any handler that requires authentication.
-//! ClientIp reads the real client IP from reverse-proxy headers before falling
-//! back to the direct connection address.
-
-use std::net::{IpAddr, SocketAddr};
+//! ClientIp (defined in `middleware::client_ip`) is re-exported for handlers.
 
 use axum::{
-    extract::{ConnectInfo, FromRequestParts},
+    extract::FromRequestParts,
     http::{StatusCode, header, request::Parts},
 };
-use ipnetwork::IpNetwork;
 
 use crate::{
-    error::AppError,
-    middleware::{rate_limit::RateLimitState, request_id::X_REQUEST_ID},
-    services::auth as auth_svc,
-    state::AppState,
-    utils::jwt,
+    error::AppError, middleware::request_id::X_REQUEST_ID, services::auth as auth_svc,
+    state::AppState, utils::jwt,
 };
+
+/// Re-exported: handlers keep extracting the client address from here.
+pub use crate::middleware::client_ip::ClientIp;
 
 // Authenticated user extracted from the JWT Bearer token.
 
@@ -30,7 +26,7 @@ pub struct AuthUser {
     pub token_exp: i64,
     /// Role names from the JWT (e.g. ["user", "admin"]).
     pub roles: Vec<String>,
-    /// Permission names from the JWT (e.g. ["billing:read"]).
+    /// Permission names from the JWT (e.g. ["users:read"]).
     pub permissions: Vec<String>,
     /// Request ID injected by the request_id middleware; propagate to audit log entries.
     pub request_id: Option<uuid::Uuid>,
@@ -53,10 +49,10 @@ impl FromRequestParts<AppState> for AuthUser {
             .strip_prefix("Bearer ")
             .ok_or(AppError::Unauthorized)?;
 
-        let claims = jwt::decode_token_with_fallback(
+        let claims = jwt::decode_token_with_keys(
             token,
-            &state.jwt_verifying_key,
-            state.jwt_previous_verifying_key.as_ref(),
+            &state.jwt_verifying_keys,
+            state.clock.now().unix_timestamp(),
         )
         .map_err(|_| AppError::TokenInvalid)?;
 
@@ -72,21 +68,9 @@ impl FromRequestParts<AppState> for AuthUser {
             return Err(AppError::TokenInvalid);
         }
 
-        // Check the JTI blocklist before touching the database.
-        // Fail-closed: a Redis error here is propagated as 503
-        // (ServiceUnavailable) rather than silently treated as "not blocked",
-        // otherwise an attacker could bypass an explicit logout during a
-        // Redis outage (AUTH-H1).
-        if auth_svc::is_jti_blocked(state, claims.jti).await? {
-            return Err(AppError::TokenInvalid);
-        }
-
-        // Verify the session is still active.
-        // Uses a short-lived Redis cache (SESSION_CACHE_TTL_SECS) to avoid a DB query
-        // on every authenticated request. Explicit logouts invalidate the cache immediately.
-        if !auth_svc::check_session_validity(state, claims.sid).await? {
-            return Err(AppError::Unauthorized);
-        }
+        // Revoked token or ended session: one Redis round trip, the database
+        // only on a cache miss. Fails closed when Redis is unavailable.
+        auth_svc::verify_token_state(state, claims.jti, claims.sid).await?;
 
         let request_id = parts
             .headers
@@ -106,45 +90,55 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
-// Client IP extracted from standard reverse-proxy headers.
-
-pub struct ClientIp(pub Option<IpNetwork>);
-
-pub trait TrustedProxySource {
-    fn trusted_proxy_cidrs(&self) -> &[IpNetwork];
+/// An administrator: a valid access token carrying at least one administrative
+/// permission, from an account with a second factor enrolled. Each handler then
+/// requires the permission of its action with [`AdminUser::require`].
+pub struct AdminUser {
+    pub auth: AuthUser,
 }
 
-impl TrustedProxySource for AppState {
-    fn trusted_proxy_cidrs(&self) -> &[IpNetwork] {
-        &self.config.server.trusted_proxy_cidrs
+impl FromRequestParts<AppState> for AdminUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = AuthUser::from_request_parts(parts, state).await?;
+        if !auth
+            .permissions
+            .iter()
+            .any(|permission| crate::domain::role::is_admin_permission(permission))
+        {
+            return Err(AppError::Forbidden);
+        }
+        // An administrator's password alone must not open the administration.
+        if crate::repositories::two_factor::find_primary_by_user(&state.db, auth.user_id)
+            .await?
+            .is_none()
+            && !crate::repositories::passkey::exists_for_user(&state.db, auth.user_id).await?
+        {
+            return Err(AppError::TwoFactorRequired);
+        }
+        Ok(Self { auth })
     }
 }
 
-impl TrustedProxySource for RateLimitState {
-    fn trusted_proxy_cidrs(&self) -> &[IpNetwork] {
-        &self.trusted_proxy_cidrs
-    }
-}
-
-impl<S: Send + Sync + TrustedProxySource> FromRequestParts<S> for ClientIp {
-    type Rejection = (StatusCode, &'static str);
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let trusted = state.trusted_proxy_cidrs();
-        let peer_ip = parts
-            .extensions
-            .get::<ConnectInfo<SocketAddr>>()
-            .map(|ci| ci.0.ip());
-
-        let ip = match peer_ip {
-            Some(peer) if is_trusted_proxy(peer, trusted) => {
-                forwarded_client_ip(parts, trusted).unwrap_or(peer)
-            }
-            Some(peer) => peer,
-            None => return Ok(ClientIp(None)),
-        };
-
-        Ok(ClientIp(Some(IpNetwork::from(ip))))
+impl AdminUser {
+    /// Require `permission`, in the token and still in the database: a role
+    /// revoked a minute ago stops working now, not when the token expires.
+    pub async fn require(&self, state: &AppState, permission: &str) -> Result<(), AppError> {
+        if !self.auth.permissions.iter().any(|p| p == permission)
+            || !crate::repositories::role::user_has_permission(
+                &state.db,
+                self.auth.user_id,
+                permission,
+            )
+            .await?
+        {
+            return Err(AppError::Forbidden);
+        }
+        Ok(())
     }
 }
 
@@ -166,7 +160,11 @@ impl<S: Send + Sync> FromRequestParts<S> for RequestId {
     }
 }
 
-// User-Agent header as a plain string.
+/// Longest user agent kept: sessions, login attempts and audit metadata store it,
+/// and nothing downstream needs more.
+pub const MAX_USER_AGENT_CHARS: usize = 512;
+
+// User-Agent header as a plain string, truncated to `MAX_USER_AGENT_CHARS`.
 
 pub struct UserAgent(pub Option<String>);
 
@@ -178,97 +176,8 @@ impl<S: Send + Sync> FromRequestParts<S> for UserAgent {
             .headers
             .get(header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_owned());
+            .map(|s| s.chars().take(MAX_USER_AGENT_CHARS).collect());
 
         Ok(UserAgent(ua))
-    }
-}
-
-fn is_trusted_proxy(ip: IpAddr, trusted_proxy_cidrs: &[IpNetwork]) -> bool {
-    trusted_proxy_cidrs.iter().any(|cidr| cidr.contains(ip))
-}
-
-fn forwarded_client_ip(parts: &Parts, trusted_proxy_cidrs: &[IpNetwork]) -> Option<IpAddr> {
-    if let Some(forwarded_for) = parts
-        .headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-    {
-        let forwarded_chain = forwarded_for
-            .split(',')
-            .map(str::trim)
-            .filter_map(|raw| raw.parse::<IpAddr>().ok())
-            .collect::<Vec<_>>();
-
-        for ip in forwarded_chain.iter().rev() {
-            if !is_trusted_proxy(*ip, trusted_proxy_cidrs) {
-                return Some(*ip);
-            }
-        }
-
-        if let Some(first) = forwarded_chain.first() {
-            return Some(*first);
-        }
-    }
-
-    parts
-        .headers
-        .get("x-real-ip")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse::<IpAddr>().ok())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::http::{HeaderValue, Request};
-
-    #[derive(Default)]
-    struct TestState {
-        trusted_proxy_cidrs: Vec<IpNetwork>,
-    }
-
-    impl TrustedProxySource for TestState {
-        fn trusted_proxy_cidrs(&self) -> &[IpNetwork] {
-            &self.trusted_proxy_cidrs
-        }
-    }
-
-    #[tokio::test]
-    async fn direct_peer_ignores_forwarded_headers() {
-        let state = TestState::default();
-        let mut req = Request::builder().uri("/").body(()).unwrap();
-        req.headers_mut()
-            .insert("x-forwarded-for", HeaderValue::from_static("203.0.113.5"));
-        req.extensions_mut()
-            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 3000))));
-
-        let (mut parts, _) = req.into_parts();
-        let client_ip = ClientIp::from_request_parts(&mut parts, &state)
-            .await
-            .unwrap();
-
-        assert_eq!(client_ip.0.unwrap().ip(), IpAddr::from([127, 0, 0, 1]));
-    }
-
-    #[tokio::test]
-    async fn trusted_proxy_uses_forwarded_client_ip() {
-        let state = TestState {
-            trusted_proxy_cidrs: vec!["10.0.0.0/8".parse().unwrap()],
-        };
-        let mut req = Request::builder().uri("/").body(()).unwrap();
-        req.headers_mut().insert(
-            "x-forwarded-for",
-            HeaderValue::from_static("198.51.100.10, 10.1.2.3"),
-        );
-        req.extensions_mut()
-            .insert(ConnectInfo(SocketAddr::from(([10, 9, 8, 7], 3000))));
-
-        let (mut parts, _) = req.into_parts();
-        let client_ip = ClientIp::from_request_parts(&mut parts, &state)
-            .await
-            .unwrap();
-
-        assert_eq!(client_ip.0.unwrap().ip(), IpAddr::from([198, 51, 100, 10]));
     }
 }

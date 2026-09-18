@@ -1,0 +1,67 @@
+# Dependency updates, monthly and grouped, to keep noise and CI runs low:
+# one pull request per ecosystem for minor and patch updates, one for major
+# updates (a deliberate migration, but visible rather than ignored).
+#
+# Pull requests target staging, the draft branch: they are checked by the CI
+# when staging is proposed to main. Security updates always target main.
+
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directories: ["/", "/fuzz"]
+    target-branch: staging
+    open-pull-requests-limit: 2
+    schedule:
+      interval: monthly
+      time: "06:00"
+      timezone: Europe/Paris
+    groups:
+      cargo:
+        update-types: [minor, patch]
+      cargo-major:
+        update-types: [major]
+    ignore:
+      # sqlx 0.8's `ipnetwork` feature is tied to the 0.20 line: a second
+      # ipnetwork version breaks every sqlx Type/Encode/Decode bound on the
+      # IpNetwork columns. Drop this once sqlx supports ipnetwork 0.21+.
+      - dependency-name: ipnetwork
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    target-branch: staging
+    open-pull-requests-limit: 1
+    schedule:
+      interval: monthly
+      time: "06:00"
+      timezone: Europe/Paris
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Base images of the Dockerfiles, pinned by digest.
+  - package-ecosystem: docker
+    directory: "/"
+    target-branch: staging
+    open-pull-requests-limit: 1
+    schedule:
+      interval: monthly
+      time: "06:00"
+      timezone: Europe/Paris
+    groups:
+      dockerfiles:
+        patterns: ["*"]
+
+  # Images of the compose files, pinned by digest.
+  - package-ecosystem: docker-compose
+    directories: ["/", "/deploy/monitoring"]
+    target-branch: staging
+    open-pull-requests-limit: 1
+    schedule:
+      interval: monthly
+      time: "06:00"
+      timezone: Europe/Paris
+    groups:
+      compose:
+        patterns: ["*"]

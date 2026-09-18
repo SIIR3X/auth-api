@@ -3,7 +3,6 @@
 //! Email changes are handled by the email_change service (two-step OTP flow).
 //! Password changes revoke all active sessions to force re-login.
 
-use deadpool_redis::redis::AsyncCommands;
 use ipnetwork::IpNetwork;
 use serde_json::json;
 use uuid::Uuid;
@@ -20,6 +19,7 @@ use crate::{
 };
 
 use super::{auth as auth_svc, events, reauth as reauth_svc};
+use crate::utils::redis_counter::{self, Budget};
 
 /// Redis key prefix for the per-user reauth-failure counter.
 /// Protects re-authentication / sensitive-action endpoints (`change_password`,
@@ -31,11 +31,12 @@ const REAUTH_FAIL_PREFIX: &str = "reauth_failures:";
 /// legitimate user mistyping yesterday is not blocked today.
 const REAUTH_FAIL_TTL_SECS: u64 = 3600;
 
-fn reauth_fail_key(user_id: Uuid) -> String {
+pub(crate) fn reauth_fail_key(user_id: Uuid) -> String {
     format!("{}{}", REAUTH_FAIL_PREFIX, user_id)
 }
 
-/// Verifies a user's current password. Returns Err(InvalidCredentials) on mismatch.
+/// Verifies a user's current password. Returns Err(ReauthenticationFailed) on mismatch:
+/// the caller is already signed in, so "invalid email or password" would mislead.
 ///
 /// Wraps a per-user Redis counter to prevent brute-force across re-auth
 /// endpoints. Once the configured `LOCKOUT_THRESHOLD` is reached, the call
@@ -51,18 +52,23 @@ pub async fn verify_password(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
-    let threshold = state.config.security.lockout_threshold as i64;
+    let threshold = i64::from(state.config.security.lockout_threshold);
     let fail_key = reauth_fail_key(user_id);
 
-    // Check the lockout counter BEFORE running argon2: an attacker who has
-    // already tripped the lockout must not be able to keep probing.
-    if threshold > 0
-        && let Ok(mut conn) = state.redis.get().await
-    {
-        let failures: i64 = conn.get(&fail_key).await.unwrap_or(0);
-        if failures >= threshold {
-            return Err(AppError::AccountLocked);
-        }
+    // Reserve the attempt before Argon2 runs, in one atomic step: parallel
+    // guesses cannot all read a count below the threshold. Fails closed when
+    // Redis is unavailable, like every budget guarding a secret.
+    let attempt = redis_counter::consume(
+        &state.redis,
+        &[Budget {
+            key: &fail_key,
+            limit: threshold,
+            window_secs: REAUTH_FAIL_TTL_SECS,
+        }],
+    )
+    .await?;
+    if attempt.exceeded {
+        return Err(AppError::AccountLocked);
     }
 
     let valid = password::verify_async(password, &user.password_hash, &state.config.crypto)
@@ -70,38 +76,21 @@ pub async fn verify_password(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     if !valid {
-        // Increment the per-user failure counter; arm the TTL on every write
-        // so a slow brute-force does not silently outlive the window.
-        if threshold > 0
-            && let Ok(mut conn) = state.redis.get().await
-        {
-            let new_failures: i64 = conn.incr(&fail_key, 1i64).await.unwrap_or(0);
-            let _: Result<(), _> = conn.expire(&fail_key, REAUTH_FAIL_TTL_SECS as i64).await;
-
-            if new_failures >= threshold {
-                // Threshold just reached: surface a distinct error so the
-                // caller (and logs) can tell rate limiting apart from a
-                // simple wrong-password mistake.
-                // TODO: consider sending an account-alert email here once
-                // the email service is plumbed through to user_svc without
-                // creating a circular import.
-                tracing::warn!(
-                    user_id = %user_id,
-                    failures = new_failures,
-                    "reauth lockout triggered for user"
-                );
-                return Err(AppError::AccountLocked);
-            }
+        if attempt.max_count() >= threshold {
+            // Threshold just reached: a distinct error, so the caller (and the
+            // logs) can tell the lockout from a mistyped password.
+            tracing::warn!(
+                user_id = %user_id,
+                failures = attempt.max_count(),
+                "reauth lockout triggered for user"
+            );
+            return Err(AppError::AccountLocked);
         }
-
-        return Err(AppError::InvalidCredentials);
+        return Err(AppError::ReauthenticationFailed);
     }
 
-    // On success, reset the counter so a previously-mistyping user is not
-    // penalised on later legitimate use.
-    if let Ok(mut conn) = state.redis.get().await {
-        let _: Result<(), _> = conn.del(&fail_key).await;
-    }
+    // A success clears the budget, so earlier typos do not count later.
+    redis_counter::reset(&state.redis, &[&fail_key]).await;
 
     Ok(())
 }
@@ -129,7 +118,10 @@ pub async fn change_username(
 
     user_repo::update_username(&state.db, user_id, new_username)
         .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        // The pre-check can race with another rename; the constraint decides.
+        .map_err(|e| {
+            AppError::from_unique_violation(e, &[("users_username_key", "username_taken")])
+        })?;
 
     audit::append(
         &state.db,
@@ -149,12 +141,14 @@ pub async fn change_username(
 
 /// Verifies the current password before applying the new one, then revokes all sessions.
 /// Requires a verified email.
+#[allow(clippy::too_many_arguments)]
 pub async fn change_password(
     state: &AppState,
     user_id: Uuid,
     current_session_id: Uuid,
     current_password: Option<&str>,
     new_password: &str,
+    keep_current_session: bool,
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
@@ -178,11 +172,9 @@ pub async fn change_password(
         return Err(AppError::EmailNotVerified);
     }
 
-    let new_hash = password::hash_async(new_password, &state.config.crypto)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    crate::services::pwned::ensure_not_breached(state, new_password).await?;
 
-    user_repo::update_password_hash(&state.db, user_id, &new_hash)
+    let new_hash = password::hash_async(new_password, &state.config.crypto)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -191,17 +183,25 @@ pub async fn change_password(
         .map_err(|e| AppError::Internal(e.into()))?
         .into_iter()
         .map(|session| session.id)
+        .filter(|id| !keep_current_session || *id != current_session_id)
         .collect::<Vec<_>>();
 
-    // Revoke all sessions so other devices must re-authenticate
-    session_repo::revoke_all_by_user(&state.db, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    // The new hash, the revocation of the sessions, the audit entry and the
+    // events commit together.
+    let mut tx = state.db.begin().await?;
 
-    auth_svc::invalidate_session_caches(state, &revoked_session_ids).await;
+    user_repo::update_password_hash(&mut *tx, user_id, &new_hash).await?;
+
+    // Other devices must sign in with the new password; the current session
+    // too unless the caller keeps it.
+    if keep_current_session {
+        session_repo::revoke_others(&mut *tx, user_id, current_session_id).await?;
+    } else {
+        session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
+    }
 
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
@@ -212,6 +212,24 @@ pub async fn change_password(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+
+    events::enqueue(
+        &mut *tx,
+        "user.password_changed",
+        &events::UserPasswordChanged { user_id },
+    )
+    .await?;
+    events::enqueue(
+        &mut *tx,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked { user_id },
+    )
+    .await?;
+
+    tx.commit().await?;
+    events::wake();
+
+    auth_svc::invalidate_session_caches(state, &revoked_session_ids).await;
 
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();
@@ -256,11 +274,24 @@ pub async fn delete_account(
     )
     .await?;
 
-    let user = user_repo::find_by_id(&state.db, user_id)
+    user_repo::find_by_id(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
+    erase_account(state, user_id, json!({}), ip, request_id).await
+}
+
+/// Delete the account and everything linked to it, announce it, and forget its
+/// traces. `metadata` goes to the `account_deleted` audit entry and must not
+/// identify the account.
+pub(crate) async fn erase_account(
+    state: &AppState,
+    user_id: Uuid,
+    metadata: serde_json::Value,
+    ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
+) -> Result<(), AppError> {
     // Collect active session IDs before deletion so we can invalidate their
     // Redis cache entries - otherwise the session validity cache would stay
     // warm for up to SESSION_CACHE_TTL_SECS after the account is gone.
@@ -271,27 +302,38 @@ pub async fn delete_account(
         .map(|s| s.id)
         .collect();
 
-    // Append the audit entry before deletion (audit_log uses SET NULL on user FK).
+    // Downstream services erase their data on `user.deleted`, and the user id is
+    // the only key to it. The audit entry, the event and the deletion commit
+    // together: the account is never gone without its event, and the event
+    // never announces a deletion that failed. The event waits in the outbox
+    // while NATS is down.
+    let mut tx = state.db.begin().await?;
+
+    // Appended before the deletion: the foreign key then sets its user_id to NULL.
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
             action: AuditAction::AccountDeleted,
             ip_address: ip,
-            metadata: serde_json::json!({"username": user.username, "email": user.email}),
+            // No identity in the metadata: the audit log outlives the account,
+            // and an erased user must not remain readable in it.
+            metadata,
         },
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
-    user_repo::delete(&state.db, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    events::enqueue(&mut *tx, "user.deleted", &events::UserDeleted { user_id }).await?;
+
+    user_repo::forget_traces(&mut *tx, user_id).await?;
+    user_repo::delete(&mut *tx, user_id).await?;
+
+    tx.commit().await?;
+    events::wake();
 
     auth_svc::invalidate_session_caches(state, &session_ids).await;
-
-    events::publish(state, "user.deleted", &events::UserDeleted { user_id }).await;
 
     Ok(())
 }
@@ -320,4 +362,42 @@ pub async fn reauthenticate(
         "user_initiated",
     )
     .await
+}
+
+/// Everything stored about the account, after a recent re-authentication: the
+/// document is as sensitive as the account itself.
+pub async fn export_data(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
+    ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
+) -> Result<serde_json::Value, AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        user_id,
+        session_id,
+        None,
+        ip,
+        request_id,
+        "export_data",
+    )
+    .await?;
+
+    // Audited first, so the export records itself.
+    audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(user_id),
+            request_id,
+            action: AuditAction::DataExported,
+            ip_address: ip,
+            metadata: json!({}),
+        },
+    )
+    .await?;
+
+    crate::repositories::export::account_document(&state.db, user_id)
+        .await?
+        .ok_or(AppError::NotFound)
 }

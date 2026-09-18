@@ -10,74 +10,116 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use std::borrow::Cow;
+
 use serde::Serialize;
 use tracing::error;
 
 // Response body
 
-#[derive(Serialize)]
-struct ErrorBody {
+/// Body of every error response.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ErrorBody {
+    /// Stable and machine-readable: `invalid_credentials`, `reauthentication_required`, ...
     code: &'static str,
-    message: &'static str,
+    /// Human-readable explanation; may change between versions.
+    #[schema(value_type = String)]
+    message: Cow<'static, str>,
 }
 
 impl ErrorBody {
-    fn new(code: &'static str, message: &'static str) -> Self {
-        Self { code, message }
+    pub(crate) fn new(code: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 }
 
 // AppError
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AppError {
     // 401
+    #[error("authentication required")]
     Unauthorized,
+    #[error("invalid credentials")]
     InvalidCredentials,
+    #[error("invalid two-factor code")]
     TwoFactorFailed,
+    #[error("token expired")]
     TokenExpired,
+    #[error("token invalid")]
     TokenInvalid,
+    #[error("re-authentication failed")]
+    ReauthenticationFailed,
 
     // 403
+    #[error("forbidden")]
     Forbidden,
+    #[error("email not verified")]
     EmailNotVerified,
+    #[error("account suspended")]
     AccountSuspended,
+    #[error("account inactive")]
     AccountInactive,
+    #[error("account locked")]
     AccountLocked,
+    #[error("two-factor authentication required")]
     TwoFactorRequired,
-    LoginBlocked,
+    #[error("recent re-authentication required")]
     ReauthenticationRequired,
 
     // 404
+    #[error("resource not found")]
     NotFound,
 
     // 409
+    #[error("conflict: {0}")]
     Conflict(&'static str),
 
     // 422
+    #[error("validation failed: {0}")]
     Validation(String),
 
     // 422 - CAPTCHA
+    #[error("captcha verification failed")]
     CaptchaFailed,
 
+    // 422 - the password appears in a known data breach
+    #[error("password found in a data breach")]
+    PasswordCompromised,
+
     // 400 - Device authorization flow (RFC 8628)
+    #[error("device authorization pending")]
     DeviceAuthPending,
+    #[error("device code expired")]
     DeviceCodeExpired,
+    #[error("device access denied")]
     DeviceAccessDenied,
+    #[error("device polling too fast")]
     DeviceSlowDown,
 
     // 403 - Device session/client restrictions
+    #[error("device session limit reached")]
     DeviceSessionLimitReached,
+    #[error("device client not allowed")]
     DeviceClientNotAllowed,
+    #[error("device client unknown")]
     DeviceClientUnknown,
+    #[error("invalid authorization code")]
+    InvalidAuthorizationCode,
 
     // 429
+    #[error("rate limit exceeded")]
     RateLimitExceeded,
 
     // 503
+    #[error("dependency unavailable: {0}")]
     ServiceUnavailable(&'static str),
 
     // 500 - message is logged, never sent to the caller
+    #[error("internal error: {0}")]
     Internal(anyhow::Error),
 }
 
@@ -127,6 +169,13 @@ impl IntoResponse for AppError {
                 StatusCode::UNAUTHORIZED,
                 ErrorBody::new("token_invalid", "This token is invalid."),
             ),
+            Self::ReauthenticationFailed => (
+                StatusCode::UNAUTHORIZED,
+                ErrorBody::new(
+                    "reauthentication_failed",
+                    "The current password is incorrect.",
+                ),
+            ),
 
             // 403
             Self::Forbidden => (
@@ -165,13 +214,6 @@ impl IntoResponse for AppError {
                     "Two-factor authentication is required.",
                 ),
             ),
-            Self::LoginBlocked => (
-                StatusCode::FORBIDDEN,
-                ErrorBody::new(
-                    "login_blocked",
-                    "This login attempt has been blocked due to suspicious activity.",
-                ),
-            ),
             Self::ReauthenticationRequired => (
                 StatusCode::FORBIDDEN,
                 ErrorBody::new(
@@ -187,26 +229,47 @@ impl IntoResponse for AppError {
             ),
 
             // 409
-            Self::Conflict(field) => {
-                // field is a static str like "email" or "username", safe to log
-                let body = ErrorBody::new("conflict", "A resource with this value already exists.");
-                tracing::warn!(field, "conflict on unique field");
-                (StatusCode::CONFLICT, body)
+            Self::Conflict(code) => {
+                // `code` is a static, stable identifier such as "email_taken":
+                // clients branch on it, and it is safe to log.
+                tracing::warn!(code, "conflict");
+                let message = match code {
+                    "last_administrator" => {
+                        "At least one account must keep the permission to manage roles."
+                    }
+                    "default_role" => "The role given to every new account cannot be deleted.",
+                    "too_many_tokens" => "Revoke a personal access token before creating another.",
+                    "external_identity_not_linked" => {
+                        "No account is linked to this identity: sign in, then link it from the account settings."
+                    }
+                    "external_identity_already_linked" => {
+                        "This identity is already linked to an account."
+                    }
+                    _ => "A resource with this value already exists.",
+                };
+                (StatusCode::CONFLICT, ErrorBody::new(code, message))
             }
 
             // 422
-            Self::Validation(_) => (
+            // Validation messages are written by the handlers for the caller
+            // ("password must be at least 10 characters") and never carry
+            // internal state, so they are returned as-is.
+            Self::Validation(message) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
-                ErrorBody::new(
-                    "validation_error",
-                    "The request body contains invalid data.",
-                ),
+                ErrorBody::new("validation_error", message),
             ),
             Self::CaptchaFailed => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ErrorBody::new(
                     "captcha_failed",
                     "CAPTCHA verification failed. Please try again.",
+                ),
+            ),
+            Self::PasswordCompromised => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorBody::new(
+                    "password_compromised",
+                    "This password appears in a known data breach. Choose another one.",
                 ),
             ),
 
@@ -253,6 +316,14 @@ impl IntoResponse for AppError {
                 ),
             ),
 
+            Self::InvalidAuthorizationCode => (
+                StatusCode::BAD_REQUEST,
+                ErrorBody::new(
+                    "invalid_authorization_code",
+                    "The authorization code is invalid, expired or already used.",
+                ),
+            ),
+
             Self::DeviceClientUnknown => (
                 StatusCode::BAD_REQUEST,
                 ErrorBody::new(
@@ -282,18 +353,85 @@ impl IntoResponse for AppError {
                 )
             }
 
-            // 500
-            Self::Internal(err) => {
-                error!(error = %err, "internal server error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ErrorBody::new("internal_error", "An unexpected error occurred."),
-                )
-            }
+            // 500, or 503 when the cause is a dependency that cannot be reached
+            Self::Internal(err) => match unavailable_dependency(&err) {
+                Some(dependency) => {
+                    tracing::warn!(dependency, error = %err, "dependency unavailable");
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        ErrorBody::new(
+                            "service_unavailable",
+                            "A required upstream dependency is unavailable.",
+                        ),
+                    )
+                }
+                None => {
+                    error!(error = %err, "internal server error");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ErrorBody::new("internal_error", "An unexpected error occurred."),
+                    )
+                }
+            },
         };
 
         (status, Json(body)).into_response()
     }
+}
+
+/// Protocol errors sqlx reports when the connection closes while being set up.
+fn connection_setup_failed(message: &str) -> bool {
+    ["SSLRequest", "unexpected EOF", "connection closed"]
+        .iter()
+        .any(|marker| message.contains(marker))
+}
+
+/// The dependency an internal error comes from, when that dependency is
+/// unreachable rather than the request being wrong: an outage is a 503 the
+/// client may retry, not a 500 that pages someone for a bug.
+fn unavailable_dependency(err: &anyhow::Error) -> Option<&'static str> {
+    use deadpool_redis::redis::RedisError;
+
+    fn redis_unreachable(e: &RedisError) -> bool {
+        e.is_io_error() || e.is_connection_dropped() || e.is_timeout() || e.is_unrecoverable_error()
+    }
+
+    err.chain().find_map(|cause| {
+        if let Some(e) = cause.downcast_ref::<sqlx::Error>() {
+            let unreachable = match e {
+                sqlx::Error::PoolTimedOut
+                | sqlx::Error::PoolClosed
+                | sqlx::Error::WorkerCrashed
+                | sqlx::Error::Io(_)
+                | sqlx::Error::Tls(_) => true,
+                // A server or proxy that drops the connection during its setup
+                // surfaces as a protocol error; any other protocol error is a bug.
+                sqlx::Error::Protocol(message) => connection_setup_failed(message),
+                // Connection exceptions (class 08), shutdowns and exhausted
+                // connection slots.
+                sqlx::Error::Database(db) => db.code().is_some_and(|code| {
+                    code.starts_with("08")
+                        || matches!(code.as_ref(), "57P01" | "57P02" | "57P03" | "53300")
+                }),
+                _ => false,
+            };
+            return unreachable.then_some("database");
+        }
+        if let Some(e) = cause.downcast_ref::<RedisError>() {
+            return redis_unreachable(e).then_some("redis");
+        }
+        if let Some(e) = cause.downcast_ref::<deadpool::managed::PoolError<RedisError>>() {
+            return match e {
+                deadpool::managed::PoolError::Backend(e) => redis_unreachable(e),
+                deadpool::managed::PoolError::Timeout(_) | deadpool::managed::PoolError::Closed => {
+                    true
+                }
+                _ => false,
+            }
+            .then_some("redis");
+        }
+        None
+    })
 }
 
 // From impls for common error sources
@@ -359,6 +497,15 @@ mod tests {
         assert_eq!(status(AppError::TokenInvalid), 401);
     }
 
+    #[tokio::test]
+    async fn reauthentication_failed_is_401_with_its_own_code() {
+        assert_eq!(status(AppError::ReauthenticationFailed), 401);
+        assert_eq!(
+            body_code(AppError::ReauthenticationFailed).await,
+            "reauthentication_failed"
+        );
+    }
+
     // 403
 
     #[test]
@@ -392,11 +539,6 @@ mod tests {
     }
 
     #[test]
-    fn login_blocked_is_403() {
-        assert_eq!(status(AppError::LoginBlocked), 403);
-    }
-
-    #[test]
     fn reauthentication_required_is_403() {
         assert_eq!(status(AppError::ReauthenticationRequired), 403);
     }
@@ -411,9 +553,28 @@ mod tests {
     // 409
 
     #[tokio::test]
-    async fn conflict_is_409_with_correct_code() {
-        assert_eq!(status(AppError::Conflict("email")), 409);
-        assert_eq!(body_code(AppError::Conflict("username")).await, "conflict");
+    async fn conflict_is_409_with_its_specific_code() {
+        assert_eq!(status(AppError::Conflict("email_taken")), 409);
+        assert_eq!(
+            body_code(AppError::Conflict("username_taken")).await,
+            "username_taken"
+        );
+    }
+
+    #[tokio::test]
+    async fn validation_message_is_returned_to_the_caller() {
+        let resp = AppError::Validation("password too short".into()).into_response();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["message"], "password too short");
+    }
+
+    #[test]
+    fn app_error_implements_display() {
+        assert_eq!(
+            AppError::ServiceUnavailable("redis").to_string(),
+            "dependency unavailable: redis"
+        );
     }
 
     // 422
@@ -551,5 +712,44 @@ mod tests {
         let pool_err = deadpool_redis::PoolError::NoRuntimeSpecified;
         let err: AppError = pool_err.into();
         assert_eq!(status(err), 500);
+    }
+
+    #[test]
+    fn unreachable_dependencies_are_503_not_500() {
+        let outage = |err: anyhow::Error| status(AppError::Internal(err));
+        assert_eq!(outage(sqlx::Error::PoolTimedOut.into()), 503);
+        assert_eq!(outage(sqlx::Error::PoolClosed.into()), 503);
+        let refused = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        assert_eq!(outage(sqlx::Error::Io(refused).into()), 503);
+        let dropped = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "dropped");
+        assert_eq!(
+            outage(deadpool_redis::redis::RedisError::from(dropped).into()),
+            503
+        );
+        // Wrapped with context, as the services report them.
+        assert_eq!(
+            outage(anyhow::Error::from(sqlx::Error::PoolTimedOut).context("load session")),
+            503
+        );
+    }
+
+    #[test]
+    fn other_internal_errors_stay_500() {
+        assert_eq!(
+            status(AppError::Internal(sqlx::Error::RowNotFound.into())),
+            500
+        );
+        assert_eq!(status(AppError::Internal(anyhow::anyhow!("a bug"))), 500);
+    }
+
+    #[test]
+    fn a_connection_dropped_during_setup_is_an_outage_but_a_protocol_bug_is_not() {
+        let dropped = sqlx::Error::Protocol(
+            "encountered unexpected or invalid data: unexpected response from SSLRequest: 0x00"
+                .into(),
+        );
+        assert_eq!(status(AppError::Internal(dropped.into())), 503);
+        let bug = sqlx::Error::Protocol("unknown message type: \x27Z\x27".into());
+        assert_eq!(status(AppError::Internal(bug.into())), 500);
     }
 }

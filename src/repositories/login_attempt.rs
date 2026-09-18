@@ -5,7 +5,7 @@
 
 use ipnetwork::IpNetwork;
 
-use sqlx::{PgPool, Row};
+use sqlx::{PgExecutor, PgPool, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -21,19 +21,25 @@ pub const COUNT_RECENT_FAILURES_BY_IDENTIFIER_SQL: &str = "SELECT COUNT(*) FROM 
 
 pub const COUNT_RECENT_FAILURES_BY_IP_SQL: &str = "SELECT COUNT(*) FROM (
          SELECT 1 FROM login_attempts
-         WHERE request_ip = $1::cidr
+         WHERE request_ip <<= $1::cidr
            AND was_successful = FALSE
            AND attempted_at > $2
          LIMIT $3
      ) sub";
 
+/// Consecutive wrong passwords since the last successful sign-in. Only
+/// `invalid_password` counts: a failed second factor comes from someone who
+/// already holds the password, and letting it lock the account would hand them
+/// a way to shut the owner out.
 pub const COUNT_CONSECUTIVE_FAILURES_BY_USER_SQL: &str = "SELECT COUNT(*) FROM (
          SELECT 1 FROM login_attempts
          WHERE user_id = $1
            AND was_successful = FALSE
-           AND attempted_at > COALESCE(
+           AND failure_reason = 'invalid_password'
+           AND attempted_at > GREATEST(
                (SELECT MAX(attempted_at) FROM login_attempts
                 WHERE user_id = $1 AND was_successful = TRUE),
+               (SELECT lockout_cleared_at FROM users WHERE id = $1),
                '1970-01-01'::TIMESTAMPTZ
            )
          LIMIT $2
@@ -52,7 +58,10 @@ pub struct NewLoginAttempt<'a> {
 
 // Writes
 
-pub async fn record(pool: &PgPool, input: &NewLoginAttempt<'_>) -> Result<(), sqlx::Error> {
+pub async fn record<'e>(
+    executor: impl PgExecutor<'e>,
+    input: &NewLoginAttempt<'_>,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO login_attempts
              (user_id, attempted_identifier, was_successful, failure_reason, request_ip, request_user_agent)
@@ -64,7 +73,7 @@ pub async fn record(pool: &PgPool, input: &NewLoginAttempt<'_>) -> Result<(), sq
     .bind(&input.failure_reason)
     .bind(input.request_ip)
     .bind(input.request_user_agent)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
@@ -89,7 +98,8 @@ pub async fn count_recent_failures_by_identifier(
     Ok(row.get::<i64, _>(0))
 }
 
-/// Counts recent failed attempts from an IP after `cutoff`, capped at `max_count`.
+/// Counts recent failed attempts from a client network (an IPv4 address, an
+/// IPv6 /64: see `ip_bucket_network`) after `cutoff`, capped at `max_count`.
 pub async fn count_recent_failures_by_ip(
     pool: &PgPool,
     ip: IpNetwork,

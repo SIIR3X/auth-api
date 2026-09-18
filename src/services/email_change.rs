@@ -15,42 +15,34 @@
 use base64::Engine;
 use deadpool_redis::redis::AsyncCommands;
 use ipnetwork::IpNetwork;
-use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
-    domain::audit::AuditAction,
+    domain::{
+        audit::AuditAction,
+        email_change::{FlowEvent, FlowStep, Transition},
+    },
     error::AppError,
     repositories::{
         audit::{self, NewAuditEntry},
-        session as session_repo, user as user_repo,
+        session as session_repo, token as token_repo, user as user_repo,
     },
     state::AppState,
-    utils::crypto,
+    utils::{
+        backoff, crypto,
+        redis_counter::{self, Budget},
+    },
 };
 
 use super::{auth as auth_svc, email as email_svc, events};
 
 const FLOW_TTL_SECS: u64 = 60 * 15; // 15-minute window for the entire flow
 const MAX_OTP_FAILURES: i64 = 5;
-const BACKOFF_BASE_SECS: u64 = 1;
-const BACKOFF_MAX_SECS: u64 = 16;
 
 /// Per-user cooldown between two completed email changes (prevents mailbox spam).
 const CHANGE_COOLDOWN_SECS: u64 = 300;
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum FlowStep {
-    /// OTP sent to the current email; waiting for the user to confirm it.
-    CurrentVerify,
-    /// Current email confirmed; waiting for the user to submit a new address.
-    NewSubmit,
-    /// OTP sent to the new email; waiting for the user to confirm it.
-    NewVerify,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FlowState {
@@ -72,9 +64,22 @@ struct FlowState {
 pub async fn start(
     state: &AppState,
     user_id: Uuid,
+    current_session_id: Uuid,
+    current_password: Option<&str>,
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<String, AppError> {
+    super::reauth::require_recent_reauth_or_password(
+        state,
+        user_id,
+        current_session_id,
+        current_password,
+        ip,
+        request_id,
+        "email_change_start",
+    )
+    .await?;
+
     // Block if a change was completed recently.
     let cooldown_key = format!("email_change_cd:{}", user_id);
     {
@@ -109,7 +114,7 @@ pub async fn start(
     }
 
     let flow_token = crypto::generate_token();
-    let otp = generate_otp();
+    let otp = crypto::generate_otp();
     let otp_hash = hash_otp(&otp);
 
     let flow = FlowState {
@@ -170,14 +175,14 @@ pub async fn verify_current(
 ) -> Result<(), AppError> {
     let mut flow = load_flow(state, flow_token, user_id).await?;
 
-    if flow.step != FlowStep::CurrentVerify {
+    let Some(Transition::To(next)) = flow.step.after(FlowEvent::CurrentConfirmed) else {
         return Err(AppError::Unauthorized);
-    }
+    };
 
     let fail_key = format!("email_change_fail:{}", flow_token);
     verify_otp(state, submitted_code, flow.otp_hash.as_deref(), &fail_key).await?;
 
-    flow.step = FlowStep::NewSubmit;
+    flow.step = next;
     flow.otp_hash = None;
     save_flow(state, flow_token, &flow).await?;
 
@@ -196,26 +201,22 @@ pub async fn submit_new(
 ) -> Result<(), AppError> {
     let mut flow = load_flow(state, flow_token, user_id).await?;
 
-    if flow.step != FlowStep::NewSubmit {
+    let Some(Transition::To(next)) = flow.step.after(FlowEvent::NewAddressSubmitted) else {
         return Err(AppError::Unauthorized);
-    }
+    };
 
-    let taken: Option<(i32,)> =
-        sqlx::query_as("SELECT 1 FROM users WHERE email = $1 AND id <> $2 LIMIT 1")
-            .bind(new_email)
-            .bind(user_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+    let taken = user_repo::email_taken(&state.db, new_email, user_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
-    if taken.is_some() {
+    if taken {
         return Err(AppError::Conflict("email_taken"));
     }
 
-    let otp = generate_otp();
+    let otp = crypto::generate_otp();
     let otp_hash = hash_otp(&otp);
 
-    flow.step = FlowStep::NewVerify;
+    flow.step = next;
     flow.otp_hash = Some(otp_hash);
     flow.new_email = Some(new_email.to_string());
     save_flow(state, flow_token, &flow).await?;
@@ -232,7 +233,7 @@ pub async fn submit_new(
             request_id,
             action: AuditAction::EmailVerificationSent,
             ip_address: ip,
-            metadata: json!({"reason": "email_change_new", "target_email": new_email}),
+            metadata: json!({"reason": "email_change_new"}),
         },
     )
     .await
@@ -278,7 +279,7 @@ pub async fn confirm_new(
 ) -> Result<(), AppError> {
     let flow = load_flow(state, flow_token, user_id).await?;
 
-    if flow.step != FlowStep::NewVerify {
+    if flow.step.after(FlowEvent::NewConfirmed) != Some(Transition::Done) {
         return Err(AppError::Unauthorized);
     }
 
@@ -287,11 +288,10 @@ pub async fn confirm_new(
     let fail_key = format!("email_change_fail:{}", flow_token);
     verify_otp(state, submitted_code, flow.otp_hash.as_deref(), &fail_key).await?;
 
-    let old_email = user_repo::find_by_id(&state.db, user_id)
+    let previous = user_repo::find_by_id(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
-        .map(|u| u.email)
-        .unwrap_or_default();
+        .ok_or(AppError::NotFound)?;
 
     let other_session_ids = session_repo::find_active_by_user(&state.db, user_id)
         .await
@@ -302,91 +302,58 @@ pub async fn confirm_new(
         .collect::<Vec<_>>();
 
     {
-        let mut tx = state
-            .db
-            .begin()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let mut tx = state.db.begin().await?;
 
         // Re-check uniqueness inside the transaction.
-        let taken: Option<(i32,)> =
-            sqlx::query_as("SELECT 1 FROM users WHERE email = $1 AND id <> $2 LIMIT 1")
-                .bind(new_email)
-                .bind(user_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
-
-        if taken.is_some() {
+        if user_repo::email_taken(&mut *tx, new_email, user_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+        {
             return Err(AppError::Conflict("email_taken"));
         }
 
-        sqlx::query(
-            "UPDATE email_verification_tokens
-             SET used_at = NOW()
-             WHERE user_id = $1 AND used_at IS NULL",
+        token_repo::revoke_active_verification_by_user(&mut *tx, user_id).await?;
+
+        // Ownership of the new address is proven via OTP, so it is verified at once.
+        user_repo::change_email(&mut *tx, user_id, new_email).await?;
+
+        session_repo::revoke_others(&mut *tx, user_id, current_session_id).await?;
+
+        audit::append(
+            &mut *tx,
+            &NewAuditEntry {
+                user_id: Some(user_id),
+                request_id,
+                action: AuditAction::EmailChanged,
+                ip_address: ip,
+                metadata: json!({}),
+            },
         )
-        .bind(user_id)
-        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-        // Ownership of the new address is proven via OTP, so the account stays
-        // active and email_verified_at is set immediately.
-        sqlx::query(
-            "UPDATE users
-             SET email = $2,
-                 email_verified_at = NOW(),
-                 status = 'active'::user_status
-             WHERE id = $1",
+        events::enqueue(
+            &mut *tx,
+            "user.sessions_revoked",
+            &events::UserSessionsRevoked { user_id },
         )
-        .bind(user_id)
-        .bind(new_email)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-        sqlx::query(
-            "UPDATE sessions
-             SET revoked_at = NOW()
-             WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL",
+        .await?;
+        events::enqueue(
+            &mut *tx,
+            "user.email_changed",
+            &events::UserEmailChanged { user_id },
         )
-        .bind(user_id)
-        .bind(current_session_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+        .await?;
 
-        sqlx::query(
-            "INSERT INTO audit_log (user_id, request_id, action, ip_address, metadata)
-             VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(Some(user_id))
-        .bind(request_id)
-        .bind(AuditAction::EmailChanged)
-        .bind(ip)
-        .bind(json!({"new_email": new_email}))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-        tx.commit()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        tx.commit().await?;
     }
+    events::wake();
 
     auth_svc::invalidate_session_caches(state, &other_session_ids).await;
 
-    events::publish(
-        state,
-        "user.email_changed",
-        &events::UserEmailChanged {
-            user_id,
-            old_email: old_email.clone(),
-            new_email: new_email.to_string(),
-        },
-    )
-    .await;
+    // Challenges and flows opened before the change belong to the old identity.
+    auth_svc::purge_user_pre_auth_and_email_change(state, user_id).await;
+    notify_previous_address(state, &previous, new_email);
 
     // Clean up all Redis keys for this flow and arm the cooldown.
     if let Ok(mut conn) = state.redis.get().await {
@@ -410,6 +377,34 @@ pub async fn confirm_new(
 }
 
 // Internal helpers
+
+/// Warn the previous address that the account moved away from it: if the change
+/// was not wanted, this message is the owner's only chance to notice.
+fn notify_previous_address(
+    state: &AppState,
+    previous: &crate::domain::user::User,
+    new_email: &str,
+) {
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = previous.email.clone();
+    let username = previous.username.clone();
+    let locale = previous.preferred_locale.clone();
+    let masked = email_svc::mask_email(new_email);
+    email_svc::dispatch_best_effort("email_changed_notice", async move {
+        email_svc::send_email_changed(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+            &masked,
+        )
+        .await
+    });
+}
 
 async fn save_flow(state: &AppState, flow_token: &str, flow: &FlowState) -> Result<(), AppError> {
     let key = format!("email_change_flow:{}", flow_token);
@@ -460,28 +455,27 @@ async fn verify_otp(
     expected_hash: Option<&str>,
     fail_key: &str,
 ) -> Result<(), AppError> {
-    let failures: i64 = if let Ok(mut conn) = state.redis.get().await {
-        conn.get(fail_key).await.unwrap_or(0)
-    } else {
-        0
-    };
-    if failures >= MAX_OTP_FAILURES {
+    let expected = expected_hash.ok_or(AppError::Unauthorized)?;
+
+    let attempt = redis_counter::consume(
+        &state.redis,
+        &[Budget {
+            key: fail_key,
+            limit: MAX_OTP_FAILURES,
+            window_secs: FLOW_TTL_SECS,
+        }],
+    )
+    .await?;
+    if attempt.exceeded {
         return Err(AppError::RateLimitExceeded);
     }
 
-    let expected = expected_hash.ok_or(AppError::Unauthorized)?;
-    let actual = hash_otp(submitted_code);
-
-    if actual != expected {
-        let n = increment_fail(state, fail_key, FLOW_TTL_SECS).await;
-        apply_backoff(n).await;
+    if hash_otp(submitted_code) != expected {
+        backoff::apply(attempt.counts[0]).await;
         return Err(AppError::TwoFactorFailed);
     }
 
-    if let Ok(mut conn) = state.redis.get().await {
-        let _: Result<(), _> = conn.del(fail_key).await;
-    }
-
+    redis_counter::reset(&state.redis, &[fail_key]).await;
     Ok(())
 }
 
@@ -489,33 +483,4 @@ async fn verify_otp(
 fn hash_otp(code: &str) -> String {
     let hash = crypto::sha256(code.as_bytes());
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash)
-}
-
-async fn increment_fail(state: &AppState, key: &str, window_secs: u64) -> i64 {
-    if let Ok(mut conn) = state.redis.get().await {
-        let n: i64 = conn.incr(key, 1i64).await.unwrap_or(1);
-        let _: Result<(), _> = conn.expire(key, window_secs as i64).await;
-        n
-    } else {
-        1
-    }
-}
-
-async fn apply_backoff(failures: i64) {
-    if failures <= 0 {
-        return;
-    }
-    let exp = (failures - 1).min(4) as u32;
-    let secs = BACKOFF_BASE_SECS
-        .saturating_mul(2u64.pow(exp))
-        .min(BACKOFF_MAX_SECS);
-    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-}
-
-/// Generates a 6-digit numeric OTP (000000..999999).
-/// Security relies on the 5-attempt budget, exponential backoff, and 15-minute TTL
-/// rather than on entropy alone - matching the Email 2FA approach.
-fn generate_otp() -> String {
-    let code: u32 = rand::rng().random_range(0..1_000_000);
-    format!("{:06}", code)
 }

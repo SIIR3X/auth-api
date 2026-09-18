@@ -2,13 +2,8 @@
 <html>
 <body>
 <p>Bonjour {{ username }},</p>
-<p>Nous avons détecté une connexion à votre compte depuis un appareil inconnu.</p>
-<ul>
-  {% if ip %}<li><strong>Adresse IP :</strong> {{ ip }}</li>{% endif %}
-  {% if country %}<li><strong>Pays :</strong> {{ country }}</li>{% endif %}
-  {% if city %}<li><strong>Ville :</strong> {{ city }}</li>{% endif %}
-  {% if user_agent %}<li><strong>Appareil :</strong> {{ user_agent }}</li>{% endif %}
-</ul>
-<p>Si c'était bien vous, aucune action n'est nécessaire. Dans le cas contraire, changez immédiatement votre mot de passe et activez l'authentification à deux facteurs.</p>
+<p>Une connexion à votre compte {{ app_name }} vient d'avoir lieu depuis {{ device }}{% if ip %}, depuis l'adresse {{ ip }}{% endif %}, le {{ time }} (UTC).</p>
+<p>Si c'était vous, il n'y a rien à faire.</p>
+<p>Sinon, réinitialisez tout de suite votre mot de passe et déconnectez toutes les sessions depuis les paramètres de votre compte.</p>
 </body>
 </html>

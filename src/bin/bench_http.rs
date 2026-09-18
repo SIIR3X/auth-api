@@ -26,7 +26,7 @@ use auth_api::{
     },
     services::{email_2fa, two_factor},
     state::AppState,
-    utils::{crypto, password, time as time_utils},
+    utils::{crypto, password},
 };
 
 #[derive(Debug, Clone)]
@@ -388,11 +388,18 @@ async fn create_email_2fa_credentials(
     let mut users = Vec::with_capacity(count);
     for index in 0..count {
         let credential = create_active_user(state, prefix, index).await?;
-        let method_id = email_2fa::setup(state, credential.user_id)
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("failed to setup Email 2FA for benchmark user: {error:?}")
-            })?;
+        let method_id = email_2fa::setup(
+            state,
+            credential.user_id,
+            Uuid::nil(),
+            Some(&credential.password),
+            None,
+            None,
+        )
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("failed to setup Email 2FA for benchmark user: {error:?}")
+        })?;
         let known_code = format!("{:06}", 100_000 + index as u32);
         let hash = crypto::sha256(known_code.as_bytes());
 
@@ -401,7 +408,7 @@ async fn create_email_2fa_credentials(
             &email_2fa_repo::NewEmail2faCode {
                 user_id: credential.user_id,
                 code_hash: &hash,
-                expires_at: time_utils::in_secs(600),
+                expires_at: ::time::OffsetDateTime::now_utc() + ::time::Duration::seconds(600),
             },
         )
         .await?;
@@ -424,9 +431,16 @@ async fn create_totp_credentials(
     let mut users = Vec::with_capacity(count);
     for index in 0..count {
         let credential = create_active_user(state, prefix, index).await?;
-        let setup = two_factor::setup_totp(state, credential.user_id)
-            .await
-            .map_err(|error| anyhow::anyhow!("failed to setup TOTP benchmark method: {error:?}"))?;
+        let setup = two_factor::setup_totp(
+            state,
+            credential.user_id,
+            Uuid::nil(),
+            Some(&credential.password),
+            None,
+            None,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to setup TOTP benchmark method: {error:?}"))?;
         let code = current_totp_code(&setup.base32_secret)?;
         let _ = two_factor::verify_setup(state, credential.user_id, setup.method_id, &code, None)
             .await
@@ -508,7 +522,7 @@ async fn bench_register(
                             &format!("{base_url}/auth/register"),
                             Some(&body),
                             None,
-                            201,
+                            202,
                         )
                         .await
                     })
@@ -726,22 +740,38 @@ async fn bench_forgot_password(
                     warmup,
                     iterations,
                     credential,
-                    move |credential, _| {
+                    move |credential, run_index| {
                         let base_url = base_url.clone();
                         let client = client.clone();
                         let state = state.clone();
+                        // A distinct documentation-range address per request: the
+                        // per-IP budget (5 per 15 min) is not what this measures.
+                        let client_ip = format!("198.18.{}.{}", worker_id % 256, run_index % 256);
                         boxed_http(async move {
-                            clear_forgot_password_rate_limit(&state).await;
+                            clear_forgot_password_rate_limit(&state, credential.user_id).await;
                             let body = json!({ "email": credential.email });
-                            send_json_expect_status(
+                            match send_json_from(
                                 &client,
                                 reqwest::Method::POST,
                                 &format!("{base_url}/auth/forgot-password"),
                                 Some(&body),
                                 None,
-                                200,
+                                Some(&client_ip),
                             )
                             .await
+                            {
+                                Ok((status, payload)) => HttpOutcome {
+                                    status,
+                                    ok: status == 200,
+                                    error: (status != 200)
+                                        .then(|| format!("expected 200, got {status}: {payload}")),
+                                },
+                                Err(e) => HttpOutcome {
+                                    status: 0,
+                                    ok: false,
+                                    error: Some(format!("request failed: {e:#}")),
+                                },
+                            }
                         })
                     },
                 )
@@ -1557,6 +1587,14 @@ async fn bench_revoke_session(
                 )
                 .await
                 .context("failed to create main revoke session")?;
+                reauthenticate(
+                    &client,
+                    &base_url,
+                    &main_tokens.access_token,
+                    &credential.password,
+                )
+                .await
+                .context("failed to re-authenticate revoke session")?;
 
                 // Pre-create one extra session per timed run.
                 let total = warmup + iterations;
@@ -1649,6 +1687,9 @@ async fn bench_email_change_start(
                 )
                 .await
                 .context("failed to create email_change_start session")?;
+                reauthenticate(&client, &base_url, &tokens.access_token, &credential.password)
+                    .await
+                    .context("failed to re-authenticate email_change_start session")?;
 
                 run_worker_loop(
                     worker_id,
@@ -1720,6 +1761,9 @@ async fn bench_email_change_full(
                 )
                 .await
                 .context("failed to create email_change_full session")?;
+                reauthenticate(&client, &base_url, &tokens.access_token, &credential.password)
+                    .await
+                    .context("failed to re-authenticate email_change_full session")?;
 
                 run_worker_loop(
                     worker_id,
@@ -1844,7 +1888,10 @@ fn parse_flow_token(payload: &str) -> Result<String> {
 /// Replaces the `otp_hash` field inside `email_change_flow:{flow_token}` in Redis
 /// with the SHA-256 hash of `BENCH_EMAIL_CHANGE_OTP`, encoded as base64url.
 /// This lets the benchmark complete OTP verification steps without a real mail server.
-async fn inject_known_otp_into_flow(redis: &deadpool_redis::Pool, flow_token: &str) {
+async fn inject_known_otp_into_flow(
+    redis: &auth_api::utils::redis_pool::RedisPool,
+    flow_token: &str,
+) {
     let key = format!("email_change_flow:{}", flow_token);
     if let Ok(mut conn) = redis.get().await
         && let Ok(raw) = conn.get::<_, String>(&key).await
@@ -2225,7 +2272,22 @@ async fn send_json(
     body: Option<&Value>,
     bearer: Option<&str>,
 ) -> Result<(u16, String)> {
+    send_json_from(client, method, url, body, bearer, None).await
+}
+
+/// Like [`send_json`], presenting `forwarded_for` as the client address.
+async fn send_json_from(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+    body: Option<&Value>,
+    bearer: Option<&str>,
+    forwarded_for: Option<&str>,
+) -> Result<(u16, String)> {
     let mut request = client.request(method, url);
+    if let Some(ip) = forwarded_for {
+        request = request.header("x-forwarded-for", ip);
+    }
     if let Some(token) = bearer {
         request = request.bearer_auth(token);
     }
@@ -2289,7 +2351,7 @@ async fn replace_email_code(pool: &PgPool, user_id: Uuid, code: &str) -> Result<
         &email_2fa_repo::NewEmail2faCode {
             user_id,
             code_hash: &hash,
-            expires_at: time_utils::in_secs(600),
+            expires_at: ::time::OffsetDateTime::now_utc() + ::time::Duration::seconds(600),
         },
     )
     .await
@@ -2304,11 +2366,33 @@ async fn clear_email_2fa_cooldown(state: &AppState, user_id: Uuid) {
     }
 }
 
-async fn clear_forgot_password_rate_limit(state: &AppState) {
+async fn clear_forgot_password_rate_limit(state: &AppState, user_id: Uuid) {
     if let Ok(mut conn) = state.redis.get().await {
-        let key = "fp_req:127.0.0.1";
-        let _: Result<(), _> = conn.del(key).await;
+        let _: Result<(), _> = conn.del("fp_req:127.0.0.1").await;
+        let _: Result<(), _> = conn.del(format!("fp_account:{user_id}")).await;
     }
+}
+
+/// Confirm the password once for a session, as a client does before sensitive
+/// actions (session revocation, email change). Kept out of the timed region.
+async fn reauthenticate(
+    client: &reqwest::Client,
+    base_url: &str,
+    access_token: &str,
+    password: &str,
+) -> Result<()> {
+    let (status, payload) = send_json(
+        client,
+        reqwest::Method::POST,
+        &format!("{base_url}/users/me/reauth"),
+        Some(&json!({ "current_password": password })),
+        Some(access_token),
+    )
+    .await?;
+    if status != 204 {
+        anyhow::bail!("reauth returned {status}: {payload}");
+    }
+    Ok(())
 }
 
 async fn clear_totp_reuse_key(state: &AppState, user_id: Uuid, code: &str) {

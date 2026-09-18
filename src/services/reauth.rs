@@ -1,9 +1,13 @@
 //! Recent re-authentication service for sensitive actions.
 //!
-//! A successful password login marks the current session as "recently re-authenticated"
-//! for a short TTL in Redis. Sensitive actions can then require either:
-//! - a live recent re-auth marker on the session, or
-//! - the user's current password, which refreshes the marker.
+//! An explicit re-authentication (`POST /users/me/reauth`, or a
+//! `current_password` supplied with a sensitive request) marks the current
+//! session as "recently re-authenticated" for a short TTL in Redis. Signing in
+//! does not: a fresh session obtained by an approved device code or a stolen
+//! login must not be able to change the password or remove 2FA without it.
+//!
+//! Sensitive actions then require either a live marker on the session or the
+//! user's current password, which refreshes the marker.
 
 use deadpool_redis::redis::AsyncCommands;
 use ipnetwork::IpNetwork;

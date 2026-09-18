@@ -11,7 +11,6 @@
 
 use deadpool_redis::redis::AsyncCommands;
 use ipnetwork::IpNetwork;
-use rand::RngExt;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -25,7 +24,10 @@ use crate::{
         user as user_repo,
     },
     state::AppState,
-    utils::{backoff, crypto, time},
+    utils::{
+        backoff, crypto,
+        redis_counter::{self, Budget},
+    },
 };
 
 use super::{email as email_svc, reauth as reauth_svc};
@@ -34,25 +36,46 @@ use super::{email as email_svc, reauth as reauth_svc};
 const OTP_EXPIRY_SECS: u64 = 600;
 // Minimum delay between two sends per user (60 seconds anti-spam)
 const SEND_COOLDOWN_SECS: u64 = 60;
-// Max failed verification attempts per pre_auth_token.
+// Max failed verification attempts per pre_auth_token (or per setup method).
 // Kept low (3) because a 6-digit OTP has only ~20 bits of entropy.
 const MAX_FAILURES: i64 = 3;
+// Max failed verification attempts per account per window, across every token.
+const MAX_FAILURES_BY_USER: i64 = 10;
+// Window of the per-account budget (1 hour).
+const USER_FAILURE_WINDOW_SECS: u64 = 3600;
 
 // Setup (authenticated flow)
 
-/// Creates an unverified Email 2FA method for the user.
-/// The user must call send_code + verify_setup to activate it.
-pub async fn setup(state: &AppState, user_id: Uuid) -> Result<Uuid, AppError> {
-    let method = tf_repo::create(
-        &state.db,
+/// Creates (or restarts) an unverified Email 2FA method for the user.
+/// Requires a recent re-authentication or the current password.
+pub async fn setup(
+    state: &AppState,
+    user_id: Uuid,
+    current_session_id: Uuid,
+    current_password: Option<&str>,
+    ip: Option<IpNetwork>,
+    request_id: Option<Uuid>,
+) -> Result<Uuid, AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        user_id,
+        current_session_id,
+        current_password,
+        ip,
+        request_id,
+        "setup_email_2fa",
+    )
+    .await?;
+
+    let method = super::two_factor::create_or_restart_method(
+        state,
         &NewTwoFactorMethod {
             user_id,
             method_type: TwoFactorType::Email,
             totp_secret: None,
         },
     )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    .await?;
 
     Ok(method.id)
 }
@@ -113,10 +136,15 @@ pub async fn verify_setup(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
+    if let Ok(Some(user)) = user_repo::find_by_id(&state.db, user_id).await {
+        super::two_factor::notify_two_factor_change(state, &user, "email", true);
+    }
+
     Ok(codes)
 }
 
-/// Disables the Email 2FA method. Requires the user's current password.
+/// Disables the Email 2FA method. Requires a recent re-authentication or the
+/// current password; see `two_factor::disable_method`.
 pub async fn disable(
     state: &AppState,
     user_id: Uuid,
@@ -126,63 +154,17 @@ pub async fn disable(
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
-    reauth_svc::require_recent_reauth_or_password(
+    super::two_factor::disable_method(
         state,
         user_id,
         current_session_id,
+        method_id,
+        TwoFactorType::Email,
         current_password,
         ip,
         request_id,
-        "disable_email_2fa",
-    )
-    .await?;
-
-    let user = user_repo::find_by_id(&state.db, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .ok_or(AppError::NotFound)?;
-
-    tf_repo::delete(&state.db, method_id, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    crate::repositories::recovery_code::delete_all_by_user(&state.db, user_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
-    audit::append(
-        &state.db,
-        &NewAuditEntry {
-            user_id: Some(user_id),
-            request_id,
-            action: AuditAction::TwoFactorDisabled,
-            ip_address: ip,
-            metadata: json!({"method": "email"}),
-        },
     )
     .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    let mailer = state.mailer.clone();
-    let templates = state.templates.clone();
-    let mail_cfg = state.config.mail.clone();
-    let email_to = user.email.clone();
-    let username = user.username.clone();
-    let locale = user.preferred_locale.clone();
-    email_svc::dispatch_best_effort("email_2fa_disabled_email", async move {
-        email_svc::send_two_factor_disabled(
-            &mailer,
-            templates.as_ref(),
-            &mail_cfg,
-            &email_to,
-            &username,
-            &locale,
-            "email",
-        )
-        .await
-    });
-
-    Ok(())
 }
 
 // Code dispatch (used both during setup and during login challenge)
@@ -204,7 +186,7 @@ pub async fn send_code(state: &AppState, user_id: Uuid) -> Result<(), AppError> 
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
 
-    let code = generate_otp();
+    let code = crypto::generate_otp();
     let hash = crypto::sha256(code.as_bytes());
 
     email_2fa::create(
@@ -212,7 +194,7 @@ pub async fn send_code(state: &AppState, user_id: Uuid) -> Result<(), AppError> 
         &email_2fa::NewEmail2faCode {
             user_id,
             code_hash: &hash,
-            expires_at: time::in_secs(OTP_EXPIRY_SECS),
+            expires_at: state.clock.in_secs(OTP_EXPIRY_SECS),
         },
     )
     .await
@@ -255,7 +237,7 @@ pub async fn verify_login_code(
     pre_auth_token: &str,
     submitted_code: &str,
 ) -> Result<(), AppError> {
-    let fail_key = format!("email2fa_fail:{}", pre_auth_token);
+    let fail_key = format!("{}{pre_auth_token}", super::auth::EMAIL_2FA_FAIL_PREFIX);
     verify_otp(state, user_id, submitted_code, &fail_key).await
 }
 
@@ -267,64 +249,48 @@ async fn verify_otp(
     submitted_code: &str,
     fail_key: &str,
 ) -> Result<(), AppError> {
-    // Check failure budget
-    let failures: i64 = if let Ok(mut conn) = state.redis.get().await {
-        conn.get(fail_key).await.unwrap_or(0)
-    } else {
-        0
-    };
-    if failures >= MAX_FAILURES {
+    let user_fail_key = format!("email2fa_user_fail:{user_id}");
+
+    // Reserve the attempt atomically before looking the code up.
+    let attempt = redis_counter::consume(
+        &state.redis,
+        &[
+            Budget {
+                key: fail_key,
+                limit: MAX_FAILURES,
+                window_secs: OTP_EXPIRY_SECS,
+            },
+            Budget {
+                key: &user_fail_key,
+                limit: MAX_FAILURES_BY_USER,
+                window_secs: USER_FAILURE_WINDOW_SECS,
+            },
+        ],
+    )
+    .await?;
+    if attempt.exceeded {
         return Err(AppError::RateLimitExceeded);
     }
 
     let hash = crypto::sha256(submitted_code.as_bytes());
-
-    let record = email_2fa::find_by_hash(&state.db, &hash)
+    let record = email_2fa::find_active_by_user_and_hash(&state.db, user_id, &hash)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 
-    let record = match record {
-        Some(r) if r.user_id == user_id => r,
-        _ => {
-            let n = increment_fail(state, fail_key, OTP_EXPIRY_SECS).await;
-            apply_backoff(n).await;
-            return Err(AppError::TwoFactorFailed);
-        }
+    let consumed = match record {
+        Some(record) => email_2fa::consume(&state.db, record.id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?,
+        None => false,
     };
 
-    if record.is_used() || record.is_expired() {
-        let n = increment_fail(state, fail_key, OTP_EXPIRY_SECS).await;
-        apply_backoff(n).await;
-        return Err(AppError::TwoFactorFailed);
-    }
-
-    let consumed = email_2fa::consume(&state.db, record.id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-
     if !consumed {
-        let n = increment_fail(state, fail_key, OTP_EXPIRY_SECS).await;
-        apply_backoff(n).await;
+        apply_backoff(attempt.counts[0]).await;
         return Err(AppError::TwoFactorFailed);
     }
 
-    // Reset failure counter on success
-    if let Ok(mut conn) = state.redis.get().await {
-        let _: Result<(), _> = conn.del(fail_key).await;
-    }
-
+    redis_counter::reset(&state.redis, &[fail_key, &user_fail_key]).await;
     Ok(())
-}
-
-/// Increment the failure counter and return the new count.
-async fn increment_fail(state: &AppState, key: &str, window_secs: u64) -> i64 {
-    if let Ok(mut conn) = state.redis.get().await {
-        let n: i64 = conn.incr(key, 1i64).await.unwrap_or(1);
-        let _: Result<(), _> = conn.expire(key, window_secs as i64).await;
-        n
-    } else {
-        1
-    }
 }
 
 async fn apply_backoff(failures: i64) {
@@ -332,13 +298,3 @@ async fn apply_backoff(failures: i64) {
 }
 
 // OTP generation
-
-/// Generates a 6-digit numeric OTP (000000..999999, ~20 bits of entropy).
-///
-/// Security does not rest on the code entropy alone: a 5-attempt failure budget,
-/// exponential backoff, and a 10-minute TTL together make brute-forcing infeasible
-/// in practice. This matches common Email OTP implementations (RFC 4226 / HOTP style).
-fn generate_otp() -> String {
-    let code: u32 = rand::rng().random_range(0..1_000_000);
-    format!("{:06}", code)
-}
