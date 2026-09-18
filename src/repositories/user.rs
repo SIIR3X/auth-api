@@ -173,6 +173,26 @@ pub async fn adopt_pending_credentials<'e>(
     Ok(())
 }
 
+/// Delete every way into the account other than its password: second factors,
+/// recovery codes, passkeys, external identities and personal access tokens.
+/// Run on a pending account taken back by its owner.
+pub async fn drop_access_factors<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "WITH methods AS (DELETE FROM two_factor_methods WHERE user_id = $1),
+              codes AS (DELETE FROM recovery_codes WHERE user_id = $1),
+              keys AS (DELETE FROM passkeys WHERE user_id = $1),
+              identities AS (DELETE FROM external_identities WHERE user_id = $1)
+         DELETE FROM personal_access_tokens WHERE user_id = $1",
+    )
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 pub async fn verify_if_pending<'e>(
     executor: impl PgExecutor<'e>,
     id: Uuid,

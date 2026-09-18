@@ -24,6 +24,11 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
   the link applies them. Registering someone's address first no longer lets an
   attacker choose the password the owner activates. The links of a pending
   account now coexist until one of them verifies it (migration 0025).
+- Adding a passkey, a personal access token or an external identity e-mails
+  the owner (new `access_added` template, English and French). The e-mail sent
+  after a password change now lists what still opens the account, and a reset
+  sends it too. A reset that verifies a pending account deletes its second
+  factors, recovery codes, passkeys, identities and tokens.
 
 ## [2.0.1] - 2026-09-18
 

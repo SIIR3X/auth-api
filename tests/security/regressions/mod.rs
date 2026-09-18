@@ -1,3 +1,4 @@
+mod access_persistence;
 mod account_hardening;
 mod pre_hijacking;
 mod second_factor;

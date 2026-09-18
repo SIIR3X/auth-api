@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html>
+<body>
+<p>Bonjour {{ username }},</p>
+<p>Un nouveau moyen d'acceder a votre compte {{ app_name }} a ete ajoute :
+{% if kind == "passkey" %}la cle d'acces "{{ name }}"{% elif kind == "personal_access_token" %}le jeton d'acces personnel "{{ name }}"{% else %}la connexion avec {{ name }}{% endif %}.</p>
+<p>Si ce n'est pas vous, quelqu'un d'autre connait votre mot de passe : supprimez cet acces depuis vos parametres de securite, reinitialisez votre mot de passe et contactez le support.</p>
+</body>
+</html>

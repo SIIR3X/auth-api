@@ -187,6 +187,8 @@ pub async fn reset_password(
         .map_err(|e| AppError::Internal(e.into()))?
     {
         token::revoke_active_verification_by_user(&mut *tx, record.user_id).await?;
+        // Nothing enrolled before the owner proved the address is theirs.
+        user_repo::drop_access_factors(&mut *tx, record.user_id).await?;
     }
 
     audit::append(
@@ -229,6 +231,12 @@ pub async fn reset_password(
     // otherwise survive and could be used by an attacker who knew them.
     // Best-effort: Redis failures here must not fail the reset.
     purge_user_pre_auth_and_email_change(state, record.user_id).await;
+
+    // The owner learns what still opens the account: a passkey or token added
+    // by whoever held the old password survives the reset.
+    if let Ok(Some(user)) = user_repo::find_by_id(&state.db, record.user_id).await {
+        crate::services::user::notify_password_changed(state, &user).await;
+    }
 
     Ok(())
 }

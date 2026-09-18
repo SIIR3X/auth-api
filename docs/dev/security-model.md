@@ -43,6 +43,11 @@ the database together, is out of scope.
   the Pwned Passwords range API: only the first five characters of the SHA-1
   leave the service, answers are padded, and the check runs before the address
   is looked up so it costs the same whether the address is taken.
+- **Access that outlives the password is visible.** Passkeys, personal access
+  tokens and external identities survive a password reset, and anyone holding
+  the password can add one. Each addition mails the owner; every password
+  change or reset mails the list of what still opens the account. A pending
+  account taken back by a reset loses all of them.
 - **Lockout** after `LOCKOUT_THRESHOLD` consecutive wrong passwords. Failed
   second factors never count: whoever fails a second factor already holds the
   password, and letting them lock the account would let them shut the owner out.
@@ -293,3 +298,4 @@ when a cited test no longer exists.
 | SEC-41 | External identities sign in only once linked by the owner, bound to the starting browser, with verified ID tokens | `a_linked_identity_signs_in_and_an_unlinked_one_never_does`, `an_outcome_is_used_once_by_the_browser_that_started_it`, `an_id_token_that_does_not_verify_identifies_nobody`, `a_token_for_something_else_is_refused` |
 | SEC-42 | Delegated tokens (third-party clients, scoped sessions, personal access tokens) never act as the account: refused on account, approval and administration routes; approving another client's device needs a re-authentication | `delegated_tokens_are_refused_on_every_account_approval_and_admin_route`, `a_delegated_token_cannot_approve_itself_an_unrestricted_session`, `the_instance_application_without_scopes_acts_as_the_account`, `approving_another_client_needs_a_recent_reauthentication`, `only_sign_ins_and_the_primary_application_act_as_the_account` |
 | SEC-43 | A registration on a pending address carries its own credentials in its link: registering someone's address first does not choose the password they activate | `the_owner_activates_the_account_with_the_password_they_chose`, `a_resend_repeats_the_latest_registration_not_the_first`, `resent_links_coexist_until_one_verifies_the_account`, `email_verification_tokens_carry_complete_credentials_or_none` |
+| SEC-44 | Ways into an account that outlive its password are announced: adding a passkey, a personal access token or an external identity mails the owner, a password change or reset lists what still opens the account, and a pending account taken back by a reset keeps none | `adding_a_passkey_or_a_token_is_announced_to_the_owner`, `a_reset_lists_what_still_opens_the_account`, `a_pending_account_taken_back_by_a_reset_keeps_no_other_access` |

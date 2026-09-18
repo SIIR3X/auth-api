@@ -18,7 +18,7 @@ use crate::{
     utils::password,
 };
 
-use super::{auth as auth_svc, events, reauth as reauth_svc};
+use super::{auth as auth_svc, email::AccessItem, events, reauth as reauth_svc};
 use crate::utils::redis_counter::{self, Budget};
 
 /// Redis key prefix for the per-user reauth-failure counter.
@@ -231,6 +231,69 @@ pub async fn change_password(
 
     auth_svc::invalidate_session_caches(state, &revoked_session_ids).await;
 
+    notify_password_changed(state, &user).await;
+
+    Ok(())
+}
+
+/// What opens the account besides its password: passkeys, verified second
+/// factors, personal access tokens and external identities. Best effort: an
+/// error leaves the list shorter, never the notification unsent.
+pub(crate) async fn access_summary(state: &AppState, user_id: Uuid) -> Vec<AccessItem> {
+    use crate::domain::two_factor::TwoFactorType;
+    use crate::repositories::{
+        external_identity as identity_repo, passkey as passkey_repo,
+        personal_access_token as pat_repo, two_factor as tf_repo,
+    };
+
+    let (passkeys, methods, tokens, identities) = tokio::join!(
+        passkey_repo::find_by_user(&state.db, user_id),
+        tf_repo::find_by_user(&state.db, user_id),
+        pat_repo::find_active_by_user(&state.db, user_id),
+        identity_repo::find_by_user(&state.db, user_id),
+    );
+    let mut access = Vec::new();
+    access.extend(
+        passkeys
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| AccessItem {
+                kind: "passkey",
+                name: p.name,
+            }),
+    );
+    access.extend(
+        methods
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.is_verified)
+            .map(|m| AccessItem {
+                kind: match m.method_type {
+                    TwoFactorType::Totp => "totp",
+                    TwoFactorType::Email => "email",
+                },
+                name: String::new(),
+            }),
+    );
+    access.extend(tokens.unwrap_or_default().into_iter().map(|t| AccessItem {
+        kind: "personal_access_token",
+        name: t.name,
+    }));
+    access.extend(
+        identities
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| AccessItem {
+                kind: "external_identity",
+                name: i.provider,
+            }),
+    );
+    access
+}
+
+/// Tell the owner their password changed, listing what still opens the account.
+pub(crate) async fn notify_password_changed(state: &AppState, user: &User) {
+    let access = access_summary(state, user.id).await;
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();
     let mail_cfg = state.config.mail.clone();
@@ -245,11 +308,33 @@ pub async fn change_password(
             &email_to,
             &username,
             &locale,
+            &access,
         )
         .await
     });
+}
 
-    Ok(())
+/// Tell the owner a way into the account was added (passkey, personal access
+/// token, external identity).
+pub(crate) async fn notify_access_added(state: &AppState, user_id: Uuid, access: AccessItem) {
+    let Ok(Some(user)) = user_repo::find_by_id(&state.db, user_id).await else {
+        return;
+    };
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    super::email::dispatch_best_effort("access_added_email", async move {
+        super::email::send_access_added(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &user.email,
+            &user.username,
+            &user.preferred_locale,
+            &access,
+        )
+        .await
+    });
 }
 
 /// Permanently deletes the user account and all associated data.

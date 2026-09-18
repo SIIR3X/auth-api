@@ -249,6 +249,16 @@ pub async fn register(
     )
     .await?;
 
+    crate::services::user::notify_access_added(
+        state,
+        user_id,
+        crate::services::email::AccessItem {
+            kind: "passkey",
+            name: passkey.name.clone(),
+        },
+    )
+    .await;
+
     let recovery_codes = if recovery_code::count_usable_by_user(&state.db, user_id).await? == 0 {
         Some(two_factor_svc::create_recovery_codes_internal(state, user_id).await?)
     } else {

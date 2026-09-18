@@ -34,6 +34,16 @@ const TNAME_EMAIL_CHANGED: &str = "email_changed";
 const TNAME_RECOVERY_CODE_USED: &str = "recovery_code_used";
 const TNAME_NEW_DEVICE_LOGIN: &str = "new_device_login";
 const TNAME_MAGIC_LINK: &str = "magic_link";
+const TNAME_ACCESS_ADDED: &str = "access_added";
+
+/// A way into an account other than its password, as the notifications list
+/// it: `kind` is `passkey`, `totp`, `email`, `personal_access_token` or
+/// `external_identity`; `name` is its label (passkey or token name, provider).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccessItem {
+    pub kind: &'static str,
+    pub name: String,
+}
 
 /// Notifications waiting or being sent, past which new ones are dropped: a slow
 /// or unreachable relay must not pile up tasks in step with traffic.
@@ -220,6 +230,9 @@ pub async fn send_email_otp(
     send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
+/// The password changed or was reset. `access` lists what still opens the
+/// account without it, so an owner taking the account back sees what someone
+/// else may have added while holding the password.
 pub async fn send_password_changed(
     mailer: &Mailer,
     templates: &Tera,
@@ -227,10 +240,12 @@ pub async fn send_password_changed(
     to_email: &str,
     username: &str,
     locale: &str,
+    access: &[AccessItem],
 ) -> Result<(), AppError> {
     let mut ctx = Context::new();
     ctx.insert("username", username);
     ctx.insert("app_name", &mail_cfg.smtp.from_name);
+    ctx.insert("access", access);
 
     let body = render_with_fallback(
         templates,
@@ -242,6 +257,41 @@ pub async fn send_password_changed(
     let subject = render_subject(
         templates,
         TNAME_PASSWORD_CHANGED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
+/// A way into the account was added: a passkey, a personal access token or an
+/// external identity. Whoever holds the password can add one, and it outlives a
+/// password reset: the owner must hear of it.
+pub async fn send_access_added(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    access: &AccessItem,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+    ctx.insert("kind", access.kind);
+    ctx.insert("name", &access.name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_ACCESS_ADDED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_ACCESS_ADDED,
         locale,
         &mail_cfg.default_locale,
         &ctx,
@@ -559,7 +609,7 @@ async fn send(
 mod tests {
     use super::*;
 
-    const ALL_TEMPLATES: [&str; 10] = [
+    const ALL_TEMPLATES: [&str; 13] = [
         TNAME_VERIFICATION,
         TNAME_EMAIL_CHANGE_OTP,
         TNAME_PASSWORD_RESET,
@@ -570,6 +620,9 @@ mod tests {
         TNAME_ACCOUNT_EXISTS,
         TNAME_EMAIL_CHANGED,
         TNAME_RECOVERY_CODE_USED,
+        TNAME_NEW_DEVICE_LOGIN,
+        TNAME_MAGIC_LINK,
+        TNAME_ACCESS_ADDED,
     ];
 
     #[test]

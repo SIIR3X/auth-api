@@ -440,6 +440,15 @@ async fn settle(
                         },
                     )
                     .await?;
+                    crate::services::user::notify_access_added(
+                        state,
+                        user_id,
+                        crate::services::email::AccessItem {
+                            kind: "external_identity",
+                            name: provider.display_name.clone(),
+                        },
+                    )
+                    .await;
                     Ok(Ok((user_id, identity.id)))
                 }
                 Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {

@@ -128,6 +128,16 @@ pub async fn create(
     .await?;
     tx.commit().await?;
 
+    crate::services::user::notify_access_added(
+        state,
+        user_id,
+        crate::services::email::AccessItem {
+            kind: "personal_access_token",
+            name: token.name.clone(),
+        },
+    )
+    .await;
+
     Ok(CreatedToken { token, secret })
 }
 
