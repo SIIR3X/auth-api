@@ -4,7 +4,7 @@ info:
   description: 'Authentication API: accounts, sessions, second factors and client applications. Issues ES256 access tokens and rotating refresh tokens, and publishes the JWKS resource servers verify them with.'
   license:
     name: MIT
-  version: 2.0.0
+  version: 2.0.1
 servers:
 - url: http://localhost:3000
   description: Local development
