@@ -22,4 +22,5 @@
 ## Security
 
 - [Security model](security-model.md) - What is protected, against whom, and how
+- [Threat model](threat-model.md) - Trust boundaries, threats by STRIDE, what stops them and what is left
 - [Personal data](privacy.md) - What is stored about people, for how long, and what deletion removes

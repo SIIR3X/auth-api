@@ -1,7 +1,8 @@
 # Security Model
 
 What the service protects, against whom, and how. Each control below is pinned
-by tests (`tests/http/`) so that a regression fails the build.
+by tests (the control catalog at the end) so that a regression fails the build.
+The [threat model](threat-model.md) maps threats to these controls.
 
 ## Assets and adversaries
 
@@ -215,6 +216,14 @@ list is in [Configuration](guides/configuration.md#production-checks).
 - A logout racing a refresh of the same session, more than 2 seconds after
   its rotation, reads as a replay: the family is revoked and a replay audited.
   Kept on purpose, since the audit signal outweighs this rare race.
+- Webhook signing secrets, like TOTP secrets, are readable by anyone holding
+  `ENCRYPTION_KEY` and a database dump.
+- Passkey attestation is not verified: the account's re-authentication vouches
+  for a new passkey, not the authenticator's make.
+- An access token revoked through `POST /oauth/revoke` is remembered in Redis
+  only, until it expires; a Redis failover can forget it.
+- Resource servers verifying tokens offline accept a revoked access token until
+  it expires, unless they introspect.
 - A refresh does not check the account lockout. A lockout can be triggered by
   anyone who knows the identifier; cutting the owner's live sessions would
   turn it into a way to sign them out. Suspending the account does end them.
@@ -246,7 +255,7 @@ when a cited test no longer exists.
 | SEC-18 | Tokens and codes are stored as digests | `sessions_require_32_byte_hashes`, `email_verification_tokens_are_fixed_length` |
 | SEC-19 | The audit log is append-only and holds no personal data | `audit_log_is_append_only`, `audit_log_delete_blocked_by_trigger`, `account_deletion_leaves_no_identity_in_the_audit_log`, `an_email_change_keeps_the_status_and_audits_no_address`, `a_forged_cursor_is_refused_and_the_history_needs_a_session`, `audit_addresses_can_only_be_forgotten_or_coarsened`, `a_deleted_account_leaves_no_address_or_sign_in_attempt_behind`, `old_audit_addresses_keep_only_their_network` |
 | SEC-20 | An email change is confirmed on both addresses by the user who started it | `email_change_full_flow_success`, `email_change_steps_cannot_be_skipped`, `email_change_token_bound_to_initiating_user` |
-| SEC-21 | Account deletion is acknowledged downstream before the row goes | `account_deletion_publishes_user_deleted_through_jetstream` |
+| SEC-21 | Account deletion and its `user.deleted` event commit together, and the event goes out once the broker is back | `account_deletion_publishes_user_deleted_through_jetstream` |
 | SEC-22 | Forwarding headers count only from trusted proxies; IPv6 clients share their /64 | `direct_peer_ignores_forwarded_headers`, `trusted_proxy_uses_forwarded_client_ip`, `ipv6_addresses_share_their_64`, `every_forwarded_line_counts_as_one_list`, `an_unreadable_hop_stops_the_walk_at_the_proxy`, `sql_budgets_group_addresses_like_redis_budgets` |
 | SEC-23 | Rate limits per client, failing closed in production | `auth_rate_limit_blocks_requests_exceeding_limit`, `auth_routes_fail_closed_when_rate_limiter_backend_is_down`, `a_refused_request_consumes_nothing`, `validate_rejects_production_config_with_rate_limit_fail_open` |
 | SEC-24 | Bounded bodies, security headers, CORS allowlist, one error format | `an_oversized_body_is_refused_before_the_handler`, `security_headers_present_on_200_response`, `security_headers_enable_hsts_for_https_production`, `cross_origin_access_is_limited_to_the_allowlist`, `plain_text_errors_become_error_bodies_with_their_headers`, `parser_details_do_not_leak` |
