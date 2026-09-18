@@ -5,6 +5,11 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-09-18
+
+Dependency and image updates; no change to the API, the events or the
+configuration.
+
 ### Changed
 
 - Dependencies: `argon2` 0.6, `jsonwebtoken` 11, `totp-rs` 6, `async-nats` 0.50,
@@ -13,6 +18,8 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 - Images: Rust 1.98 for the build, Prometheus 3.14, Alertmanager 0.34, blackbox
   exporter 0.28, NATS exporter 0.20, Mailpit 1.31. The test and development
   stacks stay on PostgreSQL 17 and Redis 7, the versions production runs.
+- PostgreSQL 17 and Redis 7 images of the test and development stacks
+  refreshed to their latest builds.
 
 ## [2.0.0] - 2026-09-16
 
