@@ -40,6 +40,7 @@ Every port of the development stack is published on `127.0.0.1` only.
 | `make fuzz` | Every fuzz target for `FUZZ_SECS` seconds (default 60; nightly toolchain and `cargo-fuzz`) |
 | `make mutants` | Mutation testing of the domain, crypto, token, client address and configuration code (`cargo-mutants`, unit tests); report in `reports/mutants.out/` |
 | `make coverage` | Coverage of every suite (`cargo-llvm-cov`), HTML report in `reports/coverage/` |
+| `make js-test` | Tests of the npm packages in `clients/js` (Node.js 20 or later, nothing to install) |
 
 Each test runs in its own process against its own database, cloned from a
 migrated template. The nextest configuration (`.config/nextest.toml`) kills a

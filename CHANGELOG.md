@@ -122,6 +122,9 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   (`/users/me/external-identities`) and never matched by email; the sign-in is
   bound to the browser that started it, the ID token verified against the
   provider's keys, and an enrolled second factor still applies.
+- `clients/js/verifier` (`@auth-api/verifier`, internal): the same verification
+  for Node.js resource servers, without dependency, with an Express middleware;
+  `make js-test` and a CI job run its tests.
 - `crates/verifier` (`auth-api-verifier`, internal): verifies access tokens in
   Rust resource servers, with JWKS caching, issuer and audience checks, an
   optional introspection-backed revocation check and an axum extractor.

@@ -43,6 +43,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       infra: ${{ steps.filter.outputs.infra }}
       image: ${{ steps.filter.outputs.image }}
+      js: ${{ steps.filter.outputs.js }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -74,6 +75,7 @@ jobs:
           {
             echo "rust=$(matches '^(src/|tests/|crates/|fuzz/|migrations/|templates/|benches/|\.config/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|deny\.toml$|Makefile$|docker-compose\.test\.yml$|docs/dev/api/openapi\.yaml$|\.github/workflows/ci\.yml$)')"
             echo "infra=$(matches '^(Dockerfile|\.dockerignore$|docker-compose[^/]*\.ya?ml$|nats\.conf$|config\.prod\.env$|nginx/|deploy/|scripts/|perf/[^/]*\.sh$|docs/deploy/guides/prometheus-alerts\.yml$|Makefile$|\.github/workflows/ci\.yml$)')"
+            echo "js=$(matches '^(clients/js/|Makefile$|\.github/workflows/ci\.yml$)')"
             echo "image=$(matches '^(Dockerfile$|\.dockerignore$|Cargo\.lock$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)')"
           } >> "$GITHUB_OUTPUT"
 
@@ -159,6 +161,22 @@ jobs:
       - name: Compose, Dockerfiles, nginx, Prometheus, shell scripts
         run: CHECKS=static scripts/infra-check.sh
 
+  js:
+    name: JavaScript
+    needs: changes
+    if: needs.changes.outputs.js == 'true' && github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner's Node.js; the packages have no dependency to install.
+      - name: Tests
+        run: make js-test
+
   image:
     name: Image
     needs: changes
@@ -176,7 +194,7 @@ jobs:
 
   ci-ok:
     name: ci-ok
-    needs: [changes, hygiene, rust, infra, image]
+    needs: [changes, hygiene, rust, infra, js, image]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -159,6 +159,10 @@ coverage: ## Coverage of every suite, failing under 93% lines, 89% regions, 83% 
 		--fail-under-lines 93 --fail-under-regions 89 --fail-under-functions 83 \
 		--html --output-dir reports/coverage
 
+.PHONY: js-test
+js-test: ## Tests of the npm packages in clients/js (Node.js 20 or later, no install)
+	cd clients/js/verifier && node --test
+
 .PHONY: bench
 bench: ## Run Criterion benchmarks (CPU only, no infrastructure needed)
 	cargo bench
