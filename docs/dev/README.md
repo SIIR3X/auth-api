@@ -6,6 +6,7 @@
 - [Commands](guides/commands.md) - All available `make` commands
 - [Quality gate](guides/quality-gate.md) - `make ci`: what it checks and when to run it
 - [Release](guides/release.md) - Building a release bundle
+- [Versioning](guides/versioning.md) - What the version number promises, deprecation, upgrades and support
 - [Configuration](guides/configuration.md) - Environment files, secrets, and variables reference
 - [Integration](guides/integration.md) - Choosing a flow, verifying tokens in resource servers, following account changes
 - [Webhooks](guides/webhooks.md) - Receiving signed account events over HTTPS
