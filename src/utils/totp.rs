@@ -5,7 +5,7 @@
 //! Verification decrypts the stored secret, rebuilds the TOTP context, and checks
 //! the submitted code with a 1-step (30s) tolerance window.
 
-use totp_rs::{Algorithm, Secret, TOTP};
+use totp_rs::{Algorithm, Builder, Secret, Totp};
 
 use crate::utils::crypto::{CryptoError, Keyring};
 
@@ -22,7 +22,7 @@ pub enum TotpError {
 /// Generates a new TOTP secret and returns its base32 representation.
 /// The caller is responsible for encrypting it before storage.
 pub fn generate_secret() -> String {
-    Secret::generate_secret().to_encoded().to_string()
+    Secret::generate().to_base32()
 }
 
 /// Returns the otpauth URI to encode into a QR code for authenticator apps.
@@ -57,14 +57,35 @@ pub fn verify_code(
     }
     let plaintext = keyring.decrypt(encrypted_secret)?;
 
-    let secret_bytes = Secret::Encoded(plaintext)
-        .to_bytes()
-        .map_err(|_| TotpError::InvalidSecret)?;
+    Ok(totp(&plaintext, skew)?.check(code, now).is_some())
+}
 
-    let totp = TOTP::new(Algorithm::SHA1, 6, skew, 30, secret_bytes)
-        .map_err(|_| TotpError::InvalidSecret)?;
+/// The code an authenticator app shows at `unix_time` for a base32 secret: for
+/// tests, benchmarks and diagnostics.
+pub fn code_at(base32_secret: &str, unix_time: u64) -> Result<String, TotpError> {
+    Ok(totp(base32_secret, 0)?.generate(unix_time).to_string())
+}
 
-    Ok(totp.check(code, now))
+/// The code an authenticator app shows now, by the system clock.
+pub fn current_code(base32_secret: &str) -> Result<String, TotpError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| TotpError::TimeError)?;
+    code_at(base32_secret, now.as_secs())
+}
+
+/// SHA-1, 6 digits, 30-second steps: what every authenticator app supports.
+/// `build` refuses secrets under 128 bits.
+fn totp(base32_secret: &str, skew: u8) -> Result<Totp, TotpError> {
+    let secret = Secret::try_from_base32(base32_secret).map_err(|_| TotpError::InvalidSecret)?;
+    Builder::new()
+        .with_algorithm(Algorithm::SHA1)
+        .with_digits(6)
+        .with_skew(u16::from(skew))
+        .with_step_duration(30)
+        .with_secret(secret)
+        .build()
+        .map_err(|_| TotpError::InvalidSecret)
 }
 
 // Percent-encodes a string for use in a URI (RFC 3986 unreserved chars pass through).
@@ -92,7 +113,7 @@ mod tests {
     fn keyring() -> Keyring {
         Keyring::new(*KEY, None)
     }
-    use totp_rs::{Algorithm, Secret, TOTP};
+    use totp_rs::Secret;
 
     const KEY: &[u8; 32] = &[7u8; 32];
     const NOW: i64 = 1_700_000_000;
@@ -102,7 +123,10 @@ mod tests {
         let secret = generate_secret();
         assert!(!secret.is_empty());
         // totp-rs must be able to decode it back to bytes
-        assert!(Secret::Encoded(secret).to_bytes().is_ok());
+        assert_eq!(
+            Secret::try_from_base32(secret).unwrap().as_bytes().len(),
+            20
+        );
     }
 
     #[test]
@@ -128,10 +152,7 @@ mod tests {
 
     /// Code of the step containing `at`.
     fn code_at(at: i64) -> String {
-        let bytes = Secret::Encoded(RFC_SECRET.into()).to_bytes().unwrap();
-        TOTP::new(Algorithm::SHA1, 6, 0, 30, bytes)
-            .unwrap()
-            .generate(at as u64)
+        super::code_at(RFC_SECRET, at as u64).unwrap()
     }
 
     fn encrypted_rfc_secret() -> String {

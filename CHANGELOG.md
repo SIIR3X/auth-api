@@ -5,6 +5,15 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies: `argon2` 0.6, `jsonwebtoken` 11, `totp-rs` 6, `async-nats` 0.50,
+  `base64` 0.23 and `sha1` 0.11, plus minor and patch updates. Password hashes
+  and TOTP secrets stored by earlier releases remain valid, pinned by tests.
+- Images: Rust 1.98 for the build, Prometheus 3.14, Alertmanager 0.34, blackbox
+  exporter 0.28, NATS exporter 0.20, Mailpit 1.31. The test and development
+  stacks stay on PostgreSQL 17 and Redis 7, the versions production runs.
+
 ## [2.0.0] - 2026-09-16
 
 The release after 1.1.3, and the first under the

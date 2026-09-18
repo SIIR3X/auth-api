@@ -65,3 +65,11 @@ updates:
     groups:
       compose:
         patterns: ["*"]
+    ignore:
+      # The test and development stacks run the major versions production runs
+      # (docs/deploy/database/deployment.md): PostgreSQL 17 and Redis 7. Move
+      # them together with production, never ahead of it.
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+      - dependency-name: redis
+        update-types: ["version-update:semver-major"]

@@ -161,7 +161,7 @@ Every infrastructure alert has a scenario in `rules/infrastructure.test.yml`:
 
 ```bash
 docker run --rm --entrypoint promtool -w /m/rules -v "$PWD/deploy/monitoring:/m:ro" \
-  prom/prometheus:v3.5.0 test rules infrastructure.test.yml
+  prom/prometheus:v3.14.0 test rules infrastructure.test.yml
 ```
 
 `Watchdog` always fires. Point its receiver at a dead man's switch service

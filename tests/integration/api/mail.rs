@@ -219,8 +219,6 @@ async fn disable_totp_sends_two_factor_disabled_email() {
 
     let user = fixtures::authenticated_user(&app, 805).await;
 
-    use totp_rs::{Algorithm, Secret, TOTP};
-
     let setup_res = app
         .post_auth(
             "/users/me/two-factor/totp/setup",
@@ -233,15 +231,7 @@ async fn disable_totp_sends_two_factor_disabled_email() {
     let method_id = setup_body["method_id"].as_str().unwrap();
     let secret_b32 = setup_body["base32_secret"].as_str().unwrap();
 
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        6,
-        1,
-        30,
-        Secret::Encoded(secret_b32.to_owned()).to_bytes().unwrap(),
-    )
-    .unwrap();
-    let code = totp.generate_current().unwrap();
+    let code = auth_api::utils::totp::current_code(secret_b32).unwrap();
 
     let verify_res = app
         .post_auth(
@@ -279,8 +269,6 @@ async fn recovery_code_used_sends_notification_email() {
 
     let user = fixtures::authenticated_user(&app, 806).await;
 
-    use totp_rs::{Algorithm, Secret, TOTP};
-
     let setup_res = app
         .post_auth(
             "/users/me/two-factor/totp/setup",
@@ -292,15 +280,7 @@ async fn recovery_code_used_sends_notification_email() {
     let method_id = setup_body["method_id"].as_str().unwrap();
     let secret_b32 = setup_body["base32_secret"].as_str().unwrap();
 
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        6,
-        1,
-        30,
-        Secret::Encoded(secret_b32.to_owned()).to_bytes().unwrap(),
-    )
-    .unwrap();
-    let code = totp.generate_current().unwrap();
+    let code = auth_api::utils::totp::current_code(secret_b32).unwrap();
     let verify_res = app
         .post_auth(
             &format!("/users/me/two-factor/totp/{method_id}/verify"),

@@ -2,7 +2,6 @@
 //! second factors.
 
 use serde_json::{Value, json};
-use totp_rs::{Algorithm, Secret, TOTP};
 
 use crate::common::{app::TestApp, fixtures};
 
@@ -111,13 +110,8 @@ async fn the_two_factor_overview_lists_methods_and_remaining_recovery_codes() {
         .await
         .unwrap();
     let method_id = setup["method_id"].as_str().unwrap().to_owned();
-    let secret = Secret::Encoded(setup["base32_secret"].as_str().unwrap().to_owned())
-        .to_bytes()
-        .unwrap();
-    let code = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret)
-        .unwrap()
-        .generate_current()
-        .unwrap();
+    let code =
+        auth_api::utils::totp::current_code(setup["base32_secret"].as_str().unwrap()).unwrap();
 
     let verified: Value = app
         .post_auth(

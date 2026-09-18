@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use argon2::{
     Algorithm, Argon2, Params, Version,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use tokio::sync::Semaphore;
 
@@ -21,7 +21,7 @@ pub enum PasswordError {
     #[error("hashing failed: {0}")]
     Hash(argon2::password_hash::Error),
     #[error("hash string is malformed: {0}")]
-    Parse(argon2::password_hash::Error),
+    Parse(argon2::password_hash::phc::Error),
     #[error("verification failed: {0}")]
     Verify(argon2::password_hash::Error),
     #[error("password worker task failed: {0}")]
@@ -43,11 +43,10 @@ fn argon2_semaphore(cfg: &CryptoConfig) -> &'static Semaphore {
     SEMAPHORE.get_or_init(|| Semaphore::new(cfg.argon2_max_concurrency.max(1) as usize))
 }
 
-/// Hashes a plaintext password using Argon2id with a random salt.
-/// The returned string is a self-contained PHC hash (includes params + salt).
+/// Hashes a plaintext password using Argon2id with a random 16-byte salt from
+/// the operating system. The returned string is a self-contained PHC hash
+/// (includes params + salt).
 pub fn hash(password: &str, cfg: &CryptoConfig) -> Result<String, PasswordError> {
-    let salt = SaltString::generate(&mut OsRng);
-
     let params = Params::new(
         cfg.argon2_memory_kib,
         cfg.argon2_iterations,
@@ -59,7 +58,7 @@ pub fn hash(password: &str, cfg: &CryptoConfig) -> Result<String, PasswordError>
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     argon2
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|h| h.to_string())
         .map_err(PasswordError::Hash)
 }
@@ -71,7 +70,7 @@ pub fn verify(password: &str, hash: &str) -> Result<bool, PasswordError> {
 
     match Argon2::default().verify_password(password.as_bytes(), &parsed) {
         Ok(()) => Ok(true),
-        Err(argon2::password_hash::Error::Password) => Ok(false),
+        Err(argon2::password_hash::Error::PasswordInvalid) => Ok(false),
         Err(e) => Err(PasswordError::Verify(e)),
     }
 }
@@ -218,6 +217,27 @@ mod tests {
         let cfg = test_config();
         let h = hash("hunter2", &cfg).unwrap();
         assert!(verify("hunter2", &h).unwrap());
+    }
+
+    /// Hashes written by argon2 0.5.3, the version every stored password so far
+    /// was hashed with: an upgrade must never lock anyone out.
+    #[test]
+    fn hashes_written_by_the_previous_argon2_release_still_verify() {
+        for stored in [
+            "$argon2id$v=19$m=1024,t=1,p=1$LQRmYeOMiT51hO+QHoiZjA$sgcCK0PEj5O2MB5lT2uHBZBeABzytakC4LLNDPyWiGw",
+            "$argon2id$v=19$m=65536,t=3,p=4$LQRmYeOMiT51hO+QHoiZjA$PrWpnvu6FOD76HTZWdrRJT9Ubkho34paSp7Sa04Hwhc",
+        ] {
+            assert!(verify("correct horse battery staple", stored).unwrap());
+            assert!(!verify("correct horse battery stapler", stored).unwrap());
+        }
+    }
+
+    #[test]
+    fn a_new_hash_is_argon2id_with_the_configured_parameters() {
+        let h = hash("hunter2", &test_config()).unwrap();
+        assert!(h.starts_with("$argon2id$v=19$m=1024,t=1,p=1$"), "{h}");
+        // A 16-byte salt, base64 without padding.
+        assert_eq!(h.split('$').nth(4).unwrap().len(), 22);
     }
 
     #[test]
