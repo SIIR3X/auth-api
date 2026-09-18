@@ -145,6 +145,34 @@ pub async fn mark_email_verified<'e>(
 
 /// Verify the address of a pending account and activate it; any other account
 /// is left untouched. Returns whether the account was pending.
+/// Give a pending account the credentials its verification link carries. The
+/// username changes only while no other account holds it; the password and the
+/// locale always follow the link. Does nothing to an account already verified.
+pub async fn adopt_pending_credentials<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+    credentials: &crate::domain::token::PendingCredentials,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE users u
+         SET password_hash = $2,
+             preferred_locale = $4,
+             username = CASE
+                 WHEN EXISTS (SELECT 1 FROM users o WHERE o.username = $3 AND o.id <> u.id)
+                     THEN u.username
+                 ELSE $3
+             END
+         WHERE u.id = $1 AND u.status = 'pending_verification'",
+    )
+    .bind(id)
+    .bind(&credentials.password_hash)
+    .bind(&credentials.username)
+    .bind(&credentials.preferred_locale)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 pub async fn verify_if_pending<'e>(
     executor: impl PgExecutor<'e>,
     id: Uuid,

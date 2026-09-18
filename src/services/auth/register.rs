@@ -34,10 +34,26 @@ pub async fn register(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     if let Some(existing) = user_repo::find_by_email(&state.db, email).await? {
-        // A pending account gets its verification again, so an owner who lost
-        // the first e-mail can finish; an active one is told of the attempt.
+        // A pending account belongs to nobody yet: this registration gets its
+        // own link, carrying the credentials it chose. Whoever clicks it
+        // activates the account with them, so an attacker who registered the
+        // address first does not pick the owner's password. An active account
+        // is told of the attempt.
         if existing.status == UserStatus::PendingVerification {
-            issue_verification(state, &existing, ip, user_agent, request_id).await?;
+            let credentials = crate::domain::token::PendingCredentials {
+                password_hash: hash,
+                username: username.to_owned(),
+                preferred_locale: locale.to_owned(),
+            };
+            issue_verification(
+                state,
+                &existing,
+                Some(credentials),
+                ip,
+                user_agent,
+                request_id,
+            )
+            .await?;
         } else {
             notify_existing_account(state, &existing);
         }
@@ -95,6 +111,7 @@ pub async fn register(
             request_ip: ip,
             request_user_agent: user_agent,
             target_email: email,
+            credentials: None,
         },
     )
     .await
@@ -174,7 +191,7 @@ pub async fn resend_verification(
     let started = std::time::Instant::now();
     let result = match user_repo::find_by_email(&state.db, email).await? {
         Some(user) if user.status == UserStatus::PendingVerification => {
-            issue_verification(state, &user, ip, user_agent, request_id).await
+            issue_verification(state, &user, None, ip, user_agent, request_id).await
         }
         _ => Ok(()),
     };
@@ -185,11 +202,15 @@ pub async fn resend_verification(
     result
 }
 
-/// Replace the pending verification link of `user` and e-mail it, within the
-/// per-account budget.
+/// E-mail `user`, a pending account, a new verification link within the
+/// per-account budget. The link carries `credentials` when a registration sent
+/// it; a resend repeats those of the latest live link. Earlier links stay
+/// valid until one of them verifies the account: a later registration or
+/// resend must not revoke the link its owner is about to click.
 async fn issue_verification(
     state: &AppState,
     user: &User,
+    credentials: Option<crate::domain::token::PendingCredentials>,
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
     request_id: Option<Uuid>,
@@ -209,9 +230,11 @@ async fn issue_verification(
     let raw_token = crypto::generate_token();
     let hash_bytes = crypto::sha256(raw_token.as_bytes());
 
-    // The previous link stops working when the new one is issued.
     let mut tx = state.db.begin().await?;
-    token::revoke_active_verification_by_user(&mut *tx, user.id).await?;
+    let credentials = match credentials {
+        Some(credentials) => Some(credentials),
+        None => token::latest_active_credentials(&mut *tx, user.id).await?,
+    };
     token::create_verification(
         &mut *tx,
         &NewEmailVerificationToken {
@@ -221,6 +244,7 @@ async fn issue_verification(
             request_ip: ip,
             request_user_agent: user_agent,
             target_email: &user.email,
+            credentials: credentials.as_ref(),
         },
     )
     .await
@@ -239,12 +263,18 @@ async fn issue_verification(
     .map_err(|e| AppError::Internal(e.into()))?;
     tx.commit().await?;
 
+    // The e-mail names the account the link activates.
+    let (username, locale) = match &credentials {
+        Some(credentials) => (
+            credentials.username.clone(),
+            credentials.preferred_locale.clone(),
+        ),
+        None => (user.username.clone(), user.preferred_locale.clone()),
+    };
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();
     let mail_cfg = state.config.mail.clone();
     let email_to = user.email.clone();
-    let username = user.username.clone();
-    let locale = user.preferred_locale.clone();
     let frontend_url = state.config.server.frontend_url.clone();
     email::dispatch_best_effort("verification_email", async move {
         email::send_verification_email(
@@ -281,6 +311,26 @@ pub async fn verify_email(
     if !consumed {
         return Err(AppError::TokenInvalid);
     }
+
+    // A link sent by a registration on a pending account activates it with
+    // that registration's credentials; the other links of the account die.
+    if let (Some(password_hash), Some(username), Some(preferred_locale)) = (
+        record.password_hash.clone(),
+        record.username.clone(),
+        record.preferred_locale.clone(),
+    ) {
+        user_repo::adopt_pending_credentials(
+            &mut *tx,
+            record.user_id,
+            &crate::domain::token::PendingCredentials {
+                password_hash,
+                username,
+                preferred_locale,
+            },
+        )
+        .await?;
+    }
+    token::revoke_active_verification_by_user(&mut *tx, record.user_id).await?;
 
     user_repo::mark_email_verified(&mut *tx, record.user_id).await?;
 

@@ -8,7 +8,7 @@ use ipnetwork::IpNetwork;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Clone, sqlx::FromRow)]
 pub struct EmailVerificationToken {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -19,6 +19,32 @@ pub struct EmailVerificationToken {
     pub request_ip: Option<IpNetwork>,
     pub request_user_agent: Option<String>,
     pub target_email: String,
+    /// Credentials of the registration that sent this link, applied when it
+    /// verifies a pending account; `None` keeps the account's own.
+    pub password_hash: Option<String>,
+    pub username: Option<String>,
+    pub preferred_locale: Option<String>,
+}
+
+impl std::fmt::Debug for EmailVerificationToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailVerificationToken")
+            .field("id", &self.id)
+            .field("user_id", &self.user_id)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("used_at", &self.used_at)
+            .field("carries_credentials", &self.password_hash.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Credentials a registration chose, carried by its verification link.
+#[derive(Clone)]
+pub struct PendingCredentials {
+    pub password_hash: String,
+    pub username: String,
+    pub preferred_locale: String,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -213,6 +239,9 @@ mod tests {
             request_ip: None,
             request_user_agent: None,
             target_email: "jane@example.com".into(),
+            password_hash: None,
+            username: None,
+            preferred_locale: None,
         };
         assert!(token(false).is_valid(now));
         assert!(token(true).is_used());

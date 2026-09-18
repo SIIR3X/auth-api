@@ -67,7 +67,11 @@ address), `first_seen_at`, `last_seen_at`. Forgotten after
 ### email_verification_tokens, password_reset_tokens, magic_link_tokens
 
 Single-use tokens (`token_hash`, `expires_at`, `used_at`). At most one active
-token per user. `magic_link_tokens` hold sign-in links (15 minutes).
+reset or sign-in link per user; a pending account may hold several
+verification links, each carrying the `password_hash`, `username` and
+`preferred_locale` of the registration that sent it (all three or none),
+until one of them verifies the account. `magic_link_tokens` hold sign-in links
+(15 minutes).
 
 ### webhook_endpoints, webhook_deliveries
 

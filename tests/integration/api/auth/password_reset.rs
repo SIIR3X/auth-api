@@ -353,7 +353,7 @@ fn verification_mails(app: &TestApp, email: &str) -> Vec<testkit::mail::Captured
 }
 
 #[tokio::test]
-async fn a_resent_verification_link_replaces_the_previous_one() {
+async fn resent_links_coexist_until_one_verifies_the_account() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 900).await;
     let first = app
@@ -377,22 +377,25 @@ async fn a_resent_verification_link_replaces_the_previous_one() {
         .expect("a second verification link");
     assert_ne!(first, second);
 
-    app.clear_verify_email_rate_limit(&app.client_ip).await;
-    let stale = app
+    // A resend must not revoke the link its owner is about to click: someone
+    // else can ask for one, knowing only the address.
+    let used = app
         .post("/auth/verify-email", &serde_json::json!({ "token": first }))
         .await;
-    assert_eq!(
-        stale.status().as_u16(),
-        401,
-        "the previous link no longer works"
-    );
-    let fresh = app
+    assert_eq!(used.status().as_u16(), 200, "the first link still works");
+
+    app.clear_verify_email_rate_limit(&app.client_ip).await;
+    let other = app
         .post(
             "/auth/verify-email",
             &serde_json::json!({ "token": second }),
         )
         .await;
-    assert_eq!(fresh.status().as_u16(), 200);
+    assert_eq!(
+        other.status().as_u16(),
+        401,
+        "the verification ended the other links"
+    );
 }
 
 #[tokio::test]

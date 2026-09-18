@@ -19,6 +19,11 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
   requires a recent re-authentication, or `current_password` in the body of
   `POST /oauth/device/verify`; `GET /oauth/device/{user_code}` tells it in
   `reauthentication_required`.
+- A registration on an address whose account is still pending verification
+  carries its own password, username and locale in its verification link, and
+  the link applies them. Registering someone's address first no longer lets an
+  attacker choose the password the owner activates. The links of a pending
+  account now coexist until one of them verifies it (migration 0025).
 
 ## [2.0.1] - 2026-09-18
 

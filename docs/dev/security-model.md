@@ -30,10 +30,15 @@ the database together, is out of scope.
   answers `202` identically whether or not the address is taken (the owner is
   emailed instead; a pending one gets its verification again). Forgot-password
   and verification resends take a constant minimum time and answer identically.
-- **Addresses cannot be squatted.** A password reset proves ownership of the
-  address: it verifies a pending account with the password its owner chose, so
-  an account someone else registered with the address is taken back. Accounts
-  never verified are deleted after `CLEANUP_UNVERIFIED_ACCOUNT_DAYS`.
+- **Addresses cannot be squatted.** A pending account belongs to nobody yet: a
+  registration on its address gets its own verification link, carrying the
+  password, username and locale that registration chose, and the link applies
+  them when it verifies the account. Whoever registered the address first does
+  not decide the password its owner activates. Links of a pending account
+  coexist (a resend repeats the latest registration) until one verifies it.
+  A password reset also proves ownership of the address: it verifies a pending
+  account with the password its owner chose. Accounts never verified are
+  deleted after `CLEANUP_UNVERIFIED_ACCOUNT_DAYS`.
 - **Breached passwords are refused** at registration, change and reset, through
   the Pwned Passwords range API: only the first five characters of the SHA-1
   leave the service, answers are padded, and the check runs before the address
@@ -287,3 +292,4 @@ when a cited test no longer exists.
 | SEC-40 | Passkeys: registration re-authenticated and verified, sign-in challenges single use, signatures verified, cloned counters refused | `a_registration_is_verified_before_it_is_stored`, `forged_replayed_or_cloned_assertions_are_refused`, `a_passkey_signs_in_without_password_or_second_factor`, `a_removed_passkey_no_longer_signs_in`, `assertions_verify_against_the_stored_key_only`, `client_data_answers_the_challenge_from_an_allowed_origin`, `validate_rejects_production_passkey_origins_outside_the_relying_party` |
 | SEC-41 | External identities sign in only once linked by the owner, bound to the starting browser, with verified ID tokens | `a_linked_identity_signs_in_and_an_unlinked_one_never_does`, `an_outcome_is_used_once_by_the_browser_that_started_it`, `an_id_token_that_does_not_verify_identifies_nobody`, `a_token_for_something_else_is_refused` |
 | SEC-42 | Delegated tokens (third-party clients, scoped sessions, personal access tokens) never act as the account: refused on account, approval and administration routes; approving another client's device needs a re-authentication | `delegated_tokens_are_refused_on_every_account_approval_and_admin_route`, `a_delegated_token_cannot_approve_itself_an_unrestricted_session`, `the_instance_application_without_scopes_acts_as_the_account`, `approving_another_client_needs_a_recent_reauthentication`, `only_sign_ins_and_the_primary_application_act_as_the_account` |
+| SEC-43 | A registration on a pending address carries its own credentials in its link: registering someone's address first does not choose the password they activate | `the_owner_activates_the_account_with_the_password_they_chose`, `a_resend_repeats_the_latest_registration_not_the_first`, `resent_links_coexist_until_one_verifies_the_account`, `email_verification_tokens_carry_complete_credentials_or_none` |
