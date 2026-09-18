@@ -9,6 +9,7 @@ the overview.
 |------|---------|
 | - | No authentication |
 | JWT | Access token in `Authorization: Bearer` |
+| JWT (account) | Access token of a session acting for the account itself: a sign-in, or the instance's own application without scopes. A token delegated to another client, restricted to scopes, or obtained from a personal access token gets `403 first_party_session_required`. Every `/users/me`, `/admin` and approval route requires it |
 | Admin | Access token carrying the named permission, still granted in the database, from an account with a second factor |
 | JWT + reauth | Access token, and a recent re-authentication: `POST /users/me/reauth` within `SENSITIVE_ACTION_REAUTH_SECS`, or `current_password` in the body. A fresh sign-in does not count |
 
@@ -92,7 +93,7 @@ and 8628 (device authorization). Token and device authorization requests are
 | POST | `/oauth/introspect` | confidential client | Strict |
 | POST | `/oauth/revoke` | client | Strict |
 | GET | `/oauth/device/{user_code}` | JWT | Strict |
-| POST | `/oauth/device/verify` | JWT | Strict |
+| POST | `/oauth/device/verify` | JWT (account) (+ reauth for non-primary clients) | Strict |
 
 **Client authentication.** A public client sends `client_id`. A confidential
 client (one given a secret with `POST /admin/clients/{client_id}/secret`)
@@ -168,7 +169,9 @@ and are left alone.
 `authorization_pending`, `slow_down` when polling faster than the interval,
 `access_denied`, `expired_token`, or tokens. The signed-in user previews the
 request (`GET /oauth/device/{user_code}`) and approves or denies it
-(`POST /oauth/device/verify`). An approval is collected once, by the client that
+(`POST /oauth/device/verify`; approving a client other than the instance's own
+application needs `current_password` or a recent re-authentication, which
+`reauthentication_required` in the preview announces). An approval is collected once, by the client that
 started the flow; account status and the client's session limit are checked
 when tokens are issued (`invalid_grant` otherwise).
 

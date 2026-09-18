@@ -13,7 +13,7 @@ use crate::{
     state::AppState,
 };
 
-use super::extractors::{AuthUser, ClientIp};
+use super::extractors::{ClientIp, FirstPartyUser};
 
 // Response types
 
@@ -60,7 +60,7 @@ pub struct RevokeAllRequest {
 )]
 pub async fn list(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<Json<Vec<SessionResponse>>, AppError> {
     let sessions = session_svc::list_active(&state, auth.user_id).await?;
 
@@ -103,7 +103,7 @@ pub async fn list(
 pub async fn revoke(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(session_id): Path<Uuid>,
     body: Option<Json<RevokeAllRequest>>,
 ) -> Result<StatusCode, AppError> {
@@ -136,7 +136,7 @@ pub async fn revoke(
 pub async fn revoke_all(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     body: Option<Json<RevokeAllRequest>>,
 ) -> Result<StatusCode, AppError> {
     let (current_password, keep_current_session) = body

@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     auth::LoginResponse,
-    extractors::{AuthUser, ClientIp, RequestId, UserAgent},
+    extractors::{ClientIp, FirstPartyUser, RequestId, UserAgent},
     user::CurrentPasswordRequest,
 };
 
@@ -181,7 +181,7 @@ pub async fn complete_sign_in(
 )]
 pub async fn list(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<Json<Vec<ExternalIdentityResponse>>, AppError> {
     let identities = external_svc::list(&state, auth.user_id).await?;
     Ok(Json(
@@ -205,7 +205,7 @@ pub async fn list(
 pub async fn start_link(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(provider): Path<String>,
 ) -> Result<Json<ExternalStartResponse>, AppError> {
     Ok(started(
@@ -236,7 +236,7 @@ pub async fn start_link(
 )]
 pub async fn complete_link(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<ExternalCompleteRequest>,
 ) -> Result<(StatusCode, Json<ExternalIdentityResponse>), AppError> {
     let identity =
@@ -261,7 +261,7 @@ pub async fn complete_link(
 pub async fn unlink(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(id): Path<Uuid>,
     body: Option<Json<CurrentPasswordRequest>>,
 ) -> Result<StatusCode, AppError> {

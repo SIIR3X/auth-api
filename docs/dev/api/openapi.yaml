@@ -3124,6 +3124,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '404':
           description: Unknown, decided or expired request
           content:
@@ -3263,6 +3269,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '404':
           description: Unknown, decided or expired request
           content:
@@ -3397,7 +3409,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '401':
-          description: Missing, invalid or revoked access token
+          description: Missing, invalid or revoked access token, or wrong password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: Re-authentication required to approve a client other than the instance's own application, or a delegated token
           content:
             application/json:
               schema:
@@ -3473,6 +3491,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '401':
           description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
           content:
             application/json:
               schema:
@@ -3828,6 +3852,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '429':
           description: Rate limited; see Retry-After
           content:
@@ -3945,6 +3975,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '422':
           description: Invalid cursor
           content:
@@ -3987,6 +4023,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '401':
           description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
           content:
             application/json:
               schema:
@@ -4124,6 +4166,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '409':
           description: Address taken
           content:
@@ -4184,6 +4232,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '401':
           description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
           content:
             application/json:
               schema:
@@ -4278,6 +4332,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '429':
           description: Rate limited; see Retry-After
           content:
@@ -4318,6 +4378,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '401':
           description: Missing, invalid or revoked access token, or an unknown, used or foreign code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
           content:
             application/json:
               schema:
@@ -4528,6 +4594,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '413':
           description: Body larger than 64 KB
           content:
@@ -4580,6 +4652,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '429':
           description: Rate limited; see Retry-After
           content:
@@ -4619,6 +4697,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '401':
           description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
           content:
             application/json:
               schema:
@@ -4932,6 +5016,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '429':
           description: Rate limited; see Retry-After
           content:
@@ -5109,6 +5199,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '429':
           description: Rate limited; see Retry-After
           content:
@@ -5224,6 +5320,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '404':
           description: No such token for this account
           content:
@@ -5273,6 +5375,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '429':
           description: Rate limited; see Retry-After
           content:
@@ -5297,6 +5405,12 @@ paths:
           description: Code sent
         '401':
           description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
           content:
             application/json:
               schema:
@@ -5507,6 +5621,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '404':
           description: No such method
           content:
@@ -5635,6 +5755,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '401':
           description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
           content:
             application/json:
               schema:
@@ -5859,6 +5985,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '401':
           description: Missing, invalid or revoked access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
           content:
             application/json:
               schema:
@@ -6492,6 +6624,7 @@ components:
       required:
       - user_code
       - created_at
+      - reauthentication_required
       properties:
         client_id:
           type:
@@ -6504,6 +6637,11 @@ components:
         created_at:
           type: integer
           format: int64
+        reauthentication_required:
+          type: boolean
+          description: |-
+            Approving needs `current_password` (or a recent `POST /users/me/reauth`):
+            the client is not the instance's own application.
         requested_from_ip:
           type:
           - string
@@ -6521,6 +6659,13 @@ components:
       properties:
         approve:
           type: boolean
+        current_password:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Approving a device of a client other than the instance's own
+            application needs this, or a recent `POST /users/me/reauth`.
         user_code:
           type: string
     DisableEmailOtpRequest:

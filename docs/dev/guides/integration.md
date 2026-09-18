@@ -110,6 +110,12 @@ curl https://auth.example.com/auth/personal-access-tokens/exchange \
   -H 'content-type: application/json' -d "{\"token\": \"$AAPAT\"}"
 ```
 
+The access token is delegated, like the tokens of a client application other
+than the instance's own: it works on your resource servers and on
+`/oauth/userinfo`, but the auth-api account routes (`/users/me/*`), the
+approval routes and `/admin/*` answer `403 first_party_session_required`.
+Managing the account stays with the user, signed in.
+
 ### OpenID Connect
 
 Add `openid` (and `profile`, `email` for the matching claims) to the code flow

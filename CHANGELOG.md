@@ -5,6 +5,21 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 
 ## [Unreleased]
 
+### Security
+
+- Tokens delegated to a client application (another client than the
+  instance's own, or any session restricted to consented scopes) and tokens
+  obtained from a personal access token no longer act as the account: the
+  account routes (`/users/me/*`), the approval routes
+  (`/oauth/authorization-requests/*`, `/oauth/device/*`) and `/admin/*` answer
+  `403 first_party_session_required`. Such a token could previously approve a
+  device flow of the instance's application and obtain an unrestricted
+  session. Logout, `/oauth/userinfo` and resource servers are unchanged.
+- Approving a device of a client other than the instance's own application
+  requires a recent re-authentication, or `current_password` in the body of
+  `POST /oauth/device/verify`; `GET /oauth/device/{user_code}` tells it in
+  `reauthentication_required`.
+
 ## [2.0.1] - 2026-09-18
 
 Dependency and image updates; no change to the API, the events or the

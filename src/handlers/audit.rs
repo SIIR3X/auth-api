@@ -18,7 +18,7 @@ use crate::{
     domain::audit::AuditAction, error::AppError, repositories::audit as audit_repo, state::AppState,
 };
 
-use super::extractors::AuthUser;
+use super::extractors::FirstPartyUser;
 
 const DEFAULT_LIMIT: i64 = 50;
 /// Most entries one page may hold; larger requests are clamped, not refused.
@@ -69,7 +69,7 @@ pub struct AuditPageResponse {
 )]
 pub async fn list(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Query(params): Query<ListParams>,
 ) -> Result<Json<AuditPageResponse>, AppError> {
     let limit = page_limit(params.limit);

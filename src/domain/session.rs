@@ -164,27 +164,65 @@ impl Session {
     }
 }
 
+/// Whether a session acts for the account itself (first party) rather than
+/// for a client the account delegated to.
+///
+/// First party: a sign-in to the instance (no client), or a session of the
+/// instance's own application without consented scopes. Delegated: a session
+/// of any other client, any session restricted to consented scopes (OpenID
+/// Connect included), and a personal access token. A delegated token reaches
+/// the resource servers and the routes meant for clients (`/oauth/userinfo`,
+/// logout); the account routes, the approval routes and the administration
+/// refuse it, or it could widen its own grant.
+pub fn is_first_party(
+    session_type: SessionType,
+    scoped: bool,
+    for_client: bool,
+    primary_client: bool,
+) -> bool {
+    session_type != SessionType::PersonalAccessToken && !scoped && (!for_client || primary_client)
+}
+
 /// What the per-request token check learned from Redis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenState {
     /// The token's id is on the logout blocklist.
     Revoked,
-    /// The session is cached as active.
-    Active,
+    /// The session is cached as active, first party or delegated.
+    Active { first_party: bool },
     /// The session is cached as ended (revoked or expired).
     Ended,
     /// Nothing cached: the database decides.
     Unknown,
 }
 
+/// Cached value of an ended session.
+pub const CACHED_ENDED: u8 = 0;
+/// Cached value of an active first-party session.
+pub const CACHED_FIRST_PARTY: u8 = 1;
+/// Cached value of an active delegated session. A release that predates the
+/// distinction reads it as ended: during a rolling update a delegated token is
+/// at worst refused early, never accepted where it should not be.
+pub const CACHED_DELEGATED: u8 = 2;
+
+/// The value cached for a session read from the database.
+pub fn cached_value(active: bool, first_party: bool) -> u8 {
+    match (active, first_party) {
+        (false, _) => CACHED_ENDED,
+        (true, true) => CACHED_FIRST_PARTY,
+        (true, false) => CACHED_DELEGATED,
+    }
+}
+
 /// Combine the blocklist and the session cache. The blocklist wins: a logout
-/// takes effect before the cached validity expires. Only a cached `1` means
-/// active; any other cached value reads as ended.
+/// takes effect before the cached validity expires. Only the two active values
+/// mean active; any other cached value reads as ended.
 pub fn token_state(blocklisted: bool, cached: Option<u8>) -> TokenState {
     match (blocklisted, cached) {
         (true, _) => TokenState::Revoked,
         (false, None) => TokenState::Unknown,
-        (false, Some(1)) => TokenState::Active,
+        (false, Some(CACHED_FIRST_PARTY)) => TokenState::Active { first_party: true },
+        (false, Some(CACHED_DELEGATED)) => TokenState::Active { first_party: false },
         (false, Some(_)) => TokenState::Ended,
     }
 }
@@ -334,10 +372,46 @@ mod tests {
     fn the_blocklist_wins_over_the_session_cache() {
         assert_eq!(token_state(true, Some(1)), TokenState::Revoked);
         assert_eq!(token_state(true, None), TokenState::Revoked);
-        assert_eq!(token_state(false, Some(1)), TokenState::Active);
+        assert_eq!(
+            token_state(false, Some(1)),
+            TokenState::Active { first_party: true }
+        );
+        assert_eq!(
+            token_state(false, Some(2)),
+            TokenState::Active { first_party: false }
+        );
         assert_eq!(token_state(false, Some(0)), TokenState::Ended);
-        assert_eq!(token_state(false, Some(2)), TokenState::Ended);
+        assert_eq!(token_state(false, Some(3)), TokenState::Ended);
         assert_eq!(token_state(false, None), TokenState::Unknown);
+    }
+
+    #[test]
+    fn a_cached_session_reads_back_as_it_was_stored() {
+        for (active, first_party) in [(true, true), (true, false), (false, true), (false, false)] {
+            let state = token_state(false, Some(cached_value(active, first_party)));
+            if active {
+                assert_eq!(state, TokenState::Active { first_party });
+            } else {
+                assert_eq!(state, TokenState::Ended);
+            }
+        }
+    }
+
+    #[test]
+    fn only_sign_ins_and_the_primary_application_act_as_the_account() {
+        use SessionType::*;
+        // A sign-in to the instance.
+        assert!(is_first_party(Web, false, false, false));
+        // The instance's own application, unrestricted.
+        assert!(is_first_party(Device, false, true, true));
+        // Another client, even unrestricted.
+        assert!(!is_first_party(Device, false, true, false));
+        // Consented scopes, the primary application included.
+        assert!(!is_first_party(Device, true, true, true));
+        assert!(!is_first_party(Device, true, true, false));
+        // A personal access token.
+        assert!(!is_first_party(PersonalAccessToken, true, false, false));
+        assert!(!is_first_party(PersonalAccessToken, false, false, false));
     }
 
     #[test]

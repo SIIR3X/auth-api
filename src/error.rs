@@ -69,6 +69,8 @@ pub enum AppError {
     TwoFactorRequired,
     #[error("recent re-authentication required")]
     ReauthenticationRequired,
+    #[error("a session of the account itself is required")]
+    FirstPartySessionRequired,
 
     // 404
     #[error("resource not found")]
@@ -219,6 +221,13 @@ impl IntoResponse for AppError {
                 ErrorBody::new(
                     "reauthentication_required",
                     "Recent re-authentication is required for this action.",
+                ),
+            ),
+            Self::FirstPartySessionRequired => (
+                StatusCode::FORBIDDEN,
+                ErrorBody::new(
+                    "first_party_session_required",
+                    "This token was delegated to an application or issued for a personal access token; sign in to the account itself.",
                 ),
             ),
 
@@ -541,6 +550,7 @@ mod tests {
     #[test]
     fn reauthentication_required_is_403() {
         assert_eq!(status(AppError::ReauthenticationRequired), 403);
+        assert_eq!(status(AppError::FirstPartySessionRequired), 403);
     }
 
     // 404

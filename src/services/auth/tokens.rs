@@ -299,7 +299,8 @@ pub async fn is_jti_blocked(state: &AppState, jti: Uuid) -> Result<bool, AppErro
 }
 
 /// Check that an access token was neither revoked nor issued for a session
-/// that has ended.
+/// that has ended, and tell whether that session is first party
+/// ([`crate::domain::session::is_first_party`]).
 ///
 /// The JTI blocklist and the session-validity cache are read in one pipeline,
 /// one round trip on every authenticated request. On a cache miss the session
@@ -315,7 +316,7 @@ pub async fn verify_token_state(
     state: &AppState,
     jti: Uuid,
     session_id: Uuid,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let blocklist_key = format!("{JTI_BLOCKLIST_PREFIX}{jti}");
     let cache_key = format!("{SESSION_CACHE_PREFIX}{session_id}");
 
@@ -335,10 +336,10 @@ pub async fn verify_token_state(
             AppError::ServiceUnavailable("redis_query_failed")
         })?;
 
-    let active = match token_state(blocked, cached) {
+    let (active, first_party) = match token_state(blocked, cached) {
         TokenState::Revoked => return Err(AppError::TokenInvalid),
-        TokenState::Active => true,
-        TokenState::Ended => false,
+        TokenState::Active { first_party } => (true, first_party),
+        TokenState::Ended => (false, false),
         TokenState::Unknown => {
             // A database failure is an outage (503), not a revoked session: a
             // 401 would sign the user out and hide the incident from the
@@ -348,15 +349,20 @@ pub async fn verify_token_state(
                 .map_err(|e| AppError::Internal(e.into()))?
                 .ok_or(AppError::Unauthorized)?;
             let active = session.is_active(state.clock.now());
+            let first_party = session.first_party();
             let _: Result<(), _> = conn
-                .set_ex(&cache_key, u8::from(active), SESSION_CACHE_TTL_SECS)
+                .set_ex(
+                    &cache_key,
+                    crate::domain::session::cached_value(active, first_party),
+                    SESSION_CACHE_TTL_SECS,
+                )
                 .await;
-            active
+            (active, first_party)
         }
     };
 
     if active {
-        Ok(())
+        Ok(first_party)
     } else {
         Err(AppError::Unauthorized)
     }

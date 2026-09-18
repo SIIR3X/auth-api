@@ -106,6 +106,19 @@ pub struct DevicePreview {
     pub requested_from_ip: Option<String>,
     pub user_agent: Option<String>,
     pub created_at: i64,
+    /// Approving needs `current_password` (or a recent `POST /users/me/reauth`):
+    /// the client is not the instance's own application.
+    pub reauthentication_required: bool,
+}
+
+/// A signed-in user approving a device code.
+pub struct Approval<'a> {
+    pub user_id: Uuid,
+    pub session_id: Uuid,
+    pub user_code: &'a str,
+    pub current_password: Option<&'a str>,
+    pub ip: Option<IpNetwork>,
+    pub request_id: Option<Uuid>,
 }
 
 fn device_hash_encoded(device_code: &str) -> String {
@@ -399,6 +412,7 @@ async fn load_entry(
 /// Describe a pending device authorization to the user about to decide on it.
 pub async fn describe(
     state: &AppState,
+    session_id: Uuid,
     user_code: &str,
     ip: Option<IpNetwork>,
 ) -> Result<DevicePreview, AppError> {
@@ -412,37 +426,64 @@ pub async fn describe(
         return Err(AppError::Conflict("device_request_already_decided"));
     }
 
-    let client_name = match entry.client_id.as_deref() {
+    let client = match entry.client_id.as_deref() {
         Some(cid) => client_repo::find_by_id(&state.db, cid)
             .await
-            .map_err(|e| AppError::Internal(e.into()))?
-            .map(|client| client.display_name),
+            .map_err(|e| AppError::Internal(e.into()))?,
         None => None,
+    };
+    let reauthentication_required = match &client {
+        Some(client) => authorize_svc::requires_reauthentication(state, session_id, client).await,
+        None => true,
     };
 
     Ok(DevicePreview {
         user_code: entry.user_code,
         client_id: entry.client_id,
-        client_name,
+        client_name: client.map(|client| client.display_name),
         requested_from_ip: entry.client_ip,
         user_agent: entry.user_agent,
         created_at: entry.created_at,
+        reauthentication_required,
     })
 }
 
-/// Approve a device authorization request. Called by an authenticated user.
-pub async fn verify(
-    state: &AppState,
-    user_id: Uuid,
-    user_code: &str,
-    ip: Option<IpNetwork>,
-) -> Result<(), AppError> {
+/// Approve a device authorization request. Called by a signed-in user.
+///
+/// The approval mints a long-lived session for the client: for a client other
+/// than the instance's own application it needs a fresh proof of the password,
+/// like consenting to an authorization request.
+pub async fn verify(state: &AppState, approval: &Approval<'_>) -> Result<(), AppError> {
+    guard_code_scan(state, approval.ip).await?;
+    let Some((_, _, entry)) = load_entry(state, approval.user_code).await? else {
+        note_unknown_code(state, approval.ip).await;
+        return Err(AppError::NotFound);
+    };
+    let primary = match entry.client_id.as_deref() {
+        Some(cid) => client_repo::find_by_id(&state.db, cid)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .is_some_and(|client| client.is_primary),
+        None => false,
+    };
+    if !primary {
+        crate::services::reauth::require_recent_reauth_or_password(
+            state,
+            approval.user_id,
+            approval.session_id,
+            approval.current_password,
+            approval.ip,
+            approval.request_id,
+            "approve_device",
+        )
+        .await?;
+    }
     update_status(
         state,
-        user_code,
+        approval.user_code,
         DeviceAuthStatus::Authorized,
-        Some(user_id),
-        ip,
+        Some(approval.user_id),
+        approval.ip,
     )
     .await
 }

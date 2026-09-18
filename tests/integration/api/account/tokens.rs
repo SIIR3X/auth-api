@@ -72,7 +72,11 @@ async fn a_token_is_exchanged_for_access_tokens_carrying_its_scopes_only() {
     let claims = app.decode_access_token(access);
     assert_eq!(claims.permissions, ["audit:read"]);
     assert!(claims.roles.is_empty());
-    assert_eq!(app.get_auth("/users/me", access).await.status(), 200);
+    // A live token, delegated: the account routes are not its to use.
+    let response = app.get_auth("/users/me", access).await;
+    assert_eq!(response.status(), 403);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["code"], "first_party_session_required");
 
     let listed: Value = app
         .get_auth("/users/me/tokens", &user.access_token)

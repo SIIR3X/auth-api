@@ -10,7 +10,7 @@ use crate::{
     state::AppState,
 };
 
-use super::extractors::{AuthUser, ClientIp};
+use super::extractors::{ClientIp, FirstPartyUser};
 
 // Request types
 
@@ -105,7 +105,7 @@ pub struct UserResponse {
 )]
 pub async fn me(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<Json<UserResponse>, AppError> {
     let user = user_svc::get_profile(&state, auth.user_id).await?;
 
@@ -138,7 +138,7 @@ pub async fn me(
 pub async fn change_username(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<ChangeUsernameRequest>,
 ) -> Result<StatusCode, AppError> {
     super::auth::validate_username(&body.username)?;
@@ -173,7 +173,7 @@ pub async fn change_username(
 pub async fn start_email_change(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     body: Option<Json<CurrentPasswordRequest>>,
 ) -> Result<Json<FlowTokenResponse>, AppError> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
@@ -202,7 +202,7 @@ pub async fn start_email_change(
 )]
 pub async fn verify_current_email(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<VerifyCurrentEmailRequest>,
 ) -> Result<StatusCode, AppError> {
     email_change_svc::verify_current(&state, auth.user_id, &body.flow_token, &body.code).await?;
@@ -225,7 +225,7 @@ pub async fn verify_current_email(
 pub async fn submit_new_email(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<SubmitNewEmailRequest>,
 ) -> Result<StatusCode, AppError> {
     super::auth::validate_email(&body.new_email)?;
@@ -256,7 +256,7 @@ pub async fn submit_new_email(
 pub async fn confirm_new_email(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<ConfirmNewEmailRequest>,
 ) -> Result<StatusCode, AppError> {
     email_change_svc::confirm_new(
@@ -288,7 +288,7 @@ pub async fn confirm_new_email(
 pub async fn change_password(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<StatusCode, AppError> {
     validate_password(&body.new_password)?;
@@ -322,7 +322,7 @@ pub async fn change_password(
 )]
 pub async fn change_locale(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<ChangeLocaleRequest>,
 ) -> Result<StatusCode, AppError> {
     validate_locale(&body.locale)?;
@@ -402,7 +402,7 @@ pub fn validate_password(password: &str) -> Result<(), AppError> {
 pub async fn delete_account(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     body: Option<Json<DeleteAccountRequest>>,
 ) -> Result<StatusCode, AppError> {
     let current_password = body.and_then(|Json(b)| b.current_password);
@@ -434,7 +434,7 @@ pub async fn delete_account(
 pub async fn reauthenticate(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<ReauthenticateRequest>,
 ) -> Result<StatusCode, AppError> {
     user_svc::reauthenticate(
@@ -464,7 +464,7 @@ pub async fn reauthenticate(
 pub async fn export_data(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
     let document =
         user_svc::export_data(&state, auth.user_id, auth.session_id, ip, auth.request_id).await?;

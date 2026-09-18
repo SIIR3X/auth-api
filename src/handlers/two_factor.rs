@@ -15,7 +15,7 @@ use crate::{
     state::AppState,
 };
 
-use super::extractors::{AuthUser, ClientIp};
+use super::extractors::{ClientIp, FirstPartyUser};
 
 // Request types
 
@@ -95,7 +95,7 @@ pub struct EmailOtpSetupResponse {
 pub async fn setup_totp(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     body: Option<Json<SetupTwoFactorRequest>>,
 ) -> Result<Json<TotpSetupResponse>, AppError> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
@@ -132,7 +132,7 @@ pub async fn setup_totp(
 )]
 pub async fn verify_totp_setup(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(method_id): Path<Uuid>,
     Json(body): Json<VerifyTotpSetupRequest>,
 ) -> Result<Json<RecoveryCodesResponse>, AppError> {
@@ -160,7 +160,7 @@ pub async fn verify_totp_setup(
 pub async fn disable_totp(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(method_id): Path<Uuid>,
     body: Option<Json<DisableTotpRequest>>,
 ) -> Result<StatusCode, AppError> {
@@ -193,7 +193,7 @@ pub async fn disable_totp(
 pub async fn regenerate_recovery_codes(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<RegenerateRecoveryCodesRequest>,
 ) -> Result<Json<RecoveryCodesResponse>, AppError> {
     let codes = tf_svc::generate_recovery_codes(
@@ -223,7 +223,7 @@ pub async fn regenerate_recovery_codes(
 )]
 pub async fn use_recovery_code(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<UseRecoveryCodeRequest>,
 ) -> Result<StatusCode, AppError> {
     tf_svc::use_recovery_code(&state, auth.user_id, &body.code, auth.request_id).await?;
@@ -248,7 +248,7 @@ pub async fn use_recovery_code(
 pub async fn setup_email_otp(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     body: Option<Json<SetupTwoFactorRequest>>,
 ) -> Result<Json<EmailOtpSetupResponse>, AppError> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
@@ -279,7 +279,7 @@ pub async fn setup_email_otp(
 )]
 pub async fn send_email_otp_code(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<StatusCode, AppError> {
     email_2fa_svc::send_code(&state, auth.user_id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -300,7 +300,7 @@ pub async fn send_email_otp_code(
 )]
 pub async fn verify_email_otp_setup(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(method_id): Path<Uuid>,
     Json(body): Json<VerifyEmailOtpSetupRequest>,
 ) -> Result<Json<RecoveryCodesResponse>, AppError> {
@@ -329,7 +329,7 @@ pub async fn verify_email_otp_setup(
 pub async fn disable_email_otp(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(method_id): Path<Uuid>,
     body: Option<Json<DisableEmailOtpRequest>>,
 ) -> Result<StatusCode, AppError> {
@@ -386,7 +386,7 @@ pub struct TwoFactorOverviewResponse {
 )]
 pub async fn list(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<Json<TwoFactorOverviewResponse>, AppError> {
     let (methods, recovery_codes_remaining) = tf_svc::list_methods(&state, auth.user_id).await?;
 

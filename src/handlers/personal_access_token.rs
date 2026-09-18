@@ -14,7 +14,7 @@ use crate::{
     services::personal_access_token as pat_svc, state::AppState,
 };
 
-use super::extractors::{AuthUser, ClientIp};
+use super::extractors::{ClientIp, FirstPartyUser};
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreatePersonalAccessTokenRequest {
@@ -84,7 +84,7 @@ fn token_response(token: PersonalAccessToken) -> PersonalAccessTokenResponse {
 )]
 pub async fn list(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<Json<Vec<PersonalAccessTokenResponse>>, AppError> {
     let tokens = pat_svc::list(&state, auth.user_id).await?;
     Ok(Json(tokens.into_iter().map(token_response).collect()))
@@ -107,7 +107,7 @@ pub async fn list(
 pub async fn create(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<CreatePersonalAccessTokenRequest>,
 ) -> Result<(StatusCode, Json<CreatedPersonalAccessTokenResponse>), AppError> {
     let created = pat_svc::create(
@@ -145,7 +145,7 @@ pub async fn create(
 pub async fn revoke(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
     pat_svc::revoke(&state, auth.user_id, id, ip, auth.request_id).await?;

@@ -13,8 +13,14 @@ use uuid::Uuid;
 use crate::domain::session::{Session, SessionType};
 
 pub const FIND_BY_TOKEN_HASH_SQL: &str = "SELECT * FROM sessions WHERE token_hash = $1";
-pub const FIND_VALIDATION_BY_ID_SQL: &str =
-    "SELECT expires_at, revoked_at FROM sessions WHERE id = $1";
+/// What the per-request token check needs: whether the session still runs,
+/// and whether it acts for the account itself (see [`SessionValidation::first_party`]).
+pub const FIND_VALIDATION_BY_ID_SQL: &str = "SELECT s.expires_at, s.revoked_at, s.session_type,
+            s.scopes IS NOT NULL AS scoped, s.client_id IS NOT NULL AS for_client,
+            COALESCE(c.is_primary, FALSE) AS primary_client
+         FROM sessions s
+         LEFT JOIN registered_clients c ON c.client_id = s.client_id
+         WHERE s.id = $1";
 pub const FIND_ACTIVE_BY_USER_SQL: &str = "SELECT * FROM sessions
          WHERE user_id = $1 AND revoked_at IS NULL
          ORDER BY last_used_at DESC";
@@ -48,6 +54,13 @@ pub struct NewSession<'a> {
 pub struct SessionValidation {
     pub expires_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
+    pub session_type: SessionType,
+    /// The session carries consented scopes.
+    pub scoped: bool,
+    /// The session was issued to a client application.
+    pub for_client: bool,
+    /// That client is the instance's own application.
+    pub primary_client: bool,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -66,6 +79,17 @@ pub struct ActiveSessionSummary {
 impl SessionValidation {
     pub fn is_active(&self, now: OffsetDateTime) -> bool {
         self.revoked_at.is_none() && self.expires_at > now
+    }
+
+    /// Whether the session acts for the account itself rather than for a
+    /// client it delegated to: see [`crate::domain::session::is_first_party`].
+    pub fn first_party(&self) -> bool {
+        crate::domain::session::is_first_party(
+            self.session_type,
+            self.scoped,
+            self.for_client,
+            self.primary_client,
+        )
     }
 }
 

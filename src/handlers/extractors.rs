@@ -30,6 +30,9 @@ pub struct AuthUser {
     pub permissions: Vec<String>,
     /// Request ID injected by the request_id middleware; propagate to audit log entries.
     pub request_id: Option<uuid::Uuid>,
+    /// The session acts for the account itself, not for a client it delegated
+    /// to ([`crate::domain::session::is_first_party`]).
+    pub first_party: bool,
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -70,7 +73,7 @@ impl FromRequestParts<AppState> for AuthUser {
 
         // Revoked token or ended session: one Redis round trip, the database
         // only on a cache miss. Fails closed when Redis is unavailable.
-        auth_svc::verify_token_state(state, claims.jti, claims.sid).await?;
+        let first_party = auth_svc::verify_token_state(state, claims.jti, claims.sid).await?;
 
         let request_id = parts
             .headers
@@ -86,7 +89,39 @@ impl FromRequestParts<AppState> for AuthUser {
             roles: claims.roles,
             permissions: claims.permissions,
             request_id,
+            first_party,
         })
+    }
+}
+
+/// An access token of a session acting for the account itself: a sign-in to
+/// the instance, or its own application without consented scopes. The
+/// account routes, the approval routes and the administration take this
+/// rather than [`AuthUser`]: a token delegated to a client or issued for a
+/// personal access token would otherwise reach beyond what was granted to it,
+/// up to approving itself a new, unrestricted session.
+pub struct FirstPartyUser(pub AuthUser);
+
+impl std::ops::Deref for FirstPartyUser {
+    type Target = AuthUser;
+
+    fn deref(&self) -> &AuthUser {
+        &self.0
+    }
+}
+
+impl FromRequestParts<AppState> for FirstPartyUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = AuthUser::from_request_parts(parts, state).await?;
+        if !auth.first_party {
+            return Err(AppError::FirstPartySessionRequired);
+        }
+        Ok(Self(auth))
     }
 }
 
@@ -104,7 +139,7 @@ impl FromRequestParts<AppState> for AdminUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let auth = AuthUser::from_request_parts(parts, state).await?;
+        let FirstPartyUser(auth) = FirstPartyUser::from_request_parts(parts, state).await?;
         if !auth
             .permissions
             .iter()

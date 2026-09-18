@@ -172,7 +172,8 @@ impl Modify for CommonResponses {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
         use utoipa::openapi::{PathItem, RefOr, response::ResponseBuilder};
 
-        for item in openapi.paths.paths.values_mut() {
+        for (path, item) in openapi.paths.paths.iter_mut() {
+            let first_party = requires_first_party(path);
             let PathItem {
                 get,
                 put,
@@ -211,6 +212,12 @@ impl Modify for CommonResponses {
                 if protected {
                     common.push(("401", "Missing, invalid or revoked access token"));
                 }
+                if first_party {
+                    common.push((
+                        "403",
+                        "`first_party_session_required`: a token delegated to a client or issued for a personal access token",
+                    ));
+                }
 
                 let responses = &mut operation.responses.responses;
                 for (status, description) in common {
@@ -237,6 +244,15 @@ impl Modify for CommonResponses {
             }
         }
     }
+}
+
+/// Operations taking [`crate::handlers::extractors::FirstPartyUser`]: every
+/// one of them may answer `first_party_session_required`.
+pub fn requires_first_party(path: &str) -> bool {
+    path.starts_with("/users/me")
+        || path.starts_with("/admin/")
+        || path.starts_with("/oauth/authorization-requests/")
+        || path.starts_with("/oauth/device/")
 }
 
 fn error_content() -> utoipa::openapi::content::Content {
