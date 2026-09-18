@@ -122,6 +122,8 @@ the configuration: read **Breaking changes** and **Upgrading** before deploying.
   (`/users/me/external-identities`) and never matched by email; the sign-in is
   bound to the browser that started it, the ID token verified against the
   provider's keys, and an enrolled second factor still applies.
+- `docs/dev/guides/integration.md`: which flow each kind of application uses,
+  token verification rules for resource servers, and following account events.
 - `clients/js/verifier` (`@auth-api/verifier`, internal): the same verification
   for Node.js resource servers, without dependency, with an Express middleware;
   `make js-test` and a CI job run its tests.
