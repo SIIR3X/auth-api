@@ -120,11 +120,13 @@ pub async fn assign(
     user_id: Uuid,
     name: &str,
 ) -> Result<(), AppError> {
+    refuse_own_account(actor, user_id)?;
     let role = find(state, name).await?;
-    user_repo::find_by_id(&state.db, user_id)
+    let user = user_repo::find_by_id(&state.db, user_id)
         .await?
         .ok_or(AppError::NotFound)?;
     require_reauth(state, actor, "admin_assign_role").await?;
+    ensure_can_administer(state, &user, &role).await?;
 
     let mut tx = state.db.begin().await?;
     match role_repo::assign_to_user(&mut *tx, user_id, role.id, Some(actor.user_id)).await {
@@ -162,6 +164,37 @@ pub async fn unassign(
     )
     .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+/// An administrator never grants a role to their own account: holding
+/// `roles:manage` must not be a way to give oneself every permission. Stepping
+/// down (taking one's own role back) stays possible, within the guard that
+/// keeps someone able to manage roles.
+fn refuse_own_account(actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
+    if actor.user_id == user_id {
+        return Err(AppError::Forbidden);
+    }
+    Ok(())
+}
+
+/// A role granting administration goes only to an active account that can
+/// prove a second factor: the administration refuses any session that did not,
+/// and an account without one would hold administrative permissions in its
+/// tokens behind its password alone.
+pub(crate) async fn ensure_can_administer(
+    state: &AppState,
+    user: &crate::domain::user::User,
+    role: &Role,
+) -> Result<(), AppError> {
+    if !role_repo::grants_administration(&state.db, role.id).await? {
+        return Ok(());
+    }
+    if user.status != crate::domain::user::UserStatus::Active
+        || !user_repo::has_second_factor(&state.db, user.id).await?
+    {
+        return Err(AppError::Conflict("administrator_without_second_factor"));
+    }
     Ok(())
 }
 

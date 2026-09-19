@@ -34,8 +34,20 @@ pub async fn admin(app: &TestApp, index: usize) -> Admin {
         .await
         .unwrap();
     enroll_second_factor(app, user.id).await;
+    prove_second_factor(app, &user).await;
     let token = token_with(app, &user, &ADMIN_PERMISSIONS);
     Admin { user, token }
+}
+
+/// Mark the user's session as signed in with a second factor, as completing
+/// the challenge would.
+pub async fn prove_second_factor(app: &TestApp, user: &AuthenticatedUser) {
+    let claims = app.decode_access_token(&user.access_token);
+    sqlx::query("UPDATE sessions SET mfa = TRUE WHERE id = $1")
+        .bind(claims.sid)
+        .execute(&app.db)
+        .await
+        .unwrap();
 }
 
 pub async fn enroll_second_factor(app: &TestApp, user_id: Uuid) {

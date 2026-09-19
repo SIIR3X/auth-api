@@ -169,6 +169,24 @@ pub async fn grant_role(pool: &PgPool, grant: &RoleGrant) -> Result<(), String> 
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("no role named {}", grant.role))?;
+    // As over HTTP: the administration refuses every session that did not
+    // prove a second factor, so the account must have one first.
+    if role::grants_administration(pool, granted.id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        let ready = account.status == crate::domain::user::UserStatus::Active
+            && user::has_second_factor(pool, account.id)
+                .await
+                .map_err(|e| e.to_string())?;
+        if !ready {
+            return Err(format!(
+                "{} must be an active account with a verified second factor or a passkey \
+                 before it receives the {} role: sign in and enroll one first",
+                grant.email, granted.name
+            ));
+        }
+    }
 
     match role::assign_to_user(pool, account.id, granted.id, None).await {
         Ok(_) => {}

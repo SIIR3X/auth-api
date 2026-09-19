@@ -10,7 +10,7 @@ the overview.
 | - | No authentication |
 | JWT | Access token in `Authorization: Bearer` |
 | JWT (account) | Access token of a session acting for the account itself: a sign-in, or the instance's own application without scopes. A token delegated to another client, restricted to scopes, or obtained from a personal access token gets `403 first_party_session_required`. Every `/users/me`, `/admin` and approval route requires it |
-| Admin | Access token carrying the named permission, still granted in the database, from an account with a second factor |
+| Admin | Access token carrying the named permission, still granted in the database, from a session whose sign-in proved a second factor (TOTP, email code, recovery code or passkey) |
 | JWT + reauth | Access token, and a recent re-authentication: `POST /users/me/reauth` within `SENSITIVE_ACTION_REAUTH_SECS`, or `current_password` in the body. A fresh sign-in does not count |
 
 | Rate limit | Meaning |

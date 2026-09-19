@@ -284,3 +284,18 @@ pub async fn permission_held<'e>(
     .fetch_one(executor)
     .await
 }
+
+/// Whether the role grants at least one administrative permission.
+pub async fn grants_administration(pool: &PgPool, role_id: Uuid) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM role_permissions rp
+             JOIN permissions p ON p.id = rp.permission_id
+             WHERE rp.role_id = $1 AND p.name = ANY($2)
+         )",
+    )
+    .bind(role_id)
+    .bind(&crate::domain::role::ADMIN_PERMISSIONS[..])
+    .fetch_one(pool)
+    .await
+}

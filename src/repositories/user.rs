@@ -173,6 +173,18 @@ pub async fn adopt_pending_credentials<'e>(
     Ok(())
 }
 
+/// Whether the account can prove a second factor: a verified TOTP or email
+/// method, or a passkey.
+pub async fn has_second_factor(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM two_factor_methods WHERE user_id = $1 AND is_verified)
+             OR EXISTS (SELECT 1 FROM passkeys WHERE user_id = $1)",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+}
+
 /// Delete every way into the account other than its password: second factors,
 /// recovery codes, passkeys, external identities and personal access tokens.
 /// Run on a pending account taken back by its owner.

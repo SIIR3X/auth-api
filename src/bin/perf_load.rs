@@ -874,6 +874,7 @@ async fn db_step(pool: &PgPool, scenario: &str, rng: &mut Rng, users: u64) -> Re
                     client_id: None,
                     family_created_at: None,
                     scopes: None,
+                    mfa: false,
                 },
             )
             .await?;

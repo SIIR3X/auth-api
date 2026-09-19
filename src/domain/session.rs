@@ -84,6 +84,8 @@ pub struct Session {
     pub session_type: SessionType,
     pub client_id: Option<String>,
     pub compromise_reason: Option<SessionCompromiseReason>,
+    /// The sign-in that started the session proved a second factor.
+    pub mfa: bool,
 }
 
 impl Session {
@@ -258,6 +260,7 @@ mod tests {
             session_type: SessionType::Web,
             client_id: None,
             compromise_reason: None,
+            mfa: false,
         }
     }
 

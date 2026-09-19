@@ -125,9 +125,10 @@ impl FromRequestParts<AppState> for FirstPartyUser {
     }
 }
 
-/// An administrator: a valid access token carrying at least one administrative
-/// permission, from an account with a second factor enrolled. Each handler then
-/// requires the permission of its action with [`AdminUser::require`].
+/// An administrator: a first-party access token carrying at least one
+/// administrative permission, from a session whose sign-in proved a second
+/// factor. Each handler then requires the permission of its action with
+/// [`AdminUser::require`].
 pub struct AdminUser {
     pub auth: AuthUser,
 }
@@ -147,12 +148,10 @@ impl FromRequestParts<AppState> for AdminUser {
         {
             return Err(AppError::Forbidden);
         }
-        // An administrator's password alone must not open the administration.
-        if crate::repositories::two_factor::find_primary_by_user(&state.db, auth.user_id)
-            .await?
-            .is_none()
-            && !crate::repositories::passkey::exists_for_user(&state.db, auth.user_id).await?
-        {
+        // An administrator's password alone, or a sign-in link alone, must not
+        // open the administration: the session itself must have proven a
+        // second factor, whatever factors the account has enrolled.
+        if !crate::repositories::session::proved_second_factor(&state.db, auth.session_id).await? {
             return Err(AppError::TwoFactorRequired);
         }
         Ok(Self { auth })

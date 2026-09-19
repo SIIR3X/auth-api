@@ -52,6 +52,30 @@ async fn an_administrator_without_a_second_factor_is_refused() {
 }
 
 #[tokio::test]
+async fn an_administrator_whose_sign_in_skipped_the_second_factor_is_refused() {
+    // Enrolled, but the session came from the password alone: a passkey-only
+    // administrator signing in by password, or a sign-in link.
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 1).await;
+    let role = auth_api::repositories::role::find_by_name(&app.db, "admin")
+        .await
+        .unwrap()
+        .unwrap();
+    auth_api::repositories::role::assign_to_user(&app.db, user.id, role.id, None)
+        .await
+        .unwrap();
+    super::enroll_second_factor(&app, user.id).await;
+    let token = token_with(&app, &user, &["users:read"]);
+
+    let (status, response) = body(app.get_auth("/admin/users", &token).await).await;
+    assert_eq!(status, 403);
+    assert_eq!(response["code"], "two_factor_required");
+
+    super::prove_second_factor(&app, &user).await;
+    assert_eq!(app.get_auth("/admin/users", &token).await.status(), 200);
+}
+
+#[tokio::test]
 async fn a_permission_revoked_in_the_database_stops_working_before_the_token_expires() {
     let app = TestApp::spawn().await;
     let admin = admin(&app, 1).await;

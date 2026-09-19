@@ -375,6 +375,8 @@ pub async fn sign_in(
                     identifier: Some(&user.username),
                     request_id,
                     audit_metadata: json!({ "method": "passkey", "passkey_id": passkey.id }),
+                    // User verification on the authenticator: two factors.
+                    second_factor: true,
                 }),
             )
             .await

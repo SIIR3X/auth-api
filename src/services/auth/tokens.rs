@@ -9,6 +9,9 @@ pub(crate) struct SignIn<'a> {
     pub identifier: Option<&'a str>,
     pub request_id: Option<Uuid>,
     pub audit_metadata: serde_json::Value,
+    /// The sign-in proved a second factor (TOTP, email code, recovery code,
+    /// passkey with user verification).
+    pub second_factor: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -36,6 +39,9 @@ pub(crate) async fn issue_tokens(
     );
 
     let device_name = device_name.and_then(crate::domain::session::device_label);
+    let mfa = sign_in
+        .as_ref()
+        .is_some_and(|sign_in| sign_in.second_factor);
 
     // The session and the sign-in records commit together: one round of
     // fsync instead of four, and no session without its audit trail.
@@ -60,6 +66,7 @@ pub(crate) async fn issue_tokens(
             client_id,
             family_created_at: None,
             scopes,
+            mfa,
         },
     )
     .await

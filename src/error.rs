@@ -247,6 +247,9 @@ impl IntoResponse for AppError {
                         "At least one account must keep the permission to manage roles."
                     }
                     "default_role" => "The role given to every new account cannot be deleted.",
+                    "administrator_without_second_factor" => {
+                        "An administrative role goes only to an active account with a second factor or a passkey."
+                    }
                     "too_many_tokens" => "Revoke a personal access token before creating another.",
                     "external_identity_not_linked" => {
                         "No account is linked to this identity: sign in, then link it from the account settings."

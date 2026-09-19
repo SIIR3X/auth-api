@@ -159,6 +159,7 @@ pub async fn refresh_token(
             client_id: session.client_id.as_deref(),
             family_created_at: Some(session.family_created_at),
             scopes: None,
+            mfa: session.mfa,
         },
     )
     .await

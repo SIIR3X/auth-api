@@ -137,6 +137,7 @@ pub async fn complete_two_factor_login(
             identifier: None,
             request_id,
             audit_metadata: json!({"two_factor": true}),
+            second_factor: true,
         }),
     )
     .await?;
@@ -205,6 +206,7 @@ pub async fn complete_email_2fa_login(
             identifier: None,
             request_id,
             audit_metadata: json!({"two_factor": "email"}),
+            second_factor: true,
         }),
     )
     .await?;
@@ -316,6 +318,7 @@ pub async fn complete_login_with_recovery(
             identifier: None,
             request_id,
             audit_metadata: json!({"two_factor": "recovery_code"}),
+            second_factor: true,
         }),
     )
     .await?;

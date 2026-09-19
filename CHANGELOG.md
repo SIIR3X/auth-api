@@ -34,6 +34,20 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
   browser that started the flow. A victim opening the provider URL of a link an
   attacker started no longer gets their identity linked to the attacker's
   account.
+- `/admin/*` requires a session whose sign-in proved a second factor (TOTP,
+  email code, recovery code, or a passkey), recorded on the session
+  (migration 0026); an enrolled factor is no longer enough. An administrator
+  who signed in with a password alone, or a sign-in link, gets
+  `403 two_factor_required`.
+- A role granting an administrative permission goes only to an active account
+  with a verified second factor or a passkey (`409
+  administrator_without_second_factor`, also refused by `--grant-role`), and
+  no administrator grants a role to their own account (`403`).
+
+### Upgrading
+
+- Administrators signed in before the upgrade sign in again with their second
+  factor: sessions opened earlier carry no proof of it.
 
 ## [2.0.1] - 2026-09-18
 

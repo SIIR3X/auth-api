@@ -214,8 +214,9 @@ pub async fn delete(
     responses(
         (status = 204, description = "Role granted, or already held"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `roles:manage`, no second factor, or re-authentication required", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `roles:manage`, no second factor, re-authentication required, or the administrator's own account", body = crate::error::ErrorBody),
         (status = 404, description = "No such account or role", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_without_second_factor`: the role grants administration and the account is not active or has no second factor", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]

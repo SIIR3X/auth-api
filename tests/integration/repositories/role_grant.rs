@@ -13,6 +13,21 @@ async fn granting_a_role_assigns_it_once_and_audits_it() {
         email: user.email.clone(),
     };
 
+    // An administrative role waits for an active account with a second factor.
+    let refused = grant_role(&app.db, &grant).await.unwrap_err();
+    assert!(refused.contains("second factor"), "{refused}");
+    fixtures::activate_user(&app.db, user.id).await;
+    let refused = grant_role(&app.db, &grant).await.unwrap_err();
+    assert!(refused.contains("second factor"), "{refused}");
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified)
+         VALUES ($1, 'email', TRUE, TRUE)",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
     grant_role(&app.db, &grant).await.unwrap();
     grant_role(&app.db, &grant).await.unwrap();
 

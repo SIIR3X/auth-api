@@ -48,6 +48,9 @@ pub struct NewSession<'a> {
     pub family_created_at: Option<OffsetDateTime>,
     /// Consented client scopes; `None` for an unrestricted session.
     pub scopes: Option<&'a [String]>,
+    /// The sign-in proved a second factor. A rotation inherits it whatever
+    /// this says.
+    pub mfa: bool,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -101,8 +104,8 @@ pub async fn create<'e>(
 ) -> Result<Session, sqlx::Error> {
     sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()), $12)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes, mfa)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()), $12, $13)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -117,6 +120,7 @@ pub async fn create<'e>(
     .bind(input.client_id)
     .bind(input.family_created_at)
     .bind(input.scopes)
+    .bind(input.mfa)
     .fetch_one(executor)
     .await
 }
@@ -143,8 +147,8 @@ pub async fn rotate(
 
     let new_session = sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes, mfa)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -159,6 +163,7 @@ pub async fn rotate(
     .bind(input.client_id)
     .bind(input.family_created_at.unwrap_or(old_session.family_created_at))
     .bind(input.scopes.map(<[String]>::to_vec).or(old_session.scopes))
+    .bind(old_session.mfa)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -236,6 +241,18 @@ pub async fn find_by_token_hash(
         .bind(token_hash)
         .fetch_optional(pool)
         .await
+}
+
+/// Whether the sign-in of the session proved a second factor; `false` for an
+/// unknown session.
+pub async fn proved_second_factor(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query_scalar::<_, bool>("SELECT mfa FROM sessions WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(false),
+    )
 }
 
 pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Session>, sqlx::Error> {

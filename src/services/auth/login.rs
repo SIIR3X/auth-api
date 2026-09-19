@@ -288,6 +288,7 @@ pub(crate) async fn first_factor_proven(
             identifier,
             request_id,
             audit_metadata,
+            second_factor: false,
         }),
     )
     .await?;

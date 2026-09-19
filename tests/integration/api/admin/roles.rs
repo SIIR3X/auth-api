@@ -3,7 +3,7 @@
 use reqwest::Method;
 use serde_json::{Value, json};
 
-use super::{admin, body};
+use super::{admin, body, enroll_second_factor};
 use crate::common::{app::TestApp, fixtures};
 
 async fn send(
@@ -69,6 +69,7 @@ async fn a_role_is_created_granted_changed_taken_back_and_deleted() {
     let app = TestApp::spawn().await;
     let admin = admin(&app, 1).await;
     let member = fixtures::authenticated_user(&app, 2).await;
+    enroll_second_factor(&app, member.id).await;
 
     let (status, created) = send(
         &app,
@@ -257,6 +258,7 @@ async fn nobody_can_remove_the_last_way_to_manage_roles_or_the_default_role() {
 
     // With a second administrator, the first can step down.
     let other = fixtures::authenticated_user(&app, 2).await;
+    enroll_second_factor(&app, other.id).await;
     let (status, _) = send(
         &app,
         Method::POST,
@@ -295,4 +297,60 @@ async fn granting_a_role_needs_a_recent_reauthentication() {
     assert_eq!(status, 403);
     assert_eq!(response["code"], "reauthentication_required");
     assert!(permissions_of(&app, member.id).await.is_empty());
+}
+
+#[tokio::test]
+async fn an_administrative_role_goes_only_to_an_active_account_with_a_second_factor() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let member = fixtures::authenticated_user(&app, 2).await;
+    let path = format!("/admin/users/{}/roles", member.id);
+
+    let (status, response) = send(
+        &app,
+        Method::POST,
+        &path,
+        &admin.token,
+        json!({ "role": "admin" }),
+    )
+    .await;
+    assert_eq!(status, 409, "{response}");
+    assert_eq!(response["code"], "administrator_without_second_factor");
+
+    // A role without administrative permission needs nothing.
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        &path,
+        &admin.token,
+        json!({ "role": "user" }),
+    )
+    .await;
+    assert_eq!(status, 204);
+
+    enroll_second_factor(&app, member.id).await;
+    let (status, response) = send(
+        &app,
+        Method::POST,
+        &path,
+        &admin.token,
+        json!({ "role": "admin" }),
+    )
+    .await;
+    assert_eq!(status, 204, "{response}");
+}
+
+#[tokio::test]
+async fn an_administrator_never_grants_a_role_to_their_own_account() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let (status, response) = send(
+        &app,
+        Method::POST,
+        &format!("/admin/users/{}/roles", admin.user.id),
+        &admin.token,
+        json!({ "role": "user" }),
+    )
+    .await;
+    assert_eq!(status, 403, "{response}");
 }

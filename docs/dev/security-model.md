@@ -170,10 +170,15 @@ the database together, is out of scope.
 
 ## Administration
 
-- `/admin` routes require an administrative permission in the token, a second
-  factor enrolled on the administrator's account, and the permission of the
-  action still granted in the database: revoking a role takes effect on the
-  next request, not when the token expires.
+- `/admin` routes require a first-party token carrying an administrative
+  permission, from a session whose sign-in proved a second factor (TOTP, email
+  code, recovery code, or a passkey with user verification), and the
+  permission of the action still granted in the database: revoking a role
+  takes effect on the next request, not when the token expires. An enrolled
+  factor is not enough: a password or a sign-in link alone never opens it.
+- An administrative role goes only to an active account that has a verified
+  second factor or a passkey, over HTTP and from the command line; nobody
+  grants a role to their own account.
 - Administrators cannot suspend, sign out, reset or delete their own account
   from `/admin`, and deleting an account needs their recent re-authentication.
 - Every change is audited on the account it changed, with the administrator's
@@ -302,3 +307,4 @@ when a cited test no longer exists.
 | SEC-42 | Delegated tokens (third-party clients, scoped sessions, personal access tokens) never act as the account: refused on account, approval and administration routes; approving another client's device needs a re-authentication | `delegated_tokens_are_refused_on_every_account_approval_and_admin_route`, `a_delegated_token_cannot_approve_itself_an_unrestricted_session`, `the_instance_application_without_scopes_acts_as_the_account`, `approving_another_client_needs_a_recent_reauthentication`, `only_sign_ins_and_the_primary_application_act_as_the_account` |
 | SEC-43 | A registration on a pending address carries its own credentials in its link: registering someone's address first does not choose the password they activate | `the_owner_activates_the_account_with_the_password_they_chose`, `a_resend_repeats_the_latest_registration_not_the_first`, `resent_links_coexist_until_one_verifies_the_account`, `email_verification_tokens_carry_complete_credentials_or_none` |
 | SEC-44 | Ways into an account that outlive its password are announced: adding a passkey, a personal access token or an external identity mails the owner, a password change or reset lists what still opens the account, and a pending account taken back by a reset keeps none | `adding_a_passkey_or_a_token_is_announced_to_the_owner`, `a_reset_lists_what_still_opens_the_account`, `a_pending_account_taken_back_by_a_reset_keeps_no_other_access` |
+| SEC-45 | The administration requires a session whose sign-in proved a second factor, not merely an enrolled one; an administrative role goes only to an active account with a second factor, never to oneself | `an_administrator_whose_sign_in_skipped_the_second_factor_is_refused`, `only_a_sign_in_with_a_second_factor_marks_its_session`, `an_administrative_role_goes_only_to_an_active_account_with_a_second_factor`, `an_administrator_never_grants_a_role_to_their_own_account`, `granting_a_role_assigns_it_once_and_audits_it` |
