@@ -48,6 +48,10 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
   (`403 reauthentication_required`). Webhook changes and redeliveries are
   audited with the host of the endpoint, and client secret and unlock changes
   commit with their audit entry.
+- The last active account able to manage roles can no longer be suspended or
+  deleted, by an administrator or by its owner (`409 last_administrator`), and
+  two concurrent role withdrawals can no longer both pass the check. Suspended
+  accounts no longer count as able to manage roles.
 
 ### Upgrading
 

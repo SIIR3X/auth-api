@@ -277,7 +277,8 @@ pub async fn permission_held<'e>(
              SELECT 1 FROM user_roles ur
              JOIN role_permissions rp ON rp.role_id = ur.role_id
              JOIN permissions p ON p.id = rp.permission_id
-             WHERE p.name = $1
+             JOIN users u ON u.id = ur.user_id
+             WHERE p.name = $1 AND u.status = 'active'
          )",
     )
     .bind(permission)

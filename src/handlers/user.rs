@@ -396,6 +396,7 @@ pub fn validate_password(password: &str) -> Result<(), AppError> {
         (status = 204, description = "Account deleted"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
+        (status = 409, description = "`last_administrator`: the account is the last active one able to manage roles", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]

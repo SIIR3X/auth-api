@@ -71,9 +71,15 @@ pub async fn suspend(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(
     }
 
     let active = session_repo::find_active_by_user(&state.db, user_id).await?;
+    let manages_roles =
+        role_repo::user_has_permission(&state.db, user_id, crate::domain::role::ROLES_MANAGE)
+            .await?;
     let mut tx = state.db.begin().await?;
     if !user_repo::suspend(&mut *tx, user_id).await? {
         return Ok(());
+    }
+    if manages_roles {
+        super::roles::keep_an_administrator(&mut tx).await?;
     }
     session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
     audit::append(

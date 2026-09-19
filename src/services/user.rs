@@ -392,6 +392,15 @@ pub(crate) async fn erase_account(
     // together: the account is never gone without its event, and the event
     // never announces a deletion that failed. The event waits in the outbox
     // while NATS is down.
+    // Deleting the last active account able to manage roles would leave the
+    // deployment without one: refused, whoever asks (the owner or an admin).
+    let manages_roles = crate::repositories::role::user_has_permission(
+        &state.db,
+        user_id,
+        crate::domain::role::ROLES_MANAGE,
+    )
+    .await?;
+
     let mut tx = state.db.begin().await?;
 
     // Appended before the deletion: the foreign key then sets its user_id to NULL.
@@ -414,6 +423,9 @@ pub(crate) async fn erase_account(
 
     user_repo::forget_traces(&mut *tx, user_id).await?;
     user_repo::delete(&mut *tx, user_id).await?;
+    if manages_roles {
+        super::admin::roles::keep_an_administrator(&mut tx).await?;
+    }
 
     tx.commit().await?;
     events::wake();

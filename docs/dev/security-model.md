@@ -190,7 +190,9 @@ the database together, is out of scope.
   token alone can neither send account events elsewhere nor shut owners out.
   Every change is audited in the same transaction; a webhook's audit keeps the
   host it points to (never the path or query), and redeliveries are audited. No change may leave the deployment without an
-  account holding `roles:manage`.
+  active account holding `roles:manage`: not a change of roles, not suspending
+  or deleting that account, by an administrator or by its owner. These checks
+  take a shared lock, so two concurrent withdrawals cannot both pass.
 
 ## Webhooks
 
@@ -313,3 +315,4 @@ when a cited test no longer exists.
 | SEC-44 | Ways into an account that outlive its password are announced: adding a passkey, a personal access token or an external identity mails the owner, a password change or reset lists what still opens the account, and a pending account taken back by a reset keeps none | `adding_a_passkey_or_a_token_is_announced_to_the_owner`, `a_reset_lists_what_still_opens_the_account`, `a_pending_account_taken_back_by_a_reset_keeps_no_other_access` |
 | SEC-45 | The administration requires a session whose sign-in proved a second factor, not merely an enrolled one; an administrative role goes only to an active account with a second factor, never to oneself | `an_administrator_whose_sign_in_skipped_the_second_factor_is_refused`, `only_a_sign_in_with_a_second_factor_marks_its_session`, `an_administrative_role_goes_only_to_an_active_account_with_a_second_factor`, `an_administrator_never_grants_a_role_to_their_own_account`, `granting_a_role_assigns_it_once_and_audits_it` |
 | SEC-46 | Administrative actions that redirect events or lock owners out need a recent re-authentication (webhooks, suspension, forced reset, client secrets), and every change is audited in its own transaction, redeliveries and webhook hosts included | `pointing_a_webhook_somewhere_needs_a_reauthentication_and_is_traced`, `a_redelivery_is_audited`, `suspending_or_forcing_a_reset_needs_a_recent_reauthentication` |
+| SEC-47 | No change leaves the deployment without an active account able to manage roles: role changes, suspension and deletion (by an administrator or by the owner) are refused, and concurrent withdrawals are serialized | `nobody_can_remove_the_last_way_to_manage_roles_or_the_default_role`, `the_last_role_manager_is_neither_suspended_nor_deleted`, `concurrent_withdrawals_never_leave_nobody_managing_roles` |

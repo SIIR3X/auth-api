@@ -241,9 +241,16 @@ async fn require_reauth(
     .await
 }
 
-/// Refuse a change that would leave nobody able to manage roles; the
-/// transaction is then rolled back.
-async fn keep_an_administrator(tx: &mut sqlx::PgConnection) -> Result<(), AppError> {
+/// Refuse a change that would leave no active account able to manage roles;
+/// the transaction is then rolled back.
+///
+/// Every such change takes the same transaction-scoped lock before checking,
+/// so two of them cannot each see the other's holder and both commit: the
+/// second one checks once the first has committed.
+pub(crate) async fn keep_an_administrator(tx: &mut sqlx::PgConnection) -> Result<(), AppError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('roles_manage_guard', 0))")
+        .execute(&mut *tx)
+        .await?;
     if role_repo::permission_held(&mut *tx, role_domain::ROLES_MANAGE).await? {
         Ok(())
     } else {

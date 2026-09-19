@@ -955,6 +955,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`last_administrator`: the account is the last active one able to manage roles'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '413':
           description: Body larger than 64 KB
           content:
@@ -1363,6 +1369,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '404':
           description: No such account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`last_administrator`: the account is the last active one able to manage roles'
           content:
             application/json:
               schema:
@@ -3906,6 +3918,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
           description: Recent re-authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`last_administrator`: the account is the last active one able to manage roles'
           content:
             application/json:
               schema:

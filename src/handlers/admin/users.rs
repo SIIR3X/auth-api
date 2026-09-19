@@ -190,6 +190,7 @@ pub async fn detail(
         (status = 403, description = "Missing `users:manage`, no second factor proven by the session, or the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
         (status = 422, description = "The account was never verified", body = crate::error::ErrorBody),
+        (status = 409, description = "`last_administrator`: the account is the last active one able to manage roles", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -311,6 +312,7 @@ pub async fn force_password_reset(
         (status = 401, description = "Missing, invalid or revoked access token, or wrong password", body = crate::error::ErrorBody),
         (status = 403, description = "Missing `users:manage`, no second factor, the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
+        (status = 409, description = "`last_administrator`: the account is the last active one able to manage roles", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
