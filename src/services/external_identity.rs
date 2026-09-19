@@ -461,7 +461,11 @@ async fn take_outcome(
     let outcome: Outcome = stored
         .and_then(|s| serde_json::from_str(&s).ok())
         .ok_or(AppError::TokenInvalid)?;
-    if outcome.binding_hash != hex_digest(binding) || outcome.intent != intent {
+    if !crypto::constant_time_eq(
+        outcome.binding_hash.as_bytes(),
+        hex_digest(binding).as_bytes(),
+    ) || outcome.intent != intent
+    {
         return Err(AppError::TokenInvalid);
     }
     match outcome.error.as_deref() {

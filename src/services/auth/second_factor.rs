@@ -73,6 +73,7 @@ pub async fn complete_two_factor_login(
 
     let valid = totp::verify_code(
         encrypted_secret,
+        user_id,
         code,
         &state.keyring,
         state.config.crypto.totp_skew,

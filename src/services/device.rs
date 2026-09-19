@@ -137,18 +137,13 @@ fn uc_key(user_code: &str) -> String {
 /// Generate a short, human-readable user code in the format "XXXX-XXXX".
 /// Uses uppercase letters (excluding ambiguous O, I, L) and digits (excluding 0, 1).
 fn generate_user_code() -> String {
-    use rand::RngExt;
-
     const LETTERS: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ";
     const DIGITS: &[u8] = b"23456789";
 
-    let mut rng = rand::rng();
-    let part1: String = (0..4)
-        .map(|_| LETTERS[rng.random_range(0..LETTERS.len())] as char)
-        .collect();
-    let part2: String = (0..4)
-        .map(|_| DIGITS[rng.random_range(0..DIGITS.len())] as char)
-        .collect();
+    let pick =
+        |alphabet: &[u8]| alphabet[crypto::random_below(alphabet.len() as u32) as usize] as char;
+    let part1: String = (0..4).map(|_| pick(LETTERS)).collect();
+    let part2: String = (0..4).map(|_| pick(DIGITS)).collect();
 
     format!("{part1}-{part2}")
 }

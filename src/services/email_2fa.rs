@@ -187,7 +187,10 @@ pub async fn send_code(state: &AppState, user_id: Uuid) -> Result<(), AppError> 
         .ok_or(AppError::Unauthorized)?;
 
     let code = crypto::generate_otp();
-    let hash = crypto::sha256(code.as_bytes());
+    // A keyed digest: a copy of the table does not give live codes away.
+    let hash = state
+        .keyring
+        .otp_digest(OTP_PURPOSE, user_id.as_bytes(), &code);
 
     email_2fa::create(
         &state.db,
@@ -241,6 +244,9 @@ pub async fn verify_login_code(
     verify_otp(state, user_id, submitted_code, &fail_key).await
 }
 
+/// Separates the digests of these codes from any other flow's.
+const OTP_PURPOSE: &str = "email_2fa";
+
 // Shared OTP verification logic
 
 async fn verify_otp(
@@ -272,8 +278,13 @@ async fn verify_otp(
         return Err(AppError::RateLimitExceeded);
     }
 
-    let hash = crypto::sha256(submitted_code.as_bytes());
-    let record = email_2fa::find_active_by_user_and_hash(&state.db, user_id, &hash)
+    let digests: Vec<Vec<u8>> = state
+        .keyring
+        .otp_digests(OTP_PURPOSE, user_id.as_bytes(), submitted_code)
+        .iter()
+        .map(|digest| digest.to_vec())
+        .collect();
+    let record = email_2fa::find_active_by_user_and_hash(&state.db, user_id, &digests)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
 

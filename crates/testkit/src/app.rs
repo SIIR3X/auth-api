@@ -389,6 +389,7 @@ impl TestApp {
             .expect("email_change flow state not found in Redis");
 
         let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let user_id: uuid::Uuid = state["user_id"].as_str().unwrap().parse().unwrap();
         let hash_b64 = state["otp_hash"]
             .as_str()
             .expect("otp_hash missing from flow state");
@@ -396,7 +397,11 @@ impl TestApp {
             .decode(hash_b64)
             .unwrap();
 
-        brute_force_otp(&hash_bytes)
+        brute_force_otp(&hash_bytes, |code| {
+            self.state
+                .keyring
+                .otp_digest("email_change", user_id.as_bytes(), code)
+        })
     }
 
     /// Clear the per-user email-change cooldown so a second flow can start.
@@ -600,11 +605,13 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
 }
 
 /// Recover a 6-digit OTP from its SHA-256 digest.
-pub fn brute_force_otp(expected_hash: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
+/// The six-digit code whose digest, by `digest`, is `expected_hash`: tests
+/// hold the application keyring, an attacker holding only the stored digest
+/// does not.
+pub fn brute_force_otp(expected_hash: &[u8], digest: impl Fn(&str) -> [u8; 32]) -> String {
     (0u32..1_000_000)
         .map(|n| format!("{n:06}"))
-        .find(|candidate| Sha256::digest(candidate.as_bytes()).as_slice() == expected_hash)
+        .find(|candidate| digest(candidate).as_slice() == expected_hash)
         .expect("OTP not found in the 6-digit space")
 }
 
@@ -659,6 +666,7 @@ mod tests {
     #[test]
     fn otp_is_recovered_from_its_digest() {
         use sha2::{Digest, Sha256};
-        assert_eq!(brute_force_otp(&Sha256::digest(b"004217")), "004217");
+        let digest = |code: &str| -> [u8; 32] { Sha256::digest(code.as_bytes()).into() };
+        assert_eq!(brute_force_otp(&digest("004217"), digest), "004217");
     }
 }

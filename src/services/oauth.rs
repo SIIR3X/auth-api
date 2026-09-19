@@ -181,7 +181,7 @@ pub async fn authenticate_client(
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    crypto::constant_time_eq(a, b)
 }
 
 // Authorization requests

@@ -32,7 +32,7 @@ async fn a_new_code_replaces_the_live_one() {
         .expect("a live code");
     assert_eq!(live.id, second);
     assert!(
-        email_2fa::find_active_by_user_and_hash(&db.pool, user, &[1u8; 32])
+        email_2fa::find_active_by_user_and_hash(&db.pool, user, &[vec![1u8; 32]])
             .await
             .unwrap()
             .is_none(),
@@ -57,13 +57,13 @@ async fn a_code_verifies_only_for_the_user_it_was_sent_to() {
     issue(&db, owner, &hash).await;
 
     assert!(
-        email_2fa::find_active_by_user_and_hash(&db.pool, owner, &hash)
+        email_2fa::find_active_by_user_and_hash(&db.pool, owner, &[hash.to_vec()])
             .await
             .unwrap()
             .is_some()
     );
     assert!(
-        email_2fa::find_active_by_user_and_hash(&db.pool, other, &hash)
+        email_2fa::find_active_by_user_and_hash(&db.pool, other, &[hash.to_vec()])
             .await
             .unwrap()
             .is_none(),
@@ -111,7 +111,7 @@ async fn an_expired_code_is_neither_found_nor_consumed() {
             .is_none()
     );
     assert!(
-        email_2fa::find_active_by_user_and_hash(&db.pool, user, &hash)
+        email_2fa::find_active_by_user_and_hash(&db.pool, user, &[hash.to_vec()])
             .await
             .unwrap()
             .is_none()

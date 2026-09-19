@@ -52,22 +52,26 @@ pub struct ClaimedDelivery {
     pub payload: Value,
     pub occurred_at: OffsetDateTime,
     pub attempts: i32,
+    pub endpoint_id: Uuid,
     pub url: String,
     pub secret: String,
 }
 
 // Endpoints
 
+/// `id` is chosen by the caller: the secret is encrypted bound to it.
 pub async fn create_endpoint<'e>(
     executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
     settings: &EndpointSettings<'_>,
     encrypted_secret: &str,
 ) -> Result<WebhookEndpoint, sqlx::Error> {
     sqlx::query_as::<_, WebhookEndpoint>(
-        "INSERT INTO webhook_endpoints (url, description, events, enabled, secret)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO webhook_endpoints (id, url, description, events, enabled, secret)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *",
     )
+    .bind(id)
     .bind(settings.url)
     .bind(settings.description)
     .bind(settings.events)
@@ -206,7 +210,7 @@ pub async fn claim_due(
              FROM due WHERE d.id = due.id
              RETURNING d.id, d.endpoint_id, d.event_id, d.event_name, d.payload, d.occurred_at, d.attempts
          )
-         SELECT c.id, c.event_id, c.event_name, c.payload, c.occurred_at, c.attempts, e.url, e.secret
+         SELECT c.id, c.event_id, c.event_name, c.payload, c.occurred_at, c.attempts, e.id AS endpoint_id, e.url, e.secret
          FROM claimed c JOIN webhook_endpoints e ON e.id = c.endpoint_id",
     )
     .bind(limit)

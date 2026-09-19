@@ -8,7 +8,6 @@
 
 use deadpool_redis::redis::AsyncCommands;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::common::{
     app::TestApp,
@@ -245,7 +244,16 @@ async fn email_code_lookup_is_scoped_to_the_challenged_user() {
     let app = TestApp::spawn().await;
     let alice = fixtures::authenticated_user(&app, 605).await;
     let bob = fixtures::authenticated_user(&app, 606).await;
-    let known_hash = Sha256::digest(b"123456").to_vec();
+    let known_hash = app
+        .state
+        .keyring
+        .otp_digest("email_2fa", alice.id.as_bytes(), "123456")
+        .to_vec();
+    let bob_hash = app
+        .state
+        .keyring
+        .otp_digest("email_2fa", bob.id.as_bytes(), "123456")
+        .to_vec();
 
     // Enable email 2FA for Alice with a code we control.
     let res = app
@@ -280,7 +288,7 @@ async fn email_code_lookup_is_scoped_to_the_challenged_user() {
          VALUES ($1, $2, NOW() - INTERVAL '1 minute', NOW() + INTERVAL '5 minutes')",
     )
     .bind(bob.id)
-    .bind(&known_hash)
+    .bind(&bob_hash)
     .execute(&app.db)
     .await
     .unwrap();

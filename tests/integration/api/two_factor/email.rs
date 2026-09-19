@@ -1,7 +1,6 @@
 use crate::common::{app::TestApp, fixtures};
 use auth_api::repositories::{email_2fa as email_2fa_repo, recovery_code as recovery_code_repo};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 // helpers
 
@@ -51,19 +50,11 @@ async fn read_otp_from_db(app: &TestApp, user_id: uuid::Uuid) -> String {
     .await
     .expect("no active email_2fa_code found");
 
-    brute_force_otp(&row.0)
-}
-
-/// Brute-force a 6-digit OTP from its SHA-256 hash.
-fn brute_force_otp(expected_hash: &[u8]) -> String {
-    for n in 0u32..1_000_000 {
-        let candidate = format!("{:06}", n);
-        let h = Sha256::digest(candidate.as_bytes());
-        if h.as_slice() == expected_hash {
-            return candidate;
-        }
-    }
-    panic!("OTP not found in 6-digit space - unexpected hash");
+    testkit::app::brute_force_otp(&row.0, |code| {
+        app.state
+            .keyring
+            .otp_digest("email_2fa", user_id.as_bytes(), code)
+    })
 }
 
 async fn active_email_code_hashes(app: &TestApp, user_id: uuid::Uuid) -> Vec<Vec<u8>> {

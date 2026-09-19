@@ -295,7 +295,7 @@ pub(crate) fn verifier_matches(challenge: &str, verifier: &str) -> bool {
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    crypto::constant_time_eq(a, b)
 }
 
 /// Accept a redirect URI registered for the client, exactly; or, for a client

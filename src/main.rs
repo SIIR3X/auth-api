@@ -94,6 +94,18 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::from_config(config).await?;
 
+    // Secrets written under a key that is no longer configured cannot be read:
+    // every TOTP sign-in and webhook delivery they belong to would fail. Refuse
+    // to serve rather than fail those requests one by one.
+    let unreadable = key_rotation::secrets_under_unknown_keys(&state).await?;
+    if unreadable > 0 {
+        anyhow::bail!(
+            "{unreadable} TOTP or webhook secrets are encrypted with a key that is neither \
+             ENCRYPTION_KEY nor PREVIOUS_ENCRYPTION_KEY: restore the previous key and finish \
+             the rotation with --rotate-totp-keys before removing it"
+        );
+    }
+
     // Rotate audit log partitions at startup: creates upcoming monthly partitions
     // and drops partitions older than retention_months.
     if let Err(e) = cleanup::rotate_audit_log(&state.db, state.config.audit.retention_months).await

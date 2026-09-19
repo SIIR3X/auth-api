@@ -92,8 +92,9 @@ fn totp_benches(c: &mut Criterion) {
     let secret = totp::generate_secret();
     // The production path: a keyring and a versioned ciphertext.
     let keyring = auth_api::utils::crypto::Keyring::new([7u8; 32], None);
+    let owner = uuid::Uuid::nil();
     let encrypted = keyring
-        .encrypt(&secret)
+        .encrypt(&secret, owner.as_bytes())
         .expect("failed to encrypt benchmark secret");
 
     group.bench_function("generate_secret", |b| b.iter(totp::generate_secret));
@@ -111,6 +112,7 @@ fn totp_benches(c: &mut Criterion) {
             let code = totp::current_code(&secret).expect("code");
             totp::verify_code(
                 black_box(&encrypted),
+                owner,
                 black_box(&code),
                 black_box(&keyring),
                 1,

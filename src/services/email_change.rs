@@ -115,7 +115,7 @@ pub async fn start(
 
     let flow_token = crypto::generate_token();
     let otp = crypto::generate_otp();
-    let otp_hash = hash_otp(&otp);
+    let otp_hash = hash_otp(state, user_id, &otp);
 
     let flow = FlowState {
         user_id,
@@ -180,7 +180,14 @@ pub async fn verify_current(
     };
 
     let fail_key = format!("email_change_fail:{}", flow_token);
-    verify_otp(state, submitted_code, flow.otp_hash.as_deref(), &fail_key).await?;
+    verify_otp(
+        state,
+        user_id,
+        submitted_code,
+        flow.otp_hash.as_deref(),
+        &fail_key,
+    )
+    .await?;
 
     flow.step = next;
     flow.otp_hash = None;
@@ -214,7 +221,7 @@ pub async fn submit_new(
     }
 
     let otp = crypto::generate_otp();
-    let otp_hash = hash_otp(&otp);
+    let otp_hash = hash_otp(state, user_id, &otp);
 
     flow.step = next;
     flow.otp_hash = Some(otp_hash);
@@ -286,7 +293,14 @@ pub async fn confirm_new(
     let new_email = flow.new_email.as_deref().ok_or(AppError::Unauthorized)?;
 
     let fail_key = format!("email_change_fail:{}", flow_token);
-    verify_otp(state, submitted_code, flow.otp_hash.as_deref(), &fail_key).await?;
+    verify_otp(
+        state,
+        user_id,
+        submitted_code,
+        flow.otp_hash.as_deref(),
+        &fail_key,
+    )
+    .await?;
 
     let previous = user_repo::find_by_id(&state.db, user_id)
         .await
@@ -451,6 +465,7 @@ async fn load_flow(
 
 async fn verify_otp(
     state: &AppState,
+    user_id: Uuid,
     submitted_code: &str,
     expected_hash: Option<&str>,
     fail_key: &str,
@@ -470,7 +485,16 @@ async fn verify_otp(
         return Err(AppError::RateLimitExceeded);
     }
 
-    if hash_otp(submitted_code) != expected {
+    // Compared in constant time, under every key the keyring holds: a code
+    // issued just before a key rotation still verifies.
+    let matches = state
+        .keyring
+        .otp_digests(OTP_PURPOSE, user_id.as_bytes(), submitted_code)
+        .iter()
+        .any(|digest| {
+            crypto::constant_time_eq(encode_digest(digest).as_bytes(), expected.as_bytes())
+        });
+    if !matches {
         backoff::apply(attempt.counts[0]).await;
         return Err(AppError::TwoFactorFailed);
     }
@@ -479,8 +503,19 @@ async fn verify_otp(
     Ok(())
 }
 
-/// Returns the base64url-encoded SHA-256 of an OTP plaintext.
-fn hash_otp(code: &str) -> String {
-    let hash = crypto::sha256(code.as_bytes());
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash)
+/// Separates the digests of this flow's codes from any other flow's.
+const OTP_PURPOSE: &str = "email_change";
+
+/// The keyed digest of a code of `user_id`'s flow, base64url-encoded as the
+/// flow stores it: the Redis entry alone does not give the code away.
+fn hash_otp(state: &AppState, user_id: Uuid, code: &str) -> String {
+    encode_digest(
+        &state
+            .keyring
+            .otp_digest(OTP_PURPOSE, user_id.as_bytes(), code),
+    )
+}
+
+fn encode_digest(digest: &[u8; 32]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }

@@ -155,7 +155,7 @@ pub async fn setup_totp(
     );
     let encrypted = state
         .keyring
-        .encrypt(&base32_secret)
+        .encrypt(&base32_secret, user_id.as_bytes())
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let method = create_or_restart_method(
@@ -213,6 +213,7 @@ pub async fn verify_setup(
 
     let valid = totp::verify_code(
         encrypted_secret,
+        user_id,
         code,
         &state.keyring,
         state.config.crypto.totp_skew,

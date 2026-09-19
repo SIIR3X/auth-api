@@ -93,11 +93,17 @@ and resumed.
    Run it until it reports `rotated=0 failed=0`: secrets already under the new
    key are skipped, and a secret changed during the run is left as the service
    wrote it.
+
+   Without `PREVIOUS_ENCRYPTION_KEY`, the same command rewrites secrets written
+   before 2.1.0 in the current format, which binds each one to its account or
+   endpoint; run it once after upgrading.
 4. Remove the previous key and redeploy:
    `pass rm prod/auth-api/previous-encryption-key`, then the update guide's
    exports again (the previous key is now unset).
 
-Keep the old key in `pass` history until the run reported no failures.
+Keep the old key in `pass` history until the run reported no failures. An
+instance refuses to start while a secret names a key it does not hold: if the
+previous key was removed too early, put it back and finish step 3.
 
 ## 3. Backup and Restore
 

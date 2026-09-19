@@ -100,7 +100,7 @@ async fn attempt(state: &AppState, delivery: &ClaimedDelivery) -> Outcome {
     let failed = |status, error: String| Outcome::Failed { status, error };
     let key = match state
         .keyring
-        .decrypt(&delivery.secret)
+        .decrypt(&delivery.secret, delivery.endpoint_id.as_bytes())
         .ok()
         .and_then(|secret| webhook::secret_bytes(&secret))
     {
@@ -258,11 +258,12 @@ fn checked<'a>(
     Ok((events, description))
 }
 
-fn new_secret(state: &AppState) -> Result<(String, String), AppError> {
+/// A new signing secret for endpoint `id`, and its ciphertext bound to it.
+fn new_secret(state: &AppState, id: Uuid) -> Result<(String, String), AppError> {
     let secret = webhook::format_secret(&crypto::random_bytes::<32>());
     let encrypted = state
         .keyring
-        .encrypt(&secret)
+        .encrypt(&secret, id.as_bytes())
         .map_err(|e| AppError::Internal(anyhow::anyhow!("cannot encrypt webhook secret: {e:?}")))?;
     Ok((secret, encrypted))
 }
@@ -302,10 +303,12 @@ pub async fn create(
 ) -> Result<SavedEndpoint, AppError> {
     let (events, description) = checked(state, input)?;
     require_reauth(state, actor, "admin_create_webhook").await?;
-    let (secret, encrypted) = new_secret(state)?;
+    let id = Uuid::new_v4();
+    let (secret, encrypted) = new_secret(state, id)?;
     let mut tx = state.db.begin().await?;
     let endpoint = webhook_repo::create_endpoint(
         &mut *tx,
+        id,
         &EndpointSettings {
             url: input.url,
             description,
@@ -371,7 +374,7 @@ pub async fn update(
 
 pub async fn rotate_secret(state: &AppState, actor: &Actor, id: Uuid) -> Result<String, AppError> {
     require_reauth(state, actor, "admin_webhook_secret").await?;
-    let (secret, encrypted) = new_secret(state)?;
+    let (secret, encrypted) = new_secret(state, id)?;
     let mut tx = state.db.begin().await?;
     if !webhook_repo::replace_secret(&mut *tx, id, &encrypted).await? {
         return Err(AppError::NotFound);

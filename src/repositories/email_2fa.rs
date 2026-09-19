@@ -34,7 +34,8 @@ pub async fn find_active_by_user(
     .await
 }
 
-/// Finds the user's live (unused, unexpired) code matching `code_hash`.
+/// Finds the user's live (unused, unexpired) code matching one of `code_hashes`
+/// (the digest of the submitted code under each key of the keyring).
 ///
 /// Scoped to the user on purpose: a 6-digit code is not unique across accounts,
 /// and an unscoped lookup could return another user's row, fail a valid code,
@@ -42,19 +43,19 @@ pub async fn find_active_by_user(
 pub async fn find_active_by_user_and_hash(
     pool: &PgPool,
     user_id: Uuid,
-    code_hash: &[u8],
+    code_hashes: &[Vec<u8>],
 ) -> Result<Option<Email2faCode>, sqlx::Error> {
     sqlx::query_as::<_, Email2faCode>(
         "SELECT * FROM email_2fa_codes
          WHERE user_id = $1
-           AND code_hash = $2
+           AND code_hash = ANY($2)
            AND used_at IS NULL
            AND expires_at > now()
          ORDER BY created_at DESC
          LIMIT 1",
     )
     .bind(user_id)
-    .bind(code_hash)
+    .bind(code_hashes)
     .fetch_optional(pool)
     .await
 }

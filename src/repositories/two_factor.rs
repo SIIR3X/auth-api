@@ -200,9 +200,12 @@ pub async fn find_primary_by_user(
 
 /// Returns (id, totp_secret) for every verified TOTP method that has a secret.
 /// Used exclusively during encryption key rotation.
-pub async fn find_all_totp_secrets(pool: &PgPool) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
-    let rows: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, totp_secret
+/// `(method id, account id, ciphertext)` of every TOTP secret.
+pub async fn find_all_totp_secrets(
+    pool: &PgPool,
+) -> Result<Vec<(Uuid, Uuid, String)>, sqlx::Error> {
+    let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT id, user_id, totp_secret
          FROM two_factor_methods
          WHERE method_type = 'totp' AND totp_secret IS NOT NULL",
     )

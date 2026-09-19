@@ -102,7 +102,16 @@ the database together, is out of scope.
 - Adding or removing a method notifies the account's address. Removing the last
   method deletes the recovery codes; removing a primary method promotes another.
 - TOTP secrets are encrypted with AES-256-GCM. Ciphertexts name their key, so
-  the key can be rotated without downtime and the rotation can be resumed.
+  the key can be rotated without downtime and the rotation can be resumed, and
+  each is bound to its account (webhook secrets to their endpoint) as
+  associated data: a ciphertext copied onto another row does not decrypt. The
+  service refuses to start while a secret names a key it no longer holds.
+- Email codes (sign-in and email change) are stored as HMAC-SHA256 digests
+  under a key derived from `ENCRYPTION_KEY` (HKDF), bound to the flow and the
+  account: a copy of the database or of Redis does not give live codes away,
+  where a bare hash of six digits falls in milliseconds. Every secret is
+  compared in constant time, and every random value comes from the operating
+  system's generator.
 
 ## External identities
 
@@ -325,3 +334,4 @@ when a cited test no longer exists.
 | SEC-46 | Administrative actions that redirect events or lock owners out need a recent re-authentication (webhooks, suspension, forced reset, client secrets), and every change is audited in its own transaction, redeliveries and webhook hosts included | `pointing_a_webhook_somewhere_needs_a_reauthentication_and_is_traced`, `a_redelivery_is_audited`, `suspending_or_forcing_a_reset_needs_a_recent_reauthentication` |
 | SEC-47 | No change leaves the deployment without an active account able to manage roles: role changes, suspension and deletion (by an administrator or by the owner) are refused, and concurrent withdrawals are serialized | `nobody_can_remove_the_last_way_to_manage_roles_or_the_default_role`, `the_last_role_manager_is_neither_suspended_nor_deleted`, `concurrent_withdrawals_never_leave_nobody_managing_roles` |
 | SEC-48 | The API connects with a role that reads and writes data only: it cannot alter the schema, truncate or rewrite the audit log, or change the permission catalog and migration history; maintenance needing more runs in owner-privileged functions | `the_runtime_role_cannot_erase_the_audit_trail_or_alter_the_schema`, `the_runtime_role_does_everything_the_service_needs` |
+| SEC-49 | Secrets at rest resist a database copy: email codes are keyed digests, ciphertexts are bound to their row, secrets are compared in constant time, and a secret under a removed key stops the start-up | `otp_digests_are_keyed_bound_and_survive_a_rotation`, `a_ciphertext_moved_to_another_row_no_longer_decrypts`, `constant_time_equality_compares_contents_and_lengths`, `secrets_under_a_removed_key_are_detected`, `email_code_lookup_is_scoped_to_the_challenged_user`, `debug_output_never_shows_the_password_hash` |

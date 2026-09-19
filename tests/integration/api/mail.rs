@@ -13,7 +13,8 @@ use crate::common::{app::TestApp, fixtures};
 // helpers
 
 /// Extract the OTP code from the `email_2fa_codes` table for a user.
-/// Tokens are stored as SHA-256 hashes, so we brute-force the 6-digit space.
+/// Codes are stored as keyed digests; the test holds the key and walks the
+/// 6-digit space.
 async fn otp_from_db(app: &TestApp, user_id: uuid::Uuid) -> String {
     let hash: Vec<u8> = sqlx::query_scalar(
         "SELECT code_hash FROM email_2fa_codes
@@ -25,15 +26,11 @@ async fn otp_from_db(app: &TestApp, user_id: uuid::Uuid) -> String {
     .await
     .expect("no email_2fa_code found");
 
-    use sha2::{Digest, Sha256};
-    for n in 0u32..1_000_000 {
-        let candidate = format!("{:06}", n);
-        let digest = Sha256::digest(candidate.as_bytes());
-        if digest.as_slice() == hash {
-            return candidate;
-        }
-    }
-    panic!("could not find OTP matching hash");
+    testkit::app::brute_force_otp(&hash, |code| {
+        app.state
+            .keyring
+            .otp_digest("email_2fa", user_id.as_bytes(), code)
+    })
 }
 
 // 1. Registration verification email

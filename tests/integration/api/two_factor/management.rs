@@ -8,7 +8,6 @@
 //! - signing in alone never grants sensitive actions.
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::common::{
     app::TestApp,
@@ -57,7 +56,12 @@ async fn enable_email_2fa(app: &TestApp, user: &AuthenticatedUser) -> String {
 
     sqlx::query("UPDATE email_2fa_codes SET code_hash = $2 WHERE user_id = $1 AND used_at IS NULL")
         .bind(user.id)
-        .bind(Sha256::digest(b"424242").to_vec())
+        .bind(
+            app.state
+                .keyring
+                .otp_digest("email_2fa", user.id.as_bytes(), "424242")
+                .to_vec(),
+        )
         .execute(&app.db)
         .await
         .unwrap();
