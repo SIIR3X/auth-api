@@ -115,7 +115,10 @@ the database together, is out of scope.
   party, expiry and nonce against the flow.
 - The callback's outcome is redeemed once, within two minutes, only with the
   binding secret the starting browser kept: a callback URL forwarded to a victim
-  cannot sign the victim in to the attacker's account.
+  cannot sign the victim in to the attacker's account. The callback writes
+  nothing: a link is made only when that browser completes the flow, so an
+  attacker sending a victim the provider URL of a link they started does not
+  get the victim's identity linked to their account.
 - The identity stands for the password: a second factor enrolled on the account
   is still required.
 
@@ -295,7 +298,7 @@ when a cited test no longer exists.
 | SEC-38 | The client credentials grant is limited to confidential, scoped clients that enable it, and its tokens never act as a user | `a_client_obtains_a_token_for_itself_with_its_scopes`, `the_grant_is_reserved_to_confidential_clients_that_enable_it`, `a_client_token_is_introspected_and_revoked`, `a_client_subject_is_stable_and_never_a_user_id` |
 | SEC-39 | ID tokens are bound to their client, nonce and access token, and identity scopes release only their claims | `an_openid_request_gets_an_id_token_bound_to_its_nonce_and_access_token`, `userinfo_releases_the_claims_of_the_granted_scopes`, `scopes_release_their_claims_only` |
 | SEC-40 | Passkeys: registration re-authenticated and verified, sign-in challenges single use, signatures verified, cloned counters refused | `a_registration_is_verified_before_it_is_stored`, `forged_replayed_or_cloned_assertions_are_refused`, `a_passkey_signs_in_without_password_or_second_factor`, `a_removed_passkey_no_longer_signs_in`, `assertions_verify_against_the_stored_key_only`, `client_data_answers_the_challenge_from_an_allowed_origin`, `validate_rejects_production_passkey_origins_outside_the_relying_party` |
-| SEC-41 | External identities sign in only once linked by the owner, bound to the starting browser, with verified ID tokens | `a_linked_identity_signs_in_and_an_unlinked_one_never_does`, `an_outcome_is_used_once_by_the_browser_that_started_it`, `an_id_token_that_does_not_verify_identifies_nobody`, `a_token_for_something_else_is_refused` |
+| SEC-41 | External identities sign in only once linked by the owner, bound to the starting browser, with verified ID tokens | `a_linked_identity_signs_in_and_an_unlinked_one_never_does`, `an_outcome_is_used_once_by_the_browser_that_started_it`, `an_id_token_that_does_not_verify_identifies_nobody`, `a_token_for_something_else_is_refused`, `a_callback_alone_links_nothing` |
 | SEC-42 | Delegated tokens (third-party clients, scoped sessions, personal access tokens) never act as the account: refused on account, approval and administration routes; approving another client's device needs a re-authentication | `delegated_tokens_are_refused_on_every_account_approval_and_admin_route`, `a_delegated_token_cannot_approve_itself_an_unrestricted_session`, `the_instance_application_without_scopes_acts_as_the_account`, `approving_another_client_needs_a_recent_reauthentication`, `only_sign_ins_and_the_primary_application_act_as_the_account` |
 | SEC-43 | A registration on a pending address carries its own credentials in its link: registering someone's address first does not choose the password they activate | `the_owner_activates_the_account_with_the_password_they_chose`, `a_resend_repeats_the_latest_registration_not_the_first`, `resent_links_coexist_until_one_verifies_the_account`, `email_verification_tokens_carry_complete_credentials_or_none` |
 | SEC-44 | Ways into an account that outlive its password are announced: adding a passkey, a personal access token or an external identity mails the owner, a password change or reset lists what still opens the account, and a pending account taken back by a reset keeps none | `adding_a_passkey_or_a_token_is_announced_to_the_owner`, `a_reset_lists_what_still_opens_the_account`, `a_pending_account_taken_back_by_a_reset_keeps_no_other_access` |

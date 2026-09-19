@@ -66,9 +66,15 @@ struct Outcome {
     provider: String,
     intent: Intent,
     binding_hash: String,
-    /// The account signing in, or the account the identity was linked to.
+    /// The account signing in, or the account starting the link.
     user_id: Option<Uuid>,
+    /// The identity signing in, or already linked to the account starting the
+    /// link.
     identity_id: Option<Uuid>,
+    /// The provider's subject of a link still to make: the link is made only
+    /// by `complete_link`, once the binding proves the browser that started it.
+    #[serde(default)]
+    subject: Option<String>,
     /// Stable error code when the flow failed.
     error: Option<String>,
 }
@@ -209,13 +215,17 @@ pub async fn callback(
         binding_hash: pending.binding_hash.clone(),
         user_id: None,
         identity_id: None,
+        subject: None,
         error: None,
     };
     match result {
         Ok(subject) => match settle(state, provider, &pending, &subject).await? {
             Ok((user_id, identity_id)) => {
                 outcome.user_id = Some(user_id);
-                outcome.identity_id = Some(identity_id);
+                outcome.identity_id = identity_id;
+                if identity_id.is_none() {
+                    outcome.subject = Some(subject);
+                }
             }
             Err(code) => outcome.error = Some(code.into()),
         },
@@ -408,55 +418,29 @@ async fn fetch_json(
     Ok(value)
 }
 
-/// Resolve an identified person: the account signing in, or the link made.
+/// Resolve an identified person: the account signing in and its identity, or
+/// the account starting a link and the identity it already holds (`None`: the
+/// link is still to make). Nothing is written for a link here: the callback is
+/// a URL anyone can be tricked into opening, and only `complete_link`, holding
+/// the binding of the browser that started the flow, may link.
 async fn settle(
     state: &AppState,
     provider: &IdentityProviderConfig,
     pending: &Pending,
     subject: &str,
-) -> Result<Result<(Uuid, Uuid), &'static str>, AppError> {
+) -> Result<Result<(Uuid, Option<Uuid>), &'static str>, AppError> {
     let existing = identity_repo::find_by_subject(&state.db, &provider.name, subject).await?;
     match (pending.intent, existing, pending.user_id) {
         (Intent::SignIn, Some(identity), _) => {
             identity_repo::touch(&state.db, identity.id).await?;
-            Ok(Ok((identity.user_id, identity.id)))
+            Ok(Ok((identity.user_id, Some(identity.id))))
         }
         (Intent::SignIn, None, _) => Ok(Err("not_linked")),
         (Intent::Link, Some(identity), Some(user_id)) if identity.user_id == user_id => {
-            Ok(Ok((user_id, identity.id)))
+            Ok(Ok((user_id, Some(identity.id))))
         }
         (Intent::Link, Some(_), _) => Ok(Err("already_linked")),
-        (Intent::Link, None, Some(user_id)) => {
-            match identity_repo::link(&state.db, user_id, &provider.name, subject).await {
-                Ok(identity) => {
-                    audit::append(
-                        &state.db,
-                        &NewAuditEntry {
-                            user_id: Some(user_id),
-                            request_id: None,
-                            action: AuditAction::ExternalIdentityLinked,
-                            ip_address: None,
-                            metadata: json!({ "provider": provider.name }),
-                        },
-                    )
-                    .await?;
-                    crate::services::user::notify_access_added(
-                        state,
-                        user_id,
-                        crate::services::email::AccessItem {
-                            kind: "external_identity",
-                            name: provider.display_name.clone(),
-                        },
-                    )
-                    .await;
-                    Ok(Ok((user_id, identity.id)))
-                }
-                Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {
-                    Ok(Err("already_linked"))
-                }
-                Err(e) => Err(e.into()),
-            }
-        }
+        (Intent::Link, None, Some(user_id)) => Ok(Ok((user_id, None))),
         (Intent::Link, None, None) => Ok(Err("invalid_request")),
     }
 }
@@ -520,7 +504,8 @@ pub async fn complete_sign_in(
     .await
 }
 
-/// Finish a link started by `user_id`.
+/// Finish a link started by `user_id`: the binding proves this is the browser
+/// that started it, and only now is the identity linked.
 pub async fn complete_link(
     state: &AppState,
     user_id: Uuid,
@@ -531,11 +516,47 @@ pub async fn complete_link(
     if outcome.user_id != Some(user_id) {
         return Err(AppError::TokenInvalid);
     }
-    identity_repo::find_by_user(&state.db, user_id)
-        .await?
-        .into_iter()
-        .find(|identity| Some(identity.id) == outcome.identity_id)
-        .ok_or(AppError::NotFound)
+    if let Some(identity_id) = outcome.identity_id {
+        return identity_repo::find_by_user(&state.db, user_id)
+            .await?
+            .into_iter()
+            .find(|identity| identity.id == identity_id)
+            .ok_or(AppError::NotFound);
+    }
+    let subject = outcome.subject.ok_or(AppError::TokenInvalid)?;
+    let provider = provider(state, &outcome.provider)?;
+
+    let mut tx = state.db.begin().await?;
+    let identity = match identity_repo::link(&mut *tx, user_id, &provider.name, &subject).await {
+        Ok(identity) => identity,
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {
+            return Err(AppError::Conflict("external_identity_already_linked"));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    audit::append(
+        &mut *tx,
+        &NewAuditEntry {
+            user_id: Some(user_id),
+            request_id: None,
+            action: AuditAction::ExternalIdentityLinked,
+            ip_address: None,
+            metadata: json!({ "provider": provider.name }),
+        },
+    )
+    .await?;
+    tx.commit().await?;
+
+    crate::services::user::notify_access_added(
+        state,
+        user_id,
+        crate::services::email::AccessItem {
+            kind: "external_identity",
+            name: provider.display_name.clone(),
+        },
+    )
+    .await;
+    Ok(identity)
 }
 
 /// Start linking a provider to a signed-in, re-authenticated account.

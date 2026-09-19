@@ -29,6 +29,11 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
   after a password change now lists what still opens the account, and a reset
   sends it too. A reset that verifies a pending account deletes its second
   factors, recovery codes, passkeys, identities and tokens.
+- The callback of an external identity link no longer links: the link is made
+  by `POST /users/me/external-identities/complete`, once the binding proves the
+  browser that started the flow. A victim opening the provider URL of a link an
+  attacker started no longer gets their identity linked to the attacker's
+  account.
 
 ## [2.0.1] - 2026-09-18
 

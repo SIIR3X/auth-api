@@ -472,3 +472,47 @@ async fn a_github_identity_is_its_numeric_user_id() {
     .await;
     assert_eq!(status, 200);
 }
+
+/// A callback URL is something anyone can be made to open. An attacker starting
+/// a link on their own account and sending the provider URL to someone signed
+/// in there must not get that person's identity linked: nothing is linked until
+/// the browser holding the binding completes the flow.
+#[tokio::test]
+async fn a_callback_alone_links_nothing() {
+    let mock = Provider::start().await;
+    let app = app_with(&mock, IdentityProviderKind::Oidc).await;
+    let attacker = fixtures::authenticated_user(&app, 20).await;
+
+    let (code, _binding) = through_provider(
+        &app,
+        &mock,
+        "corp",
+        (
+            "/users/me/external-identities/corp/start",
+            Some(&attacker.access_token),
+        ),
+        "victim-subject",
+    )
+    .await;
+    let linked: i64 = sqlx::query_scalar("SELECT count(*) FROM external_identities")
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(linked, 0, "the callback linked the identity on its own");
+
+    // The outcome code lands in the victim's browser; without the attacker's
+    // binding it completes nothing.
+    let (status, _) = post(
+        &app,
+        "/users/me/external-identities/complete",
+        Some(&attacker.access_token),
+        json!({ "code": code, "binding": "not-the-binding" }),
+    )
+    .await;
+    assert_eq!(status, 401);
+    let linked: i64 = sqlx::query_scalar("SELECT count(*) FROM external_identities")
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(linked, 0);
+}
