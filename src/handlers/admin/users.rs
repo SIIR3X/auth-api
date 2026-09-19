@@ -114,7 +114,7 @@ fn parse_status(status: &str) -> Result<UserStatus, AppError> {
     responses(
         (status = 200, description = "Accounts, newest first", body = AdminUserPage),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:read`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:read`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid status or cursor", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -159,7 +159,7 @@ pub async fn search(
     responses(
         (status = 200, description = "The account", body = AdminUserDetail),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:read`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:read`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -187,7 +187,7 @@ pub async fn detail(
     responses(
         (status = 204, description = "Suspended and signed out everywhere, or already suspended"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:manage`, no second factor enrolled, or the administrator's own account", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, no second factor proven by the session, or the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
         (status = 422, description = "The account was never verified", body = crate::error::ErrorBody),
     ),
@@ -212,7 +212,7 @@ pub async fn suspend(
     responses(
         (status = 204, description = "Active again, or already active"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -236,7 +236,7 @@ pub async fn reactivate(
     responses(
         (status = 204, description = "Lockouts ended and past failures forgiven"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -260,7 +260,7 @@ pub async fn unlock(
     responses(
         (status = 200, description = "Signed out everywhere", body = RevokedSessionsResponse),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:manage`, no second factor enrolled, or the administrator's own account", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, no second factor proven by the session, or the administrator's own account", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -284,7 +284,7 @@ pub async fn revoke_sessions(
     responses(
         (status = 204, description = "Signed out everywhere and a reset link mailed to the owner"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:manage`, no second factor enrolled, or the administrator's own account", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, no second factor proven by the session, or the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),

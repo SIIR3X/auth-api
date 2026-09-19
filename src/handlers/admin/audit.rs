@@ -61,7 +61,7 @@ pub struct AdminAuditPage {
     responses(
         (status = 200, description = "Audit entries, newest first", body = AdminAuditPage),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `audit:read`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `audit:read`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid cursor or account id", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),

@@ -331,10 +331,13 @@ pub async fn reactivate<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<b
 }
 
 /// End a lockout and forgive the failed sign-ins that caused it.
-pub async fn clear_lockout(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn clear_lockout<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE users SET locked_until = NULL, lockout_cleared_at = NOW() WHERE id = $1")
         .bind(id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }

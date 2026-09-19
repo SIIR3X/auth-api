@@ -133,7 +133,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `audit:read`, or no second factor enrolled
+          description: Missing `audit:read`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -179,7 +179,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `clients:manage`, or no second factor enrolled
+          description: Missing `clients:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -312,7 +312,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `clients:manage`, or no second factor enrolled
+          description: Missing `clients:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -433,7 +433,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `clients:manage`, or no second factor enrolled
+          description: Missing `clients:manage`, or no second factor proven by the session, or re-authentication required
           content:
             application/json:
               schema:
@@ -485,7 +485,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `roles:manage`, or no second factor enrolled
+          description: Missing `roles:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -525,7 +525,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `roles:manage`, or no second factor enrolled
+          description: Missing `roles:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -645,7 +645,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `roles:manage`, or no second factor enrolled
+          description: Missing `roles:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -820,7 +820,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `users:read`, or no second factor enrolled
+          description: Missing `users:read`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -878,7 +878,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `users:read`, or no second factor enrolled
+          description: Missing `users:read`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -1016,7 +1016,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `users:manage`, no second factor enrolled, or the administrator's own account
+          description: Missing `users:manage`, no second factor proven by the session, or the administrator's own account, or re-authentication required
           content:
             application/json:
               schema:
@@ -1076,7 +1076,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `users:manage`, or no second factor enrolled
+          description: Missing `users:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -1226,7 +1226,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `roles:manage`, or no second factor enrolled
+          description: Missing `roles:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -1296,7 +1296,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `users:manage`, no second factor enrolled, or the administrator's own account
+          description: Missing `users:manage`, no second factor proven by the session, or the administrator's own account
           content:
             application/json:
               schema:
@@ -1356,7 +1356,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `users:manage`, no second factor enrolled, or the administrator's own account
+          description: Missing `users:manage`, no second factor proven by the session, or the administrator's own account, or re-authentication required
           content:
             application/json:
               schema:
@@ -1416,7 +1416,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `users:manage`, or no second factor enrolled
+          description: Missing `users:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -1468,7 +1468,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `webhooks:manage`, or no second factor enrolled
+          description: Missing `webhooks:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -1517,7 +1517,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `webhooks:manage`, or no second factor enrolled
+          description: Missing `webhooks:manage`, or no second factor proven by the session, or re-authentication required
           content:
             application/json:
               schema:
@@ -1593,7 +1593,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `webhooks:manage`, or no second factor enrolled
+          description: Missing `webhooks:manage`, or no second factor proven by the session, or re-authentication required
           content:
             application/json:
               schema:
@@ -1664,7 +1664,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `webhooks:manage`, or no second factor enrolled
+          description: Missing `webhooks:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -1730,7 +1730,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `webhooks:manage`, or no second factor enrolled
+          description: Missing `webhooks:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -1791,7 +1791,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `webhooks:manage`, or no second factor enrolled
+          description: Missing `webhooks:manage`, or no second factor proven by the session
           content:
             application/json:
               schema:
@@ -1855,7 +1855,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `webhooks:manage`, or no second factor enrolled
+          description: Missing `webhooks:manage`, or no second factor proven by the session, or re-authentication required
           content:
             application/json:
               schema:

@@ -43,6 +43,11 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
   with a verified second factor or a passkey (`409
   administrator_without_second_factor`, also refused by `--grant-role`), and
   no administrator grants a role to their own account (`403`).
+- Creating, updating or re-keying a webhook, suspending an account, forcing a
+  password reset and removing a client secret need a recent re-authentication
+  (`403 reauthentication_required`). Webhook changes and redeliveries are
+  audited with the host of the endpoint, and client secret and unlock changes
+  commit with their audit entry.
 
 ### Upgrading
 

@@ -267,15 +267,45 @@ fn new_secret(state: &AppState) -> Result<(String, String), AppError> {
     Ok((secret, encrypted))
 }
 
+/// Pointing a webhook somewhere sends it every account event of its
+/// subscription: creating one, changing where it points and rotating its
+/// secret need a recent re-authentication, like granting a role.
+async fn require_reauth(
+    state: &AppState,
+    actor: &Actor,
+    reason: &'static str,
+) -> Result<(), AppError> {
+    crate::services::reauth::require_recent_reauth_or_password(
+        state,
+        actor.user_id,
+        actor.session_id,
+        None,
+        actor.ip,
+        actor.request_id,
+        reason,
+    )
+    .await
+}
+
+/// The host of a webhook URL, for the audit log: enough to trace where events
+/// went, without the path or query, which may carry a token of their own.
+fn url_host(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+}
+
 pub async fn create(
     state: &AppState,
     actor: &Actor,
     input: &EndpointInput<'_>,
 ) -> Result<SavedEndpoint, AppError> {
     let (events, description) = checked(state, input)?;
+    require_reauth(state, actor, "admin_create_webhook").await?;
     let (secret, encrypted) = new_secret(state)?;
+    let mut tx = state.db.begin().await?;
     let endpoint = webhook_repo::create_endpoint(
-        &state.db,
+        &mut *tx,
         &EndpointSettings {
             url: input.url,
             description,
@@ -285,7 +315,15 @@ pub async fn create(
         &encrypted,
     )
     .await?;
-    audit_change(state, actor, AuditAction::WebhookCreated, endpoint.id).await?;
+    audit_change(
+        &mut tx,
+        actor,
+        AuditAction::WebhookCreated,
+        endpoint.id,
+        json!({ "host": url_host(input.url) }),
+    )
+    .await?;
+    tx.commit().await?;
     Ok(SavedEndpoint {
         endpoint,
         secret: Some(secret),
@@ -299,8 +337,13 @@ pub async fn update(
     input: &EndpointInput<'_>,
 ) -> Result<WebhookEndpoint, AppError> {
     let (events, description) = checked(state, input)?;
+    require_reauth(state, actor, "admin_update_webhook").await?;
+    let previous = webhook_repo::find_endpoint(&state.db, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let mut tx = state.db.begin().await?;
     let endpoint = webhook_repo::update_endpoint(
-        &state.db,
+        &mut *tx,
         id,
         &EndpointSettings {
             url: input.url,
@@ -311,53 +354,106 @@ pub async fn update(
     )
     .await?
     .ok_or(AppError::NotFound)?;
-    audit_change(state, actor, AuditAction::WebhookUpdated, id).await?;
+    audit_change(
+        &mut tx,
+        actor,
+        AuditAction::WebhookUpdated,
+        id,
+        json!({
+            "previous_host": url_host(&previous.url),
+            "host": url_host(input.url),
+        }),
+    )
+    .await?;
+    tx.commit().await?;
     Ok(endpoint)
 }
 
 pub async fn rotate_secret(state: &AppState, actor: &Actor, id: Uuid) -> Result<String, AppError> {
+    require_reauth(state, actor, "admin_webhook_secret").await?;
     let (secret, encrypted) = new_secret(state)?;
-    if !webhook_repo::replace_secret(&state.db, id, &encrypted).await? {
+    let mut tx = state.db.begin().await?;
+    if !webhook_repo::replace_secret(&mut *tx, id, &encrypted).await? {
         return Err(AppError::NotFound);
     }
-    audit_change(state, actor, AuditAction::WebhookSecretRotated, id).await?;
+    audit_change(
+        &mut tx,
+        actor,
+        AuditAction::WebhookSecretRotated,
+        id,
+        json!({}),
+    )
+    .await?;
+    tx.commit().await?;
     Ok(secret)
 }
 
 pub async fn delete(state: &AppState, actor: &Actor, id: Uuid) -> Result<(), AppError> {
-    if !webhook_repo::delete_endpoint(&state.db, id).await? {
+    let previous = webhook_repo::find_endpoint(&state.db, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let mut tx = state.db.begin().await?;
+    if !webhook_repo::delete_endpoint(&mut *tx, id).await? {
         return Err(AppError::NotFound);
     }
-    audit_change(state, actor, AuditAction::WebhookDeleted, id).await
+    audit_change(
+        &mut tx,
+        actor,
+        AuditAction::WebhookDeleted,
+        id,
+        json!({ "host": url_host(&previous.url) }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
+/// Send a delivery again: audited like every change an administrator makes,
+/// since it replays account events to the endpoint.
 pub async fn redeliver(
     state: &AppState,
+    actor: &Actor,
     endpoint_id: Uuid,
     delivery_id: Uuid,
 ) -> Result<(), AppError> {
-    if !webhook_repo::redeliver(&state.db, endpoint_id, delivery_id).await? {
+    let mut tx = state.db.begin().await?;
+    if !webhook_repo::redeliver(&mut *tx, endpoint_id, delivery_id).await? {
         return Err(AppError::NotFound);
     }
+    audit_change(
+        &mut tx,
+        actor,
+        AuditAction::WebhookUpdated,
+        endpoint_id,
+        json!({ "redelivered": delivery_id }),
+    )
+    .await?;
+    tx.commit().await?;
     wake();
     Ok(())
 }
 
-/// The URL is left out of the audit log: it may carry a token of its own.
+/// Audited in the change's transaction. The URL itself is left out, only its
+/// host is kept: the path or query may carry a token of its own.
 async fn audit_change(
-    state: &AppState,
+    tx: &mut sqlx::PgConnection,
     actor: &Actor,
     action: AuditAction,
     id: Uuid,
+    extra: serde_json::Value,
 ) -> Result<(), AppError> {
+    let mut metadata = json!({ "webhook_id": id });
+    if let (Some(metadata), Some(extra)) = (metadata.as_object_mut(), extra.as_object()) {
+        metadata.extend(extra.clone());
+    }
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(actor.user_id),
             request_id: actor.request_id,
             action,
             ip_address: actor.ip,
-            metadata: actor.metadata(json!({ "webhook_id": id })),
+            metadata: actor.metadata(metadata),
         },
     )
     .await?;

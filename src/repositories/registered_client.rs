@@ -99,8 +99,8 @@ pub async fn lock_existing<'e>(
 
 /// Set the digest of the client's secret, or clear it to make the client
 /// public. Returns whether the client exists.
-pub async fn set_secret_hash(
-    pool: &PgPool,
+pub async fn set_secret_hash<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     client_id: &str,
     secret_hash: Option<&[u8]>,
 ) -> Result<bool, sqlx::Error> {
@@ -113,7 +113,7 @@ pub async fn set_secret_hash(
     )
     .bind(client_id)
     .bind(secret_hash)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(result.rows_affected() == 1)
 }

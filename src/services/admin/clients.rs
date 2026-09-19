@@ -134,11 +134,12 @@ pub async fn rotate_secret(
     let secret =
         crate::domain::oauth::format_client_secret(&crate::utils::crypto::generate_token());
     let digest = crate::utils::crypto::sha256(secret.as_bytes());
-    if !client_repo::set_secret_hash(&state.db, client_id, Some(&digest)).await? {
+    let mut tx = state.db.begin().await?;
+    if !client_repo::set_secret_hash(&mut *tx, client_id, Some(&digest)).await? {
         return Err(AppError::NotFound);
     }
     audit::append(
-        &state.db,
+        &mut *tx,
         &entry(
             actor,
             AuditAction::ClientSecretRotated,
@@ -146,20 +147,34 @@ pub async fn rotate_secret(
         ),
     )
     .await?;
+    tx.commit().await?;
     Ok(secret)
 }
 
-/// Remove the client's secret, making it a public client.
+/// Remove the client's secret, making it a public client: anyone knowing its
+/// id can then run its flows. Needs a recent re-authentication, like giving it
+/// a secret.
 pub async fn remove_secret(
     state: &AppState,
     actor: &Actor,
     client_id: &str,
 ) -> Result<(), AppError> {
-    if !client_repo::set_secret_hash(&state.db, client_id, None).await? {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        actor.user_id,
+        actor.session_id,
+        None,
+        actor.ip,
+        actor.request_id,
+        "admin_client_secret",
+    )
+    .await?;
+    let mut tx = state.db.begin().await?;
+    if !client_repo::set_secret_hash(&mut *tx, client_id, None).await? {
         return Err(AppError::NotFound);
     }
     audit::append(
-        &state.db,
+        &mut *tx,
         &entry(
             actor,
             AuditAction::ClientSecretRotated,
@@ -167,6 +182,7 @@ pub async fn remove_secret(
         ),
     )
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 

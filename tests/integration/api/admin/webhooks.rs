@@ -362,3 +362,115 @@ async fn endpoints_are_checked_updated_rotated_and_removed() {
         ]
     );
 }
+
+/// A stolen administrator token alone must not point account events
+/// somewhere: creating, redirecting or re-keying a webhook needs a recent
+/// re-authentication, and the audit keeps where events went.
+#[tokio::test]
+async fn pointing_a_webhook_somewhere_needs_a_reauthentication_and_is_traced() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let (_receiver, url) = Receiver::start().await;
+
+    app.clear_recent_reauth(&admin.token).await;
+    let (status, response) = send(
+        &app,
+        Method::POST,
+        "/admin/webhooks",
+        &admin.token,
+        json!({ "url": url, "events": ["*"] }),
+    )
+    .await;
+    assert_eq!(status, 403, "{response}");
+    assert_eq!(response["code"], "reauthentication_required");
+
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        "/users/me/reauth",
+        &admin.user.access_token,
+        json!({ "current_password": admin.user.password }),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, created) = send(
+        &app,
+        Method::POST,
+        "/admin/webhooks",
+        &admin.token,
+        json!({ "url": url, "events": ["*"] }),
+    )
+    .await;
+    assert_eq!(status, 201, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+
+    let metadata: Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE action = 'webhook_created' AND user_id = $1",
+    )
+    .bind(admin.user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(metadata["host"], "127.0.0.1");
+    assert_eq!(metadata["webhook_id"], id.as_str());
+    assert!(
+        !metadata.to_string().contains("/hook"),
+        "no path: {metadata}"
+    );
+
+    app.clear_recent_reauth(&admin.token).await;
+    for (method, path) in [
+        (Method::PUT, format!("/admin/webhooks/{id}")),
+        (Method::POST, format!("/admin/webhooks/{id}/secret")),
+    ] {
+        let (status, response) = send(
+            &app,
+            method,
+            &path,
+            &admin.token,
+            json!({ "url": url, "events": ["*"] }),
+        )
+        .await;
+        assert_eq!(status, 403, "{path}: {response}");
+        assert_eq!(response["code"], "reauthentication_required");
+    }
+}
+
+#[tokio::test]
+async fn a_redelivery_is_audited() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let (receiver, url) = Receiver::start().await;
+    let (_, created) = send(
+        &app,
+        Method::POST,
+        "/admin/webhooks",
+        &admin.token,
+        json!({ "url": url, "events": ["user.created"] }),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_owned();
+    fixtures::register_user(&app, 2).await;
+    eventually(|| receiver.count() == 1).await;
+    let deliveries = delivery_state(&app, &admin.token, &id).await;
+    let delivery = deliveries[0]["id"].as_str().unwrap().to_owned();
+
+    let (status, response) = send(
+        &app,
+        Method::POST,
+        &format!("/admin/webhooks/{id}/deliveries/{delivery}/retry"),
+        &admin.token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 204, "{response}");
+    let redelivered: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log
+         WHERE action = 'webhook_updated' AND metadata->>'redelivered' = $1",
+    )
+    .bind(&delivery)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(redelivered, 1);
+}

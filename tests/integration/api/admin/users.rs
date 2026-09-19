@@ -439,3 +439,32 @@ async fn deleting_an_account_needs_a_recent_reauthentication_and_announces_it() 
         "an administrator does not delete their own account here"
     );
 }
+
+#[tokio::test]
+async fn suspending_or_forcing_a_reset_needs_a_recent_reauthentication() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let target = fixtures::authenticated_user(&app, 2).await;
+    app.clear_recent_reauth(&admin.token).await;
+
+    for action in ["suspend", "password-reset"] {
+        let (status, response) = body(
+            app.post_auth(
+                &format!("/admin/users/{}/{action}", target.id),
+                &admin.token,
+                &json!({}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, 403, "{action}: {response}");
+        assert_eq!(response["code"], "reauthentication_required");
+    }
+    assert_eq!(
+        app.get_auth("/users/me", &target.access_token)
+            .await
+            .status(),
+        200,
+        "the target is untouched"
+    );
+}

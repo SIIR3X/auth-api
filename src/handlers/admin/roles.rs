@@ -73,7 +73,7 @@ fn role_response(role: Role, permissions: Vec<String>) -> RoleResponse {
     responses(
         (status = 200, description = "Every permission a role can grant", body = [PermissionResponse]),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `roles:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `roles:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -101,7 +101,7 @@ pub async fn permissions(
     responses(
         (status = 200, description = "Every role with its permissions", body = [RoleResponse]),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `roles:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `roles:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -188,7 +188,7 @@ pub async fn set_permissions(
     responses(
         (status = 204, description = "Role deleted and taken back from every account"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `roles:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `roles:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such role", body = crate::error::ErrorBody),
         (status = 409, description = "`default_role`, or `last_administrator`", body = crate::error::ErrorBody),
     ),
@@ -243,7 +243,7 @@ pub async fn assign(
     responses(
         (status = 204, description = "Role taken back, or not held"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `roles:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `roles:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such role", body = crate::error::ErrorBody),
         (status = 409, description = "`last_administrator`: nobody would keep `roles:manage`", body = crate::error::ErrorBody),
     ),

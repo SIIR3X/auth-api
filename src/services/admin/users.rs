@@ -62,6 +62,7 @@ pub async fn detail(state: &AppState, user_id: Uuid) -> Result<UserDetail, AppEr
 /// changes nothing.
 pub async fn suspend(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
     refuse_own_account(actor, user_id)?;
+    require_reauth(state, actor, "admin_suspend_account").await?;
     let user = find(state, user_id).await?;
     if user.status == UserStatus::PendingVerification {
         return Err(AppError::Validation(
@@ -130,13 +131,15 @@ pub async fn reactivate(state: &AppState, actor: &Actor, user_id: Uuid) -> Resul
 /// End a lockout: the sign-in lockout and the re-authentication one.
 pub async fn unlock(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
     find(state, user_id).await?;
-    user_repo::clear_lockout(&state.db, user_id).await?;
-    redis_counter::reset(&state.redis, &[&user_svc::reauth_fail_key(user_id)]).await;
+    let mut tx = state.db.begin().await?;
+    user_repo::clear_lockout(&mut *tx, user_id).await?;
     audit::append(
-        &state.db,
+        &mut *tx,
         &entry(actor, user_id, AuditAction::AccountUnlocked, json!({})),
     )
     .await?;
+    tx.commit().await?;
+    redis_counter::reset(&state.redis, &[&user_svc::reauth_fail_key(user_id)]).await;
     Ok(())
 }
 
@@ -183,6 +186,7 @@ pub async fn force_password_reset(
     user_id: Uuid,
 ) -> Result<(), AppError> {
     refuse_own_account(actor, user_id)?;
+    require_reauth(state, actor, "admin_force_password_reset").await?;
     let user = find(state, user_id).await?;
     let active = session_repo::find_active_by_user(&state.db, user_id).await?;
 
@@ -237,6 +241,26 @@ pub async fn delete(
         actor.metadata(json!({})),
         actor.ip,
         actor.request_id,
+    )
+    .await
+}
+
+/// Suspending an account or forcing its reset locks its owner out: like
+/// deleting it, it needs the administrator's recent re-authentication, so a
+/// stolen administrator token alone cannot shut accounts out.
+async fn require_reauth(
+    state: &AppState,
+    actor: &Actor,
+    reason: &'static str,
+) -> Result<(), AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        actor.user_id,
+        actor.session_id,
+        None,
+        actor.ip,
+        actor.request_id,
+        reason,
     )
     .await
 }

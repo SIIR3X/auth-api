@@ -81,7 +81,7 @@ fn client_response(client: RegisteredClient) -> ClientResponse {
     responses(
         (status = 200, description = "Every registered client", body = [ClientResponse]),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `clients:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `clients:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -149,7 +149,7 @@ pub async fn save(
     responses(
         (status = 204, description = "Client removed and its sessions revoked"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `clients:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `clients:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such client", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -208,7 +208,7 @@ pub async fn rotate_secret(
     responses(
         (status = 204, description = "Secret removed; the client is public"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `clients:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `clients:manage`, or no second factor proven by the session, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such client", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
