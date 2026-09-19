@@ -4,8 +4,9 @@
 # Usage:
 #   restore-db.sh -i <age-private-key-file> -f <backup.sql.gz.age> -d <postgres-url> [--force]
 #
-# Connect as the application's role (auth_api), owner of the target database:
-# the dump assigns every object to it. The restore runs in a single transaction,
+# Connect as the role that owns the schema (auth_api_owner, or auth_api when a
+# single role owns it), owner of the target database: the dump assigns every
+# object to it and carries the privileges of the API role. The restore runs in a single transaction,
 # so a failure leaves the target as it was.
 #
 # A database that already holds the `users` table is refused: a restore is

@@ -106,7 +106,7 @@ the copy rather than `config.prod.env`.
 ### 1.5 Run the migrations
 
 ```bash
-DATABASE_URL=$(pass prod/auth-api/database-url) \
+DATABASE_URL=$(pass prod/auth-api/database-owner-url) \
   sqlx migrate run --source /srv/auth-api/releases/auth-api-X.Y.Z/migrations
 ```
 

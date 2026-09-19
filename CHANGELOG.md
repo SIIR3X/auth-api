@@ -52,11 +52,25 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
   deleted, by an administrator or by its owner (`409 last_administrator`), and
   two concurrent role withdrawals can no longer both pass the check. Suspended
   accounts no longer count as able to manage roles.
+- The database schema can belong to a separate owner role: the API then
+  connects with a role limited to reading and writing data
+  (`deploy/db/auth-api-grants.sql`), which cannot alter the schema, rewrite or
+  truncate the audit log, or change the permission catalog. The maintenance
+  functions that need more run with their owner's privileges (migration 0027).
+- `deploy/db/postgresql.auth-api.conf` logs slow statements without their bound
+  values (`log_parameter_max_length = 0`): password hashes and token digests no
+  longer reach the PostgreSQL log.
 
 ### Upgrading
 
 - Administrators signed in before the upgrade sign in again with their second
   factor: sessions opened earlier carry no proof of it.
+- Recommended: move the database to two roles (database deployment guide,
+  section 2.6): create `auth_api_owner`, `REASSIGN OWNED BY auth_api`, run
+  `deploy/db/auth-api-grants.sql`, then run migrations with the owner's URL
+  (`prod/auth-api/database-owner-url`). A single-role deployment keeps working.
+- Copy the new `log_parameter_max_length` lines of
+  `deploy/db/postgresql.auth-api.conf` and reload PostgreSQL.
 
 ## [2.0.1] - 2026-09-18
 

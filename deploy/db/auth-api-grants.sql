@@ -1,0 +1,46 @@
+-- Privileges of the runtime role `auth_api` on a schema owned by
+-- `auth_api_owner` (docs/deploy/database/deployment.md, section 2.1). Run as
+-- postgres in the auth-api database, after the first migration run:
+--   sudo -u postgres psql -d auth_api -f auth-api-grants.sql
+-- Running it again is harmless. Later migrations run as `auth_api_owner` and
+-- the default privileges below extend to the tables they create.
+--
+-- The runtime role reads and writes data and nothing else: it cannot alter,
+-- drop or truncate a table, disable a trigger, rewrite the audit log, change
+-- the permission catalog or the migration history. A compromised application
+-- or an SQL injection is bounded by that.
+
+GRANT USAGE ON SCHEMA public TO auth_api;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO auth_api;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO auth_api;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO auth_api;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE auth_api_owner IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO auth_api;
+ALTER DEFAULT PRIVILEGES FOR ROLE auth_api_owner IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO auth_api;
+ALTER DEFAULT PRIVILEGES FOR ROLE auth_api_owner IN SCHEMA public
+    GRANT EXECUTE ON FUNCTIONS TO auth_api;
+
+-- The audit log is append-only for the application: rows are rewritten only
+-- by the functions of migration 0027, which run as the owner, and removed only
+-- with their partition.
+REVOKE UPDATE, DELETE ON audit_log FROM auth_api;
+DO $$
+DECLARE
+    partition RECORD;
+BEGIN
+    FOR partition IN
+        SELECT c.relname FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        WHERE p.relname = 'audit_log'
+    LOOP
+        EXECUTE format('REVOKE UPDATE, DELETE ON %I FROM auth_api', partition.relname);
+    END LOOP;
+END
+$$;
+
+-- The permission catalog and the migration history change with migrations only.
+REVOKE INSERT, UPDATE, DELETE ON permissions FROM auth_api;
+REVOKE INSERT, UPDATE, DELETE ON _sqlx_migrations FROM auth_api;

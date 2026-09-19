@@ -1,0 +1,136 @@
+//! The runtime role of `deploy/db/auth-api-grants.sql` (SEC-48): it reads and
+//! writes data, and nothing else. A compromised application or an SQL
+//! injection cannot erase the audit trail, alter the schema, or change the
+//! permission catalog.
+
+use sqlx::{Connection, PgConnection};
+use testkit::TestDb;
+
+const RUNTIME_PASSWORD: &str = "runtime-role-test";
+
+/// The two roles of the grants script, shared by every test database of the
+/// cluster (roles are cluster-wide); creating them races between tests.
+async fn ensure_roles(db: &TestDb) {
+    for statement in [
+        "CREATE ROLE auth_api_owner NOLOGIN".to_owned(),
+        format!("CREATE ROLE auth_api LOGIN PASSWORD '{RUNTIME_PASSWORD}'"),
+    ] {
+        if let Err(e) = sqlx::query(&statement).execute(&db.pool).await {
+            let duplicate = e
+                .as_database_error()
+                .and_then(|e| e.code())
+                .is_some_and(|code| code == "42710" || code == "23505");
+            assert!(duplicate, "{statement}: {e}");
+        }
+    }
+}
+
+async fn runtime_connection(db: &TestDb) -> PgConnection {
+    ensure_roles(db).await;
+    let grants =
+        std::fs::read_to_string(testkit::workspace_path("deploy/db/auth-api-grants.sql")).unwrap();
+    sqlx::raw_sql(&grants).execute(&db.pool).await.unwrap();
+
+    let mut url = reqwest::Url::parse(&db.url).unwrap();
+    url.set_username("auth_api").unwrap();
+    url.set_password(Some(RUNTIME_PASSWORD)).unwrap();
+    PgConnection::connect(url.as_str()).await.unwrap()
+}
+
+async fn refused(conn: &mut PgConnection, statement: &str) {
+    let error = sqlx::raw_sql(statement)
+        .execute(&mut *conn)
+        .await
+        .expect_err(statement);
+    let code = error
+        .as_database_error()
+        .and_then(|e| e.code())
+        .map(|c| c.into_owned());
+    assert_eq!(
+        code.as_deref(),
+        Some("42501"),
+        "{statement} failed otherwise: {error}"
+    );
+}
+
+#[tokio::test]
+async fn the_runtime_role_cannot_erase_the_audit_trail_or_alter_the_schema() {
+    let db = TestDb::new().await;
+    let mut runtime = runtime_connection(&db).await;
+
+    for statement in [
+        "ALTER TABLE audit_log DISABLE TRIGGER ALL",
+        "TRUNCATE audit_log",
+        "DROP TABLE audit_log_default",
+        "UPDATE audit_log SET metadata = '{}'",
+        "DELETE FROM audit_log",
+        "DELETE FROM audit_log_default",
+        "DELETE FROM permissions",
+        "UPDATE permissions SET description = 'planted'",
+        "DELETE FROM _sqlx_migrations",
+        "CREATE TABLE planted (id INT)",
+        "ALTER TABLE users ADD COLUMN planted TEXT",
+    ] {
+        refused(&mut runtime, statement).await;
+    }
+}
+
+#[tokio::test]
+async fn the_runtime_role_does_everything_the_service_needs() {
+    let db = TestDb::new().await;
+    let user_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO users (username, email, password_hash)
+         VALUES ('runtime_role', 'runtime.role@example.com', repeat('h', 60)) RETURNING id",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let mut runtime = runtime_connection(&db).await;
+
+    // Writes data, the audit log included.
+    sqlx::query(
+        "INSERT INTO audit_log (user_id, action, ip_address) VALUES ($1, 'login', '203.0.113.9')",
+    )
+    .bind(user_id)
+    .execute(&mut runtime)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET preferred_locale = 'fr' WHERE id = $1")
+        .bind(user_id)
+        .execute(&mut runtime)
+        .await
+        .unwrap();
+
+    // Runs the maintenance the service schedules, through the functions that
+    // hold the owner's privileges.
+    for statement in [
+        "SELECT rotate_audit_log_partitions(12, 2)",
+        "SELECT coarsen_audit_addresses('0 seconds'::interval, 100)",
+        "SELECT purge_unverified_accounts('3650 days'::interval, 100)",
+    ] {
+        sqlx::raw_sql(statement)
+            .execute(&mut runtime)
+            .await
+            .unwrap_or_else(|e| panic!("{statement}: {e}"));
+    }
+
+    // Erases an account: its traces through the function, then the row; the
+    // audit entries lose their account through the foreign key.
+    sqlx::query("SELECT forget_account_traces($1)")
+        .bind(user_id)
+        .execute(&mut runtime)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&mut runtime)
+        .await
+        .unwrap();
+    let orphaned: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE user_id IS NULL AND action = 'login'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(orphaned, 1);
+}

@@ -129,12 +129,23 @@ sudo apt install -y postgresql postgresql-contrib
 sudo -u postgres psql
 ```
 
+Two roles: `auth_api_owner` owns the schema and runs the migrations;
+`auth_api`, the role the API connects with, reads and writes data and nothing
+else. A compromised API, or an SQL injection, can then neither alter the
+schema nor rewrite the audit log or the permission catalog.
+
 ```sql
-CREATE USER auth_api WITH PASSWORD 'your-strong-password';
-CREATE DATABASE auth_api OWNER auth_api;
-GRANT ALL PRIVILEGES ON DATABASE auth_api TO auth_api;
+CREATE ROLE auth_api_owner LOGIN PASSWORD 'owner-strong-password';
+CREATE ROLE auth_api LOGIN PASSWORD 'your-strong-password';
+CREATE DATABASE auth_api OWNER auth_api_owner;
+\c auth_api
+ALTER SCHEMA public OWNER TO auth_api_owner;
 \q
 ```
+
+Store both URLs: `prod/auth-api/database-owner-url` for migrations and restores
+(`postgres://auth_api_owner:...@10.0.0.2/auth_api`), and
+`prod/auth-api/database-url` for the API (`postgres://auth_api:...@10.0.0.2/auth_api`).
 
 ---
 
@@ -152,8 +163,15 @@ sudo cp deploy/db/postgresql.auth-api.conf /etc/postgresql/17/main/conf.d/auth-a
 Edit `/etc/postgresql/17/main/pg_hba.conf` - allow the API VPS via its VPN IP only:
 
 ```conf
-host    auth_api    auth_api    10.0.0.1/32    scram-sha-256
+host    auth_api    auth_api          10.0.0.1/32    scram-sha-256
+host    auth_api    auth_api_owner    10.0.0.1/32    scram-sha-256
 ```
+
+Traffic between the VPS crosses the WireGuard tunnel, which encrypts it; the
+API connects without TLS. Where the tunnel is not the trust boundary (another
+network in between, a managed database), turn on `ssl` in PostgreSQL, write
+`hostssl` instead of `host` above, and add `sslmode=verify-full` with the CA
+(`sslrootcert=`) to both URLs.
 
 Restart PostgreSQL, then give the role its session limits (statements and lock
 waits stop before the API's 30-second request timeout; a connection idle inside
@@ -193,16 +211,51 @@ Migrations ship in every release bundle (see [Deploying a New Release](../guides
 **On the API VPS**, with `sqlx-cli` installed (see [API Deployment](../api/deployment.md#12-install-docker-and-sqlx-cli)):
 
 ```bash
-DATABASE_URL="$(pass prod/auth-api/database-url)?options=-c%20statement_timeout%3D0" \
+DATABASE_URL="$(pass prod/auth-api/database-owner-url)" \
   sqlx migrate run --source /srv/auth-api/releases/auth-api-X.Y.Z/migrations
 ```
 
-The `options` parameter lifts the role's 25-second statement timeout for the
-migration session only: a migration on a large table may run longer.
+Migrations run as `auth_api_owner`, which carries no statement timeout: a
+migration on a large table may run longer than the API's 25 seconds.
+
+After the **first** migration run, give the API role its privileges, **on the
+DB VPS**:
+
+```bash
+sudo -u postgres psql -d auth_api -f deploy/db/auth-api-grants.sql
+```
+
+Later migrations need nothing more: the default privileges the script sets
+cover the tables they create. The API role cannot create, alter, drop or
+truncate a table, disable a trigger, update or delete audit rows, change the
+permission catalog or the migration history; the few maintenance functions that
+need more (audit partitions, address coarsening, account erasure, purge of
+unverified accounts) run with the owner's privileges.
+
+A deployment where a single `auth_api` role owns the schema keeps working, but
+without these limits; section 2.6 moves it to two roles.
 
 ---
 
-### 2.6 Size PostgreSQL's memory
+### 2.6 Move a single-role deployment to two roles
+
+For a database created before 2.1.0, owned by `auth_api`. **On the DB VPS**,
+with the API running (ownership changes do not block it):
+
+```sql
+-- sudo -u postgres psql -d auth_api
+CREATE ROLE auth_api_owner LOGIN PASSWORD 'owner-strong-password';
+REASSIGN OWNED BY auth_api TO auth_api_owner;
+ALTER DATABASE auth_api OWNER TO auth_api_owner;
+```
+
+Then run `deploy/db/auth-api-grants.sql` as in section 2.5, add the
+`auth_api_owner` line to `pg_hba.conf`, and run later migrations with the owner
+URL.
+
+---
+
+### 2.7 Size PostgreSQL's memory
 
 Reads barely notice the number of accounts. Writes do, once the indexes they
 update no longer fit in memory: at 1 million accounts the sign-in transaction
@@ -439,14 +492,16 @@ Backups run nightly at 2:00 AM and are retained for 7 days (`RETAIN_DAYS`).
 
 ### 4.6 Restore a backup
 
-Always through `restore-db.sh`, connected as `auth_api`, into a **fresh**
-database: a bare `| psql` does not stop at the first error. The script restores
-in a single transaction, so a failure leaves the target untouched.
+Always through `restore-db.sh`, connected as the owner role `auth_api_owner`
+(or `auth_api` in a single-role deployment), into a **fresh** database: a bare
+`| psql` does not stop at the first error. The script restores in a single
+transaction, so a failure leaves the target untouched. The dump carries the
+privileges of the API role: nothing is left to grant after a restore.
 
 ```bash
-sudo -u postgres psql -c "CREATE DATABASE auth_api_restore OWNER auth_api"
+sudo -u postgres psql -c "CREATE DATABASE auth_api_restore OWNER auth_api_owner"
 scripts/restore-db.sh -i backup.key -f auth_api_YYYYMMDD_HHMMSS.sql.gz.age \
-  -d "postgres://auth_api:<password>@10.0.0.2/auth_api_restore"
+  -d "postgres://auth_api_owner:<password>@10.0.0.2/auth_api_restore"
 ```
 
 Check the restored data, then point `DATABASE_URL` at it (or rename the
