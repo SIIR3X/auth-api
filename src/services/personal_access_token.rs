@@ -80,6 +80,12 @@ pub async fn create(
     let expires_at = state.clock.now() + Duration::days(lifetime_days);
 
     let mut tx = state.db.begin().await?;
+    // Serialized per account: concurrent creations cannot all count the same
+    // tokens and pass the limit together.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("personal_access_tokens:{user_id}"))
+        .execute(&mut *tx)
+        .await?;
     if pat_repo::count_active_by_user(&mut *tx, user_id).await? >= pat::MAX_ACTIVE_PER_ACCOUNT {
         return Err(AppError::Conflict("too_many_tokens"));
     }

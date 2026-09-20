@@ -85,8 +85,15 @@ pub(super) async fn track_credential_stuffing(
     match state.redis.get().await {
         Ok(mut conn) => {
             let key = format!("{}{}", CS_HLL_PREFIX, ip_bucket(ip_val.ip()));
-            let _: Result<(), _> = conn.pfadd(&key, identifier).await;
-            let _: Result<(), _> = conn.expire(&key, CS_WINDOW_SECS as i64).await;
+            // One atomic pipeline: the key never lives without its expiry.
+            let _: Result<(), _> = deadpool_redis::redis::pipe()
+                .atomic()
+                .pfadd(&key, identifier)
+                .ignore()
+                .expire(&key, CS_WINDOW_SECS as i64)
+                .ignore()
+                .query_async(&mut *conn)
+                .await;
         }
         Err(e) => {
             tracing::warn!(ip = %ip_val.ip(), error = %e, "credential-stuffing tracking skipped: Redis unavailable");

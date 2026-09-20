@@ -518,3 +518,35 @@ async fn a_second_factor_answers_an_inactive_account_like_the_password_sign_in()
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["code"], "account_inactive");
 }
+
+/// Concurrent regenerations cannot each replace the codes the previous one
+/// just showed: the cooldown is claimed before regenerating.
+#[tokio::test]
+async fn concurrent_recovery_code_regenerations_run_once() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 640).await;
+    enable_totp(&app, &user).await;
+    app.post_auth(
+        "/users/me/reauth",
+        &user.access_token,
+        &json!({ "current_password": user.password }),
+    )
+    .await;
+
+    let regenerate = || async {
+        app.post_auth(
+            "/users/me/two-factor/recovery-codes",
+            &user.access_token,
+            &json!({}),
+        )
+        .await
+        .status()
+        .as_u16()
+    };
+    let statuses = futures::future::join_all((0..5).map(|_| regenerate())).await;
+    assert_eq!(
+        statuses.iter().filter(|s| **s == 200).count(),
+        1,
+        "{statuses:?}"
+    );
+}

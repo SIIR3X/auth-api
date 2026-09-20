@@ -129,6 +129,26 @@ pub async fn peek(redis: &RedisPool, key: &str) -> Result<i64, AppError> {
 
 /// Clear budgets after a success. Best-effort: a stale counter only delays the
 /// user until its window expires, it never lets an attacker through.
+/// Claim a cooldown: `true` when `key` was free and is now held for
+/// `ttl_secs`, `false` when a previous claim still holds it. One `SET NX EX`,
+/// before the guarded action: concurrent requests cannot all see the key free
+/// and all act. Fails open (a Redis outage claims nothing and allows the
+/// action), like the volume budgets.
+pub async fn claim_cooldown(redis: &RedisPool, key: &str, ttl_secs: u64) -> bool {
+    let Ok(mut conn) = redis.get().await else {
+        return true;
+    };
+    let claimed: Result<Option<String>, _> = deadpool_redis::redis::cmd("SET")
+        .arg(key)
+        .arg(1)
+        .arg("NX")
+        .arg("EX")
+        .arg(ttl_secs)
+        .query_async(&mut *conn)
+        .await;
+    claimed.map(|reply| reply.is_some()).unwrap_or(true)
+}
+
 pub async fn reset(redis: &RedisPool, keys: &[&str]) {
     use deadpool_redis::redis::AsyncCommands;
 

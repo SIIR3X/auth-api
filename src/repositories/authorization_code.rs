@@ -55,8 +55,8 @@ pub async fn create(pool: &PgPool, input: &NewAuthorizationCode<'_>) -> Result<U
 
 /// Consume a live code in one statement. `None` for unknown, expired or already
 /// consumed codes; [`find`] tells them apart when needed.
-pub async fn consume(
-    pool: &PgPool,
+pub async fn consume<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     code_hash: &[u8],
 ) -> Result<Option<AuthorizationCode>, sqlx::Error> {
     sqlx::query_as::<_, AuthorizationCode>(&format!(
@@ -66,7 +66,7 @@ pub async fn consume(
          RETURNING {COLUMNS}"
     ))
     .bind(code_hash)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
 }
 
@@ -84,11 +84,15 @@ pub async fn find(
 }
 
 /// Remember which session a code produced, so a replay can revoke it.
-pub async fn attach_session(pool: &PgPool, id: Uuid, session_id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn attach_session<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+    session_id: Uuid,
+) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE authorization_codes SET session_id = $2 WHERE id = $1")
         .bind(id)
         .bind(session_id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }

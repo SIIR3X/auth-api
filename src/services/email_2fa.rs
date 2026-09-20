@@ -9,7 +9,6 @@
 //!   2. send_code    -- sends the first code so the user can confirm their email
 //!   3. verify_setup -- validates the code, marks the method verified, primary if first
 
-use deadpool_redis::redis::AsyncCommands;
 use ipnetwork::IpNetwork;
 use serde_json::json;
 use uuid::Uuid;
@@ -172,13 +171,11 @@ pub async fn disable(
 /// Generates and sends a 6-digit OTP to the user's email.
 /// Enforces a 60-second cooldown between sends.
 pub async fn send_code(state: &AppState, user_id: Uuid) -> Result<(), AppError> {
-    // Anti-spam cooldown
+    // Anti-spam cooldown, claimed before the send: concurrent requests cannot
+    // all find it free and all send.
     let cooldown_key = format!("email2fa_cd:{}", user_id);
-    if let Ok(mut conn) = state.redis.get().await {
-        let active: bool = conn.exists(&cooldown_key).await.unwrap_or(false);
-        if active {
-            return Err(AppError::RateLimitExceeded);
-        }
+    if !redis_counter::claim_cooldown(&state.redis, &cooldown_key, SEND_COOLDOWN_SECS).await {
+        return Err(AppError::RateLimitExceeded);
     }
 
     let user = user_repo::find_by_id(&state.db, user_id)
@@ -202,11 +199,6 @@ pub async fn send_code(state: &AppState, user_id: Uuid) -> Result<(), AppError> 
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Set cooldown after successful DB write
-    if let Ok(mut conn) = state.redis.get().await {
-        let _: Result<(), _> = conn.set_ex(&cooldown_key, 1u8, SEND_COOLDOWN_SECS).await;
-    }
 
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();

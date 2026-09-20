@@ -174,7 +174,9 @@ the database together, is out of scope.
   own application requires a re-authentication, like consenting to it.
 - **Authorization code with PKCE:** S256 only, exact redirect URIs (loopback on
   any port only for a registered path, never `localhost`), single-use codes
-  consumed atomically, a replayed code revokes its session.
+  consumed atomically, a replayed code revokes its session. The redemption
+  holds the code until its session is linked, so even a replay racing it finds
+  the session to revoke.
 - **Scopes:** a request may narrow the client's registered scopes, never widen
   them; a client's tokens carry only the consented permissions, re-derived from
   the user's current permissions on every refresh, and no roles.
@@ -351,3 +353,4 @@ when a cited test no longer exists.
 | SEC-50 | Settings that would weaken a control are refused at start-up (TOTP skew beyond the replay window, Argon2 under the OWASP floor in production, lifetimes and windows out of range, a zero rate limit), and weaker stored hashes are replaced as accounts sign in | `validate_bounds_the_totp_skew_to_what_the_replay_table_covers`, `validate_refuses_weak_argon2_parameters_in_production_only`, `validate_bounds_lifetimes_windows_and_limits`, `a_hash_weaker_than_the_configuration_is_rehashed`, `a_weaker_password_hash_is_replaced_after_sign_in` |
 | SEC-51 | Password guesses with a stolen token are bounded without locking the owner out: every route taking the current password is strict, re-authentication failures count per session, the authenticated recovery route has its own budget, and client endpoints are bounded per client rather than per address | `routes_taking_the_current_password_count_against_the_strict_bucket`, `a_stolen_session_guessing_the_password_does_not_lock_the_owner_out`, `the_authenticated_recovery_route_spends_its_own_budget`, `client_endpoints_are_bounded_per_client_and_per_wrong_secret` |
 | SEC-52 | Revocations take effect at once: a revoked family loses its cached validity, a racing check cannot restore it, a pre-auth token is consumed before its session is issued, refused refreshes are counted, and token responses forbid every cache | `a_revoked_family_loses_its_cached_validity_at_once`, `replayed_refresh_tokens_count_against_the_address`, `token_responses_forbid_every_cache`, `a_cached_session_reads_back_as_it_was_stored` |
+| SEC-53 | Checks and the actions they guard cannot be raced apart: a replayed authorization code waits for its redemption and revokes what it produced, cooldowns are claimed before acting, and the token quota is counted under a lock | `a_code_redeemed_twice_at_once_leaves_no_session_alive`, `concurrent_recovery_code_regenerations_run_once`, `concurrent_creations_respect_the_token_limit` |

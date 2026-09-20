@@ -11,8 +11,6 @@ use ipnetwork::IpNetwork;
 use serde_json::json;
 use uuid::Uuid;
 
-use deadpool_redis::redis::AsyncCommands;
-
 use crate::{
     domain::{
         audit::AuditAction,
@@ -296,24 +294,21 @@ pub async fn generate_recovery_codes(
     )
     .await?;
 
+    // Claimed before regenerating: concurrent requests cannot each replace
+    // the codes the previous one just showed.
     let cooldown_key = format!("rc_regen:{}", user_id);
-    if let Ok(mut conn) = state.redis.get().await {
-        let locked: bool = conn.exists(&cooldown_key).await.unwrap_or(false);
-        if locked {
-            return Err(AppError::RateLimitExceeded);
+    if !redis_counter::claim_cooldown(&state.redis, &cooldown_key, RC_REGEN_COOLDOWN_SECS).await {
+        return Err(AppError::RateLimitExceeded);
+    }
+
+    match create_recovery_codes(state, user_id).await {
+        Ok(codes) => Ok(codes),
+        Err(error) => {
+            // Nothing was replaced: the owner may try again.
+            redis_counter::reset(&state.redis, &[&cooldown_key]).await;
+            Err(error)
         }
     }
-
-    let codes = create_recovery_codes(state, user_id).await?;
-
-    // Set cooldown after successful regeneration.
-    if let Ok(mut conn) = state.redis.get().await {
-        let _: Result<(), _> = conn
-            .set_ex(&cooldown_key, 1u8, RC_REGEN_COOLDOWN_SECS)
-            .await;
-    }
-
-    Ok(codes)
 }
 
 // Internal version used by verify_setup; no password check needed at that point.

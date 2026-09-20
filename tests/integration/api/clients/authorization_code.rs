@@ -274,6 +274,30 @@ async fn a_replayed_code_is_refused_and_revokes_its_session() {
     assert_eq!(status, 400, "the replayed code's session must be revoked");
 }
 
+/// A code replayed while its first redemption is still issuing the session
+/// waits for it, then revokes that session: the replay can never slip in before
+/// the code is linked to what it produced.
+#[tokio::test]
+async fn a_code_redeemed_twice_at_once_leaves_no_session_alive() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PRIMARY, true, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 722).await;
+    let p = pkce();
+    let code = code_for(&app, &user, PRIMARY, CALLBACK, &p).await;
+
+    let (first, second) = tokio::join!(
+        redeem(&app, &code, &p.verifier, PRIMARY, CALLBACK),
+        redeem(&app, &code, &p.verifier, PRIMARY, CALLBACK),
+    );
+    let mut statuses = [first.0, second.0];
+    statuses.sort();
+    assert_eq!(statuses, [200, 400], "exactly one redemption succeeds");
+
+    let tokens = if first.0 == 200 { first.1 } else { second.1 };
+    let (status, _) = refresh(&app, tokens["refresh_token"].as_str().unwrap(), PRIMARY).await;
+    assert_eq!(status, 400, "the replay revoked the session it raced");
+}
+
 #[tokio::test]
 async fn a_wrong_verifier_burns_the_code() {
     let app = TestApp::spawn().await;

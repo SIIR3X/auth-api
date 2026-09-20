@@ -203,3 +203,32 @@ async fn creation_is_checked() {
         assert_eq!(exchange(&app, malformed).await.0, 401, "{malformed}");
     }
 }
+
+/// Concurrent creations cannot pass the per-account limit together.
+#[tokio::test]
+async fn concurrent_creations_respect_the_token_limit() {
+    let app = TestApp::spawn().await;
+    let user = account(&app, 30).await;
+    let limit = auth_api::domain::personal_access_token::MAX_ACTIVE_PER_ACCOUNT as usize;
+    let creations = (0..limit + 5).map(|i| {
+        let app = &app;
+        let user = &user;
+        async move {
+            create(app, user, json!({ "name": format!("parallel-{i}") }))
+                .await
+                .0
+        }
+    });
+    let statuses = futures::future::join_all(creations).await;
+    assert_eq!(statuses.iter().filter(|s| **s == 201).count(), limit);
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM personal_access_tokens t
+         JOIN sessions s ON s.id = t.session_id
+         WHERE t.user_id = $1 AND s.revoked_at IS NULL",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(active as usize, limit);
+}

@@ -178,6 +178,11 @@ fn consent(requested: Option<&[String]>, held: &[String]) -> Option<Vec<String>>
 /// The code is consumed before anything else is checked, so a failed attempt
 /// (wrong verifier, wrong redirect) ends the code instead of leaving it open to
 /// further guesses. Every refusal answers identically.
+///
+/// Consumption, the session limit and the link from the code to its session
+/// share one transaction, which holds the code's row until the session is
+/// linked: a replay of the code waits for it, then finds the session to
+/// revoke instead of a code with none yet.
 /// Returns the tokens and the OpenID Connect nonce of the request, if any.
 pub async fn redeem(
     state: &AppState,
@@ -185,10 +190,16 @@ pub async fn redeem(
 ) -> Result<(auth_svc::AuthTokens, Option<String>), AppError> {
     let hash = crypto::sha256(request.code.as_bytes());
 
-    let Some(entry) = code_repo::consume(&state.db, &hash)
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let Some(entry) = code_repo::consume(&mut *tx, &hash)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
     else {
+        drop(tx);
         revoke_on_replay(state, &hash).await;
         return Err(AppError::InvalidAuthorizationCode);
     };
@@ -197,17 +208,29 @@ pub async fn redeem(
         || entry.redirect_uri != request.redirect_uri
         || !verifier_matches(&entry.code_challenge, request.verifier)
     {
+        // The failed attempt still burns the code.
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
         return Err(AppError::InvalidAuthorizationCode);
     }
 
-    let client = load_client(state, &entry.client_id).await?;
-    ensure_account_usable(state, entry.user_id).await?;
-
-    let lock = lock_client_sessions(state, entry.user_id, &entry.client_id).await?;
-
-    let (used, allowed) = session_allowance(state, entry.user_id, &client).await?;
-    if allowed.is_some_and(|allowed| used >= allowed) {
-        return Err(AppError::DeviceSessionLimitReached);
+    let checks = async {
+        let client = load_client(state, &entry.client_id).await?;
+        ensure_account_usable(state, entry.user_id).await?;
+        lock_client_sessions_in(&mut tx, entry.user_id, &entry.client_id).await?;
+        let (used, allowed) = session_allowance(state, entry.user_id, &client).await?;
+        if allowed.is_some_and(|allowed| used >= allowed) {
+            return Err(AppError::DeviceSessionLimitReached);
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = checks {
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+        return Err(error);
     }
 
     let tokens = auth_svc::issue_tokens(
@@ -224,13 +247,12 @@ pub async fn redeem(
     )
     .await?;
 
-    lock.commit()
+    code_repo::attach_session(&mut *tx, entry.id, tokens.session.id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-
-    if let Err(e) = code_repo::attach_session(&state.db, entry.id, tokens.session.id).await {
-        tracing::warn!(error = %e, "could not link the authorization code to its session");
-    }
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok((tokens, entry.nonce))
 }
@@ -361,12 +383,22 @@ pub(crate) async fn lock_client_sessions(
         .begin()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+    lock_client_sessions_in(&mut lock, user_id, client_id).await?;
+    Ok(lock)
+}
+
+/// [`lock_client_sessions`] inside a transaction the caller already holds.
+async fn lock_client_sessions_in(
+    tx: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    client_id: &str,
+) -> Result<(), AppError> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(format!("client_sessions:{user_id}:{client_id}"))
-        .execute(&mut *lock)
+        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(lock)
+    Ok(())
 }
 
 /// Sessions the user holds for the client, and how many the client allows.
