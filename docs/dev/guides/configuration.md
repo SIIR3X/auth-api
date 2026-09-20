@@ -249,4 +249,14 @@ With `APP_ENV=production` the service refuses to start when:
 - `WEBHOOK_ALLOW_HTTP` or `WEBHOOK_ALLOW_PRIVATE_NETWORKS` is `true`;
 - `WEBAUTHN_ORIGINS` is empty, or lists an origin that is not HTTPS or not on
   `WEBAUTHN_RP_ID`;
-- `SENSITIVE_ACTION_REAUTH_SECS` or `ARGON2_MAX_CONCURRENCY` is `0`.
+- `ARGON2_MEMORY_KIB` is under `19456` or `ARGON2_ITERATIONS` under `2`.
+
+In every environment, the service also refuses to start when:
+
+- `SENSITIVE_ACTION_REAUTH_SECS` is `0` or above `900`, or
+  `ARGON2_MAX_CONCURRENCY` is `0`;
+- `TOTP_SKEW` is above `1` (used codes are remembered one step each side);
+- `JWT_ACCESS_EXPIRY_SECS` is outside `60`-`3600`,
+  `JWT_SHORT_SESSION_EXPIRY_SECS` is `0`, or `JWT_REFRESH_EXPIRY_SECS` is below
+  `JWT_SHORT_SESSION_EXPIRY_SECS`;
+- `RATE_LIMIT_RPM` or `RATE_LIMIT_AUTH_RPM` is `0`.

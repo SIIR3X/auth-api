@@ -22,9 +22,11 @@ the database together, is out of scope.
 
 ## Credentials
 
-- **Argon2id**, 64 MiB and 3 iterations by default; hashes run on a bounded
-  pool (`ARGON2_MAX_CONCURRENCY`) so a login storm queues instead of exhausting
-  memory.
+- **Argon2id**, 64 MiB and 3 iterations by default, never under 19 MiB and 2
+  iterations in production; hashes run on a bounded pool
+  (`ARGON2_MAX_CONCURRENCY`) so a login storm queues instead of exhausting
+  memory. A stored hash weaker than the configured parameters is replaced after
+  the next successful sign-in.
 - **No account oracle.** An unknown identifier still pays a full hash against a
   decoy. A locked account answers the same whatever the password. Registration
   answers `202` identically whether or not the address is taken (the owner is
@@ -335,3 +337,4 @@ when a cited test no longer exists.
 | SEC-47 | No change leaves the deployment without an active account able to manage roles: role changes, suspension and deletion (by an administrator or by the owner) are refused, and concurrent withdrawals are serialized | `nobody_can_remove_the_last_way_to_manage_roles_or_the_default_role`, `the_last_role_manager_is_neither_suspended_nor_deleted`, `concurrent_withdrawals_never_leave_nobody_managing_roles` |
 | SEC-48 | The API connects with a role that reads and writes data only: it cannot alter the schema, truncate or rewrite the audit log, or change the permission catalog and migration history; maintenance needing more runs in owner-privileged functions | `the_runtime_role_cannot_erase_the_audit_trail_or_alter_the_schema`, `the_runtime_role_does_everything_the_service_needs` |
 | SEC-49 | Secrets at rest resist a database copy: email codes are keyed digests, ciphertexts are bound to their row, secrets are compared in constant time, and a secret under a removed key stops the start-up | `otp_digests_are_keyed_bound_and_survive_a_rotation`, `a_ciphertext_moved_to_another_row_no_longer_decrypts`, `constant_time_equality_compares_contents_and_lengths`, `secrets_under_a_removed_key_are_detected`, `email_code_lookup_is_scoped_to_the_challenged_user`, `debug_output_never_shows_the_password_hash` |
+| SEC-50 | Settings that would weaken a control are refused at start-up (TOTP skew beyond the replay window, Argon2 under the OWASP floor in production, lifetimes and windows out of range, a zero rate limit), and weaker stored hashes are replaced as accounts sign in | `validate_bounds_the_totp_skew_to_what_the_replay_table_covers`, `validate_refuses_weak_argon2_parameters_in_production_only`, `validate_bounds_lifetimes_windows_and_limits`, `a_hash_weaker_than_the_configuration_is_rehashed`, `a_weaker_password_hash_is_replaced_after_sign_in` |

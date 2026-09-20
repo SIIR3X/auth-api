@@ -232,11 +232,21 @@ async fn internal_addresses_are_never_called() {
 
     fixtures::register_user(&app, 2).await;
     webhooks::deliver_once(&app.state).await.unwrap();
-    let deliveries = delivery_state(&app, &admin.token, created["id"].as_str().unwrap()).await;
+    // The background dispatcher may have claimed the delivery first: wait for
+    // the attempt to be recorded, whoever made it.
+    let id = created["id"].as_str().unwrap();
+    let mut deliveries = delivery_state(&app, &admin.token, id).await;
+    for _ in 0..50 {
+        if deliveries[0]["last_error"].is_string() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        deliveries = delivery_state(&app, &admin.token, id).await;
+    }
     assert!(
         deliveries[0]["last_error"]
             .as_str()
-            .unwrap()
+            .unwrap_or_default()
             .contains("blocked address"),
         "{deliveries}"
     );

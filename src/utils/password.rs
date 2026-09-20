@@ -75,6 +75,27 @@ pub fn verify(password: &str, hash: &str) -> Result<bool, PasswordError> {
     }
 }
 
+/// Whether `hash` was computed with weaker parameters than `cfg` asks for, or
+/// another algorithm: the password is then hashed again once proven, so raising
+/// `ARGON2_*` protects existing accounts as they sign in, not only new ones.
+/// A hash that does not parse is left alone (verification refuses it anyway).
+pub fn needs_rehash(hash: &str, cfg: &CryptoConfig) -> bool {
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        return false;
+    };
+    if parsed.algorithm.as_str() != "argon2id" {
+        return true;
+    }
+    match Params::try_from(&parsed) {
+        Ok(params) => {
+            params.m_cost() < cfg.argon2_memory_kib
+                || params.t_cost() < cfg.argon2_iterations
+                || params.p_cost() < cfg.argon2_parallelism
+        }
+        Err(_) => false,
+    }
+}
+
 /// Runs Argon2id hashing on the blocking threadpool so authentication work
 /// does not stall the async runtime under load. Concurrency is bounded by
 /// the global Argon2 semaphore (see `argon2_semaphore`).
@@ -192,6 +213,39 @@ fn parse_memory_max(contents: &str) -> Option<u64> {
         .parse::<u64>()
         .ok()
         .map(|bytes| bytes / 1024 / 1024)
+}
+
+#[cfg(test)]
+mod rehash_tests {
+    use super::*;
+
+    fn config(memory: u32, iterations: u32, parallelism: u32) -> CryptoConfig {
+        CryptoConfig {
+            argon2_memory_kib: memory,
+            argon2_iterations: iterations,
+            argon2_parallelism: parallelism,
+            argon2_max_concurrency: 1,
+            totp_issuer: String::new(),
+            encryption_key: String::new(),
+            previous_encryption_key: None,
+            totp_skew: 1,
+            recovery_code_expiry_days: 0,
+        }
+    }
+
+    #[test]
+    fn a_hash_weaker_than_the_configuration_is_rehashed() {
+        let weak = hash("Password-1!", &config(8, 1, 1)).unwrap();
+        assert!(needs_rehash(&weak, &config(16, 1, 1)), "memory");
+        assert!(needs_rehash(&weak, &config(8, 2, 1)), "iterations");
+        assert!(needs_rehash(&weak, &config(8, 1, 2)), "parallelism");
+        assert!(!needs_rehash(&weak, &config(8, 1, 1)), "as configured");
+        assert!(
+            !needs_rehash(&weak, &config(4, 1, 1)),
+            "stronger than asked"
+        );
+        assert!(!needs_rehash("not a phc string", &config(8, 1, 1)));
+    }
 }
 
 #[cfg(test)]

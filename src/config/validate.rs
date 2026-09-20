@@ -23,6 +23,7 @@ impl Config {
         validate_device_auth(&self.device_auth)?;
         validate_session_lifetime(&self.jwt)?;
         validate_crypto(&self.crypto)?;
+        validate_rate_limits(&self.rate_limit)?;
 
         validate_jwt_audience(&self.jwt.audience, self.is_production())?;
 
@@ -64,6 +65,7 @@ impl Config {
                 });
             }
 
+            validate_production_argon2(&self.crypto)?;
             validate_production_encryption_key("ENCRYPTION_KEY", &self.crypto.encryption_key)?;
             if let Some(previous) = self.crypto.previous_encryption_key.as_deref() {
                 validate_production_encryption_key("PREVIOUS_ENCRYPTION_KEY", previous)?;
@@ -373,7 +375,62 @@ pub(super) fn validate_crypto(crypto: &CryptoConfig) -> Result<(), ConfigError> 
             reason: "must be greater than 0".into(),
         });
     }
+    // A code is accepted over (2 * skew + 1) steps of 30 seconds, and consumed
+    // codes are remembered for 90 seconds: a wider skew would let a used code
+    // be replayed once its record is gone.
+    if crypto.totp_skew > MAX_TOTP_SKEW {
+        return Err(ConfigError::Invalid {
+            key: "TOTP_SKEW".into(),
+            reason: format!("must be at most {MAX_TOTP_SKEW}"),
+        });
+    }
 
+    Ok(())
+}
+
+/// Widest TOTP skew the replay table covers (see `used_totp_codes`).
+pub const MAX_TOTP_SKEW: u8 = 1;
+
+/// Argon2id floors in production (OWASP: 19 MiB and 2 iterations): lower
+/// values make every stored hash cheap to crack.
+pub const MIN_ARGON2_MEMORY_KIB: u32 = 19_456;
+pub const MIN_ARGON2_ITERATIONS: u32 = 2;
+
+pub(super) fn validate_production_argon2(crypto: &CryptoConfig) -> Result<(), ConfigError> {
+    if crypto.argon2_memory_kib < MIN_ARGON2_MEMORY_KIB {
+        return Err(ConfigError::Invalid {
+            key: "ARGON2_MEMORY_KIB".into(),
+            reason: format!("must be at least {MIN_ARGON2_MEMORY_KIB} in production"),
+        });
+    }
+    if crypto.argon2_iterations < MIN_ARGON2_ITERATIONS {
+        return Err(ConfigError::Invalid {
+            key: "ARGON2_ITERATIONS".into(),
+            reason: format!("must be at least {MIN_ARGON2_ITERATIONS} in production"),
+        });
+    }
+    if crypto.argon2_parallelism == 0 {
+        return Err(ConfigError::Invalid {
+            key: "ARGON2_PARALLELISM".into(),
+            reason: "must be at least 1".into(),
+        });
+    }
+    Ok(())
+}
+
+/// A limit of zero refuses every request.
+pub(super) fn validate_rate_limits(limits: &RateLimitConfig) -> Result<(), ConfigError> {
+    for (key, value) in [
+        ("RATE_LIMIT_RPM", limits.requests_per_minute),
+        ("RATE_LIMIT_AUTH_RPM", limits.auth_requests_per_minute),
+    ] {
+        if value == 0 {
+            return Err(ConfigError::Invalid {
+                key: key.into(),
+                reason: "must be at least 1".into(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -386,10 +443,12 @@ pub(super) fn validate_security(security: &SecurityConfig) -> Result<(), ConfigE
         });
     }
 
-    if security.sensitive_action_reauth_secs == 0 {
+    if security.sensitive_action_reauth_secs == 0
+        || security.sensitive_action_reauth_secs > MAX_REAUTH_WINDOW_SECS
+    {
         return Err(ConfigError::Invalid {
             key: "SENSITIVE_ACTION_REAUTH_SECS".into(),
-            reason: "must be greater than 0".into(),
+            reason: format!("must be between 1 and {MAX_REAUTH_WINDOW_SECS}"),
         });
     }
 
@@ -421,12 +480,44 @@ pub(super) fn validate_device_auth(device: &DeviceAuthConfig) -> Result<(), Conf
     Ok(())
 }
 
-/// A zero absolute lifetime would refuse every refresh.
+/// Longest re-authentication window: a proof of the password stands for
+/// sensitive actions only for a few minutes.
+pub const MAX_REAUTH_WINDOW_SECS: u64 = 900;
+
+/// Access token lifetimes accepted: revocation reaches resource servers that
+/// verify tokens offline only when the token expires, so it stays short.
+pub const ACCESS_EXPIRY_RANGE_SECS: std::ops::RangeInclusive<u64> = 60..=3600;
+
+/// Lifetimes that make sense together. A zero absolute lifetime would refuse
+/// every refresh, and a refresh lifetime of zero would end every session at
+/// once.
 pub(super) fn validate_session_lifetime(jwt: &JwtConfig) -> Result<(), ConfigError> {
     if jwt.max_session_lifetime_secs == 0 {
         return Err(ConfigError::Invalid {
             key: "JWT_MAX_SESSION_LIFETIME_SECS".into(),
             reason: "must be greater than 0".into(),
+        });
+    }
+    if !ACCESS_EXPIRY_RANGE_SECS.contains(&jwt.access_expiry_secs) {
+        return Err(ConfigError::Invalid {
+            key: "JWT_ACCESS_EXPIRY_SECS".into(),
+            reason: format!(
+                "must be between {} and {}",
+                ACCESS_EXPIRY_RANGE_SECS.start(),
+                ACCESS_EXPIRY_RANGE_SECS.end()
+            ),
+        });
+    }
+    if jwt.short_session_expiry_secs == 0 {
+        return Err(ConfigError::Invalid {
+            key: "JWT_SHORT_SESSION_EXPIRY_SECS".into(),
+            reason: "must be greater than 0".into(),
+        });
+    }
+    if jwt.refresh_expiry_secs < jwt.short_session_expiry_secs {
+        return Err(ConfigError::Invalid {
+            key: "JWT_REFRESH_EXPIRY_SECS".into(),
+            reason: "must be at least JWT_SHORT_SESSION_EXPIRY_SECS: remember me must not shorten a session".into(),
         });
     }
     Ok(())

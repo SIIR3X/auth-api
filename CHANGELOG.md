@@ -69,6 +69,8 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
   section 2.6): create `auth_api_owner`, `REASSIGN OWNED BY auth_api`, run
   `deploy/db/auth-api-grants.sql`, then run migrations with the owner's URL
   (`prod/auth-api/database-owner-url`). A single-role deployment keeps working.
+- Check the settings refused at start-up (listed under Security) against your
+  environment before upgrading.
 - Run `auth-api --rotate-totp-keys` once, without `PREVIOUS_ENCRYPTION_KEY`, to
   bind the secrets written before the upgrade to their rows.
 - Copy the new `log_parameter_max_length` lines of

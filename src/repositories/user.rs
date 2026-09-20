@@ -37,6 +37,24 @@ pub async fn create<'e>(
     .await
 }
 
+/// Replace the hash only while it is still `current`: a rehash racing a
+/// password change never brings the old password back.
+pub async fn replace_password_hash(
+    pool: &PgPool,
+    id: Uuid,
+    current: &str,
+    replacement: &str,
+) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("UPDATE users SET password_hash = $3 WHERE id = $1 AND password_hash = $2")
+            .bind(id)
+            .bind(current)
+            .bind(replacement)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 pub async fn update_password_hash<'e>(
     executor: impl PgExecutor<'e>,
     id: Uuid,

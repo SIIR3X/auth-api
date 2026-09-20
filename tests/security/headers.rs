@@ -212,6 +212,8 @@ async fn security_headers_enable_hsts_for_https_production() {
         config.external_login_uri = "https://app.example.com/external-login".into();
         config.webauthn.origins = vec!["https://app.example.com".into()];
         config.webhooks.allow_private_networks = false;
+        config.crypto.argon2_memory_kib = 19_456;
+        config.crypto.argon2_iterations = 2;
         // The committed development AES key is refused in production.
         config.crypto.encryption_key = "6M+xtK7VzYMoz/3mc3vJf2e6h9b9yLyx3Eabo/236YE=".into();
     })

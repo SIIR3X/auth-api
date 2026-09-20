@@ -186,7 +186,10 @@ pub async fn login(
             apply_backoff(failures + 1).await;
             return Err(AppError::InvalidCredentials);
         }
-        (Some(u), true) => u,
+        (Some(u), true) => {
+            rehash_if_weaker(state, &u, password_plaintext);
+            u
+        }
     };
 
     // Account status checks
@@ -204,6 +207,29 @@ pub async fn login(
         json!({}),
     )
     .await
+}
+
+/// Hash the password again, in the background, when its stored hash is weaker
+/// than the configured parameters: raising `ARGON2_*` then protects existing
+/// accounts as they sign in. Best effort: a failure keeps the old hash.
+fn rehash_if_weaker(state: &AppState, user: &User, password_plaintext: &str) {
+    if !password::needs_rehash(&user.password_hash, &state.config.crypto) {
+        return;
+    }
+    let db = state.db.clone();
+    let cfg = state.config.crypto.clone();
+    let (id, current) = (user.id, user.password_hash.clone());
+    let plaintext = password_plaintext.to_owned();
+    crate::utils::background::spawn(async move {
+        let Ok(replacement) = password::hash_async(&plaintext, &cfg).await else {
+            return;
+        };
+        match user_repo::replace_password_hash(&db, id, &current, &replacement).await {
+            Ok(true) => metrics::counter!("auth_password_rehashes_total").increment(1),
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%error, "could not store a rehashed password"),
+        }
+    });
 }
 
 /// The account proved its first factor (password, sign-in link): pause for the

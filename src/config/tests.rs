@@ -48,8 +48,8 @@ fn valid_config() -> Config {
             audience: vec!["https://core.example.com".into()],
         },
         crypto: CryptoConfig {
-            argon2_memory_kib: 8192,
-            argon2_iterations: 1,
+            argon2_memory_kib: 19_456,
+            argon2_iterations: 2,
             argon2_parallelism: 1,
             argon2_max_concurrency: 4,
             totp_issuer: "test".into(),
@@ -1088,4 +1088,73 @@ fn validate_rejects_an_even_number_of_stream_replicas() {
         .validate()
         .expect_err("2 replicas cannot hold a quorum");
     assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "NATS_STREAM_REPLICAS"));
+}
+
+#[test]
+fn validate_bounds_the_totp_skew_to_what_the_replay_table_covers() {
+    let mut crypto = valid_config().crypto;
+    crypto.totp_skew = 2;
+    let err = validate_crypto(&crypto).expect_err("skew 2");
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "TOTP_SKEW"));
+    crypto.totp_skew = 1;
+    assert!(validate_crypto(&crypto).is_ok());
+}
+
+#[test]
+fn validate_refuses_weak_argon2_parameters_in_production_only() {
+    for (field, key) in [
+        ("memory", "ARGON2_MEMORY_KIB"),
+        ("iterations", "ARGON2_ITERATIONS"),
+    ] {
+        let mut config = valid_config();
+        match field {
+            "memory" => config.crypto.argon2_memory_kib = 8,
+            _ => config.crypto.argon2_iterations = 1,
+        }
+        let err = config.validate().expect_err(field);
+        assert!(
+            matches!(err, ConfigError::Invalid { key: k, .. } if k == key),
+            "{field}"
+        );
+    }
+    let mut development = valid_config();
+    development.env = Environment::Development;
+    development.crypto.argon2_memory_kib = 8;
+    development.crypto.argon2_iterations = 1;
+    assert!(validate_production_argon2(&development.crypto).is_err());
+    assert!(
+        validate_crypto(&development.crypto).is_ok(),
+        "only production refuses them"
+    );
+}
+
+#[test]
+fn validate_bounds_lifetimes_windows_and_limits() {
+    type Change = fn(&mut Config);
+    let cases: [(&str, Change); 6] = [
+        ("JWT_ACCESS_EXPIRY_SECS", |c| c.jwt.access_expiry_secs = 30),
+        ("JWT_ACCESS_EXPIRY_SECS", |c| {
+            c.jwt.access_expiry_secs = 86_400
+        }),
+        ("JWT_SHORT_SESSION_EXPIRY_SECS", |c| {
+            c.jwt.short_session_expiry_secs = 0
+        }),
+        ("JWT_REFRESH_EXPIRY_SECS", |c| {
+            c.jwt.refresh_expiry_secs = 60;
+            c.jwt.short_session_expiry_secs = 3600;
+        }),
+        ("SENSITIVE_ACTION_REAUTH_SECS", |c| {
+            c.security.sensitive_action_reauth_secs = 86_400
+        }),
+        ("RATE_LIMIT_RPM", |c| c.rate_limit.requests_per_minute = 0),
+    ];
+    for (expected, change) in cases {
+        let mut config = valid_config();
+        change(&mut config);
+        let err = config.validate().expect_err(expected);
+        assert!(
+            matches!(&err, ConfigError::Invalid { key, .. } if key == expected),
+            "{expected}: {err:?}"
+        );
+    }
 }
