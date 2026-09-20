@@ -234,3 +234,23 @@ async fn security_headers_enable_hsts_for_https_production() {
         Some("max-age=63072000; includeSubDomains")
     );
 }
+
+/// RFC 6749 section 5.1: token responses carry `Cache-Control: no-store` and
+/// `Pragma: no-cache`; cacheable public documents carry neither.
+#[tokio::test]
+async fn token_responses_forbid_every_cache() {
+    let app = TestApp::spawn().await;
+    let user = crate::common::fixtures::register_user(&app, 1).await;
+    crate::common::fixtures::activate_user(&app.db, user.id).await;
+    let response = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await;
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(response.headers()["pragma"], "no-cache");
+
+    let jwks = app.get("/.well-known/jwks.json").await;
+    assert!(jwks.headers().get("pragma").is_none());
+}

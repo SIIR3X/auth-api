@@ -246,7 +246,7 @@ async fn revoke_on_replay(state: &AppState, code_hash: &[u8]) {
     }
     tracing::warn!(client_id = %seen.client_id, "authorization code replayed after redemption");
     if let Some(session_id) = seen.session_id
-        && let Err(e) = session_repo::revoke_family(&state.db, session_id).await
+        && let Err(e) = auth_svc::revoke_family(state, session_id).await
     {
         tracing::error!(error = %e, "could not revoke the session of a replayed code");
     }

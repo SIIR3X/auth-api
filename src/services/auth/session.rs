@@ -19,14 +19,12 @@ pub async fn refresh_token(
     // abuse budgets: without Redis the refresh goes on to the database, the
     // durable authority on revocation.
     if let Some(ip_val) = ip {
-        let key = format!("refresh_fail:{}", ip_bucket(ip_val.ip()));
-        match state.redis.get().await {
-            Ok(mut conn) => {
-                let failures: i64 = conn.get(&key).await.unwrap_or(0);
-                if failures >= MAX_REFRESH_FAILURES_BY_IP {
-                    return Err(AppError::RateLimitExceeded);
-                }
+        let key = refresh_failure_key(ip_val);
+        match redis_counter::peek(&state.redis, &key).await {
+            Ok(failures) if failures >= MAX_REFRESH_FAILURES_BY_IP => {
+                return Err(AppError::RateLimitExceeded);
             }
+            Ok(_) => {}
             Err(error) => {
                 tracing::warn!(error = %error, "refresh budget unavailable, failing open");
             }
@@ -56,20 +54,13 @@ pub async fn refresh_token(
     {
         Some(s) => s,
         None => {
-            // Increment failure counter on unknown token.
-            if let Some(ip_val) = ip {
-                let key = format!("refresh_fail:{}", ip_bucket(ip_val.ip()));
-                if let Ok(mut conn) = state.redis.get().await {
-                    let _: Result<(), _> = conn.incr(&key, 1i64).await;
-                    let _: Result<(), _> =
-                        conn.expire(&key, REFRESH_FAILURE_WINDOW_SECS as i64).await;
-                }
-            }
+            note_refresh_failure(state, ip).await;
             return Err(AppError::TokenInvalid);
         }
     };
 
     if session.client_id.as_deref() != client_id {
+        note_refresh_failure(state, ip).await;
         return Err(AppError::TokenInvalid);
     }
 
@@ -80,12 +71,17 @@ pub async fn refresh_token(
     };
     match session.refresh_verdict(state.clock.now(), ip.map(|n| n.ip()), &policy) {
         RefreshVerdict::Rotate => {}
-        RefreshVerdict::ConcurrentRefresh => return Err(AppError::TokenInvalid),
+        RefreshVerdict::ConcurrentRefresh => {
+            // Two tabs, or a retried request - or a thief refreshing first,
+            // which leaves the owner signed out: measured, so a spike shows.
+            metrics::counter!("auth_refresh_concurrent_total").increment(1);
+            tracing::info!(session_id = %session.id, "rotated refresh token presented within the grace window");
+            return Err(AppError::TokenInvalid);
+        }
         RefreshVerdict::Expired => return Err(AppError::TokenExpired),
         RefreshVerdict::Replay => {
-            session_repo::revoke_family(&state.db, session.id)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
+            note_refresh_failure(state, ip).await;
+            revoke_family(state, session.id).await?;
 
             audit::append(
                 &state.db,
@@ -103,6 +99,7 @@ pub async fn refresh_token(
             return Err(AppError::TokenInvalid);
         }
         RefreshVerdict::AddressMismatch => {
+            note_refresh_failure(state, ip).await;
             metrics::counter!("auth_session_replays_total").increment(1);
             audit::append(
                 &state.db,
@@ -173,9 +170,7 @@ pub async fn refresh_token(
             {
                 return Err(AppError::TokenInvalid);
             }
-            session_repo::revoke_family(&state.db, session.id)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
+            revoke_family(state, session.id).await?;
 
             metrics::counter!("auth_session_replays_total").increment(1);
 
@@ -212,6 +207,29 @@ pub async fn refresh_token(
     })
 }
 
+fn refresh_failure_key(ip: IpNetwork) -> String {
+    format!("refresh_fail:{}", ip_bucket(ip.ip()))
+}
+
+/// Count a refused refresh (unknown token, another client's session, a replay,
+/// another address) against the address, atomically with its window.
+async fn note_refresh_failure(state: &AppState, ip: Option<IpNetwork>) {
+    let Some(ip) = ip else { return };
+    let key = refresh_failure_key(ip);
+    if let Err(error) = redis_counter::consume(
+        &state.redis,
+        &[Budget {
+            key: &key,
+            limit: MAX_REFRESH_FAILURES_BY_IP,
+            window_secs: REFRESH_FAILURE_WINDOW_SECS,
+        }],
+    )
+    .await
+    {
+        tracing::warn!(%error, "could not count a refused refresh");
+    }
+}
+
 pub async fn logout(
     state: &AppState,
     session_id: Uuid,
@@ -232,7 +250,7 @@ pub async fn logout(
 
     // Invalidate the Redis session cache so revocation propagates immediately
     // without waiting for SESSION_CACHE_TTL_SECS to expire.
-    invalidate_session_cache(state, session_id);
+    invalidate_session_cache(state, session_id).await;
 
     blocklist_jti(state, jti, token_exp).await;
 

@@ -67,11 +67,16 @@ the database together, is out of scope.
 - **Access tokens** are ES256 JWTs (15 minutes) carrying `iss`, `aud`, `sid` and
   `jti`. Every authenticated request checks, in one Redis round trip, that the
   `jti` was not revoked by a logout and that the session is still active. A
-  Redis failure refuses the request: revocation cannot be proven.
+  Redis failure refuses the request: revocation cannot be proven. A revocation
+  writes an "ended" marker into the validity cache, which a check racing it
+  cannot overwrite with a stale "active".
 - **Refresh tokens** are opaque, stored as SHA-256 digests, and rotated on every
-  use. Presenting a rotated token again revokes the whole session family;
-  within 2 seconds of the rotation it is treated as a concurrent refresh from
-  the same client (two tabs) and refused without revocation.
+  use. Presenting a rotated token again revokes the whole session family and
+  ends the cached validity of its access tokens at once; within 1 second of
+  the rotation it is treated as a concurrent refresh from the same client (two
+  tabs), refused without revocation and counted
+  (`auth_refresh_concurrent_total`). Refused refreshes (unknown token, another
+  client's session, a replay, another address) count against the address.
 - **Absolute lifetime.** A sign-in ends after `JWT_MAX_SESSION_LIFETIME_SECS`
   however often it is refreshed, and no rotation dates a session past that
   moment. `JWT_STRICT_SESSION_BINDING` refuses a refresh
@@ -272,7 +277,7 @@ list is in [Configuration](guides/configuration.md#production-checks).
   lifetime, not their entropy.
 - Outside production, rate limiting and CAPTCHA fail open by default.
 - Anyone holding both `ENCRYPTION_KEY` and a database dump can read TOTP secrets.
-- A logout racing a refresh of the same session, more than 2 seconds after
+- A logout racing a refresh of the same session, more than 1 second after
   its rotation, reads as a replay: the family is revoked and a replay audited.
   Kept on purpose, since the audit signal outweighs this rare race.
 - Webhook signing secrets, like TOTP secrets, are readable by anyone holding
@@ -345,3 +350,4 @@ when a cited test no longer exists.
 | SEC-49 | Secrets at rest resist a database copy: email codes are keyed digests, ciphertexts are bound to their row, secrets are compared in constant time, and a secret under a removed key stops the start-up | `otp_digests_are_keyed_bound_and_survive_a_rotation`, `a_ciphertext_moved_to_another_row_no_longer_decrypts`, `constant_time_equality_compares_contents_and_lengths`, `secrets_under_a_removed_key_are_detected`, `email_code_lookup_is_scoped_to_the_challenged_user`, `debug_output_never_shows_the_password_hash` |
 | SEC-50 | Settings that would weaken a control are refused at start-up (TOTP skew beyond the replay window, Argon2 under the OWASP floor in production, lifetimes and windows out of range, a zero rate limit), and weaker stored hashes are replaced as accounts sign in | `validate_bounds_the_totp_skew_to_what_the_replay_table_covers`, `validate_refuses_weak_argon2_parameters_in_production_only`, `validate_bounds_lifetimes_windows_and_limits`, `a_hash_weaker_than_the_configuration_is_rehashed`, `a_weaker_password_hash_is_replaced_after_sign_in` |
 | SEC-51 | Password guesses with a stolen token are bounded without locking the owner out: every route taking the current password is strict, re-authentication failures count per session, the authenticated recovery route has its own budget, and client endpoints are bounded per client rather than per address | `routes_taking_the_current_password_count_against_the_strict_bucket`, `a_stolen_session_guessing_the_password_does_not_lock_the_owner_out`, `the_authenticated_recovery_route_spends_its_own_budget`, `client_endpoints_are_bounded_per_client_and_per_wrong_secret` |
+| SEC-52 | Revocations take effect at once: a revoked family loses its cached validity, a racing check cannot restore it, a pre-auth token is consumed before its session is issued, refused refreshes are counted, and token responses forbid every cache | `a_revoked_family_loses_its_cached_validity_at_once`, `replayed_refresh_tokens_count_against_the_address`, `token_responses_forbid_every_cache`, `a_cached_session_reads_back_as_it_was_stored` |

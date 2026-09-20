@@ -115,14 +115,9 @@ pub async fn complete_two_factor_login(
 
     redis_counter::reset(&state.redis, &[&user_fail_key]).await;
 
-    // Consume the pre-auth token now that verification succeeded.
-    if let Ok(mut c) = state.redis.get().await {
-        let _: Result<(), _> = c.del(&redis_key).await;
-        let _: Result<(), _> = c.del(&fail_key).await;
-        let _: Result<(), _> = c
-            .srem::<_, _, ()>(user_pre_auth_index_key(user_id), pre_auth_token)
-            .await;
-    }
+    // Consume the pre-auth token now that verification succeeded: of
+    // concurrent completions, only the one that removes it goes on.
+    take_pre_auth(state, &redis_key, user_id, pre_auth_token, &[&fail_key]).await?;
 
     let tokens = issue_tokens(
         state,
@@ -186,12 +181,7 @@ pub async fn complete_email_2fa_login(
     }
 
     // Consume the pre-auth token on success.
-    if let Ok(mut c) = state.redis.get().await {
-        let _: Result<(), _> = c.del(&redis_key).await;
-        let _: Result<(), _> = c
-            .srem::<_, _, ()>(user_pre_auth_index_key(user_id), pre_auth_token)
-            .await;
-    }
+    take_pre_auth(state, &redis_key, user_id, pre_auth_token, &[]).await?;
 
     let tokens = issue_tokens(
         state,
@@ -296,14 +286,14 @@ pub async fn complete_login_with_recovery(
     }
 
     // Consume the pre-auth token now that recovery succeeded.
-    if let Ok(mut c) = state.redis.get().await {
-        let _: Result<(), _> = c.del(&redis_key).await;
-        let _: Result<(), _> = c.del(&fail_key).await;
-        let _: Result<(), _> = c.del(&user_fail_key).await;
-        let _: Result<(), _> = c
-            .srem::<_, _, ()>(user_pre_auth_index_key(user_id), pre_auth_token)
-            .await;
-    }
+    take_pre_auth(
+        state,
+        &redis_key,
+        user_id,
+        pre_auth_token,
+        &[&fail_key, &user_fail_key],
+    )
+    .await?;
 
     let tokens = issue_tokens(
         state,
@@ -345,4 +335,36 @@ pub async fn complete_login_with_recovery(
     metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
     metrics::counter!("auth_2fa_success_total", "method" => "recovery_code").increment(1);
     Ok(tokens)
+}
+
+/// Consume a pre-auth token before issuing the session it stands for. The
+/// removal is required, not best effort: a token left behind by a Redis error
+/// could complete the sign-in again, and of concurrent completions only the one
+/// that removes it may go on.
+async fn take_pre_auth(
+    state: &AppState,
+    redis_key: &str,
+    user_id: Uuid,
+    pre_auth_token: &str,
+    budgets: &[&str],
+) -> Result<(), AppError> {
+    let mut conn = state
+        .redis
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let removed: i64 = conn
+        .del(redis_key)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    if removed != 1 {
+        return Err(AppError::TokenInvalid);
+    }
+    for key in budgets {
+        let _: Result<(), _> = conn.del(*key).await;
+    }
+    let _: Result<(), _> = conn
+        .srem::<_, _, ()>(user_pre_auth_index_key(user_id), pre_auth_token)
+        .await;
+    Ok(())
 }

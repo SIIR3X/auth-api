@@ -233,6 +233,17 @@ pub async fn revoke_family(pool: &PgPool, session_id: Uuid) -> Result<u64, sqlx:
 
 // Reads
 
+/// Every session of the family of `session_id`.
+pub async fn family_session_ids(pool: &PgPool, session_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT id FROM sessions
+         WHERE session_family_id = (SELECT session_family_id FROM sessions WHERE id = $1)",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn find_by_token_hash(
     pool: &PgPool,
     token_hash: &[u8],

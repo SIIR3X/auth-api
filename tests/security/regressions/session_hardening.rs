@@ -321,3 +321,49 @@ async fn the_authenticated_recovery_route_spends_its_own_budget() {
     let sign_in_budget: Option<i64> = conn.get(format!("rc_user_fail:{}", user.id)).await.unwrap();
     assert_eq!(sign_in_budget, None, "the sign-in budget is untouched");
 }
+
+/// A replayed refresh token revokes its family, and the access tokens of that
+/// family stop working at once, not when the validity cache expires.
+#[tokio::test]
+async fn a_revoked_family_loses_its_cached_validity_at_once() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 720).await;
+
+    let rotated: Value = refresh(&app, &user.refresh_token)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let access = rotated["access_token"].as_str().unwrap();
+    // Cached as active by this request.
+    assert_eq!(app.get_auth("/users/me", access).await.status(), 200);
+
+    // Past the grace window, the first token comes back: a replay.
+    app.clock.advance(time::Duration::seconds(5));
+    assert_eq!(refresh(&app, &user.refresh_token).await.status(), 401);
+    assert_eq!(
+        app.get_auth("/users/me", access).await.status(),
+        401,
+        "the family's access token still worked from the cache"
+    );
+}
+
+/// Replayed and foreign refresh tokens count against the address, like
+/// unknown ones.
+#[tokio::test]
+async fn replayed_refresh_tokens_count_against_the_address() {
+    use deadpool_redis::redis::AsyncCommands;
+
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 721).await;
+    refresh(&app, &user.refresh_token).await;
+    app.clock.advance(time::Duration::seconds(5));
+    refresh(&app, &user.refresh_token).await;
+
+    let mut conn = app.redis.get().await.unwrap();
+    let failures: Option<i64> = conn
+        .get(format!("refresh_fail:{}", app.client_ip))
+        .await
+        .unwrap();
+    assert_eq!(failures, Some(1));
+}

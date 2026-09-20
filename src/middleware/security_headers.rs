@@ -69,6 +69,14 @@ pub async fn layer(
     if !headers.contains_key("cache-control") {
         headers.insert("cache-control", HeaderValue::from_static("no-store"));
     }
+    // RFC 6749 section 5.1 pairs `no-store` with `Pragma: no-cache` for
+    // HTTP/1.0 caches on every response carrying tokens.
+    if headers
+        .get("cache-control")
+        .is_some_and(|value| value.as_bytes().starts_with(b"no-store"))
+    {
+        headers.insert("pragma", HeaderValue::from_static("no-cache"));
+    }
 
     res
 }

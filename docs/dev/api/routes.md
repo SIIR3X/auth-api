@@ -68,7 +68,7 @@ loopback only.
 - `login` answers tokens, or `{ "two_factor_required": ..., "pre_auth_token", "method" }`.
   Each pre-auth token is bound to the method it was issued for.
 - `refresh` rotates the refresh token. Presenting a rotated token again revokes
-  the whole session family, except within 2 seconds of the rotation (two tabs,
+  the whole session family, except within 1 second of the rotation (two tabs,
   a retried request).
 - Logout stays outside the strict bucket so an exhausted budget never prevents
   ending a session.
@@ -231,6 +231,10 @@ every other session and notifies the previous address.
 | GET | `/users/me/sessions` | JWT | General |
 | DELETE | `/users/me/sessions` | JWT + reauth | Strict |
 | DELETE | `/users/me/sessions/{id}` | JWT + reauth | Strict |
+
+`last_used_at` of a session is the moment it was issued or last refreshed:
+a refresh rotates the session, so an active session was used at most one
+refresh lifetime ago. Access tokens do not update it.
 
 ## External identities
 

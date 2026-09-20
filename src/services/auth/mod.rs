@@ -113,8 +113,9 @@ const REFRESH_FAILURE_WINDOW_SECS: u64 = 900;
 /// A rotated refresh token presented again within this window is treated as a
 /// concurrent refresh from the same client (two tabs, a retried request): it is
 /// refused without revoking the family. Later, it is a replay and the whole
-/// family is revoked. Kept short: inside the window a replay goes undetected.
-const REFRESH_REUSE_GRACE: TimeDuration = TimeDuration::seconds(2);
+/// family is revoked. Kept short: inside the window a replay goes undetected
+/// (it is counted in `auth_refresh_concurrent_total`).
+const REFRESH_REUSE_GRACE: TimeDuration = TimeDuration::seconds(1);
 
 /// Pre-auth (2FA challenge) token TTL in Redis.
 const PRE_AUTH_TTL_SECS: u64 = 300;

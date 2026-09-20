@@ -357,12 +357,15 @@ pub async fn verify_token_state(
                 .ok_or(AppError::Unauthorized)?;
             let active = session.is_active(state.clock.now());
             let first_party = session.first_party();
-            let _: Result<(), _> = conn
-                .set_ex(
-                    &cache_key,
-                    crate::domain::session::cached_value(active, first_party),
-                    SESSION_CACHE_TTL_SECS,
-                )
+            // NX: a revocation that raced this read left an "ended" marker,
+            // which must not be overwritten by the stale "active" just read.
+            let _: Result<Option<String>, _> = deadpool_redis::redis::cmd("SET")
+                .arg(&cache_key)
+                .arg(crate::domain::session::cached_value(active, first_party))
+                .arg("NX")
+                .arg("EX")
+                .arg(SESSION_CACHE_TTL_SECS)
+                .query_async(&mut *conn)
                 .await;
             (active, first_party)
         }
@@ -375,17 +378,14 @@ pub async fn verify_token_state(
     }
 }
 
-/// Immediately invalidate the session validity cache entry.
-/// Call this on explicit logout to ensure revocation takes effect without waiting for TTL expiry.
-/// Best-effort: if Redis is unavailable, the cache expires naturally within SESSION_CACHE_TTL_SECS.
-pub fn invalidate_session_cache(state: &AppState, session_id: Uuid) {
-    let redis = state.redis.clone();
-    let key = format!("{SESSION_CACHE_PREFIX}{session_id}");
-    crate::utils::background::spawn(async move {
-        if let Ok(mut conn) = redis.get().await {
-            let _: Result<(), _> = conn.del(&key).await;
-        }
-    });
+/// Mark a revoked session as ended in the validity cache, at once. An "ended"
+/// marker rather than a deletion: a token check that read the session from the
+/// database just before the revocation writes its result only if no marker is
+/// there (`SET NX`), so it cannot put back a stale "active" for the cache TTL.
+/// Best-effort: if Redis is unavailable, the cache expires within
+/// SESSION_CACHE_TTL_SECS.
+pub async fn invalidate_session_cache(state: &AppState, session_id: Uuid) {
+    invalidate_session_caches(state, &[session_id]).await;
 }
 
 pub async fn invalidate_session_caches(state: &AppState, session_ids: &[Uuid]) {
@@ -394,10 +394,29 @@ pub async fn invalidate_session_caches(state: &AppState, session_ids: &[Uuid]) {
     }
 
     if let Ok(mut conn) = state.redis.get().await {
-        let keys: Vec<String> = session_ids
-            .iter()
-            .map(|id| format!("{SESSION_CACHE_PREFIX}{id}"))
-            .collect();
-        let _: Result<(), _> = conn.del(keys).await;
+        let mut pipe = deadpool_redis::redis::pipe();
+        for id in session_ids {
+            pipe.set_ex(
+                format!("{SESSION_CACHE_PREFIX}{id}"),
+                crate::domain::session::CACHED_ENDED,
+                SESSION_CACHE_TTL_SECS,
+            )
+            .ignore();
+        }
+        let _: Result<(), _> = pipe.query_async(&mut *conn).await;
     }
+}
+
+/// Revoke every session of the family of `session_id` (a replayed refresh
+/// token or authorization code) and mark them ended in the validity cache, so
+/// their access tokens stop working now rather than when the cache expires.
+pub async fn revoke_family(state: &AppState, session_id: Uuid) -> Result<(), AppError> {
+    session_repo::revoke_family(&state.db, session_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let family = session_repo::family_session_ids(&state.db, session_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    invalidate_session_caches(state, &family).await;
+    Ok(())
 }
