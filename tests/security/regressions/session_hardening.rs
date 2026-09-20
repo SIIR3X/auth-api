@@ -242,3 +242,82 @@ async fn a_deleted_account_leaves_no_address_or_sign_in_attempt_behind() {
         "audit entries of the account keep its addresses"
     );
 }
+
+/// A stolen session guessing the password locks itself out, not the owner:
+/// the owner's own session still re-authenticates and revokes it.
+#[tokio::test]
+async fn a_stolen_session_guessing_the_password_does_not_lock_the_owner_out() {
+    let app = TestApp::spawn().await;
+    let owner = fixtures::authenticated_user(&app, 700).await;
+    let stolen: Value = app
+        .post(
+            "/auth/login",
+            &json!({ "identifier": owner.email, "password": owner.password }),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let stolen_token = stolen["access_token"].as_str().unwrap();
+    let stolen_sid = app.decode_access_token(stolen_token).sid;
+
+    // The test configuration locks after 3 failures.
+    for _ in 0..3 {
+        app.post_auth(
+            "/users/me/reauth",
+            stolen_token,
+            &json!({ "current_password": "Guess-Guess-1!" }),
+        )
+        .await;
+    }
+    let res = app
+        .post_auth(
+            "/users/me/reauth",
+            stolen_token,
+            &json!({ "current_password": owner.password }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 403, "the stolen session is locked");
+
+    let res = app
+        .delete_auth_json(
+            &format!("/users/me/sessions/{stolen_sid}"),
+            &owner.access_token,
+            &json!({ "current_password": owner.password }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204, "the owner still acts");
+    assert_eq!(app.get_auth("/users/me", stolen_token).await.status(), 401);
+}
+
+/// Wrong recovery codes sent through the authenticated route spend a budget of
+/// their own: a stolen token cannot exhaust the sign-in budget of the owner.
+#[tokio::test]
+async fn the_authenticated_recovery_route_spends_its_own_budget() {
+    use deadpool_redis::redis::AsyncCommands;
+
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 701).await;
+    for _ in 0..5 {
+        let res = app
+            .post_auth(
+                "/users/me/two-factor/recovery-codes/use",
+                &user.access_token,
+                &json!({ "code": "AAAA-BBBB-CCCC-DDDD-EEEE" }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 401);
+    }
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/recovery-codes/use",
+            &user.access_token,
+            &json!({ "code": "AAAA-BBBB-CCCC-DDDD-EEEE" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 429);
+
+    let mut conn = app.redis.get().await.unwrap();
+    let sign_in_budget: Option<i64> = conn.get(format!("rc_user_fail:{}", user.id)).await.unwrap();
+    assert_eq!(sign_in_budget, None, "the sign-in budget is untouched");
+}

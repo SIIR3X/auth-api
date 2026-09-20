@@ -21,30 +21,45 @@ use crate::{
 use super::{auth as auth_svc, email::AccessItem, events, reauth as reauth_svc};
 use crate::utils::redis_counter::{self, Budget};
 
-/// Redis key prefix for the per-user reauth-failure counter.
+/// Redis key prefix of the re-authentication failure budgets.
 /// Protects re-authentication / sensitive-action endpoints (`change_password`,
 /// `change_username`, sessions::revoke, email-change flow, ...) from
 /// brute-force when an access token has been stolen: even with a valid
 /// access token, an attacker cannot try unlimited passwords.
 const REAUTH_FAIL_PREFIX: &str = "reauth_failures:";
-/// TTL of the counter (1 hour). Resets after a period of inactivity so a
+/// TTL of the counters (1 hour). Resets after a period of inactivity so a
 /// legitimate user mistyping yesterday is not blocked today.
 const REAUTH_FAIL_TTL_SECS: u64 = 3600;
+/// The account-wide ceiling, in multiples of `LOCKOUT_THRESHOLD`: high enough
+/// that one stolen session exhausting its own budget leaves the owner's
+/// sessions able to re-authenticate, low enough to bound the guesses made
+/// through several sessions.
+const REAUTH_ACCOUNT_CEILING_FACTOR: i64 = 3;
 
+/// The account-wide re-authentication budget (reset by an administrator's
+/// unlock).
 pub(crate) fn reauth_fail_key(user_id: Uuid) -> String {
     format!("{}{}", REAUTH_FAIL_PREFIX, user_id)
 }
 
-/// Verifies a user's current password. Returns Err(ReauthenticationFailed) on mismatch:
-/// the caller is already signed in, so "invalid email or password" would mislead.
+/// The budget of one session.
+fn session_reauth_fail_key(user_id: Uuid, session_id: Uuid) -> String {
+    format!("{REAUTH_FAIL_PREFIX}{user_id}:{session_id}")
+}
+
+/// Verifies a user's current password from `session_id`. Returns
+/// Err(ReauthenticationFailed) on mismatch: the caller is already signed in,
+/// so "invalid email or password" would mislead.
 ///
-/// Wraps a per-user Redis counter to prevent brute-force across re-auth
-/// endpoints. Once the configured `LOCKOUT_THRESHOLD` is reached, the call
-/// returns `AppError::AccountLocked` until the TTL elapses, regardless of
-/// whether the next submitted password is correct.
+/// Guesses are counted per session and per account. Once a session reaches
+/// `LOCKOUT_THRESHOLD` failures, that session gets `AccountLocked` until the
+/// window ends, whatever it submits; the account-wide ceiling is three times
+/// higher. A stolen session thus locks itself out, not the owner's own
+/// sessions, which keep revoking it and changing the password.
 pub async fn verify_password(
     state: &AppState,
     user_id: Uuid,
+    session_id: Uuid,
     password: &str,
 ) -> Result<(), AppError> {
     let user = user_repo::find_by_id(&state.db, user_id)
@@ -53,18 +68,26 @@ pub async fn verify_password(
         .ok_or(AppError::NotFound)?;
 
     let threshold = i64::from(state.config.security.lockout_threshold);
-    let fail_key = reauth_fail_key(user_id);
+    let session_key = session_reauth_fail_key(user_id, session_id);
+    let account_key = reauth_fail_key(user_id);
 
     // Reserve the attempt before Argon2 runs, in one atomic step: parallel
     // guesses cannot all read a count below the threshold. Fails closed when
     // Redis is unavailable, like every budget guarding a secret.
     let attempt = redis_counter::consume(
         &state.redis,
-        &[Budget {
-            key: &fail_key,
-            limit: threshold,
-            window_secs: REAUTH_FAIL_TTL_SECS,
-        }],
+        &[
+            Budget {
+                key: &session_key,
+                limit: threshold,
+                window_secs: REAUTH_FAIL_TTL_SECS,
+            },
+            Budget {
+                key: &account_key,
+                limit: threshold.saturating_mul(REAUTH_ACCOUNT_CEILING_FACTOR),
+                window_secs: REAUTH_FAIL_TTL_SECS,
+            },
+        ],
     )
     .await?;
     if attempt.exceeded {
@@ -76,21 +99,23 @@ pub async fn verify_password(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     if !valid {
-        if attempt.max_count() >= threshold {
+        if attempt.counts[0] >= threshold {
             // Threshold just reached: a distinct error, so the caller (and the
             // logs) can tell the lockout from a mistyped password.
             tracing::warn!(
                 user_id = %user_id,
-                failures = attempt.max_count(),
-                "reauth lockout triggered for user"
+                failures = attempt.counts[0],
+                "reauth lockout triggered for session"
             );
             return Err(AppError::AccountLocked);
         }
         return Err(AppError::ReauthenticationFailed);
     }
 
-    // A success clears the budget, so earlier typos do not count later.
-    redis_counter::reset(&state.redis, &[&fail_key]).await;
+    // A success proves the password: earlier typos stop counting, for this
+    // session and for the account. A session that exhausted its own budget
+    // stays locked until its window ends.
+    redis_counter::reset(&state.redis, &[&session_key, &account_key]).await;
 
     Ok(())
 }

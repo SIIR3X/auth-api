@@ -321,7 +321,7 @@ mod tests {
                 "auth_router" => "/auth",
                 "me_router" | "me_strict_router" => "/users/me",
                 "admin_router" => "/admin",
-                "oauth_router" => "/oauth",
+                "oauth_router" | "oauth_client_router" => "/oauth",
                 _ => "",
             };
             let full = match route {

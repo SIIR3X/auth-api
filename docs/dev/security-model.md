@@ -85,6 +85,11 @@ the database together, is out of scope.
   `403 first_party_session_required`. Otherwise a delegated token could approve
   on its own a flow of the instance's application and obtain an unrestricted
   session. The kind is read from the session, cached with its validity.
+- **Re-authentication resists a stolen session.** Every route that accepts the
+  current password shares the strict bucket of `/users/me/reauth`, and wrong
+  passwords are counted per session and per account (three times the session
+  budget): a stolen session guessing the password locks itself out, while the
+  owner's sessions still re-authenticate, revoke it and change the password.
 - **Sensitive actions require a recent re-authentication**: changing the
   password, username or email, deleting the account, revoking sessions, and
   adding or removing a second factor. A fresh sign-in does not count - a stolen
@@ -97,8 +102,9 @@ the database together, is out of scope.
 - TOTP codes are accepted once (durable replay table), with per-challenge and
   per-account failure budgets. Confirming a new TOTP method consumes its code
   in the same table, under its own budget. Email codes have their own budgets;
-  recovery codes share one per-account budget between the sign-in challenge and
-  the authenticated route.
+  recovery codes have a per-challenge and per-account budget at sign-in, and a
+  per-session one on the authenticated route, so a stolen token cannot keep the
+  owner from signing in with a recovery code.
 - A second factor answers an account status exactly as the password sign-in
   does.
 - Adding or removing a method notifies the account's address. Removing the last
@@ -298,7 +304,7 @@ when a cited test no longer exists.
 | SEC-08 | Absolute session lifetime and optional address binding | `session_lifetime_counts_from_the_first_sign_in`, `a_rotation_inherits_the_family_start`, `refresh_rejects_mismatched_ip_with_strict_binding`, `rotations_never_outlive_the_absolute_lifetime`, `a_rotated_session_is_never_dated_past_its_absolute_lifetime` |
 | SEC-09 | Sensitive actions need a recent re-authentication; signing in does not count | `signing_in_does_not_grant_sensitive_actions`, `revoke_session_requires_recent_reauth`, `delete_account_without_password_and_no_recent_reauth_rejected`, `a_device_session_cannot_change_the_password_without_reauthentication`, `enrolling_a_second_factor_requires_reauthentication` |
 | SEC-10 | A pre-auth token completes only the method it was issued for | `totp_challenge_cannot_be_completed_with_an_email_code`, `a_pre_auth_state_without_a_method_cannot_complete_with_a_recovery_code`, `seeds_and_regressions_hold` |
-| SEC-11 | Second-factor codes are single-use and budgeted per challenge and per account | `totp_replay_within_window_rejected`, `totp_replay_rejected_even_after_redis_key_loss`, `concurrent_totp_guesses_never_exceed_the_token_budget`, `account_budget_blocks_fresh_pre_auth_tokens`, `recovery_challenge_rate_limited_after_max_failures`, `email_2fa_lockout_after_max_failures`, `recovery_login_replay_rejected`, `a_code_confirming_a_new_method_cannot_complete_a_sign_in`, `confirming_a_new_method_has_an_attempt_budget`, `recovery_code_guesses_share_one_budget_across_routes`, `a_challenge_owns_its_state_and_every_failure_budget` |
+| SEC-11 | Second-factor codes are single-use and budgeted per challenge and per account | `totp_replay_within_window_rejected`, `totp_replay_rejected_even_after_redis_key_loss`, `concurrent_totp_guesses_never_exceed_the_token_budget`, `account_budget_blocks_fresh_pre_auth_tokens`, `recovery_challenge_rate_limited_after_max_failures`, `email_2fa_lockout_after_max_failures`, `recovery_login_replay_rejected`, `a_code_confirming_a_new_method_cannot_complete_a_sign_in`, `confirming_a_new_method_has_an_attempt_budget`, `recovery_code_guesses_through_the_account_leave_the_sign_in_budget`, `a_challenge_owns_its_state_and_every_failure_budget` |
 | SEC-12 | Changes to second factors are notified and keep a usable configuration | `removing_the_last_method_drops_recovery_codes`, `removing_the_primary_method_promotes_the_remaining_one`, `disable_totp_sends_two_factor_disabled_email` |
 | SEC-13 | TOTP secrets are encrypted with named keys; rotation is resumable | `keyring_writes_versioned_ciphertexts_it_can_read`, `keyring_refuses_a_key_it_does_not_hold`, `encrypt_produces_different_output_each_call`, `rotate_is_idempotent_when_run_twice`, `rotate_re_encrypts_totp_secret_with_new_key` |
 | SEC-14 | Only registered clients obtain sessions through client flows | `a_flow_needs_a_registered_client` |
@@ -338,3 +344,4 @@ when a cited test no longer exists.
 | SEC-48 | The API connects with a role that reads and writes data only: it cannot alter the schema, truncate or rewrite the audit log, or change the permission catalog and migration history; maintenance needing more runs in owner-privileged functions | `the_runtime_role_cannot_erase_the_audit_trail_or_alter_the_schema`, `the_runtime_role_does_everything_the_service_needs` |
 | SEC-49 | Secrets at rest resist a database copy: email codes are keyed digests, ciphertexts are bound to their row, secrets are compared in constant time, and a secret under a removed key stops the start-up | `otp_digests_are_keyed_bound_and_survive_a_rotation`, `a_ciphertext_moved_to_another_row_no_longer_decrypts`, `constant_time_equality_compares_contents_and_lengths`, `secrets_under_a_removed_key_are_detected`, `email_code_lookup_is_scoped_to_the_challenged_user`, `debug_output_never_shows_the_password_hash` |
 | SEC-50 | Settings that would weaken a control are refused at start-up (TOTP skew beyond the replay window, Argon2 under the OWASP floor in production, lifetimes and windows out of range, a zero rate limit), and weaker stored hashes are replaced as accounts sign in | `validate_bounds_the_totp_skew_to_what_the_replay_table_covers`, `validate_refuses_weak_argon2_parameters_in_production_only`, `validate_bounds_lifetimes_windows_and_limits`, `a_hash_weaker_than_the_configuration_is_rehashed`, `a_weaker_password_hash_is_replaced_after_sign_in` |
+| SEC-51 | Password guesses with a stolen token are bounded without locking the owner out: every route taking the current password is strict, re-authentication failures count per session, the authenticated recovery route has its own budget, and client endpoints are bounded per client rather than per address | `routes_taking_the_current_password_count_against_the_strict_bucket`, `a_stolen_session_guessing_the_password_does_not_lock_the_owner_out`, `the_authenticated_recovery_route_spends_its_own_budget`, `client_endpoints_are_bounded_per_client_and_per_wrong_secret` |

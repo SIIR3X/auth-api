@@ -63,7 +63,7 @@ pub async fn reauthenticate(
     request_id: Option<Uuid>,
     reason: &'static str,
 ) -> Result<(), AppError> {
-    user_svc::verify_password(state, user_id, current_password).await?;
+    user_svc::verify_password(state, user_id, session_id, current_password).await?;
     mark_recent_reauth(state, session_id).await;
     record_reauth_event(state, user_id, ip, request_id, reason).await
 }

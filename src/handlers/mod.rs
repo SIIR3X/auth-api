@@ -256,7 +256,7 @@ fn build_router(
         // brute-force attack must not prevent the legitimate user from ending their session.
         .route("/auth/logout", post(auth::logout))
         .layer(middleware::from_fn_with_state(
-            rl_general,
+            rl_general.clone(),
             rate_limit::layer_with_state,
         ));
 
@@ -271,10 +271,15 @@ fn build_router(
         )
         .nest(
             "/oauth",
-            oauth_router().layer(middleware::from_fn_with_state(
-                rl_auth,
-                rate_limit::layer_with_state,
-            )),
+            oauth_router()
+                .layer(middleware::from_fn_with_state(
+                    rl_auth,
+                    rate_limit::layer_with_state,
+                ))
+                .merge(oauth_client_router().layer(middleware::from_fn_with_state(
+                    rl_general,
+                    rate_limit::layer_with_state,
+                ))),
         )
         .nest("/users/me", me_with_strict_reauth)
         .nest("/admin", admin)
@@ -454,11 +459,8 @@ fn admin_router() -> Router<AppState> {
 fn oauth_router() -> Router<AppState> {
     Router::new()
         .route("/authorize", get(oauth::authorize))
-        .route("/token", post(oauth::token))
         .route("/device_authorization", post(oauth::device_authorization))
-        .route("/introspect", post(oauth::introspect))
         .route("/userinfo", get(oauth::userinfo))
-        .route("/revoke", post(oauth::revoke))
         .route("/device/verify", post(oauth::verify_device))
         .route("/device/{user_code}", get(oauth::describe_device))
         .route("/authorization-requests/{id}", get(oauth::describe_request))
@@ -470,6 +472,19 @@ fn oauth_router() -> Router<AppState> {
             "/authorization-requests/{id}/deny",
             post(oauth::deny_request),
         )
+}
+
+// The endpoints a client application calls with its own credentials: under
+// the general per-address bucket, with a per-client budget and a per-address
+// budget of wrong secrets in `services::oauth::authenticate_client`. The strict
+// bucket would cap a resource server introspecting from one address, or every
+// client behind a NAT, at a handful of requests a minute.
+
+fn oauth_client_router() -> Router<AppState> {
+    Router::new()
+        .route("/token", post(oauth::token))
+        .route("/introspect", post(oauth::introspect))
+        .route("/revoke", post(oauth::revoke))
 }
 
 // Sensitive authenticated routes placed under the strict auth rate-limit bucket.
@@ -485,6 +500,30 @@ fn me_strict_router() -> Router<AppState> {
         .route("/email/verify-current", post(user::verify_current_email))
         .route("/email/submit", post(user::submit_new_email))
         .route("/email/confirm", post(user::confirm_new_email))
+        // Every route accepting `current_password` guesses the password like
+        // `/reauth` does, so it shares its bucket: the general one would let a
+        // stolen access token try passwords fifteen times faster.
+        .route("/", delete(user::delete_account))
+        .route("/username", patch(user::change_username))
+        .route("/password", patch(user::change_password))
+        .route("/sessions", delete(session::revoke_all))
+        .route("/sessions/{id}", delete(session::revoke))
+        .route("/passkeys/{id}", delete(passkey::remove))
+        .route(
+            "/external-identities/{id}",
+            delete(external_identity::unlink),
+        )
+        .route("/two-factor/totp/setup", post(two_factor::setup_totp))
+        .route("/two-factor/totp/{id}", delete(two_factor::disable_totp))
+        .route(
+            "/two-factor/recovery-codes",
+            post(two_factor::regenerate_recovery_codes),
+        )
+        .route("/two-factor/email/setup", post(two_factor::setup_email_otp))
+        .route(
+            "/two-factor/email/{id}",
+            delete(two_factor::disable_email_otp),
+        )
 }
 
 // Protected routes under /users/me (all require a valid JWT).
@@ -496,10 +535,7 @@ fn me_router() -> Router<AppState> {
         .route("/", get(user::me))
         .route("/audit", get(audit::list))
         .route("/two-factor", get(two_factor::list))
-        .route("/username", patch(user::change_username))
-        .route("/password", patch(user::change_password))
         .route("/locale", patch(user::change_locale))
-        .route("/", delete(user::delete_account))
         // External identities
         .route("/external-identities", get(external_identity::list))
         .route(
@@ -510,40 +546,26 @@ fn me_router() -> Router<AppState> {
             "/external-identities/{provider}/start",
             post(external_identity::start_link),
         )
-        .route(
-            "/external-identities/{id}",
-            delete(external_identity::unlink),
-        )
         // Passkeys
         .route("/passkeys", get(passkey::list))
         .route("/passkeys", post(passkey::register))
         .route("/passkeys/options", post(passkey::registration_options))
-        .route("/passkeys/{id}", delete(passkey::remove))
         // Personal access tokens
         .route("/tokens", get(personal_access_token::list))
         .route("/tokens", post(personal_access_token::create))
         .route("/tokens/{id}", delete(personal_access_token::revoke))
         // Sessions
         .route("/sessions", get(session::list))
-        .route("/sessions", delete(session::revoke_all))
-        .route("/sessions/{id}", delete(session::revoke))
         // Two-factor: TOTP
-        .route("/two-factor/totp/setup", post(two_factor::setup_totp))
         .route(
             "/two-factor/totp/{id}/verify",
             post(two_factor::verify_totp_setup),
-        )
-        .route("/two-factor/totp/{id}", delete(two_factor::disable_totp))
-        .route(
-            "/two-factor/recovery-codes",
-            post(two_factor::regenerate_recovery_codes),
         )
         .route(
             "/two-factor/recovery-codes/use",
             post(two_factor::use_recovery_code),
         )
         // Two-factor: Email OTP
-        .route("/two-factor/email/setup", post(two_factor::setup_email_otp))
         .route(
             "/two-factor/email/send",
             post(two_factor::send_email_otp_code),
@@ -551,10 +573,6 @@ fn me_router() -> Router<AppState> {
         .route(
             "/two-factor/email/{id}/verify",
             post(two_factor::verify_email_otp_setup),
-        )
-        .route(
-            "/two-factor/email/{id}",
-            delete(two_factor::disable_email_otp),
         )
 }
 

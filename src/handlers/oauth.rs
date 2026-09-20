@@ -532,11 +532,13 @@ pub struct TokenOperationRequest {
 )]
 pub async fn introspect(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, EndpointError> {
     let parameters = form(&headers, &body)?;
-    let introspection = oauth_svc::introspect(&state, authorization(&headers), &parameters).await?;
+    let introspection =
+        oauth_svc::introspect(&state, authorization(&headers), &parameters, ip).await?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(introspection)).into_response())
 }
 

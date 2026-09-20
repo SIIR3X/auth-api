@@ -39,6 +39,9 @@ const MAX_TOTP_SETUP_FAILURES: i64 = 5;
 const TOTP_SETUP_FAILURE_WINDOW_SECS: u64 = 900;
 /// Redis key prefix for the TOTP setup failure budget.
 const TOTP_SETUP_FAIL_PREFIX: &str = "totp_setup_fail:";
+/// Wrong recovery codes one session may submit to the authenticated route per
+/// day.
+const MAX_AUTHENTICATED_RECOVERY_FAILURES: i64 = 5;
 /// Minimum delay between two recovery code regenerations (24 hours).
 const RC_REGEN_COOLDOWN_SECS: u64 = 86_400;
 
@@ -355,18 +358,21 @@ async fn create_recovery_codes(state: &AppState, user_id: Uuid) -> Result<Vec<St
 pub async fn use_recovery_code(
     state: &AppState,
     user_id: Uuid,
+    session_id: Uuid,
     code: &str,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
-    // The same per-account budget as the sign-in challenge: a second route
-    // must not double the guesses against the same codes.
-    let fail_key = format!("{}{user_id}", super::auth::RC_USER_FAIL_PREFIX);
+    // A budget of its own, per session: sharing the sign-in challenge's would
+    // let a stolen access token exhaust it and keep the owner from signing in
+    // with a recovery code for a day. Recovery codes carry 80 bits: the budget
+    // bounds volume.
+    let fail_key = format!("rc_route_fail:{user_id}:{session_id}");
 
     let attempt = redis_counter::consume(
         &state.redis,
         &[Budget {
             key: &fail_key,
-            limit: super::auth::MAX_RECOVERY_FAILURES_BY_USER,
+            limit: MAX_AUTHENTICATED_RECOVERY_FAILURES,
             window_secs: super::auth::RECOVERY_FAILURE_USER_WINDOW_SECS,
         }],
     )

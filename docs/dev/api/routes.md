@@ -17,9 +17,14 @@ the overview.
 |------------|---------|
 | General | `RATE_LIMIT_RPM` per client per minute |
 | Strict | Counts against the general budget **and** `RATE_LIMIT_AUTH_RPM` |
+| General, per client | The general budget per address, plus 1 200 requests per minute per authenticated client and 20 wrong client secrets per address per 15 minutes |
 
 Each request passes one limiter, which checks all of its buckets in a single
 Redis call; a refused request consumes nothing. A `429` carries `Retry-After`.
+Every route accepting `current_password` is strict, like `/users/me/reauth`.
+Wrong passwords given to re-authenticate are also counted per session
+(`LOCKOUT_THRESHOLD` per hour) and per account (three times as many): a stolen
+session locks itself, not the owner's sessions.
 
 Timestamps are Unix seconds. Errors are `{"code": "...", "message": "..."}`
 with a stable `code`.
@@ -88,10 +93,10 @@ and 8628 (device authorization). Token and device authorization requests are
 | GET | `/oauth/authorization-requests/{id}` | JWT | Strict |
 | POST | `/oauth/authorization-requests/{id}/approve` | JWT (+ reauth for non-primary clients) | Strict |
 | POST | `/oauth/authorization-requests/{id}/deny` | JWT | Strict |
-| POST | `/oauth/token` | client | Strict |
+| POST | `/oauth/token` | client | General, per client |
 | POST | `/oauth/device_authorization` | client | Strict |
-| POST | `/oauth/introspect` | confidential client | Strict |
-| POST | `/oauth/revoke` | client | Strict |
+| POST | `/oauth/introspect` | confidential client | General, per client |
+| POST | `/oauth/revoke` | client | General, per client |
 | GET | `/oauth/device/{user_code}` | JWT | Strict |
 | POST | `/oauth/device/verify` | JWT (account) (+ reauth for non-primary clients) | Strict |
 
@@ -186,10 +191,10 @@ when tokens are issued (`invalid_grant` otherwise).
 | GET | `/users/me/tokens` | JWT | General |
 | POST | `/users/me/tokens` | JWT + reauth (recent only) | General |
 | DELETE | `/users/me/tokens/{id}` | JWT | General |
-| PATCH | `/users/me/username` | JWT + reauth | General |
-| PATCH | `/users/me/password` | JWT + reauth | General |
+| PATCH | `/users/me/username` | JWT + reauth | Strict |
+| PATCH | `/users/me/password` | JWT + reauth | Strict |
 | PATCH | `/users/me/locale` | JWT | General |
-| DELETE | `/users/me` | JWT + reauth | General |
+| DELETE | `/users/me` | JWT + reauth | Strict |
 
 `/users/me/audit?limit=&cursor=` returns the caller's own security history,
 newest first: `{ "entries": [...], "next_cursor" }`. Pass `next_cursor` back as
@@ -224,8 +229,8 @@ every other session and notifies the previous address.
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
 | GET | `/users/me/sessions` | JWT | General |
-| DELETE | `/users/me/sessions` | JWT + reauth | General |
-| DELETE | `/users/me/sessions/{id}` | JWT + reauth | General |
+| DELETE | `/users/me/sessions` | JWT + reauth | Strict |
+| DELETE | `/users/me/sessions/{id}` | JWT + reauth | Strict |
 
 ## External identities
 
@@ -238,7 +243,7 @@ every other session and notifies the previous address.
 | GET | `/users/me/external-identities` | JWT | General |
 | POST | `/users/me/external-identities/{provider}/start` | JWT + reauth (recent only) | General |
 | POST | `/users/me/external-identities/complete` | JWT | General |
-| DELETE | `/users/me/external-identities/{id}` | JWT + reauth | General |
+| DELETE | `/users/me/external-identities/{id}` | JWT + reauth | Strict |
 
 Providers (`IDENTITY_PROVIDERS`): Google, GitHub, or any OpenID Connect issuer.
 
@@ -267,7 +272,7 @@ account links one identity per provider
 | GET | `/users/me/passkeys` | JWT | General |
 | POST | `/users/me/passkeys/options` | JWT + reauth (recent only) | General |
 | POST | `/users/me/passkeys` | JWT | General |
-| DELETE | `/users/me/passkeys/{id}` | JWT + reauth | General |
+| DELETE | `/users/me/passkeys/{id}` | JWT + reauth | Strict |
 | POST | `/auth/passkeys/options` | - | Strict |
 | POST | `/auth/passkeys/sign-in` | passkey | Strict |
 
@@ -290,14 +295,14 @@ second factor `/admin` requires.
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
 | GET | `/users/me/two-factor` | JWT | General |
-| POST | `/users/me/two-factor/totp/setup` | JWT + reauth | General |
+| POST | `/users/me/two-factor/totp/setup` | JWT + reauth | Strict |
 | POST | `/users/me/two-factor/totp/{id}/verify` | JWT | General |
-| DELETE | `/users/me/two-factor/totp/{id}` | JWT + reauth | General |
-| POST | `/users/me/two-factor/email/setup` | JWT + reauth | General |
+| DELETE | `/users/me/two-factor/totp/{id}` | JWT + reauth | Strict |
+| POST | `/users/me/two-factor/email/setup` | JWT + reauth | Strict |
 | POST | `/users/me/two-factor/email/send` | JWT | General |
 | POST | `/users/me/two-factor/email/{id}/verify` | JWT | General |
-| DELETE | `/users/me/two-factor/email/{id}` | JWT + reauth | General |
-| POST | `/users/me/two-factor/recovery-codes` | JWT + reauth | General |
+| DELETE | `/users/me/two-factor/email/{id}` | JWT + reauth | Strict |
+| POST | `/users/me/two-factor/recovery-codes` | JWT + reauth | Strict |
 | POST | `/users/me/two-factor/recovery-codes/use` | JWT | General |
 
 `GET /users/me/two-factor` lists the configured methods (with the ids the other

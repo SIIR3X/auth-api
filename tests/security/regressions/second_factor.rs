@@ -458,13 +458,16 @@ async fn confirming_a_new_method_has_an_attempt_budget() {
     );
 }
 
+/// Guesses through the authenticated route spend a budget of their own: a
+/// stolen access token cannot keep the owner from signing in with a recovery
+/// code (each code carries 80 bits; the budgets bound volume).
 #[tokio::test]
-async fn recovery_code_guesses_share_one_budget_across_routes() {
+async fn recovery_code_guesses_through_the_account_leave_the_sign_in_budget() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 612).await;
     let (_, recovery_codes) = enable_totp(&app, &user).await;
 
-    for attempt in 1..=10 {
+    for attempt in 1..=6 {
         let res = app
             .post_auth(
                 "/users/me/two-factor/recovery-codes/use",
@@ -472,7 +475,8 @@ async fn recovery_code_guesses_share_one_budget_across_routes() {
                 &json!({ "code": "XXXX-XXXX-XXXX-XXXX" }),
             )
             .await;
-        assert_eq!(res.status().as_u16(), 401, "attempt {attempt}");
+        let expected = if attempt <= 5 { 401 } else { 429 };
+        assert_eq!(res.status().as_u16(), expected, "attempt {attempt}");
     }
 
     let challenge = login_challenge(&app, &user).await;
@@ -485,7 +489,7 @@ async fn recovery_code_guesses_share_one_budget_across_routes() {
             }),
         )
         .await;
-    assert_eq!(res.status().as_u16(), 429);
+    assert_eq!(res.status().as_u16(), 200);
 }
 
 #[tokio::test]

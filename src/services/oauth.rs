@@ -109,10 +109,80 @@ impl From<sqlx::Error> for EndpointError {
 
 // Client authentication
 
+/// Wrong client secrets one address may present per window. Secrets carry 256
+/// bits: this bounds volume, it is not what keeps them secret.
+const MAX_CLIENT_AUTH_FAILURES_BY_IP: i64 = 20;
+const CLIENT_AUTH_FAILURE_WINDOW_SECS: u64 = 900;
+/// Requests one client may make per minute to the token, introspection and
+/// revocation endpoints. These run under the general per-address limit: a
+/// resource server introspecting from one address, or clients behind one NAT,
+/// are bounded per client instead of by the strict per-address limit.
+const CLIENT_REQUESTS_PER_MINUTE: i64 = 1_200;
+
+fn client_failure_key(ip: IpNetwork) -> String {
+    format!(
+        "oauth_client_fail:{}",
+        crate::middleware::rate_limit::ip_bucket(ip.ip())
+    )
+}
+
 /// The client making a token or device authorization request: authenticated
 /// with its secret when it has one (`client_secret_basic` or
 /// `client_secret_post`), identified by `client_id` when it is public.
+///
+/// Wrong secrets count against the address, and every authenticated request
+/// against the client: both budgets bound volume and fail open.
 pub async fn authenticate_client(
+    state: &AppState,
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+    ip: Option<IpNetwork>,
+) -> Result<RegisteredClient, EndpointError> {
+    if let Some(ip) = ip
+        && crate::utils::redis_counter::peek(&state.redis, &client_failure_key(ip))
+            .await
+            .unwrap_or(0)
+            >= MAX_CLIENT_AUTH_FAILURES_BY_IP
+    {
+        return Err(AppError::RateLimitExceeded.into());
+    }
+    let client = identify_client(state, authorization, parameters).await;
+    match &client {
+        Err(EndpointError::OAuth(error)) if error.code == ErrorCode::InvalidClient => {
+            if let Some(ip) = ip {
+                let key = client_failure_key(ip);
+                let _ = crate::utils::redis_counter::consume(
+                    &state.redis,
+                    &[crate::utils::redis_counter::Budget {
+                        key: &key,
+                        limit: MAX_CLIENT_AUTH_FAILURES_BY_IP,
+                        window_secs: CLIENT_AUTH_FAILURE_WINDOW_SECS,
+                    }],
+                )
+                .await;
+            }
+        }
+        Ok(client) => {
+            let key = format!("oauth_client_rpm:{}", client.client_id);
+            let consumed = crate::utils::redis_counter::consume(
+                &state.redis,
+                &[crate::utils::redis_counter::Budget {
+                    key: &key,
+                    limit: CLIENT_REQUESTS_PER_MINUTE,
+                    window_secs: 60,
+                }],
+            )
+            .await;
+            if consumed.is_ok_and(|attempt| attempt.exceeded) {
+                return Err(AppError::RateLimitExceeded.into());
+            }
+        }
+        Err(_) => {}
+    }
+    client
+}
+
+async fn identify_client(
     state: &AppState,
     authorization: Option<&str>,
     parameters: &[(String, String)],
@@ -499,7 +569,7 @@ pub async fn token(
         )
         .into());
     }
-    let client = authenticate_client(state, authorization, parameters).await?;
+    let client = authenticate_client(state, authorization, parameters, ip).await?;
     let required = |name: &'static str| {
         param(name).ok_or_else(|| {
             EndpointError::OAuth(OAuthError::new(
@@ -685,7 +755,7 @@ pub async fn device_authorization(
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
 ) -> Result<device_svc::DeviceInitResponse, EndpointError> {
-    let client = authenticate_client(state, authorization, parameters).await?;
+    let client = authenticate_client(state, authorization, parameters, ip).await?;
     let scopes = check_scopes(state, &client, oauth::parameter(parameters, "scope"))
         .await?
         .map_err(|message| OAuthError::new(ErrorCode::InvalidScope, message))?;
@@ -742,8 +812,9 @@ pub async fn introspect(
     state: &AppState,
     authorization: Option<&str>,
     parameters: &[(String, String)],
+    ip: Option<IpNetwork>,
 ) -> Result<Introspection, EndpointError> {
-    let client = authenticate_client(state, authorization, parameters).await?;
+    let client = authenticate_client(state, authorization, parameters, ip).await?;
     if !client.is_confidential() {
         return Err(OAuthError::new(
             ErrorCode::UnauthorizedClient,
@@ -862,7 +933,7 @@ pub async fn revoke(
     parameters: &[(String, String)],
     ip: Option<IpNetwork>,
 ) -> Result<(), EndpointError> {
-    let client = authenticate_client(state, authorization, parameters).await?;
+    let client = authenticate_client(state, authorization, parameters, ip).await?;
     let token = oauth::parameter(parameters, "token")
         .ok_or_else(|| OAuthError::new(ErrorCode::InvalidRequest, "token is required"))?;
     let owned = |session: &crate::domain::session::Session| {

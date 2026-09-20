@@ -226,7 +226,14 @@ pub async fn use_recovery_code(
     auth: FirstPartyUser,
     Json(body): Json<UseRecoveryCodeRequest>,
 ) -> Result<StatusCode, AppError> {
-    tf_svc::use_recovery_code(&state, auth.user_id, &body.code, auth.request_id).await?;
+    tf_svc::use_recovery_code(
+        &state,
+        auth.user_id,
+        auth.session_id,
+        &body.code,
+        auth.request_id,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
