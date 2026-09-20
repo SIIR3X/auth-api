@@ -129,7 +129,9 @@ async fn an_email_change_keeps_the_status_and_audits_no_address() {
         .await
         .unwrap();
 
-    change_email(&app, &user.access_token, "moved663@example.com").await;
+    // Unique per run: new addresses are budgeted globally, per target.
+    let new_email = fixtures::unique("moved663_") + "@example.com";
+    change_email(&app, &user.access_token, &new_email).await;
 
     let status: String = sqlx::query_scalar("SELECT status::text FROM users WHERE id = $1")
         .bind(user.id)

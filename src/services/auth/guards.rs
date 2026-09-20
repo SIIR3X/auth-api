@@ -113,7 +113,7 @@ pub(super) async fn record_failure(
         db,
         &NewLoginAttempt {
             user_id,
-            attempted_identifier: identifier,
+            attempted_identifier: crate::domain::login_attempt::storable_identifier(identifier),
             was_successful: false,
             failure_reason: Some(reason),
             request_ip: ip,

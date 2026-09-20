@@ -69,6 +69,8 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
   section 2.6): create `auth_api_owner`, `REASSIGN OWNED BY auth_api`, run
   `deploy/db/auth-api-grants.sql`, then run migrations with the owner's URL
   (`prod/auth-api/database-owner-url`). A single-role deployment keeps working.
+- Migration 0028 stops if two usernames differ only in case; its message gives
+  the query that lists them. Rename all but one of each, then migrate again.
 - Check the settings refused at start-up (listed under Security) against your
   environment before upgrading.
 - Run `auth-api --rotate-totp-keys` once, without `PREVIOUS_ENCRYPTION_KEY`, to

@@ -73,3 +73,10 @@ erase their own data about that user id.
   account is gone.
 - Client addresses of the audit log lose their host part after 90 days.
 - Failed sign-ins keep the user agent, successful ones do not.
+
+## Sign-in attempts
+
+A failed sign-in records the identifier typed only when it has the shape of an
+email address or a username; anything else (a password typed into the wrong
+field, for instance) is recorded as `<unrecognized>`, so it never sits in
+`login_attempts` for the retention period.

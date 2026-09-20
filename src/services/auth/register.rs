@@ -131,6 +131,7 @@ async fn register_account(
                 &[
                     ("users_email_key", "email_taken"),
                     ("users_username_key", "username_taken"),
+                    ("users_username_lower_key", "username_taken"),
                 ],
             ) {
                 AppError::Conflict("email_taken") => Ok(None),

@@ -381,3 +381,58 @@ async fn registration_takes_a_constant_minimum_time() {
         assert!(started.elapsed() >= Duration::from_millis(250), "{email}");
     }
 }
+
+/// Usernames are unique whatever their case: `Alice` cannot impersonate
+/// `alice`, and a sign-in finds the account whatever the case typed.
+#[tokio::test]
+async fn usernames_differing_only_in_case_cannot_coexist() {
+    let app = TestApp::spawn().await;
+    let alice = fixtures::register_user(&app, 670).await;
+    fixtures::activate_user(&app.db, alice.id).await;
+
+    let res = app
+        .post(
+            "/auth/register",
+            &json!({
+                "username": alice.username.to_uppercase(),
+                "email": "impostor670@example.com",
+                "password": "Password670!ok",
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["code"], "username_taken");
+
+    let res = app
+        .post(
+            "/auth/login",
+            &json!({ "identifier": alice.username.to_uppercase(), "password": alice.password }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+}
+
+/// Something typed in the identifier field that is neither an address nor a
+/// username (a password typed there by mistake) is not kept.
+#[tokio::test]
+async fn an_unrecognized_identifier_is_not_recorded() {
+    let app = TestApp::spawn().await;
+    let res = app
+        .post(
+            "/auth/login",
+            &json!({ "identifier": "My Secret Pa$$word!", "password": "whatever" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 401);
+    let recorded: Vec<String> =
+        sqlx::query_scalar("SELECT attempted_identifier::text FROM login_attempts")
+            .fetch_all(&app.db)
+            .await
+            .unwrap();
+    assert!(
+        !recorded.iter().any(|value| value.contains("Secret")),
+        "{recorded:?}"
+    );
+    assert!(recorded.iter().any(|value| value == "<unrecognized>"));
+}

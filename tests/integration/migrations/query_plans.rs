@@ -27,7 +27,7 @@ async fn identifier_lookup_plan_uses_user_indexes() {
         pg_args![&username],
     )
     .await;
-    assert_plan_contains(&username_plan, "users_username_key");
+    assert_plan_contains(&username_plan, "users_username_lower_key");
 }
 
 #[tokio::test]

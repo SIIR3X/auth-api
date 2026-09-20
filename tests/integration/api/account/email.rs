@@ -6,7 +6,8 @@ use crate::common::{app::TestApp, fixtures};
 async fn email_change_full_flow_success() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 1).await;
-    let new_email = "new1@example.com";
+    // Unique per run: new addresses are budgeted globally, per target.
+    let new_email = &(fixtures::unique("new1_") + "@example.com");
 
     // Step 1: start - sends OTP to current email
     let res = app
@@ -122,7 +123,7 @@ async fn email_change_steps_cannot_be_skipped() {
         .post_auth(
             "/users/me/email/submit",
             &user.access_token,
-            &serde_json::json!({ "flow_token": flow_token, "new_email": "skip@example.com" }),
+            &serde_json::json!({ "flow_token": flow_token, "new_email": fixtures::unique("skip") + "@example.com" }),
         )
         .await;
     assert_eq!(res.status().as_u16(), 401);
@@ -202,6 +203,21 @@ async fn email_change_submit_taken_email_answers_like_a_free_one() {
     )
     .await;
 
+    // The per-target budget is global, and this address is the same on every
+    // run: start from a clean one.
+    {
+        use deadpool_redis::redis::AsyncCommands;
+        let digest: String =
+            auth_api::utils::crypto::sha256(user1.email.to_ascii_lowercase().as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+        let mut conn = app.redis.get().await.unwrap();
+        let _: () = conn
+            .del(format!("ec_submit_target:{digest}"))
+            .await
+            .unwrap();
+    }
     let res = app
         .post_auth(
             "/users/me/email/submit",
@@ -260,7 +276,7 @@ async fn email_change_submissions_are_budgeted() {
                 &user.access_token,
                 &serde_json::json!({
                     "flow_token": flow_token,
-                    "new_email": format!("target{attempt}@example.com"),
+                    "new_email": fixtures::unique(&format!("target{attempt}")) + "@example.com",
                 }),
             )
             .await;
@@ -275,7 +291,8 @@ async fn email_change_submissions_are_budgeted() {
 async fn email_change_confirm_wrong_code_rejected() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 7).await;
-    let new_email = "confirm_wrong7@example.com";
+    // Unique per run: new addresses are budgeted globally, per target.
+    let new_email = &(fixtures::unique("confirm_wrong7_") + "@example.com");
 
     let flow_token = start_and_verify_current(&app, &user.access_token).await;
 
@@ -381,7 +398,8 @@ async fn email_change_requires_verified_email() {
 async fn email_change_cooldown_prevents_immediate_second_change() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 12).await;
-    let new_email = "cooldown12@example.com";
+    // Unique per run: new addresses are budgeted globally, per target.
+    let new_email = &(fixtures::unique("cooldown12_") + "@example.com");
 
     // Complete a full flow.
     run_full_flow(&app, &user, new_email).await;
@@ -401,7 +419,8 @@ async fn email_change_cooldown_prevents_immediate_second_change() {
 async fn email_change_cooldown_lifted_allows_new_flow() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 13).await;
-    let new_email = "cooldown_lifted13@example.com";
+    // Unique per run: new addresses are budgeted globally, per target.
+    let new_email = &(fixtures::unique("cooldown_lifted13_") + "@example.com");
 
     run_full_flow(&app, &user, new_email).await;
 
@@ -537,7 +556,7 @@ async fn email_change_confirm_new_lockout_after_max_failures() {
     app.post_auth(
         "/users/me/email/submit",
         &user.access_token,
-        &serde_json::json!({ "flow_token": flow_token, "new_email": "new13@example.com" }),
+        &serde_json::json!({ "flow_token": flow_token, "new_email": fixtures::unique("new13") + "@example.com" }),
     )
     .await;
 

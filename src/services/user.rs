@@ -145,7 +145,13 @@ pub async fn change_username(
         .await
         // The pre-check can race with another rename; the constraint decides.
         .map_err(|e| {
-            AppError::from_unique_violation(e, &[("users_username_key", "username_taken")])
+            AppError::from_unique_violation(
+                e,
+                &[
+                    ("users_username_key", "username_taken"),
+                    ("users_username_lower_key", "username_taken"),
+                ],
+            )
         })?;
 
     audit::append(

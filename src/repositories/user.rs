@@ -7,7 +7,8 @@ use uuid::Uuid;
 use crate::domain::user::{User, UserStatus};
 
 pub const FIND_BY_EMAIL_SQL: &str = "SELECT * FROM users WHERE email = $1::citext";
-pub const FIND_BY_USERNAME_SQL: &str = "SELECT * FROM users WHERE username = $1::citext";
+/// Case-insensitive, like the uniqueness of usernames (`users_username_lower_key`).
+pub const FIND_BY_USERNAME_SQL: &str = "SELECT * FROM users WHERE lower(username) = lower($1)";
 
 // Input types
 
