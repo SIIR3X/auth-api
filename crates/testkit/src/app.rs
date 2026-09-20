@@ -531,6 +531,8 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             verify_url: "https://hcaptcha.com/siteverify".into(),
             request_timeout_secs: 1,
             fail_open_on_error: false,
+            site_key: None,
+            expected_hostnames: Vec::new(),
         },
         cors: CorsConfig {
             allowed_origins: vec!["*".into()],

@@ -320,3 +320,58 @@ async fn captcha_fail_closed_returns_503_when_upstream_returns_invalid_json() {
         "fail_open=false must return 503 when upstream returns invalid JSON"
     );
 }
+
+/// A mock recording what it was asked and answering with `hostname`.
+async fn spawn_recording_captcha_mock(
+    hostname: &'static str,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let app = Router::new().route(
+            "/verify",
+            post(move |body: String| {
+                let recorded = recorded.clone();
+                async move {
+                    recorded.lock().unwrap().push(body);
+                    Json(serde_json::json!({ "success": true, "hostname": hostname }))
+                }
+            }),
+        );
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://127.0.0.1:{port}/verify"), seen)
+}
+
+/// A token solved on another site is refused, and the provider hears the
+/// client's address and the site key.
+#[tokio::test]
+async fn a_token_solved_on_another_site_is_refused() {
+    let (verify_url, seen) = spawn_recording_captcha_mock("evil.example").await;
+    let app = TestApp::spawn_with_config(move |c| {
+        c.captcha.secret = Some("test_secret".into());
+        c.captcha.verify_url = verify_url.clone();
+        c.captcha.fail_open_on_error = false;
+        c.captcha.site_key = Some("site-key-1".into());
+    })
+    .await;
+    assert_eq!(try_register(&app, 40, Some("foreign-token")).await, 422);
+    let request = seen.lock().unwrap()[0].clone();
+    assert!(request.contains("remoteip="), "{request}");
+    assert!(request.contains("sitekey=site-key-1"), "{request}");
+
+    let (verify_url, _) = spawn_recording_captcha_mock("localhost").await;
+    let app = TestApp::spawn_with_config(move |c| {
+        c.captcha.secret = Some("test_secret".into());
+        c.captcha.verify_url = verify_url.clone();
+        c.captcha.fail_open_on_error = false;
+    })
+    .await;
+    assert_eq!(
+        try_register(&app, 41, Some("our-token")).await,
+        202,
+        "solved on the host of FRONTEND_URL"
+    );
+}

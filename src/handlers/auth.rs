@@ -165,7 +165,7 @@ pub async fn register(
 
     // Verify CAPTCHA if a secret is configured; skip silently otherwise.
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
-    captcha_svc::verify(&state, captcha_token).await?;
+    captcha_svc::verify(&state, captcha_token, ip).await?;
 
     auth_svc::register(
         &state,
@@ -219,7 +219,7 @@ pub async fn login(
     }
 
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
-    captcha_svc::verify(&state, captcha_token).await?;
+    captcha_svc::verify(&state, captcha_token, ip).await?;
 
     let result = auth_svc::login(
         &state,
@@ -349,7 +349,7 @@ pub async fn resend_verification(
     Json(body): Json<ResendVerificationRequest>,
 ) -> Result<StatusCode, AppError> {
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
-    captcha_svc::verify(&state, captcha_token).await?;
+    captcha_svc::verify(&state, captcha_token, ip).await?;
 
     auth_svc::resend_verification(&state, &body.email, ip, ua.as_deref(), rid).await?;
     Ok(StatusCode::OK)
@@ -374,7 +374,7 @@ pub async fn request_magic_link(
     Json(body): Json<MagicLinkRequest>,
 ) -> Result<StatusCode, AppError> {
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
-    captcha_svc::verify(&state, captcha_token).await?;
+    captcha_svc::verify(&state, captcha_token, ip).await?;
 
     auth_svc::request_magic_link(&state, &body.email, ip, ua.as_deref(), rid).await?;
     Ok(StatusCode::OK)
@@ -431,7 +431,7 @@ pub async fn forgot_password(
     Json(body): Json<ForgotPasswordRequest>,
 ) -> Result<StatusCode, AppError> {
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
-    captcha_svc::verify(&state, captcha_token).await?;
+    captcha_svc::verify(&state, captcha_token, ip).await?;
 
     auth_svc::forgot_password(&state, &body.email, ip, ua.as_deref(), rid).await?;
     Ok(StatusCode::OK)

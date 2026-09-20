@@ -4177,7 +4177,7 @@ paths:
         required: true
       responses:
         '204':
-          description: Code sent to the new address
+          description: 'Code sent to the new address, unless it belongs to another account: the answer is the same either way'
         '400':
           description: Malformed request
           content:
@@ -4192,12 +4192,6 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
           description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '409':
-          description: Address taken
           content:
             application/json:
               schema:

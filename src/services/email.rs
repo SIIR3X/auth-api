@@ -35,6 +35,7 @@ const TNAME_RECOVERY_CODE_USED: &str = "recovery_code_used";
 const TNAME_NEW_DEVICE_LOGIN: &str = "new_device_login";
 const TNAME_MAGIC_LINK: &str = "magic_link";
 const TNAME_ACCESS_ADDED: &str = "access_added";
+const TNAME_EMAIL_CHANGE_NEW_OTP: &str = "email_change_new_otp";
 
 /// A way into an account other than its password, as the notifications list
 /// it: `kind` is `passkey`, `totp`, `email`, `personal_access_token` or
@@ -164,6 +165,38 @@ pub async fn send_password_reset_email(
         &ctx,
     )?;
     send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
+/// The code confirming a new address, sent to that address: its holder may
+/// have no account and did not ask, so the message says so and names no one.
+pub async fn send_email_change_new_otp(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    locale: &str,
+    code: &str,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("code", code);
+    ctx.insert("expires_in_minutes", &15i32);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_EMAIL_CHANGE_NEW_OTP,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_EMAIL_CHANGE_NEW_OTP,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, "", &subject, body).await
 }
 
 pub async fn send_email_change_otp(
@@ -609,7 +642,7 @@ async fn send(
 mod tests {
     use super::*;
 
-    const ALL_TEMPLATES: [&str; 13] = [
+    const ALL_TEMPLATES: [&str; 14] = [
         TNAME_VERIFICATION,
         TNAME_EMAIL_CHANGE_OTP,
         TNAME_PASSWORD_RESET,
@@ -623,6 +656,7 @@ mod tests {
         TNAME_NEW_DEVICE_LOGIN,
         TNAME_MAGIC_LINK,
         TNAME_ACCESS_ADDED,
+        TNAME_EMAIL_CHANGE_NEW_OTP,
     ];
 
     #[test]

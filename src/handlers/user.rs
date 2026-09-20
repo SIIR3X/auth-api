@@ -215,9 +215,8 @@ pub async fn verify_current_email(
     tag = "email-change",
     request_body = SubmitNewEmailRequest,
     responses(
-        (status = 204, description = "Code sent to the new address"),
+        (status = 204, description = "Code sent to the new address, unless it belongs to another account: the answer is the same either way"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 409, description = "Address taken", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),

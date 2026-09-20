@@ -221,8 +221,12 @@ security history. No password hash, secret or token digest is included. As a
 | POST | `/users/me/email/submit` | JWT | Strict |
 | POST | `/users/me/email/confirm` | JWT | Strict |
 
-A code is sent to the current address, then to the new one. Confirming revokes
-every other session and notifies the previous address.
+A code is sent to the current address, then to the new one. Submitting an
+address that belongs to another account answers `204` like any other, but sends
+no code: the flow cannot tell who has an account. Submissions are limited to 3
+an hour per account and per target address. Confirming revokes every other
+session, the reset and sign-in links already mailed, and notifies the previous
+address.
 
 ## Sessions
 

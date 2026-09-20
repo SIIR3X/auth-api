@@ -176,7 +176,7 @@ async fn email_change_submit_invalid_email_format_rejected() {
 }
 
 #[tokio::test]
-async fn email_change_submit_taken_email_rejected() {
+async fn email_change_submit_taken_email_answers_like_a_free_one() {
     let app = TestApp::spawn().await;
     let user1 = fixtures::authenticated_user(&app, 5).await;
     let user2 = fixtures::authenticated_user(&app, 6).await;
@@ -209,7 +209,64 @@ async fn email_change_submit_taken_email_rejected() {
             &serde_json::json!({ "flow_token": flow_token, "new_email": user1.email }),
         )
         .await;
-    assert_eq!(res.status().as_u16(), 409);
+    // No oracle: the same answer as for a free address, and no code sent to
+    // the address of the other account.
+    assert_eq!(res.status().as_u16(), 204);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        app.mail
+            .messages_to(&user1.email)
+            .iter()
+            .all(|mail| mail.subject != "Confirm this address for your account"),
+        "a code went to the taken address"
+    );
+}
+
+/// Codes to new addresses are budgeted per account: the flow cannot send
+/// them to anyone in bulk.
+#[tokio::test]
+async fn email_change_submissions_are_budgeted() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 60).await;
+    let mut statuses = Vec::new();
+    for attempt in 0..4 {
+        app.post_auth(
+            "/users/me/reauth",
+            &user.access_token,
+            &serde_json::json!({ "current_password": user.password }),
+        )
+        .await;
+        let started = app
+            .post_auth(
+                "/users/me/email/start",
+                &user.access_token,
+                &serde_json::json!({}),
+            )
+            .await;
+        let flow_token = started.json::<serde_json::Value>().await.unwrap()["flow_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let otp = app.read_email_change_otp(&flow_token).await;
+        app.post_auth(
+            "/users/me/email/verify-current",
+            &user.access_token,
+            &serde_json::json!({ "flow_token": flow_token, "code": otp }),
+        )
+        .await;
+        let res = app
+            .post_auth(
+                "/users/me/email/submit",
+                &user.access_token,
+                &serde_json::json!({
+                    "flow_token": flow_token,
+                    "new_email": format!("target{attempt}@example.com"),
+                }),
+            )
+            .await;
+        statuses.push(res.status().as_u16());
+    }
+    assert_eq!(statuses, [204, 204, 204, 429]);
 }
 
 // New-email OTP verification

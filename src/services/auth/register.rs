@@ -2,8 +2,40 @@
 
 use super::*;
 
+/// Register an account. Every answer takes at least
+/// `FORGOT_PASSWORD_MIN_DURATION`: a taken address, a pending one and a new one
+/// do different work, and the difference must not show in the response time.
 #[allow(clippy::too_many_arguments)]
 pub async fn register(
+    state: &AppState,
+    username: &str,
+    email: &str,
+    password_plaintext: &str,
+    locale: &str,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+    request_id: Option<Uuid>,
+) -> Result<Option<User>, AppError> {
+    let started = std::time::Instant::now();
+    let result = register_account(
+        state,
+        username,
+        email,
+        password_plaintext,
+        locale,
+        ip,
+        user_agent,
+        request_id,
+    )
+    .await;
+    if let Some(rest) = FORGOT_PASSWORD_MIN_DURATION.checked_sub(started.elapsed()) {
+        tokio::time::sleep(rest).await;
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn register_account(
     state: &AppState,
     username: &str,
     email: &str,
@@ -54,7 +86,16 @@ pub async fn register(
                 request_id,
             )
             .await?;
-        } else {
+        } else if !budget_exhausted(
+            state,
+            &format!("ae_account:{}", existing.id),
+            MAX_ACCOUNT_EXISTS_NOTICES,
+            ACCOUNT_EXISTS_NOTICE_WINDOW_SECS,
+        )
+        .await
+        {
+            // At most a few notices an hour: registering the address again
+            // and again must not flood its owner.
             notify_existing_account(state, &existing);
         }
         return Ok(None);

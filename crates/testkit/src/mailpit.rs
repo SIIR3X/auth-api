@@ -73,7 +73,11 @@ impl MailpitClient {
     pub async fn wait_for_message(&self, email: &str, subject: &str) -> Option<MessageDetail> {
         // Record "now" before we start polling so we can discard any pre-existing
         // messages that happen to match the same email + subject.
-        let not_before = time::OffsetDateTime::now_utc() - time::Duration::milliseconds(500); // small back-buffer for clock skew
+        // Back-buffer: the message may have been sent a while before this call
+        // (padded responses, the contract validators built on a process's
+        // first request). Addresses are unique per test, so older messages
+        // to the same address come from earlier runs, seconds before.
+        let not_before = time::OffsetDateTime::now_utc() - time::Duration::seconds(3);
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(5_000);
         while std::time::Instant::now() < deadline {

@@ -29,9 +29,18 @@ the database together, is out of scope.
   the next successful sign-in.
 - **No account oracle.** An unknown identifier still pays a full hash against a
   decoy. A locked account answers the same whatever the password. Registration
-  answers `202` identically whether or not the address is taken (the owner is
-  emailed instead; a pending one gets its verification again). Forgot-password
-  and verification resends take a constant minimum time and answer identically.
+  answers `202` identically, in a constant minimum time, whether or not the
+  address is taken (the owner is emailed instead, at most three times an hour;
+  a pending one gets a verification link of its own). Forgot-password and
+  verification resends take a constant minimum time and answer identically. An
+  email change to an address that belongs to another account answers like any
+  other and sends nothing; new addresses are budgeted per account and per
+  target.
+- **Links mailed earlier stop working** when the password changes, is reset,
+  or the address changes: reset and sign-in links go with the old secret or the
+  old mailbox.
+- **CAPTCHA** verifications carry the client's address and the site key, and a
+  challenge solved on another hostname is refused.
 - **Addresses cannot be squatted.** A pending account belongs to nobody yet: a
   registration on its address gets its own verification link, carrying the
   password, username and locale that registration chose, and the link applies
@@ -354,3 +363,4 @@ when a cited test no longer exists.
 | SEC-51 | Password guesses with a stolen token are bounded without locking the owner out: every route taking the current password is strict, re-authentication failures count per session, the authenticated recovery route has its own budget, and client endpoints are bounded per client rather than per address | `routes_taking_the_current_password_count_against_the_strict_bucket`, `a_stolen_session_guessing_the_password_does_not_lock_the_owner_out`, `the_authenticated_recovery_route_spends_its_own_budget`, `client_endpoints_are_bounded_per_client_and_per_wrong_secret` |
 | SEC-52 | Revocations take effect at once: a revoked family loses its cached validity, a racing check cannot restore it, a pre-auth token is consumed before its session is issued, refused refreshes are counted, and token responses forbid every cache | `a_revoked_family_loses_its_cached_validity_at_once`, `replayed_refresh_tokens_count_against_the_address`, `token_responses_forbid_every_cache`, `a_cached_session_reads_back_as_it_was_stored` |
 | SEC-53 | Checks and the actions they guard cannot be raced apart: a replayed authorization code waits for its redemption and revokes what it produced, cooldowns are claimed before acting, and the token quota is counted under a lock | `a_code_redeemed_twice_at_once_leaves_no_session_alive`, `concurrent_recovery_code_regenerations_run_once`, `concurrent_creations_respect_the_token_limit` |
+| SEC-54 | Email flows reveal nothing and flood no one: registration is padded and budgets its notices, an email change to a taken address answers like any other, new-address codes are budgeted, earlier links die with the password or address, and CAPTCHA tokens are bound to the site | `registration_takes_a_constant_minimum_time`, `registering_a_taken_address_repeatedly_notifies_its_owner_a_few_times`, `email_change_submit_taken_email_answers_like_a_free_one`, `email_change_submissions_are_budgeted`, `a_password_change_ends_the_links_already_mailed`, `a_token_solved_on_another_site_is_refused` |

@@ -216,6 +216,8 @@ pub async fn change_password(
     let mut tx = state.db.begin().await?;
 
     user_repo::update_password_hash(&mut *tx, user_id, &new_hash).await?;
+    // A reset or sign-in link requested before the change would bypass it.
+    crate::repositories::token::revoke_mailbox_links(&mut tx, user_id).await?;
 
     // Other devices must sign in with the new password; the current session
     // too unless the caller keeps it.

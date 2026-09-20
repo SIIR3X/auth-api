@@ -176,8 +176,8 @@ pub async fn reset_password(
     // Invalidate all active sessions to force re-login with the new password
     session_repo::revoke_all_by_user(&mut *tx, record.user_id).await?;
 
-    // Also purge pending reset tokens
-    token::revoke_active_password_reset_by_user(&mut *tx, record.user_id).await?;
+    // Also purge pending reset and sign-in links
+    token::revoke_mailbox_links(&mut tx, record.user_id).await?;
 
     // The reset link went to the account's address: whoever used it owns the
     // address. A pending account is verified with the password its owner just

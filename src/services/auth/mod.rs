@@ -215,6 +215,10 @@ const MAGIC_LINK_IP_WINDOW_SECS: u64 = 900;
 const MAX_MAGIC_LINKS_BY_ACCOUNT: i64 = 3;
 const MAGIC_LINK_ACCOUNT_WINDOW_SECS: u64 = 3600;
 
+/// "Someone tried to register with your address" notices per account per window.
+const MAX_ACCOUNT_EXISTS_NOTICES: i64 = 3;
+const ACCOUNT_EXISTS_NOTICE_WINDOW_SECS: u64 = 3600;
+
 /// Every forgot-password response takes at least this long, known address or not.
 const FORGOT_PASSWORD_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(250);
 

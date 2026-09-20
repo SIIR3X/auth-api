@@ -92,6 +92,8 @@ fn valid_config() -> Config {
             verify_url: "https://hcaptcha.com/siteverify".into(),
             request_timeout_secs: 5,
             fail_open_on_error: false,
+            site_key: None,
+            expected_hostnames: Vec::new(),
         },
         pwned_passwords: PwnedPasswordsConfig {
             enabled: true,

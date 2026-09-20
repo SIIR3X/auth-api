@@ -296,3 +296,88 @@ async fn concurrent_reauthentication_guesses_never_exceed_the_budget() {
     assert_eq!(checked, 2, "{checked} guesses were checked past the budget");
     assert_eq!(locked, 18);
 }
+
+/// Registering an active address again and again does not flood its owner:
+/// the "someone tried to register" notice is budgeted per account.
+#[tokio::test]
+async fn registering_a_taken_address_repeatedly_notifies_its_owner_a_few_times() {
+    let app = TestApp::spawn().await;
+    let owner = fixtures::register_user(&app, 660).await;
+    fixtures::activate_user(&app.db, owner.id).await;
+
+    for attempt in 0..6 {
+        let res = app
+            .post(
+                "/auth/register",
+                &json!({
+                    "username": format!("flooder_{attempt}"),
+                    "email": owner.email,
+                    "password": "Password660!ok",
+                }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 202);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let notices = app
+        .mail
+        .messages_to(&owner.email)
+        .into_iter()
+        .filter(|mail| mail.subject != "Verify your email address")
+        .count();
+    assert_eq!(notices, 3);
+}
+
+/// A reset link or sign-in link mailed before a password change stops working:
+/// it would otherwise bypass the change.
+#[tokio::test]
+async fn a_password_change_ends_the_links_already_mailed() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 661).await;
+    let token = fixtures::create_password_reset_token(&app.db, user.id).await;
+
+    let res = app
+        .patch_auth(
+            "/users/me/password",
+            &user.access_token,
+            &json!({
+                "current_password": user.password,
+                "new_password": "Changed-Pass-661!",
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+
+    let res = app
+        .post(
+            "/auth/reset-password",
+            &json!({ "token": token.raw, "new_password": "Attacker-Pass-661!" }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        401,
+        "the old reset link still worked"
+    );
+}
+
+/// Registration takes the same minimum time whether the address is new or
+/// taken: the work differs, the response time must not.
+#[tokio::test]
+async fn registration_takes_a_constant_minimum_time() {
+    let app = TestApp::spawn().await;
+    let owner = fixtures::register_user(&app, 662).await;
+    fixtures::activate_user(&app.db, owner.id).await;
+
+    for email in [owner.email.clone(), "fresh662@example.com".to_owned()] {
+        let started = Instant::now();
+        let res = app
+            .post(
+                "/auth/register",
+                &json!({ "username": "timing_662", "email": email, "password": "Password662!ok" }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 202);
+        assert!(started.elapsed() >= Duration::from_millis(250), "{email}");
+    }
+}

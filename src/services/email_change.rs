@@ -197,7 +197,12 @@ pub async fn verify_current(
 }
 
 /// Records the new email address and sends an OTP to it.
-/// Validates uniqueness before sending to give a clear error without wasting an OTP.
+///
+/// A taken address answers exactly like a free one, and the flow moves on the
+/// same way, but no code is sent: the caller cannot read that mailbox, so the
+/// answer reveals nothing, and its owner is not bothered. Submissions are
+/// budgeted per account and per target address, so the route sends codes to
+/// nobody in bulk.
 pub async fn submit_new(
     state: &AppState,
     user_id: Uuid,
@@ -212,13 +217,39 @@ pub async fn submit_new(
         return Err(AppError::Unauthorized);
     };
 
+    let account_key = format!("ec_submit_account:{user_id}");
+    let target_key = format!(
+        "ec_submit_target:{}",
+        crypto::sha256(new_email.to_ascii_lowercase().as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    match redis_counter::consume(
+        &state.redis,
+        &[
+            Budget {
+                key: &account_key,
+                limit: MAX_SUBMISSIONS_PER_WINDOW,
+                window_secs: SUBMISSION_WINDOW_SECS,
+            },
+            Budget {
+                key: &target_key,
+                limit: MAX_SUBMISSIONS_PER_WINDOW,
+                window_secs: SUBMISSION_WINDOW_SECS,
+            },
+        ],
+    )
+    .await
+    {
+        Ok(attempt) if attempt.exceeded => return Err(AppError::RateLimitExceeded),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "email change budget unavailable, failing open"),
+    }
+
     let taken = user_repo::email_taken(&state.db, new_email, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-
-    if taken {
-        return Err(AppError::Conflict("email_taken"));
-    }
 
     let otp = crypto::generate_otp();
     let otp_hash = hash_otp(state, user_id, &otp);
@@ -246,19 +277,21 @@ pub async fn submit_new(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
+    if taken {
+        return Ok(());
+    }
+
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();
     let mail_cfg = state.config.mail.clone();
     let email_to = new_email.to_string();
-    let username = user.username.clone();
     let locale = user.preferred_locale.clone();
     email_svc::dispatch_best_effort("email_change_otp_new", async move {
-        email_svc::send_email_change_otp(
+        email_svc::send_email_change_new_otp(
             &mailer,
             templates.as_ref(),
             &mail_cfg,
             &email_to,
-            &username,
             &locale,
             &otp,
         )
@@ -327,6 +360,9 @@ pub async fn confirm_new(
         }
 
         token_repo::revoke_active_verification_by_user(&mut *tx, user_id).await?;
+        // Links already mailed to the previous address, possibly compromised,
+        // stop opening the account.
+        token_repo::revoke_mailbox_links(&mut tx, user_id).await?;
 
         // Ownership of the new address is proven via OTP, so it is verified at once.
         user_repo::change_email(&mut *tx, user_id, new_email).await?;
@@ -502,6 +538,11 @@ async fn verify_otp(
     redis_counter::reset(&state.redis, &[fail_key]).await;
     Ok(())
 }
+
+/// New addresses one account may submit per window, and submissions one address
+/// may receive: codes are not sent to anyone in bulk.
+const MAX_SUBMISSIONS_PER_WINDOW: i64 = 3;
+const SUBMISSION_WINDOW_SECS: u64 = 3600;
 
 /// Separates the digests of this flow's codes from any other flow's.
 const OTP_PURPOSE: &str = "email_change";

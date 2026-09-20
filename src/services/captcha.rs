@@ -18,12 +18,19 @@ use crate::{
 #[derive(Deserialize)]
 struct HCaptchaResponse {
     success: bool,
+    /// Site the challenge was solved on.
+    #[serde(default)]
+    hostname: Option<String>,
 }
 
 /// Verifies a CAPTCHA token against the hCaptcha API.
 /// Returns Ok(()) if verification succeeds or if CAPTCHA is not configured.
 /// Returns Err(AppError::CaptchaFailed) if the token is invalid.
-pub async fn verify(state: &AppState, token: &str) -> Result<(), AppError> {
+pub async fn verify(
+    state: &AppState,
+    token: &str,
+    remote_ip: Option<ipnetwork::IpNetwork>,
+) -> Result<(), AppError> {
     let config = &state.config.captcha;
 
     let secret = match config.secret.as_deref() {
@@ -36,7 +43,7 @@ pub async fn verify(state: &AppState, token: &str) -> Result<(), AppError> {
         return Err(AppError::CaptchaFailed);
     }
 
-    let upstream = ask_upstream(state, secret, token).await;
+    let upstream = ask_upstream(state, secret, token, remote_ip).await;
     match captcha_verdict(upstream, config.fail_open_on_error) {
         CaptchaVerdict::Accepted => {
             if !matches!(upstream, CaptchaUpstream::Answered { .. }) {
@@ -49,12 +56,54 @@ pub async fn verify(state: &AppState, token: &str) -> Result<(), AppError> {
     }
 }
 
-/// Ask the verification endpoint about `token`.
-async fn ask_upstream(state: &AppState, secret: &str, token: &str) -> CaptchaUpstream {
+/// Whether a challenge solved on `hostname` counts for this deployment: one of
+/// `CAPTCHA_EXPECTED_HOSTNAMES`, or the host of `FRONTEND_URL` when none is
+/// set. A provider that names no hostname is taken at its word.
+fn solved_here(state: &AppState, hostname: Option<&str>) -> bool {
+    let Some(hostname) = hostname else {
+        return true;
+    };
+    let expected = &state.config.captcha.expected_hostnames;
+    let accepted = if expected.is_empty() {
+        reqwest::Url::parse(&state.config.server.frontend_url)
+            .ok()
+            .and_then(|url| {
+                url.host_str()
+                    .map(|host| host.eq_ignore_ascii_case(hostname))
+            })
+            .unwrap_or(false)
+    } else {
+        expected
+            .iter()
+            .any(|host| host.eq_ignore_ascii_case(hostname))
+    };
+    if !accepted {
+        tracing::warn!(hostname, "captcha solved on an unexpected hostname");
+    }
+    accepted
+}
+
+/// Ask the verification endpoint about `token`, with the client's address and
+/// the widget's site key: a token solved elsewhere, or for another site key,
+/// is refused.
+async fn ask_upstream(
+    state: &AppState,
+    secret: &str,
+    token: &str,
+    remote_ip: Option<ipnetwork::IpNetwork>,
+) -> CaptchaUpstream {
+    let remote_ip = remote_ip.map(|ip| ip.ip().to_string());
+    let mut form = vec![("secret", secret), ("response", token)];
+    if let Some(ip) = remote_ip.as_deref() {
+        form.push(("remoteip", ip));
+    }
+    if let Some(site_key) = state.config.captcha.site_key.as_deref() {
+        form.push(("sitekey", site_key));
+    }
     let response = match state
         .http_client
         .post(&state.config.captcha.verify_url)
-        .form(&[("secret", secret), ("response", token)])
+        .form(&form)
         .send()
         .await
     {
@@ -72,7 +121,7 @@ async fn ask_upstream(state: &AppState, secret: &str, token: &str) -> CaptchaUps
 
     match response.json::<HCaptchaResponse>().await {
         Ok(body) => CaptchaUpstream::Answered {
-            success: body.success,
+            success: body.success && solved_here(state, body.hostname.as_deref()),
         },
         Err(error) => {
             tracing::warn!(%error, "captcha response could not be parsed");

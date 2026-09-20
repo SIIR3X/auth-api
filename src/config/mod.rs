@@ -355,6 +355,12 @@ pub struct CaptchaConfig {
     pub request_timeout_secs: u64,
     /// When true, network/5xx errors from the CAPTCHA provider allow the request through.
     pub fail_open_on_error: bool,
+    /// Site key of the widget, sent with each verification so a token solved
+    /// for another site key is refused.
+    pub site_key: Option<String>,
+    /// Hostnames a solved challenge may come from; empty means the host of
+    /// `FRONTEND_URL`.
+    pub expected_hostnames: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -564,6 +570,8 @@ impl Config {
                     .unwrap_or_else(|| "https://hcaptcha.com/siteverify".into()),
                 request_timeout_secs: vars.parse("CAPTCHA_TIMEOUT_SECS")?.unwrap_or(5),
                 fail_open_on_error: vars.parse("CAPTCHA_FAIL_OPEN")?.unwrap_or(!is_production),
+                site_key: vars.string("CAPTCHA_SITE_KEY"),
+                expected_hostnames: vars.csv("CAPTCHA_EXPECTED_HOSTNAMES").unwrap_or_default(),
             },
             pwned_passwords: PwnedPasswordsConfig {
                 enabled: vars.parse("PWNED_PASSWORDS_ENABLED")?.unwrap_or(true),

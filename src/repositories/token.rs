@@ -131,6 +131,31 @@ pub async fn revoke_active_verification_by_user<'e>(
     Ok(())
 }
 
+/// Invalidates every live sign-in link of the account.
+pub async fn revoke_active_magic_links_by_user<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    user_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE magic_link_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Invalidates every live link that would open the account from its mailbox:
+/// password resets and sign-in links. Run when the mailbox or the password
+/// changes hands.
+pub async fn revoke_mailbox_links(
+    tx: &mut sqlx::PgConnection,
+    user_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    revoke_active_password_reset_by_user(&mut *tx, user_id).await?;
+    revoke_active_magic_links_by_user(&mut *tx, user_id).await
+}
+
 // Password reset
 
 pub async fn create_password_reset(
