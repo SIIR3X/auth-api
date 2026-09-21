@@ -7,11 +7,7 @@ pub async fn resolve_pre_auth(
     pre_auth_token: &str,
 ) -> Result<PreAuthState, AppError> {
     let redis_key = pre_auth_key(pre_auth_token);
-    let mut conn = state
-        .redis
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut conn = state.redis.get().await.map_err(redis_unavailable)?;
 
     load_pre_auth_state_from_redis(&mut conn, &redis_key).await
 }
@@ -79,10 +75,7 @@ pub(super) async fn load_pre_auth_state_from_redis(
     conn: &mut crate::utils::redis_pool::RedisConnection,
     redis_key: &str,
 ) -> Result<PreAuthState, AppError> {
-    let raw: Option<String> = conn
-        .get(redis_key)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let raw: Option<String> = conn.get(redis_key).await.map_err(redis_unavailable)?;
     let raw = raw.ok_or(AppError::TokenInvalid)?;
 
     parse_pre_auth_state(&raw)

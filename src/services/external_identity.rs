@@ -493,7 +493,7 @@ pub async fn complete_sign_in(
     let user = user_repo::find_by_id(&state.db, outcome.user_id.ok_or(AppError::TokenInvalid)?)
         .await?
         .ok_or(AppError::TokenInvalid)?;
-    auth_svc::ensure_account_usable(&user, state.clock.now())?;
+    auth_svc::ensure_account_usable(&user)?;
     auth_svc::first_factor_proven(
         state,
         &user,

@@ -197,8 +197,10 @@ pub async fn revoke_active_password_reset_by_user<'e>(
 
 // Magic links
 
-/// Replace the pending links of the account with a new one.
-pub async fn replace_magic_link(
+/// Add a sign-in link. Earlier links stay usable until one of them is used:
+/// a request from someone else must not revoke the link the owner is about to
+/// click. The per-account budget bounds how many are alive.
+pub async fn add_magic_link(
     pool: &PgPool,
     user_id: Uuid,
     token_hash: &[u8],
@@ -206,13 +208,6 @@ pub async fn replace_magic_link(
     request_ip: Option<IpNetwork>,
     request_user_agent: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    sqlx::query(
-        "UPDATE magic_link_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL",
-    )
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await?;
     sqlx::query(
         "INSERT INTO magic_link_tokens
              (user_id, token_hash, expires_at, request_ip, request_user_agent)
@@ -223,9 +218,9 @@ pub async fn replace_magic_link(
     .bind(expires_at)
     .bind(request_ip)
     .bind(request_user_agent)
-    .execute(&mut *tx)
+    .execute(pool)
     .await?;
-    tx.commit().await
+    Ok(())
 }
 
 pub async fn find_magic_link_by_hash(
@@ -238,13 +233,27 @@ pub async fn find_magic_link_by_hash(
         .await
 }
 
-/// Marks the link as used. Returns false if it was already consumed.
+/// Marks the link as used, and the other pending links of its account with
+/// it. Returns false if it was already consumed.
 pub async fn consume_magic_link(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE magic_link_tokens SET used_at = NOW() WHERE id = $1 AND used_at IS NULL",
+    let mut tx = pool.begin().await?;
+    let user_id: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE magic_link_tokens SET used_at = NOW()
+         WHERE id = $1 AND used_at IS NULL
+         RETURNING user_id",
     )
     .bind(id)
-    .execute(pool)
+    .fetch_optional(&mut *tx)
     .await?;
-    Ok(result.rows_affected() == 1)
+    let Some(user_id) = user_id else {
+        return Ok(false);
+    };
+    sqlx::query(
+        "UPDATE magic_link_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(true)
 }

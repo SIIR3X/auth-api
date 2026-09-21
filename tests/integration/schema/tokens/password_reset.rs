@@ -50,32 +50,24 @@ async fn password_reset_tokens_enforce_unique_hashes() {
     assert_constraint_error(&err, "password_reset_tokens_token_hash_key");
 }
 
+/// Links of a password reset coexist until one is used: someone asking for a
+/// reset must not revoke the link its owner is about to click.
 #[tokio::test]
-async fn password_reset_tokens_allow_only_one_unused_token_per_user() {
+async fn several_unused_password_reset_tokens_coexist() {
     let db = TestDb::new().await;
 
     let user_id = insert_user(&db.pool, 6211).await;
-    sqlx::query(
-        "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
-             VALUES ($1, $2, NOW() + INTERVAL '1 hour')",
-    )
-    .bind(user_id)
-    .bind(fixed_hash(38))
-    .execute(&db.pool)
-    .await
-    .expect("failed to insert first unused password reset token");
-
-    let err = sqlx::query(
-        "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
-             VALUES ($1, $2, NOW() + INTERVAL '1 hour')",
-    )
-    .bind(user_id)
-    .bind(fixed_hash(39))
-    .execute(&db.pool)
-    .await
-    .expect_err("a second unused password reset token should fail");
-
-    assert_constraint_error(&err, "idx_password_reset_tokens_user_active");
+    for seed in [38, 39] {
+        sqlx::query(
+            "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+                 VALUES ($1, $2, NOW() + INTERVAL '1 hour')",
+        )
+        .bind(user_id)
+        .bind(fixed_hash(seed))
+        .execute(&db.pool)
+        .await
+        .expect("unused reset links of one account coexist");
+    }
 }
 
 #[tokio::test]

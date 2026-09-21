@@ -61,6 +61,31 @@ async fn login_succeeds_when_redis_is_down() {
     );
 }
 
+/// A second factor needs its challenge stored in Redis: without Redis the
+/// sign-in is unavailable (503), not an internal error.
+#[tokio::test]
+async fn a_second_factor_sign_in_without_redis_is_unavailable_not_broken() {
+    let app = app_without_redis().await;
+    let user = fixtures::register_user(&app, 374).await;
+    fixtures::activate_user(&app.db, user.id).await;
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified)
+         VALUES ($1, 'email', TRUE, TRUE)",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let res = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 503);
+}
+
 // Email verification
 
 #[tokio::test]

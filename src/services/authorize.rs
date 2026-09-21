@@ -279,7 +279,7 @@ async fn ensure_account_usable(state: &AppState, user_id: Uuid) -> Result<(), Ap
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
-    auth_svc::ensure_account_usable(&user, state.clock.now())
+    auth_svc::ensure_account_usable(&user)
 }
 
 /// RFC 7636 section 4.2: S256 only, a 43-character base64url SHA-256 digest.

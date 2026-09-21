@@ -8,8 +8,8 @@
 -- activates the account with the password chosen by the registration that sent
 -- it, so registering someone's address first never lets an attacker decide the
 -- password the owner activates. The links of a pending account therefore
--- coexist until one of them is used, which revokes the others. A password
--- reset keeps at most one unused token per user.
+-- coexist until one of them is used, which revokes the others; so do the links
+-- of a password reset.
 CREATE TABLE email_verification_tokens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -94,7 +94,8 @@ WITH (
 );
 
 CREATE INDEX idx_password_reset_tokens_user ON password_reset_tokens (user_id);
-CREATE UNIQUE INDEX idx_password_reset_tokens_user_active
+-- Pending links of an account, revoked together when one is used.
+CREATE INDEX idx_password_reset_tokens_user_active
     ON password_reset_tokens (user_id) WHERE used_at IS NULL;
 CREATE INDEX idx_password_reset_tokens_expires_at ON password_reset_tokens (expires_at);
 

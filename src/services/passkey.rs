@@ -360,7 +360,7 @@ pub async fn sign_in(
 
     match verify_assertion(state, credential).await {
         Ok((passkey, user)) => {
-            auth_svc::ensure_account_usable(&user, state.clock.now())?;
+            auth_svc::ensure_account_usable(&user)?;
             auth_svc::issue_tokens(
                 state,
                 user.id,

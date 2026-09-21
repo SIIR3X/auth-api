@@ -20,6 +20,9 @@ pub enum LoginFailureReason {
     TwoFactorRequired,
     TwoFactorFailed,
     RateLimited,
+    /// A sign-in while the account's password is locked, recorded like a
+    /// wrong password so the budgets read the same as for any other account.
+    AccountLocked,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

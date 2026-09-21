@@ -19,7 +19,7 @@ digests (32 bytes), never in clear.
 | `email_verified_at` | TIMESTAMPTZ | Yes | |
 | `last_login_at` | TIMESTAMPTZ | Yes | Last completed sign-in |
 | `locked_until` | TIMESTAMPTZ | Yes | Lockout expiry after repeated wrong passwords |
-| `lockout_cleared_at` | TIMESTAMPTZ | Yes | Last unlock by an administrator; earlier failures no longer count toward a lockout |
+| `lockout_cleared_at` | TIMESTAMPTZ | Yes | Last completed sign-in, administrator unlock or password reset; earlier failures no longer count toward a lockout |
 | `status` | user_status | No | `pending_verification`, `active`, `inactive`, `suspended` |
 | `preferred_locale` | VARCHAR(10) | No | `en`, `fr`, ... |
 | `username` | VARCHAR(50) | No | Unique, case-insensitive |

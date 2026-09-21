@@ -22,7 +22,8 @@ async fn account_locked_after_threshold_failures() {
         assert_eq!(res.status().as_u16(), 401);
     }
 
-    // The next attempt - even with the correct password - should be locked.
+    // The next attempt - even with the correct password - is refused, and
+    // answers like a wrong password: the lock reveals no account.
     let res = app
         .post(
             "/auth/login",
@@ -35,13 +36,13 @@ async fn account_locked_after_threshold_failures() {
 
     assert_eq!(
         res.status().as_u16(),
-        403,
-        "expected 403 account_locked after threshold, got {}",
+        401,
+        "expected 401 after threshold, got {}",
         res.status()
     );
 
     let body: serde_json::Value = res.json().await.unwrap();
-    assert_eq!(body["code"], "account_locked");
+    assert_eq!(body["code"], "invalid_credentials");
 }
 
 #[tokio::test]

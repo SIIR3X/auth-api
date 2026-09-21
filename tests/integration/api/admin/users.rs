@@ -295,8 +295,9 @@ async fn unlocking_ends_the_lockout_and_forgives_the_failures() {
     for _ in 0..3 {
         sign_in(&app, &target.email, "WrongPassword1!").await;
     }
-    let (_, locked) = sign_in(&app, &target.email, &target.password).await;
-    assert_eq!(locked["code"], "account_locked");
+    // A locked password answers like a wrong one.
+    let (status, _) = sign_in(&app, &target.email, &target.password).await;
+    assert_eq!(status, 401);
 
     let (status, _) = body(
         app.post_auth(

@@ -27,10 +27,13 @@ pub const COUNT_RECENT_FAILURES_BY_IP_SQL: &str = "SELECT COUNT(*) FROM (
          LIMIT $3
      ) sub";
 
-/// Consecutive wrong passwords since the last successful sign-in. Only
-/// `invalid_password` counts: a failed second factor comes from someone who
-/// already holds the password, and letting it lock the account would hand them
-/// a way to shut the owner out.
+/// Consecutive wrong passwords of the last day since the account last opened
+/// or was unlocked: a completed sign-in by any method, an administrator's
+/// unlock or a password reset, or the end of the previous lockout. Failures
+/// during a lockout do not count toward the next one, and an old typo never
+/// adds up with a new one. Only `invalid_password` counts: a failed second
+/// factor comes from someone who already holds the password, and letting it
+/// lock the account would hand them a way to shut the owner out.
 pub const COUNT_CONSECUTIVE_FAILURES_BY_USER_SQL: &str = "SELECT COUNT(*) FROM (
          SELECT 1 FROM login_attempts
          WHERE user_id = $1
@@ -40,7 +43,8 @@ pub const COUNT_CONSECUTIVE_FAILURES_BY_USER_SQL: &str = "SELECT COUNT(*) FROM (
                (SELECT MAX(attempted_at) FROM login_attempts
                 WHERE user_id = $1 AND was_successful = TRUE),
                (SELECT lockout_cleared_at FROM users WHERE id = $1),
-               '1970-01-01'::TIMESTAMPTZ
+               (SELECT locked_until FROM users WHERE id = $1),
+               NOW() - INTERVAL '1 day'
            )
          LIMIT $2
      ) sub";

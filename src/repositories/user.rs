@@ -100,12 +100,13 @@ pub async fn set_locked_until(
     Ok(())
 }
 
-/// Stamp a completed sign-in: last login time, and the end of any expired lockout.
+/// Stamp a completed sign-in, by any method: last login time, the end of any
+/// lockout, and a fresh start for the count of wrong passwords.
 pub async fn record_sign_in<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     id: Uuid,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE users SET last_login_at = NOW(), locked_until = NULL WHERE id = $1")
+    sqlx::query("UPDATE users SET last_login_at = NOW(), locked_until = NULL, lockout_cleared_at = NOW() WHERE id = $1")
         .bind(id)
         .execute(executor)
         .await?;

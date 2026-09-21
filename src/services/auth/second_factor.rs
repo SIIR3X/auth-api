@@ -14,11 +14,7 @@ pub async fn complete_two_factor_login(
     let redis_key = pre_auth_key(pre_auth_token);
     let fail_key = format!("{TOTP_FAIL_PREFIX}{pre_auth_token}");
 
-    let mut conn = state
-        .redis
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut conn = state.redis.get().await.map_err(redis_unavailable)?;
     let pre_auth_state = load_pre_auth_state_from_redis(&mut conn, &redis_key).await?;
     drop(conn);
     pre_auth_state.expect_method(ChallengeMethod::Totp)?;
@@ -27,27 +23,27 @@ pub async fn complete_two_factor_login(
     // within the attempt budget.
     let user_id = pre_auth_state.user_id;
     let remember_me = pre_auth_state.remember_me;
-    let user_fail_key = format!("{TOTP_USER_FAIL_PREFIX}{user_id}");
+    let account_keys = second_factor_budget_keys(
+        TOTP_USER_FAIL_PREFIX,
+        user_id,
+        ip,
+        MAX_TOTP_FAILURES_BY_USER,
+    );
 
-    // Reserve the attempt before checking the code, atomically, against both
-    // the token and the account: concurrent guesses cannot all read the same
-    // counter and slip under the limit together.
-    let attempt = redis_counter::consume(
-        &state.redis,
-        &[
-            Budget {
-                key: &fail_key,
-                limit: MAX_TOTP_FAILURES,
-                window_secs: PRE_AUTH_TTL_SECS,
-            },
-            Budget {
-                key: &user_fail_key,
-                limit: MAX_TOTP_FAILURES_BY_USER,
-                window_secs: SECOND_FACTOR_USER_WINDOW_SECS,
-            },
-        ],
-    )
-    .await?;
+    // Reserve the attempt before checking the code, atomically, against the
+    // token, the client address and the account: concurrent guesses cannot all
+    // read the same counter and slip under the limit together.
+    let mut budgets = vec![Budget {
+        key: &fail_key,
+        limit: MAX_TOTP_FAILURES,
+        window_secs: PRE_AUTH_TTL_SECS,
+    }];
+    budgets.extend(account_keys.iter().map(|(key, limit)| Budget {
+        key,
+        limit: *limit,
+        window_secs: SECOND_FACTOR_USER_WINDOW_SECS,
+    }));
+    let attempt = redis_counter::consume(&state.redis, &budgets).await?;
     if attempt.exceeded {
         return Err(AppError::RateLimitExceeded);
     }
@@ -57,7 +53,7 @@ pub async fn complete_two_factor_login(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
 
-    ensure_account_usable(&user, state.clock.now())?;
+    ensure_account_usable(&user)?;
 
     // The primary method may have changed since the challenge was issued.
     let method = tf_repo::find_primary_by_user(&state.db, user.id)
@@ -113,7 +109,8 @@ pub async fn complete_two_factor_login(
         return Err(AppError::TwoFactorFailed);
     }
 
-    redis_counter::reset(&state.redis, &[&user_fail_key]).await;
+    let reset: Vec<&str> = account_keys.iter().map(|(key, _)| key.as_str()).collect();
+    redis_counter::reset(&state.redis, &reset).await;
 
     // Consume the pre-auth token now that verification succeeded: of
     // concurrent completions, only the one that removes it goes on.
@@ -154,11 +151,7 @@ pub async fn complete_email_2fa_login(
 ) -> Result<AuthTokens, AppError> {
     let redis_key = pre_auth_key(pre_auth_token);
 
-    let mut conn = state
-        .redis
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut conn = state.redis.get().await.map_err(redis_unavailable)?;
     let pre_auth_state = load_pre_auth_state_from_redis(&mut conn, &redis_key).await?;
     drop(conn);
     pre_auth_state.expect_method(ChallengeMethod::Email)?;
@@ -171,9 +164,9 @@ pub async fn complete_email_2fa_login(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
 
-    ensure_account_usable(&user, state.clock.now())?;
+    ensure_account_usable(&user)?;
 
-    if let Err(e) = email_2fa::verify_login_code(state, user_id, pre_auth_token, code).await {
+    if let Err(e) = email_2fa::verify_login_code(state, user_id, pre_auth_token, code, ip).await {
         if matches!(e, AppError::TwoFactorFailed) {
             record_second_factor_failure(state, &user, ip, user_agent, request_id).await;
         }
@@ -218,11 +211,7 @@ pub async fn complete_login_with_recovery(
     let redis_key = pre_auth_key(pre_auth_token);
     let fail_key = format!("{RC_FAIL_PREFIX}{pre_auth_token}");
 
-    let mut conn = state
-        .redis
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut conn = state.redis.get().await.map_err(redis_unavailable)?;
     let pre_auth_state = load_pre_auth_state_from_redis(&mut conn, &redis_key).await?;
     drop(conn);
 
@@ -234,24 +223,24 @@ pub async fn complete_login_with_recovery(
     }
     let user_id = pre_auth_state.user_id;
     let remember_me = pre_auth_state.remember_me;
-    let user_fail_key = format!("{}{}", RC_USER_FAIL_PREFIX, user_id);
+    let account_keys = second_factor_budget_keys(
+        RC_USER_FAIL_PREFIX,
+        user_id,
+        ip,
+        MAX_RECOVERY_FAILURES_BY_USER,
+    );
 
-    let attempt = redis_counter::consume(
-        &state.redis,
-        &[
-            Budget {
-                key: &fail_key,
-                limit: MAX_RECOVERY_FAILURES,
-                window_secs: PRE_AUTH_TTL_SECS,
-            },
-            Budget {
-                key: &user_fail_key,
-                limit: MAX_RECOVERY_FAILURES_BY_USER,
-                window_secs: RECOVERY_FAILURE_USER_WINDOW_SECS,
-            },
-        ],
-    )
-    .await?;
+    let mut budgets = vec![Budget {
+        key: &fail_key,
+        limit: MAX_RECOVERY_FAILURES,
+        window_secs: PRE_AUTH_TTL_SECS,
+    }];
+    budgets.extend(account_keys.iter().map(|(key, limit)| Budget {
+        key,
+        limit: *limit,
+        window_secs: RECOVERY_FAILURE_USER_WINDOW_SECS,
+    }));
+    let attempt = redis_counter::consume(&state.redis, &budgets).await?;
     if attempt.exceeded {
         return Err(AppError::RateLimitExceeded);
     }
@@ -261,7 +250,7 @@ pub async fn complete_login_with_recovery(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
 
-    ensure_account_usable(&user, state.clock.now())?;
+    ensure_account_usable(&user)?;
 
     // The lookup refuses used and expired codes, and the UPDATE re-checks both:
     // a code sitting on its deadline can cross it between the two statements.
@@ -286,14 +275,9 @@ pub async fn complete_login_with_recovery(
     }
 
     // Consume the pre-auth token now that recovery succeeded.
-    take_pre_auth(
-        state,
-        &redis_key,
-        user_id,
-        pre_auth_token,
-        &[&fail_key, &user_fail_key],
-    )
-    .await?;
+    take_pre_auth(state, &redis_key, user_id, pre_auth_token, &[&fail_key]).await?;
+    let reset: Vec<&str> = account_keys.iter().map(|(key, _)| key.as_str()).collect();
+    redis_counter::reset(&state.redis, &reset).await;
 
     let tokens = issue_tokens(
         state,
@@ -348,15 +332,8 @@ async fn take_pre_auth(
     pre_auth_token: &str,
     budgets: &[&str],
 ) -> Result<(), AppError> {
-    let mut conn = state
-        .redis
-        .get()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    let removed: i64 = conn
-        .del(redis_key)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut conn = state.redis.get().await.map_err(redis_unavailable)?;
+    let removed: i64 = conn.del(redis_key).await.map_err(redis_unavailable)?;
     if removed != 1 {
         return Err(AppError::TokenInvalid);
     }

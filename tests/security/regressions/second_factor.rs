@@ -154,10 +154,14 @@ async fn account_budget_blocks_fresh_pre_auth_tokens() {
     let user = fixtures::authenticated_user(&app, 602).await;
     let (secret, _) = enable_totp(&app, &user).await;
 
-    // Simulate an exhausted per-account budget (20 failures this hour).
+    // Simulate an exhausted budget for this address (20 failures this hour).
     let mut conn = app.redis.get().await.unwrap();
     let _: () = conn
-        .set_ex(format!("totp_user_fail:{}", user.id), 20, 3600)
+        .set_ex(
+            format!("totp_user_fail:{}:{}", user.id, app.client_ip),
+            20,
+            3600,
+        )
         .await
         .unwrap();
 
@@ -549,4 +553,56 @@ async fn concurrent_recovery_code_regenerations_run_once() {
         1,
         "{statuses:?}"
     );
+}
+
+/// Someone holding the password and guessing codes from their address spends
+/// that address's budget, not the owner's (SEC-58).
+#[tokio::test]
+async fn guessing_codes_from_one_address_does_not_block_the_owner() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 604).await;
+    let (secret, _) = enable_totp(&app, &user).await;
+
+    let mut conn = app.redis.get().await.unwrap();
+    let _: () = conn
+        .set_ex(format!("totp_user_fail:{}:10.66.6.6", user.id), 20, 3600)
+        .await
+        .unwrap();
+
+    // The code of the current step was spent enabling TOTP: use the next one.
+    let challenge = login_challenge(&app, &user).await;
+    let res = app
+        .post(
+            "/auth/two-factor/complete",
+            &json!({
+                "pre_auth_token": challenge["pre_auth_token"],
+                "code": totp_code(&secret, 1),
+            }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        200,
+        "the owner's address is not spent"
+    );
+}
+
+/// Signing in again within the minute an e-mail code stays fresh goes on with
+/// the code already sent instead of failing after the challenge was stored.
+#[tokio::test]
+async fn signing_in_again_within_the_email_code_cooldown_still_challenges() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 605).await;
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified)
+         VALUES ($1, 'email', TRUE, TRUE)",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let first = login_challenge(&app, &user).await;
+    let second = login_challenge(&app, &user).await;
+    assert_ne!(first["pre_auth_token"], second["pre_auth_token"]);
 }

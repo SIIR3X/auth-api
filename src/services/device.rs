@@ -308,7 +308,7 @@ pub async fn poll(
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?
                 .ok_or(AppError::DeviceAccessDenied)?;
-            auth_svc::ensure_account_usable(&user, state.clock.now())?;
+            auth_svc::ensure_account_usable(&user)?;
 
             // Held until the session exists: concurrent approvals for this user
             // and client count their sessions one at a time.

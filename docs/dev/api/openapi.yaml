@@ -2171,7 +2171,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Account locked, suspended or not verified
+          description: Account suspended, inactive or not verified; a locked password answers 401 like a wrong one
           content:
             application/json:
               schema:
@@ -2321,7 +2321,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Account locked, suspended or inactive
+          description: Account suspended or inactive
           content:
             application/json:
               schema:
@@ -2731,7 +2731,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Account suspended or locked since the challenge
+          description: Account suspended or inactive since the challenge
           content:
             application/json:
               schema:
@@ -2797,7 +2797,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Account suspended or locked since the challenge
+          description: Account suspended or inactive since the challenge
           content:
             application/json:
               schema:
@@ -2919,7 +2919,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Account suspended or locked since the challenge
+          description: Account suspended or inactive since the challenge
           content:
             application/json:
               schema:

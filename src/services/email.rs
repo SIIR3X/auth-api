@@ -28,6 +28,7 @@ const TNAME_PASSWORD_RESET: &str = "password_reset";
 const TNAME_EMAIL_OTP: &str = "email_otp";
 const TNAME_PASSWORD_CHANGED: &str = "password_changed";
 const TNAME_TWO_FACTOR_DISABLED: &str = "two_factor_disabled";
+const TNAME_ACCOUNT_LOCKED: &str = "account_locked";
 const TNAME_TWO_FACTOR_ENABLED: &str = "two_factor_enabled";
 const TNAME_ACCOUNT_EXISTS: &str = "account_exists";
 const TNAME_EMAIL_CHANGED: &str = "email_changed";
@@ -563,6 +564,37 @@ pub async fn send_recovery_code_used(
     let subject = render_subject(
         templates,
         TNAME_RECOVERY_CODE_USED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
+pub async fn send_account_locked(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    minutes: i64,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("minutes", &minutes);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_ACCOUNT_LOCKED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_ACCOUNT_LOCKED,
         locale,
         &mail_cfg.default_locale,
         &ctx,

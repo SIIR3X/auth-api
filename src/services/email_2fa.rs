@@ -102,6 +102,7 @@ pub async fn verify_setup(
         user_id,
         submitted_code,
         &format!("email2fa_setup_fail:{}", method_id),
+        None,
     )
     .await?;
 
@@ -231,9 +232,10 @@ pub async fn verify_login_code(
     user_id: Uuid,
     pre_auth_token: &str,
     submitted_code: &str,
+    ip: Option<IpNetwork>,
 ) -> Result<(), AppError> {
     let fail_key = format!("{}{pre_auth_token}", super::auth::EMAIL_2FA_FAIL_PREFIX);
-    verify_otp(state, user_id, submitted_code, &fail_key).await
+    verify_otp(state, user_id, submitted_code, &fail_key, ip).await
 }
 
 /// Separates the digests of these codes from any other flow's.
@@ -246,26 +248,27 @@ async fn verify_otp(
     user_id: Uuid,
     submitted_code: &str,
     fail_key: &str,
+    ip: Option<IpNetwork>,
 ) -> Result<(), AppError> {
-    let user_fail_key = format!("email2fa_user_fail:{user_id}");
+    let account_keys = crate::services::auth::second_factor_budget_keys(
+        crate::services::auth::EMAIL_2FA_USER_FAIL_PREFIX,
+        user_id,
+        ip,
+        MAX_FAILURES_BY_USER,
+    );
 
     // Reserve the attempt atomically before looking the code up.
-    let attempt = redis_counter::consume(
-        &state.redis,
-        &[
-            Budget {
-                key: fail_key,
-                limit: MAX_FAILURES,
-                window_secs: OTP_EXPIRY_SECS,
-            },
-            Budget {
-                key: &user_fail_key,
-                limit: MAX_FAILURES_BY_USER,
-                window_secs: USER_FAILURE_WINDOW_SECS,
-            },
-        ],
-    )
-    .await?;
+    let mut budgets = vec![Budget {
+        key: fail_key,
+        limit: MAX_FAILURES,
+        window_secs: OTP_EXPIRY_SECS,
+    }];
+    budgets.extend(account_keys.iter().map(|(key, limit)| Budget {
+        key,
+        limit: *limit,
+        window_secs: USER_FAILURE_WINDOW_SECS,
+    }));
+    let attempt = redis_counter::consume(&state.redis, &budgets).await?;
     if attempt.exceeded {
         return Err(AppError::RateLimitExceeded);
     }
@@ -292,7 +295,9 @@ async fn verify_otp(
         return Err(AppError::TwoFactorFailed);
     }
 
-    redis_counter::reset(&state.redis, &[fail_key, &user_fail_key]).await;
+    let mut reset: Vec<&str> = account_keys.iter().map(|(key, _)| key.as_str()).collect();
+    reset.push(fail_key);
+    redis_counter::reset(&state.redis, &reset).await;
     Ok(())
 }
 

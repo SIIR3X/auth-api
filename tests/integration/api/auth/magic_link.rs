@@ -56,8 +56,10 @@ async fn a_link_signs_in_once() {
     assert_eq!(method["method"], "magic_link");
 }
 
+/// A new request leaves the earlier link usable (someone else asking must not
+/// revoke the link the owner is about to click); using one ends the others.
 #[tokio::test]
-async fn a_new_link_replaces_the_previous_one_and_an_old_link_expires() {
+async fn links_coexist_until_one_is_used_and_an_old_link_expires() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 1).await;
     fixtures::activate_user(&app.db, user.id).await;
@@ -72,13 +74,29 @@ async fn a_new_link_replaces_the_previous_one_and_an_old_link_expires() {
         .filter_map(|m| m.value_after("#token="))
         .find(|t| *t != first)
         .unwrap();
+    request(&app, &user.email).await;
+    let messages = app.mail.wait_for_count(&user.email, 3).await;
+    let third = messages
+        .iter()
+        .filter(|m| m.subject == SUBJECT)
+        .filter_map(|m| m.value_after("#token="))
+        .find(|t| *t != first && *t != second)
+        .unwrap();
 
-    assert_eq!(complete(&app, &first).await.0, 401);
+    assert_eq!(
+        complete(&app, &first).await.0,
+        200,
+        "the earlier link works"
+    );
+    assert_eq!(
+        complete(&app, &second).await.0,
+        401,
+        "using one ended the others"
+    );
 
     app.clock.advance(time::Duration::minutes(16));
-    let (status, body) = complete(&app, &second).await;
+    let (status, body) = complete(&app, &third).await;
     assert_eq!(status, 401, "{body}");
-    assert_eq!(body["code"], "token_expired");
 }
 
 #[tokio::test]

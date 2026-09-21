@@ -6,6 +6,64 @@ use crate::domain::token::{OneTimeToken, TokenVerdict};
 /// Every one-time token submission takes at least this long, found or not.
 const ONE_TIME_TOKEN_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Redis holds the challenge between a password and its second factor: when
+/// it cannot be reached, the sign-in is unavailable, not broken.
+pub(super) fn redis_unavailable(error: impl std::fmt::Display) -> AppError {
+    tracing::warn!(error = %error, "sign-in challenge store unavailable");
+    AppError::ServiceUnavailable("redis_unavailable")
+}
+
+/// The failure budgets of a second factor at sign-in, beside the budget of
+/// the challenge itself: `limit` failures per window from one client address,
+/// and `SECOND_FACTOR_ACCOUNT_FACTOR` times as many for the account from every
+/// address. Someone holding the password and guessing from their own address
+/// exhausts only their share, not the owner's.
+pub(crate) fn second_factor_budget_keys(
+    prefix: &str,
+    user_id: Uuid,
+    ip: Option<IpNetwork>,
+    limit: i64,
+) -> Vec<(String, i64)> {
+    let mut keys = vec![(
+        format!("{prefix}{user_id}"),
+        limit * SECOND_FACTOR_ACCOUNT_FACTOR,
+    )];
+    if let Some(ip) = ip {
+        keys.push((format!("{prefix}{user_id}:{}", ip_bucket(ip.ip())), limit));
+    }
+    keys
+}
+
+/// The budget of links mailed to `user_id` (`prefix` names the kind): per
+/// client address, then for the account as a whole.
+pub(super) async fn mailbox_budget_exhausted(
+    state: &AppState,
+    prefix: &str,
+    user_id: Uuid,
+    ip: Option<IpNetwork>,
+) -> bool {
+    if let Some(ip) = ip {
+        let key = format!("{prefix}:{user_id}:{}", ip_bucket(ip.ip()));
+        if budget_exhausted(
+            state,
+            &key,
+            MAX_MAILBOX_LINKS_BY_ACCOUNT_AND_IP,
+            MAILBOX_LINK_ACCOUNT_WINDOW_SECS,
+        )
+        .await
+        {
+            return true;
+        }
+    }
+    budget_exhausted(
+        state,
+        &format!("{prefix}:{user_id}"),
+        MAX_MAILBOX_LINKS_BY_ACCOUNT,
+        MAILBOX_LINK_ACCOUNT_WINDOW_SECS,
+    )
+    .await
+}
+
 /// Consume one attempt of an abuse-control budget.
 ///
 /// Fails open: these budgets bound volume (mail floods, token scanning) rather
@@ -175,17 +233,13 @@ pub(crate) fn ensure_status_allows_sign_in(user: &User) -> Result<(), AppError> 
     }
 }
 
-/// [`ensure_status_allows_sign_in`], then the lockout: for flows completing
-/// after the password was proven (second factors, client flows).
-pub(crate) fn ensure_account_usable(
-    user: &User,
-    now: ::time::OffsetDateTime,
-) -> Result<(), AppError> {
-    ensure_status_allows_sign_in(user)?;
-    if user.is_locked(now) {
-        return Err(AppError::AccountLocked);
-    }
-    Ok(())
+/// [`ensure_status_allows_sign_in`], for flows that do not use the password
+/// (second factors after it, passkeys, links, identities, client flows). The
+/// lockout guards the password alone: none of these can be guessed, and
+/// letting it block them would let anyone who knows the identifier shut the
+/// owner out.
+pub(crate) fn ensure_account_usable(user: &User) -> Result<(), AppError> {
+    ensure_status_allows_sign_in(user)
 }
 
 /// Look a one-time token up (email verification, password reset) and judge it.
@@ -256,17 +310,12 @@ mod tests {
     }
 
     #[test]
-    fn a_usable_account_is_allowed_and_unlocked() {
+    fn a_locked_password_does_not_block_the_other_ways_in() {
         let now = ::time::OffsetDateTime::UNIX_EPOCH + ::time::Duration::days(1);
-        let later = now + ::time::Duration::seconds(1);
-        assert!(ensure_account_usable(&user(UserStatus::Active, None), now).is_ok());
-        assert!(ensure_account_usable(&user(UserStatus::Active, Some(now)), now).is_ok());
+        let later = now + ::time::Duration::seconds(60);
+        assert!(ensure_account_usable(&user(UserStatus::Active, Some(later))).is_ok());
         assert!(matches!(
-            ensure_account_usable(&user(UserStatus::Active, Some(later)), now),
-            Err(AppError::AccountLocked)
-        ));
-        assert!(matches!(
-            ensure_account_usable(&user(UserStatus::Inactive, Some(later)), now),
+            ensure_account_usable(&user(UserStatus::Inactive, Some(later))),
             Err(AppError::AccountInactive)
         ));
     }

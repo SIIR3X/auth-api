@@ -218,7 +218,7 @@ pub async fn force_password_reset(
     events::wake();
 
     forget_sessions(state, &active).await;
-    auth_svc::send_reset_link(state, &user, actor.ip, None).await
+    auth_svc::send_reset_link(state, &user, actor.ip, None, true).await
 }
 
 /// Delete the account like its owner would, after a recent re-authentication of

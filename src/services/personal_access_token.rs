@@ -196,7 +196,7 @@ pub async fn exchange(state: &AppState, presented: &str) -> Result<ExchangedToke
     let user = user_repo::find_by_id(&state.db, found.token.user_id)
         .await?
         .ok_or(AppError::TokenInvalid)?;
-    auth_svc::ensure_account_usable(&user, state.clock.now())?;
+    auth_svc::ensure_account_usable(&user)?;
 
     pat_repo::touch(&state.db, &found.token).await?;
     let access_token = auth_svc::build_access_token(

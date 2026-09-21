@@ -35,9 +35,9 @@ async fn locked_account_answers_the_same_whatever_the_password() {
                 &json!({ "identifier": user.email, "password": password }),
             )
             .await;
-        assert_eq!(res.status().as_u16(), 403);
+        assert_eq!(res.status().as_u16(), 401);
         let body: Value = res.json().await.unwrap();
-        assert_eq!(body["code"], "account_locked");
+        assert_eq!(body["code"], "invalid_credentials");
     }
 }
 

@@ -28,7 +28,8 @@ the database together, is out of scope.
   memory. A stored hash weaker than the configured parameters is replaced after
   the next successful sign-in.
 - **No account oracle.** An unknown identifier still pays a full hash against a
-  decoy. A locked account answers the same whatever the password. Registration
+  decoy. A locked password answers like a wrong one (`401 invalid_credentials`)
+  and is recorded like one, so budgets read the same too. Registration
   answers `202` identically, in a constant minimum time, whether or not the
   address is taken (the owner is emailed instead, at most three times an hour;
   a pending one gets a verification link of its own). Forgot-password and
@@ -61,9 +62,20 @@ the database together, is out of scope.
   the password can add one. Each addition mails the owner; every password
   change or reset mails the list of what still opens the account. A pending
   account taken back by a reset loses all of them.
-- **Lockout** after `LOCKOUT_THRESHOLD` consecutive wrong passwords. Failed
-  second factors never count: whoever fails a second factor already holds the
-  password, and letting them lock the account would let them shut the owner out.
+- **Lockout** after `LOCKOUT_THRESHOLD` consecutive wrong passwords within a
+  day. It locks the password only: passkeys, sign-in links, external
+  identities and personal access tokens still open the account. Any completed
+  sign-in, an administrator's unlock, a password reset and the end of a lock
+  restart the count, so guessing cannot keep an account locked for good. The
+  owner is mailed when a lock starts. Failed second factors never count:
+  whoever fails a second factor already holds the password, and letting them
+  lock the account would let them shut the owner out.
+- **Recovery cannot be spent by others.** Reset and sign-in links coexist
+  until one is used, and their budget counts per client address before the
+  account's: someone asking again and again neither revokes the owner's link
+  nor spends the owner's share. Second-factor failure budgets count per
+  address too, with a wider ceiling for the account, and a reset restarts
+  them.
 - **Brute force** is bounded per identifier and per address (database counters),
   across identifiers from one address (HyperLogLog), and per submitted token.
   Budgets are consumed atomically in Redis before the guarded check runs, so
@@ -351,7 +363,7 @@ when a cited test no longer exists.
 | SEC-30 | A sign-in from a new device is announced to the owner | `a_sign_in_from_a_new_device_alerts_the_owner`, `the_first_sign_in_and_a_browser_update_raise_no_alert`, `versions_do_not_make_a_new_device` |
 | SEC-31 | Administration needs the permission in the token and in the database, and a second factor | `an_account_without_administrative_permission_is_refused`, `an_administrator_without_a_second_factor_is_refused`, `a_permission_revoked_in_the_database_stops_working_before_the_token_expires`, `each_action_requires_its_own_permission`, `an_administrator_cannot_suspend_their_own_account_or_a_pending_one`, `deleting_an_account_needs_a_recent_reauthentication_and_announces_it`, `granting_a_role_needs_a_recent_reauthentication`, `nobody_can_remove_the_last_way_to_manage_roles_or_the_default_role` |
 | SEC-32 | The data export needs a recent re-authentication and holds no secret and no other account | `the_export_holds_the_account_its_history_and_no_secret`, `exporting_needs_a_recent_reauthentication` |
-| SEC-33 | Sign-in links are single-use, short-lived, replaced by the next one, off by default, and never skip the second factor | `a_link_signs_in_once`, `a_new_link_replaces_the_previous_one_and_an_old_link_expires`, `a_second_factor_is_still_required`, `unknown_pending_and_suspended_addresses_answer_alike_and_get_nothing`, `links_are_capped_per_account_and_off_unless_enabled` |
+| SEC-33 | Sign-in links are single-use, short-lived, end together when one is used, off by default, and never skip the second factor | `a_link_signs_in_once`, `links_coexist_until_one_is_used_and_an_old_link_expires`, `a_second_factor_is_still_required`, `unknown_pending_and_suspended_addresses_answer_alike_and_get_nothing`, `links_are_capped_per_account_and_off_unless_enabled` |
 | SEC-34 | Personal access tokens are stored as digests, shown once, scoped to permissions the account holds, and end with their session or account | `a_token_is_exchanged_for_access_tokens_carrying_its_scopes_only`, `a_revoked_token_and_its_access_tokens_stop_working`, `tokens_expire_and_follow_the_account_status`, `creation_is_checked`, `scopes_are_limited_to_the_permissions_held` |
 | SEC-35 | Webhooks are signed, never reach internal addresses or follow redirects, and deliver exactly the committed events | `a_subscribed_endpoint_receives_signed_events`, `internal_addresses_are_never_called`, `internal_addresses_are_refused`, `only_plain_https_urls_are_registered`, `endpoints_are_checked_updated_rotated_and_removed`, `validate_rejects_production_webhooks_to_http_or_internal_addresses` |
 | SEC-36 | Confidential clients authenticate at every token request, and client sessions are refreshed only by their client | `a_confidential_client_must_authenticate_with_its_secret`, `a_public_client_has_no_secret_to_present`, `a_device_code_works_for_its_client_only`, `tokens_carry_only_the_consented_scopes_even_after_refresh`, `basic_credentials_are_form_decoded`, `a_request_asks_for_a_subset_of_the_client_scopes` |
@@ -376,3 +388,4 @@ when a cited test no longer exists.
 | SEC-55 | Identifiers are unambiguous and not over-collected: usernames are unique whatever their case, and a failed sign-in records the identifier only when it is an address or a username | `usernames_differing_only_in_case_cannot_coexist`, `an_unrecognized_identifier_is_not_recorded`, `only_addresses_and_usernames_are_recorded` |
 | SEC-56 | The public surface discloses no operational detail: requests no route matches spend the general budget and share one metric label, the public readiness probe names no dependency, and an account's export names no administrator nor the address they acted from | `unknown_paths_spend_the_general_budget`, `metrics_recorder_renders_business_counters_and_folds_unmatched_paths`, `public_readiness_says_ready_without_naming_dependencies`, `the_export_names_no_administrator_nor_their_address` |
 | SEC-57 | Secrets can stay out of the process environment: each variable can be read from the file named by `X_FILE`, and a variable set both ways refuses to start | `a_variable_can_come_from_a_file`, `a_variable_and_its_file_together_are_refused`, `an_unreadable_secret_file_stops_the_start` |
+| SEC-58 | Guessing a password cannot keep its owner out: the lock is bounded in time, restarted by any sign-in, a reset or its own end, limited to the password, announced to the owner, and recovery links and second-factor budgets are counted per address | `a_locked_password_answers_like_a_wrong_one_and_tells_the_owner`, `a_lock_does_not_outlive_itself`, `any_completed_sign_in_restarts_the_count`, `old_failures_do_not_add_up_with_new_ones`, `the_other_ways_in_stay_open_while_the_password_is_locked`, `a_reset_lifts_the_lock`, `someone_asking_for_links_neither_spends_nor_revokes_the_owners`, `guessing_codes_from_one_address_does_not_block_the_owner`, `signing_in_again_within_the_email_code_cooldown_still_challenges`, `a_second_factor_sign_in_without_redis_is_unavailable_not_broken` |

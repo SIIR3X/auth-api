@@ -103,12 +103,25 @@ pub async fn login(
                     .await
                     .map_err(|e| AppError::Internal(e.into()))?;
 
-            // A locked account answers the same whatever the password, after the
-            // same Argon2 work. Checking the lock only after a correct password
-            // turned the lockout into an oracle confirming the guess.
+            // A locked password answers like a wrong one, whatever was typed,
+            // after the same Argon2 work, and is recorded like one: a distinct
+            // answer, or a budget that stopped counting, would tell anyone which
+            // identifiers have an account. The owner learns of the lock by email.
             if u.is_locked(state.clock.now()) {
+                tokio::join!(
+                    record_failure(
+                        &state.db,
+                        Some(u.id),
+                        identifier,
+                        LoginFailureReason::AccountLocked,
+                        ip,
+                        user_agent,
+                    ),
+                    track_credential_stuffing(state, ip, identifier),
+                );
                 metrics::counter!("auth_logins_total", "outcome" => "locked").increment(1);
-                return Err(AppError::AccountLocked);
+                apply_backoff(failures + 1).await;
+                return Err(AppError::InvalidCredentials);
             }
             (Some(u), ok)
         }
@@ -196,6 +209,7 @@ pub async fn login(
                 {
                     lockout_failed("audit", &e);
                 }
+                notify_locked(state, &u, locked_until);
             }
 
             metrics::counter!("auth_logins_total", "outcome" => "invalid_credentials").increment(1);
@@ -283,14 +297,10 @@ pub(crate) async fn first_factor_proven(
         let serialized =
             serde_json::to_string(&pre_auth_state).map_err(|e| AppError::Internal(e.into()))?;
 
-        let mut conn = state
-            .redis
-            .get()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let mut conn = state.redis.get().await.map_err(redis_unavailable)?;
         conn.set_ex::<_, _, ()>(&redis_key, serialized, PRE_AUTH_TTL_SECS)
             .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+            .map_err(redis_unavailable)?;
 
         // Maintain a per-user index so reset_password (and other revocation
         // hooks) can purge active pre-auth tokens without SCAN. Best-effort:
@@ -305,8 +315,16 @@ pub(crate) async fn first_factor_proven(
             .await;
 
         // For Email 2FA, dispatch the code as soon as the challenge is issued.
+        // A code sent less than a minute ago is still valid: the challenge
+        // goes on without a new one rather than failing after it was stored.
         if method == ChallengeMethod::Email {
-            email_2fa::send_code(state, user.id).await?;
+            match email_2fa::send_code(state, user.id).await {
+                Ok(()) => {}
+                Err(AppError::RateLimitExceeded) => {
+                    tracing::info!(user_id = %user.id, "email code not resent within its cooldown");
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         metrics::counter!("auth_logins_total", "outcome" => "two_factor_required").increment(1);
@@ -337,6 +355,31 @@ pub(crate) async fn first_factor_proven(
 
     metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
     Ok(LoginResult::Complete(tokens))
+}
+
+/// Tell the owner their password is locked, and until when: a lock they did
+/// not cause means someone is guessing it. Sent once per lock, as a lock is
+/// set only on an unlocked account.
+fn notify_locked(state: &AppState, user: &User, locked_until: ::time::OffsetDateTime) {
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = user.email.clone();
+    let username = user.username.clone();
+    let locale = user.preferred_locale.clone();
+    let minutes = ((locked_until - state.clock.now()).whole_seconds().max(0) + 59) / 60;
+    email::dispatch_best_effort("account_locked_email", async move {
+        email::send_account_locked(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+            minutes,
+        )
+        .await
+    });
 }
 
 /// When a sign-in locks the account: once `consecutive` wrong passwords reach

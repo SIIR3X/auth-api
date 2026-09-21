@@ -16,6 +16,23 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- Wrong passwords lock the password for `LOCKOUT_DURATION_SECS` only: the count
+  covers a day, restarts after any completed sign-in (second factor, sign-in
+  link, passkey, external identity), an administrator's unlock, a password
+  reset or the end of a lock, and one guess per lock period no longer keeps an
+  account locked for good. Passkeys, sign-in links, external identities and
+  personal access tokens keep working during a lock. A locked password answers
+  `401 invalid_credentials` like a wrong one (it answered `403
+  account_locked`), and the owner is mailed (new `account_locked` template,
+  English and French).
+- Reset and sign-in links coexist until one is used (a new request revoked the
+  previous link), and their budget counts per client address (3 an hour) before
+  the account's (10 an hour). Second-factor failure budgets count per address,
+  with a ceiling five times higher for the account, and a password reset
+  restarts them. Signing in again within the minute an e-mail code stays fresh
+  continues the challenge instead of failing, and a second-factor sign-in
+  without Redis answers `503`.
+
 - `POST /auth/verify-email` takes the `password` of the registration that sent
   the link, along with the `token`. A later registration on a pending address
   could otherwise mail the owner a link carrying the attacker's password; a

@@ -199,7 +199,7 @@ pub async fn register(
     responses(
         (status = 200, description = "Tokens, or a two-factor challenge", body = LoginResponse),
         (status = 401, description = "Invalid credentials", body = crate::error::ErrorBody),
-        (status = 403, description = "Account locked, suspended or not verified", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended, inactive or not verified; a locked password answers 401 like a wrong one", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
@@ -391,7 +391,7 @@ pub async fn request_magic_link(
     responses(
         (status = 200, description = "Tokens, or the account's two-factor challenge", body = LoginResponse),
         (status = 401, description = "Invalid, used or expired link", body = crate::error::ErrorBody),
-        (status = 403, description = "Account locked, suspended or inactive", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive", body = crate::error::ErrorBody),
         (status = 404, description = "Sign-in links are not enabled on this deployment", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
@@ -470,7 +470,7 @@ pub async fn reset_password(
     responses(
         (status = 200, description = "Tokens issued", body = TokensResponse),
         (status = 401, description = "Invalid code or pre-auth token", body = crate::error::ErrorBody),
-        (status = 403, description = "Account suspended or locked since the challenge", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive since the challenge", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
@@ -506,7 +506,7 @@ pub async fn complete_two_factor(
     responses(
         (status = 200, description = "Tokens issued", body = TokensResponse),
         (status = 401, description = "Invalid recovery code or pre-auth token", body = crate::error::ErrorBody),
-        (status = 403, description = "Account suspended or locked since the challenge", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive since the challenge", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
@@ -541,7 +541,7 @@ pub async fn recovery_login(
     responses(
         (status = 200, description = "Tokens issued", body = TokensResponse),
         (status = 401, description = "Invalid code or pre-auth token", body = crate::error::ErrorBody),
-        (status = 403, description = "Account suspended or locked since the challenge", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive since the challenge", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
