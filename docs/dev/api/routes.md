@@ -324,11 +324,11 @@ are regenerated.
 |--------|-------|------|------------|
 | GET | `/admin/users` | Admin `users:read` | General |
 | GET | `/admin/users/{id}` | Admin `users:read` | General |
-| POST | `/admin/users/{id}/suspend` | Admin `users:manage` | General |
+| POST | `/admin/users/{id}/suspend` | Admin `users:manage` + reauth | General |
 | POST | `/admin/users/{id}/reactivate` | Admin `users:manage` | General |
 | POST | `/admin/users/{id}/unlock` | Admin `users:manage` | General |
 | DELETE | `/admin/users/{id}/sessions` | Admin `users:manage` | General |
-| POST | `/admin/users/{id}/password-reset` | Admin `users:manage` | General |
+| POST | `/admin/users/{id}/password-reset` | Admin `users:manage` + reauth | General |
 | DELETE | `/admin/users/{id}` | Admin `users:manage` + reauth | General |
 | POST | `/admin/users/{id}/roles` | Admin `roles:manage` + reauth | General |
 | DELETE | `/admin/users/{id}/roles/{name}` | Admin `roles:manage` | General |
@@ -341,8 +341,11 @@ are regenerated.
 | PUT | `/admin/clients/{client_id}` | Admin `clients:manage` + reauth | General |
 | DELETE | `/admin/clients/{client_id}` | Admin `clients:manage` | General |
 | POST | `/admin/clients/{client_id}/secret` | Admin `clients:manage` + reauth | General |
-| DELETE | `/admin/clients/{client_id}/secret` | Admin `clients:manage` | General |
+| DELETE | `/admin/clients/{client_id}/secret` | Admin `clients:manage` + reauth | General |
 | GET | `/admin/audit` | Admin `audit:read` | General |
+
+Every `/admin` route needs a first-party session that proved a second factor
+at sign-in (`403 two_factor_required` otherwise).
 
 `GET /admin/users` takes `query` (start of the address or username), `status`,
 `limit` and `cursor`, and pages newest first. Administrators cannot suspend,
@@ -355,7 +358,8 @@ until refreshed; `/admin` routes read them from the database on every request.
 Webhooks (`webhooks:manage`): `GET`/`POST /admin/webhooks`,
 `PUT`/`DELETE /admin/webhooks/{id}`, `POST /admin/webhooks/{id}/secret`,
 `GET /admin/webhooks/{id}/deliveries` and
-`POST /admin/webhooks/{id}/deliveries/{delivery_id}/retry`. See the
+`POST /admin/webhooks/{id}/deliveries/{delivery_id}/retry`. Creating, updating
+and re-keying a webhook need a recent re-authentication. See the
 [webhook guide](../guides/webhooks.md).
 
 `GET /admin/audit` takes `user_id`, `action`, `limit` and `cursor`.

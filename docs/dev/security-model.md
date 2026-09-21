@@ -215,17 +215,19 @@ the database together, is out of scope.
 - Administrators cannot suspend, sign out, reset or delete their own account
   from `/admin`, and deleting an account needs their recent re-authentication.
 - Every change is audited on the account it changed, with the administrator's
-  id, so owners see it in their own history; changes to roles and clients are
+  id, so owners see it in their own history (their export leaves the
+  administrator's id and address out); changes to roles and clients are
   audited in the administrator's own history.
 - Granting a role, changing what a role grants, saving a client or changing its
   secret, creating, redirecting or re-keying a webhook, suspending an account
   and forcing its reset need a recent re-authentication: a stolen administrator
   token alone can neither send account events elsewhere nor shut owners out.
-  Every change is audited in the same transaction; a webhook's audit keeps the
-  host it points to (never the path or query), and redeliveries are audited. No change may leave the deployment without an
-  active account holding `roles:manage`: not a change of roles, not suspending
-  or deleting that account, by an administrator or by its owner. These checks
-  take a shared lock, so two concurrent withdrawals cannot both pass.
+- Every change is audited in the same transaction; a webhook's audit keeps the
+  host it points to (never the path or query), and redeliveries are audited.
+- No change may leave the deployment without an active account holding
+  `roles:manage`: not a change of roles, not suspending or deleting that
+  account, by an administrator or by its owner. These checks take a shared
+  lock, so two concurrent withdrawals cannot both pass.
 
 ## Webhooks
 
@@ -235,7 +237,8 @@ the database together, is out of scope.
   timestamp and body); secrets are encrypted with the keyring and shown once.
 - Before each delivery the host is resolved and every address checked: loopback,
   private, link-local, shared, documentation, multicast and reserved ranges,
-  and IPv6 forms embedding them, are refused. The connection is pinned to the
+  the former 6to4 relay range, local-use NAT64, and IPv6 forms embedding them,
+  are refused. The connection is pinned to the
   checked address and redirects are not followed, so a DNS answer or a
   redirect cannot turn a webhook against the internal network.
 
@@ -267,18 +270,22 @@ the database together, is out of scope.
 - Client addresses come from forwarding headers only when the direct peer is a
   trusted proxy (`TRUSTED_PROXY_CIDRS`); IPv6 clients are limited per `/64`.
 - Rate limits: a sliding-window estimate per client, one script per request,
-  fail closed in production.
+  fail closed in production. Paths no route matches spend the general budget.
 - Request bodies are capped at 64 KB and handlers at 30 seconds. Responses carry
   HSTS, CSP `default-src 'none'`, `nosniff`, `DENY` framing and `no-store`.
-- Logs record route templates, never raw paths carrying codes. Metrics are served
-  on a loopback-only listener.
+- Logs record route templates, never raw paths carrying codes; metrics label
+  unmatched paths `<unmatched>`. Metrics and the readiness of each dependency
+  are served on an internal listener; the public `/ready` says only whether
+  the instance is ready.
 
 ## Configuration
 
 Production refuses to start with a configuration that disables a control: HTTP
 public or frontend URLs, no trusted proxy, committed development keys, a
 wildcard CORS origin, fail-open rate limiting or CAPTCHA, and more. The full
-list is in [Configuration](guides/configuration.md#production-checks).
+list is in [Configuration](guides/configuration.md#production-checks). Any
+variable can be read from a file (`X_FILE`), so an orchestrator's secrets stay
+out of the process environment.
 
 ## Known limits
 
