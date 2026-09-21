@@ -46,6 +46,9 @@ pub struct RefreshRequest {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct VerifyEmailRequest {
     pub token: String,
+    /// The password chosen at the registration that sent the link: the link
+    /// proves the mailbox, the password proves which registration it activates.
+    pub password: String,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -317,7 +320,7 @@ pub async fn refresh(
     request_body = VerifyEmailRequest,
     responses(
         (status = 200, description = "Address verified"),
-        (status = 401, description = "Invalid or expired token", body = crate::error::ErrorBody),
+        (status = 401, description = "Invalid or expired token (`token_invalid`, `token_expired`), or not the password of the registration that sent this link (`invalid_credentials`)", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
@@ -327,7 +330,7 @@ pub async fn verify_email(
     RequestId(rid): RequestId,
     Json(body): Json<VerifyEmailRequest>,
 ) -> Result<StatusCode, AppError> {
-    auth_svc::verify_email(&state, &body.token, ip, rid).await?;
+    auth_svc::verify_email(&state, &body.token, &body.password, ip, rid).await?;
     Ok(StatusCode::OK)
 }
 

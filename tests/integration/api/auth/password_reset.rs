@@ -273,7 +273,7 @@ async fn verify_email_activates_unverified_account() {
     let res = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": token.raw }),
+            &serde_json::json!({ "token": token.raw, "password": user.password }),
         )
         .await;
     assert_eq!(res.status().as_u16(), 200);
@@ -299,7 +299,7 @@ async fn verify_email_with_invalid_token_rejected() {
     let res = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": uuid::Uuid::new_v4().to_string() }),
+            &serde_json::json!({ "token": uuid::Uuid::new_v4().to_string(), "password": "Any-Password-1!" }),
         )
         .await;
 
@@ -318,7 +318,7 @@ async fn verify_email_with_already_used_token_rejected() {
     let first = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": token.raw }),
+            &serde_json::json!({ "token": token.raw, "password": user.password }),
         )
         .await;
     assert_eq!(first.status().as_u16(), 200);
@@ -334,7 +334,7 @@ async fn verify_email_with_already_used_token_rejected() {
     let second = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": token.raw }),
+            &serde_json::json!({ "token": token.raw, "password": user.password }),
         )
         .await;
     assert_eq!(second.status().as_u16(), 401);
@@ -380,7 +380,10 @@ async fn resent_links_coexist_until_one_verifies_the_account() {
     // A resend must not revoke the link its owner is about to click: someone
     // else can ask for one, knowing only the address.
     let used = app
-        .post("/auth/verify-email", &serde_json::json!({ "token": first }))
+        .post(
+            "/auth/verify-email",
+            &serde_json::json!({ "token": first, "password": user.password }),
+        )
         .await;
     assert_eq!(used.status().as_u16(), 200, "the first link still works");
 
@@ -388,7 +391,7 @@ async fn resent_links_coexist_until_one_verifies_the_account() {
     let other = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": second }),
+            &serde_json::json!({ "token": second, "password": user.password }),
         )
         .await;
     assert_eq!(

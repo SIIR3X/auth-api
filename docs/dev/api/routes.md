@@ -48,7 +48,7 @@ loopback only.
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
 | POST | `/auth/register` | - | Strict |
-| POST | `/auth/verify-email` | - | Strict |
+| POST | `/auth/verify-email` | - (`token` and the registration's `password`) | Strict |
 | POST | `/auth/verify-email/resend` | - | Strict |
 | POST | `/auth/login` | - | Strict |
 | POST | `/auth/two-factor/complete` | pre-auth token | Strict |

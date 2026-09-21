@@ -16,6 +16,12 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- `POST /auth/verify-email` takes the `password` of the registration that sent
+  the link, along with the `token`. A later registration on a pending address
+  could otherwise mail the owner a link carrying the attacker's password; a
+  resent link asks for the password the account was created with. A wrong
+  password answers `401 invalid_credentials` and leaves the link unused.
+
 - Tokens delegated to a client application (another client than the
   instance's own, or any session restricted to consented scopes) and tokens
   obtained from a personal access token no longer act as the account: the

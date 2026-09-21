@@ -61,32 +61,6 @@ pub async fn create_verification<'e>(
     .await
 }
 
-/// Credentials of the most recent live link of a pending account, so a
-/// resend repeats what its latest registration chose rather than falling back
-/// to the credentials of whoever registered the address first.
-pub async fn latest_active_credentials<'e>(
-    executor: impl PgExecutor<'e>,
-    user_id: Uuid,
-) -> Result<Option<PendingCredentials>, sqlx::Error> {
-    let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT password_hash, username, preferred_locale FROM email_verification_tokens
-         WHERE user_id = $1 AND used_at IS NULL AND expires_at > NOW()
-           AND password_hash IS NOT NULL
-         ORDER BY created_at DESC
-         LIMIT 1",
-    )
-    .bind(user_id)
-    .fetch_optional(executor)
-    .await?;
-    Ok(row.map(
-        |(password_hash, username, preferred_locale)| PendingCredentials {
-            password_hash,
-            username,
-            preferred_locale,
-        },
-    ))
-}
-
 pub async fn find_verification_by_hash(
     pool: &PgPool,
     token_hash: &[u8],

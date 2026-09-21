@@ -166,7 +166,10 @@ async fn a_one_time_token_submission_can_be_retried() {
 
     for _ in 0..2 {
         let res = app
-            .post("/auth/verify-email", &json!({ "token": token }))
+            .post(
+                "/auth/verify-email",
+                &json!({ "token": token, "password": "Any-Password-1!" }),
+            )
             .await;
         assert_eq!(res.status().as_u16(), 401, "a retry is not rate limited");
     }

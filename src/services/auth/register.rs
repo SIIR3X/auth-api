@@ -67,10 +67,10 @@ async fn register_account(
 
     if let Some(existing) = user_repo::find_by_email(&state.db, email).await? {
         // A pending account belongs to nobody yet: this registration gets its
-        // own link, carrying the credentials it chose. Whoever clicks it
-        // activates the account with them, so an attacker who registered the
-        // address first does not pick the owner's password. An active account
-        // is told of the attempt.
+        // own link, carrying the credentials it chose. The link activates the
+        // account only with the password of that registration, so neither
+        // registration can activate it with the other's password, whichever
+        // came first. An active account is told of the attempt.
         if existing.status == UserStatus::PendingVerification {
             let credentials = crate::domain::token::PendingCredentials {
                 password_hash: hash,
@@ -245,7 +245,8 @@ pub async fn resend_verification(
 
 /// E-mail `user`, a pending account, a new verification link within the
 /// per-account budget. The link carries `credentials` when a registration sent
-/// it; a resend repeats those of the latest live link. Earlier links stay
+/// it; a resend carries none, so it asks for the password the account was
+/// created with and never repeats another registration's. Earlier links stay
 /// valid until one of them verifies the account: a later registration or
 /// resend must not revoke the link its owner is about to click.
 async fn issue_verification(
@@ -272,10 +273,6 @@ async fn issue_verification(
     let hash_bytes = crypto::sha256(raw_token.as_bytes());
 
     let mut tx = state.db.begin().await?;
-    let credentials = match credentials {
-        Some(credentials) => Some(credentials),
-        None => token::latest_active_credentials(&mut *tx, user.id).await?,
-    };
     token::create_verification(
         &mut *tx,
         &NewEmailVerificationToken {
@@ -333,9 +330,14 @@ async fn issue_verification(
     Ok(())
 }
 
+/// Verify an address with a link and the password of the registration that
+/// sent it (the account's own password for a link without credentials). A
+/// wrong password leaves the link unused: it may be another registration's
+/// link, and its owner can still use it.
 pub async fn verify_email(
     state: &AppState,
     raw_token: &str,
+    password_plaintext: &str,
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
@@ -344,6 +346,23 @@ pub async fn verify_email(
 
     let record =
         check_one_time_token(state, token::find_verification_by_hash(&state.db, &hash)).await?;
+
+    let expected_hash = match &record.password_hash {
+        Some(carried) => carried.clone(),
+        None => {
+            user_repo::find_by_id(&state.db, record.user_id)
+                .await?
+                .ok_or(AppError::TokenInvalid)?
+                .password_hash
+        }
+    };
+    let matches = password::verify_async(password_plaintext, &expected_hash, &state.config.crypto)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    if !matches {
+        tracing::info!("verification link used with another registration's password");
+        return Err(AppError::InvalidCredentials);
+    }
 
     // Consuming the token, verifying the address and announcing it commit together.
     let mut tx = state.db.begin().await?;

@@ -2975,7 +2975,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '401':
-          description: Invalid or expired token
+          description: Invalid or expired token (`token_invalid`, `token_expired`), or not the password of the registration that sent this link (`invalid_credentials`)
           content:
             application/json:
               schema:
@@ -7574,7 +7574,13 @@ components:
       type: object
       required:
       - token
+      - password
       properties:
+        password:
+          type: string
+          description: |-
+            The password chosen at the registration that sent the link: the link
+            proves the mailbox, the password proves which registration it activates.
         token:
           type: string
     VerifyTotpSetupRequest:

@@ -73,7 +73,7 @@ async fn email_verification_succeeds_when_redis_is_down() {
     let res = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": token.raw }),
+            &serde_json::json!({ "token": token.raw, "password": user.password }),
         )
         .await;
     assert_eq!(res.status().as_u16(), 200);
