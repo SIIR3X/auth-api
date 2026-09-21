@@ -5,6 +5,14 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-26
+
+Security release: fixes every finding of the security audit of 2026-09-26.
+Some fixes refuse what was unsafe to accept, as the versioning policy allows
+for security fixes: each such change is listed under **Security**. Migrations
+0025 to 0028 are additive; read **Upgrading** before deploying, in particular
+migration 0028 and the settings now refused at start-up.
+
 ### Security
 
 - Tokens delegated to a client application (another client than the
