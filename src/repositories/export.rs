@@ -1,7 +1,8 @@
 //! Everything stored about one account, as one JSON document: what
 //! `GET /users/me/export` returns. Built in one statement, so the parts are
 //! consistent with each other. Secrets (password hash, TOTP secret, token and
-//! code digests) are left out. Timestamps are Unix seconds, like the API.
+//! code digests) are left out, and so is what identifies an administrator who
+//! changed the account. Timestamps are Unix seconds, like the API.
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -95,9 +96,12 @@ SELECT jsonb_build_object(
             'id', l.id,
             'created_at', floor(extract(epoch FROM l.created_at))::bigint,
             'action', l.action,
-            'ip_address', host(l.ip_address),
+            -- An administrator's change names neither the administrator nor
+            -- the address they acted from: those are theirs, not the owner's.
+            'ip_address', CASE WHEN l.metadata->>'by' = 'administrator'
+                THEN NULL ELSE host(l.ip_address) END,
             'request_id', l.request_id,
-            'metadata', l.metadata
+            'metadata', l.metadata - 'administrator_id'
         ) ORDER BY l.created_at, l.id)
         FROM audit_log l WHERE l.user_id = $1 AND l.created_at <= NOW()
     ), '[]'::jsonb)

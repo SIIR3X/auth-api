@@ -453,7 +453,12 @@ async fn concurrent_withdrawals_never_leave_nobody_managing_roles() {
     let (a, b) = tokio::join!(withdraw(first.user.id), withdraw(second.user.id));
     let mut outcomes = [a, b];
     outcomes.sort();
-    assert_eq!(outcomes, [204, 409], "one withdrawal must be refused");
+    // The refusal is the guard (409), or the permission check (403) when the
+    // actor's own withdrawal committed before the other request was checked.
+    assert!(
+        outcomes == [204, 409] || outcomes == [204, 403],
+        "one withdrawal must be refused: {outcomes:?}"
+    );
     assert!(
         auth_api::repositories::role::permission_held(&app.db, "roles:manage")
             .await

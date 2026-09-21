@@ -157,8 +157,8 @@ deliberate.
 | Pre-auth (2FA challenge) tokens | Stored in Redis: in-flight 2FA logins fail; users retry after recovery |
 | CAPTCHA / lockout counters | Various counters degrade fail-open; account lockout (DB-based) still works |
 
-**Response:** restart/restore Redis, then verify `curl -f 127.0.0.1:3001/ready`
-and `curl -f 127.0.0.1:3002/ready` on the API VPS and watch `auth_logins_total` on the metrics endpoint resume. No application
+**Response:** restart/restore Redis, then verify `curl -f 10.0.0.1:9465/ready`
+and `curl -f 10.0.0.1:9466/ready` on the API VPS (each dependency listed) and watch `auth_logins_total` on the metrics endpoint resume. No application
 restart is needed - pools reconnect automatically.
 
 **Redis full.** Redis runs with `maxmemory-policy noeviction`: evicting a
@@ -213,8 +213,9 @@ only, never behind nginx). Key series:
 
 - `auth_logins_total{outcome=...}` - success / invalid_credentials / locked / two_factor_required
 - `auth_lockouts_total`, `auth_session_replays_total`, `auth_2fa_failures_total{method=...}`
+- `auth_lockout_failures_total{step=count|lock|audit}` - a lockout that could not be applied, logged as `lockout could not be applied` (`AuthApiLockoutFailing`)
 - `argon2_queue_available_permits` - **0 while login latency climbs = login storm**; capacity is `ARGON2_MAX_CONCURRENCY` (defaults to CPU cores)
-- `axum_http_requests_duration_seconds` - per-route latency histograms
+- `axum_http_requests_duration_seconds` - per-route latency histograms; requests no route matched share the endpoint `<unmatched>`
 - `auth_db_pool_connections{state=max|open|idle|in_use}`, `auth_redis_pool_connections{state=max|open|available}`, `auth_redis_pool_waiting` - pool saturation, refreshed every 10 s; `in_use` at `max` with requests timing out = pool too small or a slow query
 - `auth_redis_errors_total{operation=budget|rate_limit|token_state}` - Redis failures, each refused with a 503 (fail closed)
 - `auth_outbox_pending`, `auth_outbox_oldest_pending_age_seconds` - domain events recorded but not yet stored by JetStream; `auth_events_published_total`, `auth_events_publish_failures_total{reason=error|timeout|stream}` - relay publications and failed attempts (each retried)
@@ -436,7 +437,7 @@ them, so it never restarts the instances because of them.
 | Path | Without NATS |
 |------|--------------|
 | Every event, `user.deleted` included | Recorded with its change in `event_outbox`; the relay publishes it once the broker is back, in order. The request succeeds; the backlog shows in `auth_outbox_pending` (`AuthApiEventsStalled` past 5 minutes) |
-| `/ready` | 503 with `"nats": "down"` (`NatsDown` alerts) |
+| `/ready` | 503; the internal listener's `/ready` (`10.0.0.1:9465/ready`) shows `"nats": "down"` (`NatsDown` alerts) |
 | Instance start | Starts and connects in the background; only a wrong token stops the start |
 
 **Response:** restart the broker (`docker compose -f docker-compose.api.yml

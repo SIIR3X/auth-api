@@ -64,9 +64,17 @@ pub async fn live() -> &'static str {
     "ok"
 }
 
-/// What `/ready` found for each dependency.
+/// Whether this instance can serve traffic, as the public `/ready` says it.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct ReadyResponse {
+    /// `ready` when every dependency answered, `unavailable` otherwise.
+    pub status: &'static str,
+}
+
+/// What a readiness check found for each dependency. Served on the internal
+/// listener only: which dependency is down is operational detail.
+#[derive(serde::Serialize)]
+pub struct Readiness {
     /// `ready` when every dependency answered, `unavailable` otherwise.
     pub status: &'static str,
     /// `up` or `down`.
@@ -75,23 +83,17 @@ pub struct ReadyResponse {
     pub nats: &'static str,
 }
 
+impl Readiness {
+    pub fn is_ready(&self) -> bool {
+        self.status == "ready"
+    }
+}
+
 /// How long a readiness check waits for one dependency.
 const READY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
-#[utoipa::path(
-    get,
-    path = "/ready",
-    tag = "discovery",
-    responses(
-        (status = 200, description = "Every dependency answered", body = ReadyResponse),
-        (status = 503, description = "A dependency did not answer", body = ReadyResponse),
-    ),
-)]
-/// Readiness: whether this instance can serve traffic now. The reverse proxy
-/// and the rolling update send traffic only to a ready instance.
-pub async fn ready(
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> (axum::http::StatusCode, axum::Json<ReadyResponse>) {
+/// Check every dependency, each within [`READY_PROBE_TIMEOUT`].
+pub async fn readiness(state: &AppState) -> Readiness {
     let database = async {
         matches!(
             tokio::time::timeout(
@@ -119,20 +121,74 @@ pub async fn ready(
     let nats = state.nats.connection_state() == async_nats::connection::State::Connected;
 
     let up = |ok: bool| if ok { "up" } else { "down" };
-    let all = database && redis && nats;
-    (
-        if all {
-            axum::http::StatusCode::OK
+    Readiness {
+        status: if database && redis && nats {
+            "ready"
         } else {
-            axum::http::StatusCode::SERVICE_UNAVAILABLE
+            "unavailable"
         },
+        database: up(database),
+        redis: up(redis),
+        nats: up(nats),
+    }
+}
+
+fn ready_status(readiness: &Readiness) -> axum::http::StatusCode {
+    if readiness.is_ready() {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/ready",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "Every dependency answered", body = ReadyResponse),
+        (status = 503, description = "A dependency did not answer; the internal listener says which", body = ReadyResponse),
+    ),
+)]
+/// Readiness: whether this instance can serve traffic now. The reverse proxy
+/// and the rolling update send traffic only to a ready instance.
+pub async fn ready(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, axum::Json<ReadyResponse>) {
+    let readiness = readiness(&state).await;
+    (
+        ready_status(&readiness),
         axum::Json(ReadyResponse {
-            status: if all { "ready" } else { "unavailable" },
-            database: up(database),
-            redis: up(redis),
-            nats: up(nats),
+            status: readiness.status,
         }),
     )
+}
+
+/// The readiness of each dependency, on the internal listener.
+async fn ready_detail(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, axum::Json<Readiness>) {
+    let readiness = readiness(&state).await;
+    (ready_status(&readiness), axum::Json(readiness))
+}
+
+/// The endpoint label of requests no route matched: the raw path would give
+/// every scanned URL a series of its own.
+fn unmatched_endpoint_label(_path: &str) -> String {
+    "<unmatched>".to_owned()
+}
+
+/// The HTTP metrics layer and the handle that renders the exposition.
+fn metrics_layer() -> (
+    axum_prometheus::PrometheusMetricLayer<'static>,
+    axum_prometheus::metrics_exporter_prometheus::PrometheusHandle,
+) {
+    axum_prometheus::PrometheusMetricLayerBuilder::new()
+        .with_endpoint_label_type(axum_prometheus::EndpointLabel::MatchedPathWithFallbackFn(
+            unmatched_endpoint_label,
+        ))
+        .with_default_metrics()
+        .build_pair()
 }
 
 #[utoipa::path(
@@ -156,9 +212,10 @@ pub async fn jwks(
     )
 }
 
-/// Build the main application router plus a separate `/metrics` router.
+/// Build the main application router plus a separate internal router:
+/// `/metrics` and the detailed `/ready`.
 ///
-/// The metrics router MUST be served on an internal listener only (see
+/// The internal router MUST be served on an internal listener only (see
 /// `MetricsConfig`): the Prometheus exposition reveals route-level traffic
 /// patterns and must never sit behind the public reverse proxy.
 ///
@@ -166,18 +223,21 @@ pub async fn jwks(
 /// happen once per process: use it from `main` only. Tests use `router()`,
 /// which records no metrics.
 pub fn router_with_metrics(state: AppState) -> (Router, Router) {
-    let (prometheus_layer, metric_handle) = axum_prometheus::PrometheusMetricLayer::pair();
+    let (prometheus_layer, metric_handle) = metrics_layer();
 
-    let app = build_router(state, Some(prometheus_layer));
-    let metrics = Router::new().route(
-        "/metrics",
-        get(move || {
-            let handle = metric_handle.clone();
-            async move { handle.render() }
-        }),
-    );
+    let app = build_router(state.clone(), Some(prometheus_layer));
+    let internal = Router::new()
+        .route(
+            "/metrics",
+            get(move || {
+                let handle = metric_handle.clone();
+                async move { handle.render() }
+            }),
+        )
+        .route("/ready", get(ready_detail))
+        .with_state(state);
 
-    (app, metrics)
+    (app, internal)
 }
 
 pub fn router(state: AppState) -> Router {
@@ -236,6 +296,15 @@ fn build_router(
         .route("/live", get(live))
         .route("/ready", get(ready));
 
+    // Requests no route matches spend the general budget too: a scan of
+    // unknown paths is still traffic from one address.
+    let unmatched = Router::new()
+        .fallback(not_found)
+        .layer(middleware::from_fn_with_state(
+            rl_general.clone(),
+            rate_limit::layer_with_state,
+        ));
+
     let admin = admin_router().layer(middleware::from_fn_with_state(
         rl_general.clone(),
         rate_limit::layer_with_state,
@@ -262,6 +331,7 @@ fn build_router(
 
     let router = probes
         .merge(public)
+        .merge(unmatched)
         .nest(
             "/auth",
             auth_router().layer(middleware::from_fn_with_state(
@@ -314,6 +384,11 @@ fn build_router(
     };
 
     router.with_state(state)
+}
+
+/// The router's own 404, which the error body layer documents.
+async fn not_found() -> axum::http::StatusCode {
+    axum::http::StatusCode::NOT_FOUND
 }
 
 fn build_cors(cfg: &crate::config::CorsConfig) -> CorsLayer {
@@ -578,16 +653,32 @@ fn me_router() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
+    use tower::ServiceExt;
+
     #[tokio::test]
-    async fn metrics_recorder_renders_business_counters() {
-        // pair() installs the process-global Prometheus recorder (and spawns
-        // its upkeep task, hence the Tokio runtime); this must stay the only
-        // test doing so (router() never installs it, so the integration suite
-        // is unaffected).
-        let (_layer, handle) = axum_prometheus::PrometheusMetricLayer::pair();
+    async fn metrics_recorder_renders_business_counters_and_folds_unmatched_paths() {
+        // The builder installs the process-global Prometheus recorder (and
+        // spawns its upkeep task, hence the Tokio runtime); this must stay the
+        // only test doing so (router() never installs it, so the integration
+        // suite is unaffected).
+        let (layer, handle) = super::metrics_layer();
 
         metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
         metrics::gauge!("argon2_queue_available_permits").set(4.0);
+
+        let app = axum::Router::new()
+            .route("/known", axum::routing::get(|| async { "ok" }))
+            .layer(layer);
+        for path in ["/known", "/scan-a1b2c3", "/.env"] {
+            app.clone()
+                .oneshot(
+                    axum::http::Request::get(path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
 
         let body = handle.render();
         assert!(
@@ -595,5 +686,11 @@ mod tests {
             "missing counter: {body}"
         );
         assert!(body.contains("argon2_queue_available_permits"));
+        assert!(body.contains(r#"endpoint="/known""#), "{body}");
+        assert!(body.contains(r#"endpoint="<unmatched>""#), "{body}");
+        assert!(
+            !body.contains("scan-a1b2c3") && !body.contains("/.env"),
+            "an unmatched path became a label: {body}"
+        );
     }
 }

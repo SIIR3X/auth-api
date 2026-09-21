@@ -113,6 +113,8 @@ for svc in api-a api-b; do
 done
 check "api-a ready" 200 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/ready)"
 check "api-b ready" 200 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3002/ready)"
+check "public ready names no dependency" '{"status":"ready"}' "$(curl -s http://127.0.0.1:3001/ready)"
+check "internal ready details dependencies" up "$(curl -s http://127.0.0.1:9465/ready | python3 -c 'import json,sys; print(json.load(sys.stdin)["nats"])')"
 check "metrics api-a" 200 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9465/metrics)"
 check "metrics api-b" 200 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9466/metrics)"
 metric() { curl -s "http://127.0.0.1:$1/metrics" | awk -v m="$2" '$1==m {printf "%d", $2}'; }

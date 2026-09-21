@@ -430,9 +430,14 @@ async fn verify_assertion(
     let passkey = passkey_repo::find_by_credential_id(&state.db, &decode(&credential.raw_id)?)
         .await?
         .ok_or_else(|| refused("unknown credential"))?;
-    if let Some(handle) = credential.response.user_handle.as_deref()
-        && decode(handle)? != passkey.user_id.as_bytes()
-    {
+    // Sign-in offers no allowed credentials, so the authenticator must say
+    // whose credential it used.
+    let handle = credential
+        .response
+        .user_handle
+        .as_deref()
+        .ok_or_else(|| refused("missing user handle"))?;
+    if decode(handle)? != passkey.user_id.as_bytes() {
         return Err(refused("user handle mismatch"));
     }
     let auth_data = decode(&credential.response.authenticator_data)?;

@@ -288,6 +288,8 @@ mod tests {
     /// Every `.route(...)` of the router, with its nesting prefix.
     fn routed_endpoints() -> BTreeSet<(String, String)> {
         let source = include_str!("handlers/mod.rs");
+        // The unit tests at the end build routers of their own.
+        let source = source.split("#[cfg(test)]").next().expect("source");
         let functions: Vec<(usize, &str)> = source
             .match_indices("fn ")
             .filter_map(|(at, _)| {

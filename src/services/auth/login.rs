@@ -156,10 +156,22 @@ pub async fn login(
 
             // After recording the failure, check if the lockout threshold is reached.
             let threshold = i64::from(state.config.security.lockout_threshold);
+            // The lockout is best effort on the sign-in path, but never silent:
+            // a failure here leaves brute force limited by the budgets alone.
+            let lockout_failed = |step: &'static str, error: &dyn std::fmt::Display| {
+                tracing::error!(user_id = %u.id, step, error = %error, "lockout could not be applied");
+                metrics::counter!("auth_lockout_failures_total", "step" => step).increment(1);
+            };
             let consecutive =
-                login_attempt::count_consecutive_failures_by_user(&state.db, u.id, threshold)
+                match login_attempt::count_consecutive_failures_by_user(&state.db, u.id, threshold)
                     .await
-                    .unwrap_or(0);
+                {
+                    Ok(consecutive) => consecutive,
+                    Err(e) => {
+                        lockout_failed("count", &e);
+                        0
+                    }
+                };
             if let Some(locked_until) = lockout_until(
                 consecutive,
                 state.config.security.lockout_threshold,
@@ -167,9 +179,10 @@ pub async fn login(
                 state.clock.now(),
             ) {
                 metrics::counter!("auth_lockouts_total").increment(1);
-                // Best-effort: lockout and audit must not leak timing information on the login path.
-                let _ = user_repo::set_locked_until(&state.db, u.id, locked_until).await;
-                let _ = audit::append(
+                if let Err(e) = user_repo::set_locked_until(&state.db, u.id, locked_until).await {
+                    lockout_failed("lock", &e);
+                }
+                if let Err(e) = audit::append(
                     &state.db,
                     &NewAuditEntry {
                         user_id: Some(u.id),
@@ -179,7 +192,10 @@ pub async fn login(
                         metadata: json!({"reason": "lockout", "locked_until": locked_until.unix_timestamp()}),
                     },
                 )
-                .await;
+                .await
+                {
+                    lockout_failed("audit", &e);
+                }
             }
 
             metrics::counter!("auth_logins_total", "outcome" => "invalid_credentials").increment(1);

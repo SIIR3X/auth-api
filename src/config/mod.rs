@@ -18,7 +18,7 @@ use env_vars::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("missing required env var: {0}")]
+    #[error("missing required env var: {0} (or {0}_FILE)")]
     Missing(String),
     #[error("invalid value for '{key}': {reason}")]
     Invalid { key: String, reason: String },
@@ -429,9 +429,14 @@ pub struct Config {
 impl Config {
     /// Load configuration from environment variables.
     /// Silently ignores a missing `.env` file; production relies on real env vars.
+    ///
+    /// Any variable `X` may instead be given as `X_FILE`, the path of a file
+    /// holding its value (a Docker or systemd secret), so secrets stay out of
+    /// the environment that `docker inspect` and `/proc` show.
     pub fn from_env() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
-        Self::from_lookup(|key| std::env::var(key).ok())
+        let files = values_from_files(std::env::vars(), |path| std::fs::read_to_string(path))?;
+        Self::from_lookup(|key| std::env::var(key).ok().or_else(|| files.get(key).cloned()))
     }
 
     /// Load configuration from `lookup`, which returns the value of a variable:

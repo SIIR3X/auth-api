@@ -120,6 +120,8 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || a == 0
         || (a == 100 && (64..=127).contains(&b))
         || (a == 192 && b == 0 && c == 0)
+        // Former 6to4 relay anycast (RFC 7526).
+        || (a == 192 && b == 88 && c == 99)
         || (a == 198 && (18..=19).contains(&b))
         || a >= 240)
 }
@@ -134,6 +136,11 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         return is_public_v4(Ipv4Addr::from(
             (u32::from(segments[6]) << 16) | u32::from(segments[7]),
         ));
+    }
+    // Local-use NAT64 (64:ff9b:1::/48, RFC 8215) translates into networks of
+    // the operator's choosing, wherever the IPv4 address sits.
+    if segments[0] == 0x64 && segments[1] == 0xff9b && segments[2] == 1 {
+        return false;
     }
     if segments[0] == 0x2002 {
         return is_public_v4(Ipv4Addr::from(
@@ -236,6 +243,7 @@ mod tests {
             "100.64.0.1",
             "0.0.0.0",
             "192.0.0.8",
+            "192.88.99.1",
             "198.18.0.1",
             "224.0.0.1",
             "240.0.0.1",
@@ -249,6 +257,8 @@ mod tests {
             "::ffff:127.0.0.1",
             "::127.0.0.1",
             "64:ff9b::a00:1",
+            "64:ff9b:1::5db8:d822",
+            "64:ff9b:1:a00:100::",
             "2002:a00:1::",
             "2001:db8::1",
             "2001::1",

@@ -213,6 +213,25 @@ async fn forged_replayed_or_cloned_assertions_are_refused() {
     impostor.counter = 100;
     assert_eq!(sign_in(&app, &mut impostor).await.0, 401);
 
+    // Without the user handle, which a discoverable credential always carries.
+    let (_, options) = post(&app, "/auth/passkeys/options", None, json!({})).await;
+    let mut credential = authenticator.get(&options);
+    credential["response"]
+        .as_object_mut()
+        .unwrap()
+        .remove("userHandle");
+    let (status, refused) = post(
+        &app,
+        "/auth/passkeys/sign-in",
+        None,
+        json!({ "credential": credential }),
+    )
+    .await;
+    assert_eq!(
+        (status, refused["code"].as_str()),
+        (401, Some("invalid_credentials"))
+    );
+
     // An unknown credential.
     let mut stranger = SoftAuthenticator::for_app(&app);
     stranger.user_handle = authenticator.user_handle.clone();

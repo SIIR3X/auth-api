@@ -3847,7 +3847,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '503':
-          description: A dependency did not answer
+          description: A dependency did not answer; the internal listener says which
           content:
             application/json:
               schema:
@@ -7133,20 +7133,10 @@ components:
             type: string
     ReadyResponse:
       type: object
-      description: What `/ready` found for each dependency.
+      description: Whether this instance can serve traffic, as the public `/ready` says it.
       required:
       - status
-      - database
-      - redis
-      - nats
       properties:
-        database:
-          type: string
-          description: '`up` or `down`.'
-        nats:
-          type: string
-        redis:
-          type: string
         status:
           type: string
           description: '`ready` when every dependency answered, `unavailable` otherwise.'

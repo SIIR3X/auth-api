@@ -5,6 +5,11 @@ that is present but does not parse is an error, never a silent fallback to its
 default (`LOCKOUT_THRESHOLD=1O` refuses to start). A blank value counts as
 unset.
 
+Any variable `X` can instead be given as `X_FILE`, the path of a file holding
+its value (a trailing newline is dropped): a Docker or systemd secret, kept out
+of the environment that `docker inspect` and `/proc` show. Setting both `X` and
+`X_FILE` refuses to start; a file that does not exist counts as unset.
+
 In `APP_ENV=production` the configuration is validated before the server
 accepts traffic; the checks are listed under [Production checks](#production-checks).
 

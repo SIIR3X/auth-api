@@ -204,3 +204,11 @@ groups:
           severity: warning
         annotations:
           summary: "a retention job failed on {{ $labels.instance }}"
+
+      - alert: AuthApiLockoutFailing
+        expr: sum by (job, instance) (increase(auth_lockout_failures_total[15m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} could not lock an account under password guessing"
+          description: "Brute force is then held by the rate limits only: check the database, then the error logs (\"lockout could not be applied\")."

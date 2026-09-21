@@ -60,6 +60,22 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 - `deploy/db/postgresql.auth-api.conf` logs slow statements without their bound
   values (`log_parameter_max_length = 0`): password hashes and token digests no
   longer reach the PostgreSQL log.
+- Requests to paths no route matches spend the general rate-limit budget, and
+  the HTTP metrics label them all `<unmatched>`: a scan no longer creates one
+  series per URL.
+- The public `GET /ready` answers only `{"status": ...}`; which dependency is
+  down is served at `/ready` on the internal metrics listener.
+- A passkey sign-in without the credential's user handle is refused
+  (`401 invalid_credentials`).
+- Webhook deliveries no longer connect to local-use NAT64 (`64:ff9b:1::/48`)
+  or the former 6to4 relay range (`192.88.99.0/24`).
+- An account's export no longer names the administrator who changed it, nor
+  the address they acted from.
+- A lockout that cannot be applied is logged as an error and counted in
+  `auth_lockout_failures_total` (alert `AuthApiLockoutFailing`).
+- Every variable can be given as `X_FILE`, the path of a file holding its
+  value (a Docker, Kubernetes or systemd secret), which keeps it out of
+  `docker inspect` and the process environment.
 
 ### Upgrading
 
@@ -75,6 +91,8 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
   environment before upgrading.
 - Run `auth-api --rotate-totp-keys` once, without `PREVIOUS_ENCRYPTION_KEY`, to
   bind the secrets written before the upgrade to their rows.
+- Monitoring that reads the dependencies from the public `/ready` must query
+  the internal listener instead (`http://10.0.0.1:9465/ready`).
 - Copy the new `log_parameter_max_length` lines of
   `deploy/db/postgresql.auth-api.conf` and reload PostgreSQL.
 

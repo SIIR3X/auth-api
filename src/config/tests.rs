@@ -1160,3 +1160,58 @@ fn validate_bounds_lifetimes_windows_and_limits() {
         );
     }
 }
+
+fn file_vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect()
+}
+
+#[test]
+fn a_variable_can_come_from_a_file() {
+    let read = |path: &str| match path {
+        "/run/secrets/smtp" => Ok("s3cret\n".to_owned()),
+        "/run/secrets/key" => Ok("-----BEGIN-----\nabc\n-----END-----\r\n".to_owned()),
+        _ => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+    };
+    let values = values_from_files(
+        file_vars(&[
+            ("SMTP_PASSWORD_FILE", "/run/secrets/smtp"),
+            ("JWT_PRIVATE_KEY_FILE", "/run/secrets/key"),
+            ("SMTP_HOST", "smtp.example.com"),
+            ("UNUSED_FILE", ""),
+            ("PREVIOUS_ENCRYPTION_KEY_FILE", "/run/secrets/absent"),
+        ]),
+        read,
+    )
+    .unwrap();
+    assert_eq!(values.get("SMTP_PASSWORD").unwrap(), "s3cret");
+    assert_eq!(
+        values.get("JWT_PRIVATE_KEY").unwrap(),
+        "-----BEGIN-----\nabc\n-----END-----"
+    );
+    assert_eq!(values.len(), 2);
+}
+
+#[test]
+fn a_variable_and_its_file_together_are_refused() {
+    let read = |_: &str| Ok("from-file".to_owned());
+    let error = values_from_files(
+        file_vars(&[("ENCRYPTION_KEY", "inline"), ("ENCRYPTION_KEY_FILE", "/k")]),
+        read,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, ConfigError::Invalid { key, .. } if key == "ENCRYPTION_KEY_FILE"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_unreadable_secret_file_stops_the_start() {
+    let read = |_: &str| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    let error =
+        values_from_files(file_vars(&[("CAPTCHA_SECRET_FILE", "/nope")]), read).unwrap_err();
+    assert!(error.to_string().contains("CAPTCHA_SECRET_FILE"), "{error}");
+}

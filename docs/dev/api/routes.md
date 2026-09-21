@@ -34,7 +34,7 @@ with a stable `code`.
 | Method | Route | Auth | Rate limit |
 |--------|-------|------|------------|
 | GET | `/health`, `/live` | - | None (liveness) |
-| GET | `/ready` | - | None (readiness: database, Redis, NATS) |
+| GET | `/ready` | - | None (readiness: `ready` or `unavailable`; the internal listener details database, Redis and NATS) |
 | GET | `/.well-known/jwks.json` | - | General |
 
 The JWKS lists the current signing key, and the previous one during a

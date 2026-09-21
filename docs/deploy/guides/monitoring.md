@@ -17,7 +17,7 @@ Monitoring host (10.0.0.3) -- WireGuard -- API VPS (10.0.0.1): API instances, NA
 
 | Target | Address | Exporter |
 |--------|---------|----------|
-| API instances and their containers | `10.0.0.1:9465`, `10.0.0.1:9466` | the API's metrics listener, which also publishes its container's memory, memory limit, CPU throttling and start time, read from its own cgroup |
+| API instances and their containers | `10.0.0.1:9465`, `10.0.0.1:9466` | the API's internal listener (`/metrics`, and `/ready` with the state of each dependency), which also publishes its container's memory, memory limit, CPU throttling and start time, read from its own cgroup |
 | NATS | `10.0.0.1:7777` | `prometheus-nats-exporter`, in `docker-compose.api.yml` |
 | Hosts | `10.0.0.1:9100`, `10.0.0.2:9100` | node_exporter (textfile collector on the DB VPS: backup metrics) |
 | PostgreSQL | `10.0.0.2:9187` | postgres_exporter |

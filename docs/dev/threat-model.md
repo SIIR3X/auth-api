@@ -50,7 +50,7 @@ at least once a year.
 | Threat | Mitigation | Residual |
 |--------|------------|----------|
 | Credential stuffing and password guessing | Per-address and per-identifier budgets, lockout, backoff, CAPTCHA, breached password refusal (SEC-03, SEC-04, SEC-23, SEC-29) | A slow, distributed attack below every budget; watch `auth_logins_total{outcome="invalid_credentials"}` |
-| Account enumeration | Identical answers and timing for unknown and known identifiers (SEC-02) | Timing measured on one machine; network jitter helps, co-located attackers are out of scope |
+| Account enumeration | Identical answers and timing for unknown and known identifiers (SEC-02) | Timing measured on one machine; network jitter helps, co-located attackers are out of scope. Usernames are public by design: registration and profile changes say when one is taken (accepted risk, section 5) |
 | Stolen access token | 15-minute lifetime, revocation checked per request, session binding option (SEC-05, SEC-08) | Resource servers verifying offline accept it until expiry unless they introspect |
 | Stolen refresh token | Rotation with replay detection revoking the family (SEC-07) | The thief wins if they refresh first and the owner never does again |
 | Forged tokens | ES256 only, `kid` pinned to its key, issuer and audience checked (SEC-05) | Theft of `JWT_PRIVATE_KEY`: rotate the key (runbook section 1) |
@@ -108,7 +108,7 @@ at least once a year.
 | Scope widening by a client | Scopes frozen at consent, re-derived at refresh (SEC-17) | - |
 | Administrator account compromise | Second factor required, permission rechecked in the database, re-authentication for role grants, last administrator kept (SEC-31) | A compromised administrator with a second factor acts as one |
 | Client credentials used as a user | No session: account routes refuse them (SEC-38) | - |
-| Personal access token overreach | Scopes limited to the holder's permissions, no sensitive action without the password (SEC-34, SEC-09) | Non-sensitive account routes accept its tokens |
+| Personal access token overreach | Scopes limited to the holder's permissions; account, approval and administration routes refuse delegated tokens (SEC-34, SEC-42) | - |
 
 ## 4. Supply chain and operations
 
@@ -130,6 +130,11 @@ at least once a year.
   magic links are enabled, and as its identity provider when one is linked.
 - Passkey attestation is not verified.
 - Email one-time codes have 6 digits; their budgets and lifetime make them hold.
+- A username is an identifier others can learn exists: choosing one that is
+  taken answers `username_taken`, whatever the case. Email addresses, the
+  identifier that reaches a person, are never confirmed this way. Budgets on
+  registration bound how fast usernames can be tried; a deployment that treats
+  usernames as secret should let users sign in by email only.
 
 ## 6. Verification
 

@@ -4,7 +4,7 @@
 //! production, a map in tests, so loading is tested without mutating the
 //! environment of a running process.
 
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 use ipnetwork::IpNetwork;
 
@@ -72,6 +72,48 @@ impl<L: Fn(&str) -> Option<String>> Env<L> {
             })
             .transpose()
     }
+}
+
+/// The values of the variables given as `X_FILE`, keyed by `X`: the content
+/// of the file, without the trailing newline editors and `echo` add. Setting
+/// both `X` and `X_FILE` is refused: which one wins would be a guess. A file
+/// that does not exist counts as an unset variable, like an empty one: Docker
+/// mounts no file for a secret whose value is empty, such as the previous key
+/// outside a rotation. A required variable then stops the start as missing.
+pub(super) fn values_from_files(
+    vars: impl IntoIterator<Item = (String, String)>,
+    read: impl Fn(&str) -> std::io::Result<String>,
+) -> Result<HashMap<String, String>, ConfigError> {
+    let vars: HashMap<String, String> = vars.into_iter().collect();
+    let mut values = HashMap::new();
+    for (file_key, path) in &vars {
+        let Some(key) = file_key.strip_suffix("_FILE") else {
+            continue;
+        };
+        if key.is_empty() || path.trim().is_empty() {
+            continue;
+        }
+        if vars.get(key).is_some_and(|value| !value.trim().is_empty()) {
+            return Err(ConfigError::Invalid {
+                key: file_key.clone(),
+                reason: format!("{key} is also set: give one of them"),
+            });
+        }
+        let content = match read(path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(ConfigError::Invalid {
+                    key: file_key.clone(),
+                    reason: format!("cannot read '{path}': {e}"),
+                });
+            }
+        };
+        let value = content.strip_suffix('\n').unwrap_or(&content);
+        let value = value.strip_suffix('\r').unwrap_or(value);
+        values.insert(key.to_owned(), value.to_owned());
+    }
+    Ok(values)
 }
 
 pub(super) fn default_argon2_max_concurrency() -> u32 {

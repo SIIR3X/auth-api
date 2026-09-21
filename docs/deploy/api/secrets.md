@@ -4,6 +4,14 @@
 
 All secrets are stored in `pass` on the API VPS and exported as environment variables before deployment.
 
+An orchestrator that mounts secrets as files (Docker Swarm, Kubernetes,
+systemd credentials) can pass any of them as `X_FILE`, the path of the file,
+instead of `X`: the value then appears neither in `docker inspect` nor in the
+process environment. The image runs as UID 65532, which must be able to read
+the file. The reference `docker-compose.api.yml` keeps environment variables:
+compose mounts file secrets into a read-only container only from host files,
+which would put the secrets on the API VPS's disk.
+
 ## Setup
 
 Initialize `pass` if not already done:

@@ -67,3 +67,41 @@ async fn exporting_needs_a_recent_reauthentication() {
     let body: Value = response.json().await.unwrap();
     assert_eq!(body["code"], "reauthentication_required");
 }
+
+#[tokio::test]
+async fn the_export_names_no_administrator_nor_their_address() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 1).await;
+    let administrator = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO audit_log (user_id, action, ip_address, metadata)
+         VALUES ($1, 'account_suspended', '203.0.113.77',
+                 jsonb_build_object('by', 'administrator', 'administrator_id', $2::text))",
+    )
+    .bind(user.id)
+    .bind(administrator)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let text = app
+        .get_auth("/users/me/export", &user.access_token)
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(!text.contains(&administrator.to_string()), "{text}");
+    assert!(!text.contains("203.0.113.77"), "{text}");
+    let document: Value = serde_json::from_str(&text).unwrap();
+    let entry = document["audit_log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["action"] == "account_suspended")
+        .expect("the change stays in the history");
+    assert_eq!(
+        entry["metadata"],
+        serde_json::json!({ "by": "administrator" })
+    );
+    assert_eq!(entry["ip_address"], Value::Null);
+}
