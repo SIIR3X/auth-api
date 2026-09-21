@@ -130,7 +130,6 @@ async fn register_account(
                 e,
                 &[
                     ("users_email_key", "email_taken"),
-                    ("users_username_key", "username_taken"),
                     ("users_username_lower_key", "username_taken"),
                 ],
             ) {

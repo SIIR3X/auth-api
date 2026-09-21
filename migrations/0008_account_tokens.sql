@@ -1,7 +1,15 @@
 -- Single-use tokens sent by e-mail: address verification (at registration and
 -- for an e-mail change, bound to the exact address verified) and password
--- reset. Stored as SHA-256 hashes; at most one unused token per user.
--- Retention functions are bounded like cleanup_expired_sessions.
+-- reset. Stored as SHA-256 hashes. Retention functions are bounded like
+-- cleanup_expired_sessions.
+--
+-- A registration on an address whose account is still pending verification
+-- carries its own credentials in its verification link: whoever clicks a link
+-- activates the account with the password chosen by the registration that sent
+-- it, so registering someone's address first never lets an attacker decide the
+-- password the owner activates. The links of a pending account therefore
+-- coexist until one of them is used, which revokes the others. A password
+-- reset keeps at most one unused token per user.
 CREATE TABLE email_verification_tokens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -12,6 +20,10 @@ CREATE TABLE email_verification_tokens (
     request_ip INET,
     request_user_agent TEXT,
     target_email CITEXT NOT NULL,
+    -- Credentials of the registration that sent the link, all or none.
+    password_hash TEXT,
+    username VARCHAR(50),
+    preferred_locale VARCHAR(10),
 
     CONSTRAINT email_verification_tokens_token_hash_key UNIQUE (token_hash),
     CONSTRAINT email_verification_tokens_token_hash_length CHECK (octet_length(token_hash) = 32),
@@ -19,6 +31,16 @@ CREATE TABLE email_verification_tokens (
     CONSTRAINT email_verification_tokens_used_after_creation CHECK (used_at IS NULL OR used_at >= created_at),
     CONSTRAINT email_verification_tokens_target_email_format CHECK (
         target_email ~* '^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$'
+    ),
+    CONSTRAINT email_verification_tokens_credentials_together CHECK (
+        (password_hash IS NULL) = (username IS NULL)
+        AND (password_hash IS NULL) = (preferred_locale IS NULL)
+    ),
+    CONSTRAINT email_verification_tokens_username_format CHECK (
+        username IS NULL OR username ~ '^[a-zA-Z0-9_]{3,50}$'
+    ),
+    CONSTRAINT email_verification_tokens_locale_format CHECK (
+        preferred_locale IS NULL OR preferred_locale ~ '^[a-z]{2}(_[A-Z]{2})?$'
     )
 )
 WITH (
@@ -29,8 +51,6 @@ WITH (
 );
 
 CREATE INDEX idx_email_verification_tokens_user ON email_verification_tokens (user_id);
-CREATE UNIQUE INDEX idx_email_verification_tokens_user_active
-    ON email_verification_tokens (user_id) WHERE used_at IS NULL;
 CREATE INDEX idx_email_verification_tokens_expires_at ON email_verification_tokens (expires_at);
 
 CREATE OR REPLACE FUNCTION cleanup_expired_email_verification_tokens(

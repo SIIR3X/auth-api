@@ -330,7 +330,7 @@ Measured in [the performance campaign](../../perf/performance-report.md)
 | `ARGON2_MAX_CONCURRENCY` | The CPU limit of the instance |
 | Memory per instance | 64 MiB x Argon2 concurrency + 256 MiB, rounded up to a multiple of 128 MiB; reservation half of it |
 | `DB_MAX_CONNECTIONS`, `REDIS_POOL_SIZE` | 4 x the cores of the instance, at least 8. The sum over every instance, plus 10, stays under PostgreSQL's `max_connections` |
-| PostgreSQL memory | Twice the indexes that sign-ins and refreshes update, about 4 KB per account (see [Database Deployment](../database/deployment.md#27-size-postgresqls-memory)) |
+| PostgreSQL memory | Twice the indexes that sign-ins and refreshes update, about 4 KB per account (see [Database Deployment](../database/deployment.md#26-size-postgresqls-memory)) |
 
 Validated with `make sizing` ([perf/README.md](../../../perf/README.md#sizing-validation))
 on 2026-09-15: the production image under each profile's CPU quota and memory

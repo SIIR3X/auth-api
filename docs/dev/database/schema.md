@@ -1,7 +1,10 @@
 # Database Schema
 
-Migrations live in `migrations/` and are never edited once released: every
-change is a new file. Tokens, codes and refresh tokens are stored as SHA-256
+Migrations live in `migrations/`, one per table or feature, each defining its
+objects whole. No deployment exists yet, so they are edited in place: a new
+column or enum value goes into the migration that creates its table, never
+into an `ALTER` of a later file. Once a database is in production they are
+frozen (`migrations/SHA256SUMS`) and every change becomes a new file. Tokens, codes and refresh tokens are stored as SHA-256
 digests (32 bytes), never in clear.
 
 ## Accounts

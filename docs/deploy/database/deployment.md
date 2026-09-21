@@ -232,30 +232,9 @@ permission catalog or the migration history; the few maintenance functions that
 need more (audit partitions, address coarsening, account erasure, purge of
 unverified accounts) run with the owner's privileges.
 
-A deployment where a single `auth_api` role owns the schema keeps working, but
-without these limits; section 2.6 moves it to two roles.
-
 ---
 
-### 2.6 Move a single-role deployment to two roles
-
-For a database created before 2.1.0, owned by `auth_api`. **On the DB VPS**,
-with the API running (ownership changes do not block it):
-
-```sql
--- sudo -u postgres psql -d auth_api
-CREATE ROLE auth_api_owner LOGIN PASSWORD 'owner-strong-password';
-REASSIGN OWNED BY auth_api TO auth_api_owner;
-ALTER DATABASE auth_api OWNER TO auth_api_owner;
-```
-
-Then run `deploy/db/auth-api-grants.sql` as in section 2.5, add the
-`auth_api_owner` line to `pg_hba.conf`, and run later migrations with the owner
-URL.
-
----
-
-### 2.7 Size PostgreSQL's memory
+### 2.6 Size PostgreSQL's memory
 
 Reads barely notice the number of accounts. Writes do, once the indexes they
 update no longer fit in memory: at 1 million accounts the sign-in transaction

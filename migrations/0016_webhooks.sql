@@ -68,8 +68,3 @@ BEGIN
     RETURN deleted;
 END;
 $$ LANGUAGE plpgsql;
-
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'webhook_created';
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'webhook_updated';
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'webhook_deleted';
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'webhook_secret_rotated';

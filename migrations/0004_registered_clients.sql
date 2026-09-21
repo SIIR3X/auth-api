@@ -10,7 +10,13 @@
 --   - allows_loopback_redirect: a loopback redirect on any port is accepted for
 --     a registered path (RFC 8252 section 7.3);
 --   - default_max_sessions: concurrent device sessions per user for a
---     non-primary client without a user_client_quotas row.
+--     non-primary client without a user_client_quotas row;
+--   - client_secret_hash: a confidential client authenticates at the token
+--     endpoint (client_secret_basic or client_secret_post). The secret is 256
+--     random bits, so its SHA-256 digest is stored, not a slow hash;
+--   - allows_client_credentials: the client credentials grant, where a
+--     confidential client obtains tokens for itself, carrying its registered
+--     scopes and no user.
 -- user_client_quotas: per-user override of a client's session limit.
 CREATE TABLE registered_clients (
     client_id VARCHAR(100) PRIMARY KEY,
@@ -20,10 +26,18 @@ CREATE TABLE registered_clients (
     redirect_uris TEXT[] NOT NULL DEFAULT '{}',
     allows_loopback_redirect BOOLEAN NOT NULL DEFAULT FALSE,
     default_max_sessions SMALLINT NOT NULL DEFAULT 5,
+    client_secret_hash BYTEA,
+    allows_client_credentials BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT registered_clients_client_id_format CHECK (client_id ~ '^[A-Za-z0-9._-]{1,100}$'),
-    CONSTRAINT registered_clients_default_max_sessions_positive CHECK (default_max_sessions > 0)
+    CONSTRAINT registered_clients_default_max_sessions_positive CHECK (default_max_sessions > 0),
+    CONSTRAINT registered_clients_secret_hash_length
+        CHECK (client_secret_hash IS NULL OR octet_length(client_secret_hash) = 32),
+    CONSTRAINT registered_clients_client_credentials_confidential
+        CHECK (NOT allows_client_credentials OR client_secret_hash IS NOT NULL),
+    CONSTRAINT registered_clients_client_credentials_scoped
+        CHECK (NOT allows_client_credentials OR cardinality(scopes) > 0)
 );
 
 -- At most one primary client.

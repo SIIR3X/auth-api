@@ -23,7 +23,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE auth_api_owner IN SCHEMA public
     GRANT EXECUTE ON FUNCTIONS TO auth_api;
 
 -- The audit log is append-only for the application: rows are rewritten only
--- by the functions of migration 0027, which run as the owner, and removed only
+-- by the maintenance functions of the migrations, which run as the owner, and removed only
 -- with their partition.
 REVOKE UPDATE, DELETE ON audit_log FROM auth_api;
 DO $$

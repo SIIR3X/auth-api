@@ -15,6 +15,8 @@ CREATE TABLE authorization_codes (
     scopes TEXT[],
     expires_at TIMESTAMPTZ NOT NULL,
     consumed_at TIMESTAMPTZ,
+    -- OpenID Connect: the nonce of the authentication request, into the ID token.
+    nonce TEXT,
     -- Session issued from the code, revoked if the code is ever replayed.
     session_id UUID REFERENCES sessions (id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -22,7 +24,8 @@ CREATE TABLE authorization_codes (
     CONSTRAINT authorization_codes_code_hash_key UNIQUE (code_hash),
     CONSTRAINT authorization_codes_code_hash_length CHECK (octet_length(code_hash) = 32),
     CONSTRAINT authorization_codes_method_supported CHECK (code_challenge_method = 'S256'),
-    CONSTRAINT authorization_codes_challenge_format CHECK (code_challenge ~ '^[A-Za-z0-9_-]{43}$')
+    CONSTRAINT authorization_codes_challenge_format CHECK (code_challenge ~ '^[A-Za-z0-9_-]{43}$'),
+    CONSTRAINT authorization_codes_nonce_length CHECK (nonce IS NULL OR char_length(nonce) <= 512)
 );
 
 CREATE INDEX idx_authorization_codes_expires ON authorization_codes (expires_at);

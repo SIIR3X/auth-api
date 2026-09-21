@@ -1,34 +1,7 @@
--- Personal data: what a deleted account leaves behind, and how long the audit
--- log keeps full client addresses.
-
--- The audit log stays append-only. Two narrowing updates are allowed and
--- nothing else: detaching a deleted user (user_id to NULL), and forgetting or
--- coarsening a client address (ip_address to NULL, or to a network containing
--- it).
-CREATE OR REPLACE FUNCTION prevent_audit_log_modification()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF TG_OP = 'UPDATE'
-       AND NEW.id = OLD.id
-       AND NEW.request_id IS NOT DISTINCT FROM OLD.request_id
-       AND NEW.created_at = OLD.created_at
-       AND NEW.action = OLD.action
-       AND NEW.metadata = OLD.metadata
-       AND (NEW.user_id IS NOT DISTINCT FROM OLD.user_id OR NEW.user_id IS NULL)
-       AND (
-           NEW.ip_address IS NOT DISTINCT FROM OLD.ip_address
-           OR NEW.ip_address IS NULL
-           OR (masklen(NEW.ip_address) < masklen(OLD.ip_address)
-               AND OLD.ip_address <<= NEW.ip_address)
-       )
-       AND (NEW.user_id IS DISTINCT FROM OLD.user_id
-            OR NEW.ip_address IS DISTINCT FROM OLD.ip_address) THEN
-        RETURN NEW;
-    END IF;
-
-    RAISE EXCEPTION 'audit_log is append-only';
-END;
-$$ LANGUAGE plpgsql;
+-- Personal data: what a deleted or never-verified account leaves behind, and
+-- how long the audit log keeps full client addresses. These functions rewrite
+-- audit rows and delete accounts, so they run with their owner's privileges
+-- like rotate_audit_log_partitions.
 
 -- Forget what an account leaves outside its own rows, in the transaction that
 -- deletes it and before its row goes: the client addresses of its audit
@@ -54,9 +27,14 @@ BEGIN
           AND attempted_identifier IN (identity.email, identity.username::CITEXT);
     END IF;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
--- Purge of never-verified accounts (0012), forgetting their traces too.
+REVOKE EXECUTE ON FUNCTION forget_account_traces(UUID) FROM PUBLIC;
+
+-- Accounts whose address was never verified are purged after a configurable
+-- age, so an address registered by mistake (or by someone else) becomes free
+-- again. Each purge forgets the account's traces, is audited and announced with
+-- `user.deleted`, like a deletion by the user, in the same transaction.
 CREATE OR REPLACE FUNCTION purge_unverified_accounts(
     age INTERVAL,
     batch_size INTEGER DEFAULT NULL
@@ -94,7 +72,9 @@ BEGIN
     GET DIAGNOSTICS purged = ROW_COUNT;
     RETURN purged;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION purge_unverified_accounts(INTERVAL, INTEGER) FROM PUBLIC;
 
 -- Audit entries still holding a full client address: the coarsening job reads
 -- them by age, and a row leaves the index once coarsened.
@@ -131,4 +111,6 @@ BEGIN
     GET DIAGNOSTICS coarsened = ROW_COUNT;
     RETURN coarsened;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION coarsen_audit_addresses(INTERVAL, INTEGER) FROM PUBLIC;

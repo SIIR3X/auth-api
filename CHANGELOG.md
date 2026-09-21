@@ -9,9 +9,10 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 
 Security release: fixes every finding of the security audit of 2026-09-26.
 Some fixes refuse what was unsafe to accept, as the versioning policy allows
-for security fixes: each such change is listed under **Security**. Migrations
-0025 to 0028 are additive; read **Upgrading** before deploying, in particular
-migration 0028 and the settings now refused at start-up.
+for security fixes: each such change is listed under **Security**. No
+deployment exists yet, so the migrations were consolidated: each table is
+defined whole in the migration that creates it, and a database is created
+from scratch (read **Upgrading**).
 
 ### Security
 
@@ -31,7 +32,7 @@ migration 0028 and the settings now refused at start-up.
   carries its own password, username and locale in its verification link, and
   the link applies them. Registering someone's address first no longer lets an
   attacker choose the password the owner activates. The links of a pending
-  account now coexist until one of them verifies it (migration 0025).
+  account now coexist until one of them verifies it.
 - Adding a passkey, a personal access token or an external identity e-mails
   the owner (new `access_added` template, English and French). The e-mail sent
   after a password change now lists what still opens the account, and a reset
@@ -43,8 +44,8 @@ migration 0028 and the settings now refused at start-up.
   attacker started no longer gets their identity linked to the attacker's
   account.
 - `/admin/*` requires a session whose sign-in proved a second factor (TOTP,
-  email code, recovery code, or a passkey), recorded on the session
-  (migration 0026); an enrolled factor is no longer enough. An administrator
+  email code, recovery code, or a passkey), recorded on the session; an
+  enrolled factor is no longer enough. An administrator
   who signed in with a password alone, or a sign-in link, gets
   `403 two_factor_required`.
 - A role granting an administrative permission goes only to an active account
@@ -64,7 +65,7 @@ migration 0028 and the settings now refused at start-up.
   connects with a role limited to reading and writing data
   (`deploy/db/auth-api-grants.sql`), which cannot alter the schema, rewrite or
   truncate the audit log, or change the permission catalog. The maintenance
-  functions that need more run with their owner's privileges (migration 0027).
+  functions that need more run with their owner's privileges.
 - `deploy/db/postgresql.auth-api.conf` logs slow statements without their bound
   values (`log_parameter_max_length = 0`): password hashes and token digests no
   longer reach the PostgreSQL log.
@@ -89,12 +90,12 @@ migration 0028 and the settings now refused at start-up.
 
 - Administrators signed in before the upgrade sign in again with their second
   factor: sessions opened earlier carry no proof of it.
-- Recommended: move the database to two roles (database deployment guide,
-  section 2.6): create `auth_api_owner`, `REASSIGN OWNED BY auth_api`, run
-  `deploy/db/auth-api-grants.sql`, then run migrations with the owner's URL
-  (`prod/auth-api/database-owner-url`). A single-role deployment keeps working.
-- Migration 0028 stops if two usernames differ only in case; its message gives
-  the query that lists them. Rename all but one of each, then migrate again.
+- The migrations were rewritten (18 files instead of 28): a database migrated
+  by an earlier version is not upgraded but recreated. Development databases:
+  drop and recreate them (`make dev` migrates the new one).
+- Create the database with two roles (database deployment guide, section
+  2.5): `auth_api_owner` runs the migrations, the API connects as `auth_api`
+  after `deploy/db/auth-api-grants.sql`.
 - Check the settings refused at start-up (listed under Security) against your
   environment before upgrading.
 - Run `auth-api --rotate-totp-keys` once, without `PREVIOUS_ENCRYPTION_KEY`, to
@@ -476,8 +477,8 @@ HTTP contract and the configuration: read **Breaking changes** and
   `noeviction`, append-only persistence, the default user disabled and an
   `auth_api` ACL user without administrative or dangerous commands
   (`REDIS_URL` becomes `redis://auth_api:<password>@10.0.0.2:6379`); kernel
-  settings (overcommit, swappiness, no transparent huge pages). Migration 0027
-  vacuums `sessions` and `login_attempts` once 2 % of their rows changed
+  settings (overcommit, swappiness, no transparent huge pages). The migrations
+  vacuum `sessions` and `login_attempts` once 2 % of their rows changed
   instead of 20 %. The API VPS no longer opens a WireGuard port it never
   listened on.
 - Backups fail loudly and restore safely. `backup-db.sh` reads

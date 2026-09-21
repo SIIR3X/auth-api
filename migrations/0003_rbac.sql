@@ -1,6 +1,7 @@
 -- Role-based access control: roles, the permission catalog, the permissions
--- each role grants, the roles each user holds, and the default role granted at
--- registration.
+-- each role grants, the roles each user holds, the default role granted at
+-- registration, and the `admin` role granting every administrative permission
+-- the /admin routes require.
 CREATE TABLE roles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -53,3 +54,19 @@ CREATE INDEX idx_user_roles_granted_by ON user_roles (granted_by) WHERE granted_
 
 INSERT INTO roles (name, description, is_default) VALUES
     ('user', 'Default role assigned on registration', TRUE);
+
+INSERT INTO permissions (resource, action, description) VALUES
+    ('users', 'read', 'Search accounts and read their details'),
+    ('users', 'manage', 'Suspend, reactivate, unlock, sign out, reset and delete accounts'),
+    ('roles', 'manage', 'Create and delete roles, set their permissions, assign them to accounts'),
+    ('clients', 'manage', 'Register, update and remove client applications'),
+    ('audit', 'read', 'Read the audit log of every account'),
+    ('webhooks', 'manage', 'Manage webhook subscriptions and their deliveries');
+
+INSERT INTO roles (name, description, is_default) VALUES
+    ('admin', 'Administrators: every administrative permission', FALSE);
+
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT roles.id, permissions.id
+FROM roles CROSS JOIN permissions
+WHERE roles.name = 'admin';

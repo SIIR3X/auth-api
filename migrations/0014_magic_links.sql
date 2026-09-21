@@ -37,5 +37,3 @@ BEGIN
     RETURN deleted;
 END;
 $$ LANGUAGE plpgsql;
-
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'magic_link_sent';

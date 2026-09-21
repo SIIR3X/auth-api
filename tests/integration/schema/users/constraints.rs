@@ -104,7 +104,7 @@ async fn users_enforce_unique_username() {
     .await
     .expect_err("duplicate username should fail");
 
-    assert_constraint_error(&err, "users_username_key");
+    assert_constraint_error(&err, "users_username_lower_key");
 }
 
 #[tokio::test]
