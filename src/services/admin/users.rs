@@ -70,7 +70,6 @@ pub async fn suspend(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(
         ));
     }
 
-    let active = session_repo::find_active_by_user(&state.db, user_id).await?;
     let manages_roles =
         role_repo::user_has_permission(&state.db, user_id, crate::domain::role::ROLES_MANAGE)
             .await?;
@@ -81,7 +80,9 @@ pub async fn suspend(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(
     if manages_roles {
         super::roles::keep_an_administrator(&mut tx).await?;
     }
-    session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
+    // Read in the transaction: a session opened meanwhile is revoked and
+    // forgotten like the others.
+    let active = session_repo::revoke_all_by_user_returning(&mut *tx, user_id).await?;
     audit::append(
         &mut *tx,
         &entry(
@@ -108,11 +109,14 @@ pub async fn suspend(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(
     events::wake();
 
     forget_sessions(state, &active).await;
+    super::notify_owner(state, user_id, "suspended", None).await;
     Ok(())
 }
 
 /// Lift a suspension. Reactivating an active account changes nothing.
 pub async fn reactivate(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
+    // Reopening an account a stolen token wants back needs the administrator.
+    require_reauth(state, actor, "admin_reactivate_account").await?;
     find(state, user_id).await?;
     let mut tx = state.db.begin().await?;
     if !user_repo::reactivate(&mut *tx, user_id).await? {
@@ -131,11 +135,16 @@ pub async fn reactivate(state: &AppState, actor: &Actor, user_id: Uuid) -> Resul
     .await?;
     tx.commit().await?;
     events::wake();
+    super::notify_owner(state, user_id, "reactivated", None).await;
     Ok(())
 }
 
 /// End a lockout: the sign-in lockout and the re-authentication one.
+/// Not on one's own account, and after a recent re-authentication: unlocking
+/// in a loop would otherwise let a stolen token guess the password freely.
 pub async fn unlock(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
+    refuse_own_account(actor, user_id)?;
+    require_reauth(state, actor, "admin_unlock_account").await?;
     find(state, user_id).await?;
     let mut tx = state.db.begin().await?;
     user_repo::clear_lockout(&mut *tx, user_id).await?;
@@ -157,10 +166,10 @@ pub async fn revoke_sessions(
 ) -> Result<u64, AppError> {
     refuse_own_account(actor, user_id)?;
     find(state, user_id).await?;
-    let active = session_repo::find_active_by_user(&state.db, user_id).await?;
 
     let mut tx = state.db.begin().await?;
-    let count = session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
+    let active = session_repo::revoke_all_by_user_returning(&mut *tx, user_id).await?;
+    let count = active.len() as u64;
     audit::append(
         &mut *tx,
         &entry(
@@ -181,6 +190,7 @@ pub async fn revoke_sessions(
     events::wake();
 
     forget_sessions(state, &active).await;
+    super::notify_owner(state, user_id, "sessions_revoked", None).await;
     Ok(count)
 }
 
@@ -194,10 +204,10 @@ pub async fn force_password_reset(
     refuse_own_account(actor, user_id)?;
     require_reauth(state, actor, "admin_force_password_reset").await?;
     let user = find(state, user_id).await?;
-    let active = session_repo::find_active_by_user(&state.db, user_id).await?;
 
     let mut tx = state.db.begin().await?;
-    let count = session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
+    let active = session_repo::revoke_all_by_user_returning(&mut *tx, user_id).await?;
+    let count = active.len();
     audit::append(
         &mut *tx,
         &entry(
@@ -222,24 +232,11 @@ pub async fn force_password_reset(
 }
 
 /// Delete the account like its owner would, after a recent re-authentication of
-/// the administrator.
-pub async fn delete(
-    state: &AppState,
-    actor: &Actor,
-    user_id: Uuid,
-    current_password: Option<&str>,
-) -> Result<(), AppError> {
+/// the administrator (`POST /users/me/reauth`, whose attempts are budgeted
+/// like every password route).
+pub async fn delete(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
     refuse_own_account(actor, user_id)?;
-    reauth_svc::require_recent_reauth_or_password(
-        state,
-        actor.user_id,
-        actor.session_id,
-        current_password,
-        actor.ip,
-        actor.request_id,
-        "admin_delete_account",
-    )
-    .await?;
+    require_reauth(state, actor, "admin_delete_account").await?;
     find(state, user_id).await?;
     user_svc::erase_account(
         state,

@@ -473,13 +473,16 @@ pub(crate) async fn disable_method(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
-    let removed = tf_repo::remove_method(&state.db, method_id, user_id, method_type)
+    let mut tx = state.db.begin().await?;
+    user_repo::lock_row(&mut *tx, user_id).await?;
+    let removed = tf_repo::remove_method(&mut tx, method_id, user_id, method_type)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
+    crate::services::user::keep_a_second_factor_for_administrators(&mut tx, user_id).await?;
 
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
@@ -494,6 +497,7 @@ pub(crate) async fn disable_method(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
 
     notify_two_factor_change(state, &user, label, false);
     Ok(())

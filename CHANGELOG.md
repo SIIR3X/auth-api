@@ -16,6 +16,23 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- Administration: nobody adds to a role they hold a permission they lack
+  (`403`), the default role never grants an administrative permission (`409
+  default_role_administration`), and an account holding administrative
+  permissions cannot remove its last second factor (`409
+  administrator_needs_second_factor`; the grant itself is now checked under the
+  account's lock). Withdrawing or deleting a role, unlocking (never one's own
+  account), reactivating, deleting a client, deleting a webhook and retrying a
+  delivery need a recent re-authentication. `DELETE /admin/users/{id}` no longer
+  takes `current_password` in its body: re-authenticate with `POST
+  /users/me/reauth` first. The owner is mailed when an administrator suspends
+  or reactivates the account, changes its roles or signs it out (new
+  `changed_by_administrator` template); deleting a role writes `role_revoked`
+  in each holder's history. Sessions revoked by a suspension or a forced reset
+  are read in the revoking transaction. `--grant-role` and `--register-client`
+  commit with their audit entry, and `--register-client` validates like the
+  administration.
+
 - Wrong passwords lock the password for `LOCKOUT_DURATION_SECS` only: the count
   covers a day, restarts after any completed sign-in (second factor, sign-in
   link, passkey, external identity), an administrator's unlock, a password

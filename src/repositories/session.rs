@@ -204,6 +204,22 @@ pub async fn revoke_all_by_user<'e>(
     Ok(result.rows_affected())
 }
 
+/// Revoke every active session of a user and return them: the sessions to
+/// forget in caches are exactly those this statement revoked.
+pub async fn revoke_all_by_user_returning<'e>(
+    executor: impl PgExecutor<'e>,
+    user_id: Uuid,
+) -> Result<Vec<Session>, sqlx::Error> {
+    sqlx::query_as::<_, Session>(
+        "UPDATE sessions SET revoked_at = NOW()
+         WHERE user_id = $1 AND revoked_at IS NULL
+         RETURNING *",
+    )
+    .bind(user_id)
+    .fetch_all(executor)
+    .await
+}
+
 /// Revoke every active session of a user except `keep` (the one making the request).
 pub async fn revoke_others<'e>(
     executor: impl PgExecutor<'e>,

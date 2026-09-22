@@ -154,6 +154,7 @@ pub async fn verify_totp_setup(
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such method", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_needs_second_factor`: the account holds administrative permissions and this is its last second factor", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -330,6 +331,7 @@ pub async fn verify_email_otp_setup(
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such method", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_needs_second_factor`: the account holds administrative permissions and this is its last second factor", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]

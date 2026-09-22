@@ -14,7 +14,7 @@ use crate::{
     handlers::{
         audit::{decode_cursor, encode_cursor, page_limit, rows_to_fetch, split_page},
         extractors::{AdminUser, ClientIp},
-        user::{CurrentPasswordRequest, user_status_str},
+        user::user_status_str,
     },
     services::admin::users as admin_users,
     state::AppState,
@@ -306,10 +306,9 @@ pub async fn force_password_reset(
     path = "/admin/users/{id}",
     tag = "admin",
     params(("id" = Uuid, Path, description = "Account id")),
-    request_body = Option<CurrentPasswordRequest>,
     responses(
         (status = 204, description = "Account deleted and `user.deleted` announced"),
-        (status = 401, description = "Missing, invalid or revoked access token, or wrong password", body = crate::error::ErrorBody),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Missing `users:manage`, no second factor, the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
         (status = 409, description = "`last_administrator`: the account is the last active one able to manage roles", body = crate::error::ErrorBody),
@@ -321,16 +320,8 @@ pub async fn delete(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     Path(user_id): Path<Uuid>,
-    body: Option<Json<CurrentPasswordRequest>>,
 ) -> Result<StatusCode, AppError> {
     admin.require(&state, "users:manage").await?;
-    let current_password = body.and_then(|Json(b)| b.current_password);
-    admin_users::delete(
-        &state,
-        &actor(&admin, ip),
-        user_id,
-        current_password.as_deref(),
-    )
-    .await?;
+    admin_users::delete(&state, &actor(&admin, ip), user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

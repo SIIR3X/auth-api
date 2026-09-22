@@ -29,6 +29,7 @@ const TNAME_EMAIL_OTP: &str = "email_otp";
 const TNAME_PASSWORD_CHANGED: &str = "password_changed";
 const TNAME_TWO_FACTOR_DISABLED: &str = "two_factor_disabled";
 const TNAME_ACCOUNT_LOCKED: &str = "account_locked";
+const TNAME_CHANGED_BY_ADMINISTRATOR: &str = "changed_by_administrator";
 const TNAME_TWO_FACTOR_ENABLED: &str = "two_factor_enabled";
 const TNAME_ACCOUNT_EXISTS: &str = "account_exists";
 const TNAME_EMAIL_CHANGED: &str = "email_changed";
@@ -595,6 +596,43 @@ pub async fn send_account_locked(
     let subject = render_subject(
         templates,
         TNAME_ACCOUNT_LOCKED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
+/// `change` is one of `suspended`, `reactivated`, `role_granted`,
+/// `role_revoked` or `sessions_revoked`; `role` names the role for the two
+/// role changes.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_changed_by_administrator(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    change: &str,
+    role: Option<&str>,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("change", change);
+    ctx.insert("role", &role.unwrap_or_default());
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_CHANGED_BY_ADMINISTRATOR,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_CHANGED_BY_ADMINISTRATOR,
         locale,
         &mail_cfg.default_locale,
         &ctx,

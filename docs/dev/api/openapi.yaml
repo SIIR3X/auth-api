@@ -720,7 +720,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Missing `roles:manage`, no second factor, or re-authentication required
+          description: Missing `roles:manage`, no second factor, re-authentication required, or adding to a role the administrator holds a permission they lack
           content:
             application/json:
               schema:
@@ -732,7 +732,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '409':
-          description: '`last_administrator`: nobody would keep `roles:manage`'
+          description: '`last_administrator`: nobody would keep `roles:manage`; `default_role_administration`: the default role never grants an administrative permission'
           content:
             application/json:
               schema:
@@ -921,13 +921,6 @@ paths:
         schema:
           type: string
           format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              oneOf:
-              - type: 'null'
-              - $ref: '#/components/schemas/CurrentPasswordRequest'
       responses:
         '204':
           description: Account deleted and `user.deleted` announced
@@ -938,7 +931,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '401':
-          description: Missing, invalid or revoked access token, or wrong password
+          description: Missing, invalid or revoked access token
           content:
             application/json:
               schema:
@@ -957,18 +950,6 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '409':
           description: '`last_administrator`: the account is the last active one able to manage roles'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '413':
-          description: Body larger than 64 KB
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '415':
-          description: Body is not JSON
           content:
             application/json:
               schema:
@@ -4854,6 +4835,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`administrator_needs_second_factor`: the account holds administrative permissions and this is its last second factor'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '413':
           description: Body larger than 64 KB
           content:
@@ -5569,6 +5556,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`administrator_needs_second_factor`: the account holds administrative permissions and this is its last second factor'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '413':
           description: Body larger than 64 KB
           content:
@@ -5933,6 +5926,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '404':
           description: No such method
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: '`administrator_needs_second_factor`: the account holds administrative permissions and this is its last second factor'
           content:
             application/json:
               schema:

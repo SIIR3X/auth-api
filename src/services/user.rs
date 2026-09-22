@@ -525,3 +525,19 @@ pub async fn export_data(
         .await?
         .ok_or(AppError::NotFound)
 }
+
+/// Refuse, before the transaction commits, a change that leaves an account
+/// holding administrative permissions without any second factor: the
+/// administration would refuse it, but the permissions would stay in its
+/// tokens behind its password alone. Run after locking the account's row.
+pub(crate) async fn keep_a_second_factor_for_administrators(
+    tx: &mut sqlx::PgConnection,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    if crate::repositories::role::holds_administration(&mut *tx, user_id).await?
+        && !user_repo::has_second_factor(&mut *tx, user_id).await?
+    {
+        return Err(AppError::Conflict("administrator_needs_second_factor"));
+    }
+    Ok(())
+}

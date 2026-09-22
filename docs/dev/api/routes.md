@@ -325,21 +325,21 @@ are regenerated.
 | GET | `/admin/users` | Admin `users:read` | General |
 | GET | `/admin/users/{id}` | Admin `users:read` | General |
 | POST | `/admin/users/{id}/suspend` | Admin `users:manage` + reauth | General |
-| POST | `/admin/users/{id}/reactivate` | Admin `users:manage` | General |
-| POST | `/admin/users/{id}/unlock` | Admin `users:manage` | General |
+| POST | `/admin/users/{id}/reactivate` | Admin `users:manage` + reauth | General |
+| POST | `/admin/users/{id}/unlock` | Admin `users:manage` + reauth | General |
 | DELETE | `/admin/users/{id}/sessions` | Admin `users:manage` | General |
 | POST | `/admin/users/{id}/password-reset` | Admin `users:manage` + reauth | General |
 | DELETE | `/admin/users/{id}` | Admin `users:manage` + reauth | General |
 | POST | `/admin/users/{id}/roles` | Admin `roles:manage` + reauth | General |
-| DELETE | `/admin/users/{id}/roles/{name}` | Admin `roles:manage` | General |
+| DELETE | `/admin/users/{id}/roles/{name}` | Admin `roles:manage` + reauth | General |
 | GET | `/admin/permissions` | Admin `roles:manage` | General |
 | GET | `/admin/roles` | Admin `roles:manage` | General |
 | POST | `/admin/roles` | Admin `roles:manage` + reauth | General |
 | PUT | `/admin/roles/{name}/permissions` | Admin `roles:manage` + reauth | General |
-| DELETE | `/admin/roles/{name}` | Admin `roles:manage` | General |
+| DELETE | `/admin/roles/{name}` | Admin `roles:manage` + reauth | General |
 | GET | `/admin/clients` | Admin `clients:manage` | General |
 | PUT | `/admin/clients/{client_id}` | Admin `clients:manage` + reauth | General |
-| DELETE | `/admin/clients/{client_id}` | Admin `clients:manage` | General |
+| DELETE | `/admin/clients/{client_id}` | Admin `clients:manage` + reauth | General |
 | POST | `/admin/clients/{client_id}/secret` | Admin `clients:manage` + reauth | General |
 | DELETE | `/admin/clients/{client_id}/secret` | Admin `clients:manage` + reauth | General |
 | GET | `/admin/audit` | Admin `audit:read` | General |
@@ -349,17 +349,26 @@ at sign-in (`403 two_factor_required` otherwise).
 
 `GET /admin/users` takes `query` (start of the address or username), `status`,
 `limit` and `cursor`, and pages newest first. Administrators cannot suspend,
-sign out, reset or delete their own account here; they use `/users/me`.
+sign out, unlock, reset or delete their own account here; they use
+`/users/me`. "+ reauth" means a recent `POST /users/me/reauth`
+(`403 reauthentication_required` otherwise); no administration route takes a
+password in its body. The owner of an account is mailed when an administrator
+suspends or reactivates it, changes its roles or signs it out.
 
 A change to roles that would leave no account with `roles:manage` answers
 `409 last_administrator`; the default role cannot be deleted
-(`409 default_role`). Access tokens carry the permissions of their issuance
+(`409 default_role`) nor grant an administrative permission
+(`409 default_role_administration`), and nobody adds to a role they hold a
+permission they lack (`403`). An account holding administrative permissions
+keeps at least one second factor (`409 administrator_needs_second_factor` on
+removing the last). Access tokens carry the permissions of their issuance
 until refreshed; `/admin` routes read them from the database on every request.
 Webhooks (`webhooks:manage`): `GET`/`POST /admin/webhooks`,
 `PUT`/`DELETE /admin/webhooks/{id}`, `POST /admin/webhooks/{id}/secret`,
 `GET /admin/webhooks/{id}/deliveries` and
-`POST /admin/webhooks/{id}/deliveries/{delivery_id}/retry`. Creating, updating
-and re-keying a webhook need a recent re-authentication. See the
+`POST /admin/webhooks/{id}/deliveries/{delivery_id}/retry`. Every change to a
+webhook, deleting it and retrying a delivery included, needs a recent
+re-authentication. See the
 [webhook guide](../guides/webhooks.md).
 
 `GET /admin/audit` takes `user_id`, `action`, `limit` and `cursor`.

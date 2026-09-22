@@ -391,7 +391,10 @@ pub async fn rotate_secret(state: &AppState, actor: &Actor, id: Uuid) -> Result<
     Ok(secret)
 }
 
+/// Deleting an endpoint drops its pending deliveries: a recent
+/// re-authentication, like every other change to where events go.
 pub async fn delete(state: &AppState, actor: &Actor, id: Uuid) -> Result<(), AppError> {
+    require_reauth(state, actor, "admin_delete_webhook").await?;
     let previous = webhook_repo::find_endpoint(&state.db, id)
         .await?
         .ok_or(AppError::NotFound)?;
@@ -419,6 +422,7 @@ pub async fn redeliver(
     endpoint_id: Uuid,
     delivery_id: Uuid,
 ) -> Result<(), AppError> {
+    require_reauth(state, actor, "admin_redeliver_webhook").await?;
     let mut tx = state.db.begin().await?;
     if !webhook_repo::redeliver(&mut *tx, endpoint_id, delivery_id).await? {
         return Err(AppError::NotFound);

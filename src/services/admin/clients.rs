@@ -98,8 +98,20 @@ pub async fn save(
     Ok((saved, !existed))
 }
 
-/// Remove the client and end every session it holds.
+/// Remove the client and end every session it holds, after a recent
+/// re-authentication: removing the instance's own application signs every one
+/// of its users out.
 pub async fn delete(state: &AppState, actor: &Actor, client_id: &str) -> Result<(), AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        actor.user_id,
+        actor.session_id,
+        None,
+        actor.ip,
+        actor.request_id,
+        "admin_delete_client",
+    )
+    .await?;
     let mut tx = state.db.begin().await?;
     let revoked = session_repo::revoke_by_client(&mut *tx, client_id).await?;
     if !client_repo::delete(&mut *tx, client_id).await? {

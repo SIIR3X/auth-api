@@ -76,9 +76,9 @@ async fn main() -> anyhow::Result<()> {
                 .max_connections(1)
                 .connect(&config.database.url)
                 .await?;
-            let client =
-                auth_api::repositories::registered_client::upsert(&pool, &registration.as_new())
-                    .await?;
+            let client = auth_api::cli::register_client(&pool, &registration)
+                .await
+                .map_err(|message| anyhow::anyhow!("--register-client: {message}"))?;
             tracing::info!(
                 client_id = client.client_id,
                 primary = client.is_primary,

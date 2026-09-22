@@ -160,9 +160,9 @@ pub async fn create(
     responses(
         (status = 200, description = "The role now grants exactly these permissions", body = RoleResponse),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `roles:manage`, no second factor, or re-authentication required", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `roles:manage`, no second factor, re-authentication required, or adding to a role the administrator holds a permission they lack", body = crate::error::ErrorBody),
         (status = 404, description = "No such role", body = crate::error::ErrorBody),
-        (status = 409, description = "`last_administrator`: nobody would keep `roles:manage`", body = crate::error::ErrorBody),
+        (status = 409, description = "`last_administrator`: nobody would keep `roles:manage`; `default_role_administration`: the default role never grants an administrative permission", body = crate::error::ErrorBody),
         (status = 422, description = "Unknown permission", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),

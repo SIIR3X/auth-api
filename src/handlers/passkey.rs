@@ -175,6 +175,7 @@ pub async fn register(
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such passkey on this account", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_needs_second_factor`: the account holds administrative permissions and this is its last second factor", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]

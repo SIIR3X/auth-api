@@ -293,11 +293,14 @@ pub async fn remove(
         "remove_passkey",
     )
     .await?;
-    if !passkey_repo::delete_owned(&state.db, id, user_id).await? {
+    let mut tx = state.db.begin().await?;
+    user_repo::lock_row(&mut *tx, user_id).await?;
+    if !passkey_repo::delete_owned(&mut *tx, id, user_id).await? {
         return Err(AppError::NotFound);
     }
+    crate::services::user::keep_a_second_factor_for_administrators(&mut tx, user_id).await?;
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
@@ -307,6 +310,7 @@ pub async fn remove(
         },
     )
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 

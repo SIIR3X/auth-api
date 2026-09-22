@@ -400,7 +400,9 @@ async fn deleting_an_account_needs_a_recent_reauthentication_and_announces_it() 
     assert_eq!(status, 403);
     assert_eq!(response["code"], "reauthentication_required");
 
-    let (status, response) = body(
+    // A password in the body is not enough: the re-authentication goes
+    // through its own, strictly budgeted route.
+    let (status, _) = body(
         app.delete_auth_json(
             &path,
             &admin.token,
@@ -409,6 +411,16 @@ async fn deleting_an_account_needs_a_recent_reauthentication_and_announces_it() 
         .await,
     )
     .await;
+    assert_eq!(status, 403);
+    let reauth = app
+        .post_auth(
+            "/users/me/reauth",
+            &admin.token,
+            &json!({ "current_password": admin.user.password }),
+        )
+        .await;
+    assert_eq!(reauth.status().as_u16(), 204);
+    let (status, response) = body(app.delete_auth(&path, &admin.token).await).await;
     assert_eq!(status, 204, "{response}");
     assert_eq!(app.get_auth(&path, &admin.token).await.status(), 404);
 

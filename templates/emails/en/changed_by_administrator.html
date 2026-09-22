@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<body>
+<p>Hello {{ username }},</p>
+{% if change == "suspended" %}<p>An administrator suspended your {{ app_name }} account and signed it out everywhere.</p>
+{% elif change == "reactivated" %}<p>An administrator reactivated your {{ app_name }} account: you can sign in again.</p>
+{% elif change == "role_granted" %}<p>An administrator gave your {{ app_name }} account the role <strong>{{ role }}</strong>.</p>
+{% elif change == "role_revoked" %}<p>Your {{ app_name }} account no longer holds the role <strong>{{ role }}</strong>.</p>
+{% else %}<p>An administrator signed your {{ app_name }} account out of every device.</p>
+{% endif %}<p>Your account's history lists this change. If you did not expect it, contact support.</p>
+</body>
+</html>

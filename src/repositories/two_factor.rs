@@ -100,13 +100,11 @@ pub struct RemovedMethod {
 ///
 /// Returns `None` when the user has no method with this id and type.
 pub async fn remove_method(
-    pool: &PgPool,
+    tx: &mut sqlx::PgConnection,
     id: Uuid,
     user_id: Uuid,
     method_type: TwoFactorType,
 ) -> Result<Option<RemovedMethod>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-
     let removed: Option<(bool,)> = sqlx::query_as(
         "DELETE FROM two_factor_methods
          WHERE id = $1 AND user_id = $2 AND method_type = $3
@@ -151,7 +149,6 @@ pub async fn remove_method(
             .await?;
     }
 
-    tx.commit().await?;
     Ok(Some(RemovedMethod {
         was_primary,
         remaining_verified,

@@ -287,7 +287,10 @@ pub async fn permission_held<'e>(
 }
 
 /// Whether the role grants at least one administrative permission.
-pub async fn grants_administration(pool: &PgPool, role_id: Uuid) -> Result<bool, sqlx::Error> {
+pub async fn grants_administration<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    role_id: Uuid,
+) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1 FROM role_permissions rp
@@ -297,6 +300,51 @@ pub async fn grants_administration(pool: &PgPool, role_id: Uuid) -> Result<bool,
     )
     .bind(role_id)
     .bind(&crate::domain::role::ADMIN_PERMISSIONS[..])
-    .fetch_one(pool)
+    .fetch_one(executor)
+    .await
+}
+
+/// Whether `user_id` holds the role.
+pub async fn holds_role<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    user_id: Uuid,
+    role_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM user_roles WHERE user_id = $1 AND role_id = $2)",
+    )
+    .bind(user_id)
+    .bind(role_id)
+    .fetch_one(executor)
+    .await
+}
+
+/// The accounts holding the role.
+pub async fn holders<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    role_id: Uuid,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar("SELECT user_id FROM user_roles WHERE role_id = $1 ORDER BY user_id")
+        .bind(role_id)
+        .fetch_all(executor)
+        .await
+}
+
+/// Whether the account holds any administrative permission.
+pub async fn holds_administration<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    user_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM user_roles ur
+             JOIN role_permissions rp ON rp.role_id = ur.role_id
+             JOIN permissions p ON p.id = rp.permission_id
+             WHERE ur.user_id = $1 AND p.name = ANY($2)
+         )",
+    )
+    .bind(user_id)
+    .bind(&crate::domain::role::ADMIN_PERMISSIONS[..])
+    .fetch_one(executor)
     .await
 }

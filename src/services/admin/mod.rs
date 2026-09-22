@@ -13,6 +13,8 @@ use ipnetwork::IpNetwork;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::{repositories::user as user_repo, services::email, state::AppState};
+
 /// The administrator making a request.
 #[derive(Debug, Clone, Copy)]
 pub struct Actor {
@@ -31,6 +33,37 @@ impl Actor {
         }
         metadata
     }
+}
+
+/// Tell the owner an administrator changed their account: a compromised
+/// administrator acting on it must not go unnoticed by the person it affects.
+/// Best effort, after the change committed.
+pub(crate) async fn notify_owner(
+    state: &AppState,
+    user_id: Uuid,
+    change: &'static str,
+    role: Option<&str>,
+) {
+    let Ok(Some(user)) = user_repo::find_by_id(&state.db, user_id).await else {
+        return;
+    };
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let role = role.map(str::to_owned);
+    email::dispatch_best_effort("changed_by_administrator_email", async move {
+        email::send_changed_by_administrator(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &user.email,
+            &user.username,
+            &user.preferred_locale,
+            change,
+            role.as_deref(),
+        )
+        .await
+    });
 }
 
 #[cfg(test)]

@@ -195,13 +195,16 @@ pub async fn adopt_pending_credentials<'e>(
 
 /// Whether the account can prove a second factor: a verified TOTP or email
 /// method, or a passkey.
-pub async fn has_second_factor(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+pub async fn has_second_factor<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM two_factor_methods WHERE user_id = $1 AND is_verified)
              OR EXISTS (SELECT 1 FROM passkeys WHERE user_id = $1)",
     )
     .bind(id)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 
@@ -356,6 +359,16 @@ pub async fn clear_lockout<'e>(
     id: Uuid,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE users SET locked_until = NULL, lockout_cleared_at = NOW() WHERE id = $1")
+        .bind(id)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// Lock the account's row until the transaction ends: checks made after it
+/// (its second factors, its roles) cannot change underneath.
+pub async fn lock_row<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
         .bind(id)
         .execute(executor)
         .await?;

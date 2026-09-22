@@ -2,6 +2,7 @@
 
 mod audit;
 mod clients;
+mod privileges;
 mod roles;
 mod users;
 mod webhooks;

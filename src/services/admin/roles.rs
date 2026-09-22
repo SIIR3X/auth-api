@@ -73,6 +73,30 @@ pub async fn set_permissions(
 ) -> Result<(Role, Vec<String>), AppError> {
     let role = find(state, name).await?;
     let permissions = known_permissions(state, permissions).await?;
+    // Adding to a role one holds a permission one lacks would be granting it
+    // to oneself (every account holds the default role, so this covers it).
+    if role_repo::holds_role(&state.db, actor.user_id, role.id).await? {
+        let current = role_repo::find_all_with_permissions(&state.db)
+            .await?
+            .into_iter()
+            .find(|(r, _)| r.id == role.id)
+            .map(|(_, granted)| granted)
+            .unwrap_or_default();
+        for added in permissions.iter().filter(|p| !current.contains(p)) {
+            if !role_repo::user_has_permission(&state.db, actor.user_id, added).await? {
+                return Err(AppError::Forbidden);
+            }
+        }
+    }
+    // Every account holds the default role: administration in it would make
+    // every new account an administrator.
+    if role.is_default
+        && permissions
+            .iter()
+            .any(|p| role_domain::is_admin_permission(p))
+    {
+        return Err(AppError::Conflict("default_role_administration"));
+    }
     require_reauth(state, actor, "admin_change_role").await?;
 
     let mut tx = state.db.begin().await?;
@@ -96,8 +120,11 @@ pub async fn delete(state: &AppState, actor: &Actor, name: &str) -> Result<(), A
     if role.is_default {
         return Err(AppError::Conflict("default_role"));
     }
+    require_reauth(state, actor, "admin_delete_role").await?;
 
     let mut tx = state.db.begin().await?;
+    // Each holder's history records the role going, like a withdrawal.
+    let holders = role_repo::holders(&mut *tx, role.id).await?;
     role_repo::delete(&mut *tx, role.id).await?;
     keep_an_administrator(&mut tx).await?;
     audit::append(
@@ -105,11 +132,21 @@ pub async fn delete(state: &AppState, actor: &Actor, name: &str) -> Result<(), A
         &own_entry(
             actor,
             AuditAction::RoleDeleted,
-            json!({ "role": role.name }),
+            json!({ "role": role.name, "holders": holders.len() }),
         ),
     )
     .await?;
+    for holder in &holders {
+        audit::append(
+            &mut *tx,
+            &target_entry(actor, *holder, AuditAction::RoleRevoked, &role.name),
+        )
+        .await?;
+    }
     tx.commit().await?;
+    for holder in holders {
+        super::notify_owner(state, holder, "role_revoked", Some(&role.name)).await;
+    }
     Ok(())
 }
 
@@ -126,9 +163,12 @@ pub async fn assign(
         .await?
         .ok_or(AppError::NotFound)?;
     require_reauth(state, actor, "admin_assign_role").await?;
-    ensure_can_administer(state, &user, &role).await?;
 
     let mut tx = state.db.begin().await?;
+    // Checked under the account's lock: its last second factor cannot go
+    // between the check and the grant.
+    user_repo::lock_row(&mut *tx, user_id).await?;
+    ensure_can_administer(&mut tx, &user, &role).await?;
     match role_repo::assign_to_user(&mut *tx, user_id, role.id, Some(actor.user_id)).await {
         Ok(_) => {}
         // ON CONFLICT DO NOTHING returns no row: the role was already held.
@@ -141,6 +181,7 @@ pub async fn assign(
     )
     .await?;
     tx.commit().await?;
+    super::notify_owner(state, user_id, "role_granted", Some(&role.name)).await;
     Ok(())
 }
 
@@ -152,6 +193,9 @@ pub async fn unassign(
     name: &str,
 ) -> Result<(), AppError> {
     let role = find(state, name).await?;
+    // Withdrawing roles is how a stolen administrator token would push the
+    // other administrators out.
+    require_reauth(state, actor, "admin_revoke_role").await?;
 
     let mut tx = state.db.begin().await?;
     if !role_repo::unassign(&mut *tx, user_id, role.id).await? {
@@ -164,6 +208,9 @@ pub async fn unassign(
     )
     .await?;
     tx.commit().await?;
+    if actor.user_id != user_id {
+        super::notify_owner(state, user_id, "role_revoked", Some(&role.name)).await;
+    }
     Ok(())
 }
 
@@ -183,15 +230,15 @@ fn refuse_own_account(actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
 /// and an account without one would hold administrative permissions in its
 /// tokens behind its password alone.
 pub(crate) async fn ensure_can_administer(
-    state: &AppState,
+    tx: &mut sqlx::PgConnection,
     user: &crate::domain::user::User,
     role: &Role,
 ) -> Result<(), AppError> {
-    if !role_repo::grants_administration(&state.db, role.id).await? {
+    if !role_repo::grants_administration(&mut *tx, role.id).await? {
         return Ok(());
     }
     if user.status != crate::domain::user::UserStatus::Active
-        || !user_repo::has_second_factor(&state.db, user.id).await?
+        || !user_repo::has_second_factor(&mut *tx, user.id).await?
     {
         return Err(AppError::Conflict("administrator_without_second_factor"));
     }

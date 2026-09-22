@@ -224,18 +224,26 @@ the database together, is out of scope.
   takes effect on the next request, not when the token expires. An enrolled
   factor is not enough: a password or a sign-in link alone never opens it.
 - An administrative role goes only to an active account that has a verified
-  second factor or a passkey, over HTTP and from the command line; nobody
-  grants a role to their own account.
+  second factor or a passkey, over HTTP and from the command line, checked
+  under the account's lock; such an account cannot remove its last factor.
+  Nobody grants a role to their own account, nor adds to a role they hold a
+  permission they lack, and the default role never grants administration.
 - Administrators cannot suspend, sign out, reset or delete their own account
   from `/admin`, and deleting an account needs their recent re-authentication.
 - Every change is audited on the account it changed, with the administrator's
   id, so owners see it in their own history (their export leaves the
   administrator's id and address out); changes to roles and clients are
   audited in the administrator's own history.
-- Granting a role, changing what a role grants, saving a client or changing its
-  secret, creating, redirecting or re-keying a webhook, suspending an account
-  and forcing its reset need a recent re-authentication: a stolen administrator
-  token alone can neither send account events elsewhere nor shut owners out.
+- Every change to roles (granting, withdrawing, creating, changing, deleting),
+  saving, deleting or re-keying a client, every change to a webhook (deleting
+  and redelivering included), and suspending, reactivating, unlocking or
+  deleting an account or forcing its reset need a recent re-authentication: a
+  stolen administrator token alone can neither push the other administrators
+  out, send account events elsewhere, reopen an account nor shut owners out.
+  The owner is mailed when an administrator suspends or reactivates the
+  account, changes its roles or signs it out; deleting a role records the
+  withdrawal in each holder's history. The command line audits its client
+  registrations and role grants in the transaction of the change.
 - Every change is audited in the same transaction; a webhook's audit keeps the
   host it points to (never the path or query), and redeliveries are audited.
 - No change may leave the deployment without an active account holding
@@ -389,3 +397,4 @@ when a cited test no longer exists.
 | SEC-56 | The public surface discloses no operational detail: requests no route matches spend the general budget and share one metric label, the public readiness probe names no dependency, and an account's export names no administrator nor the address they acted from | `unknown_paths_spend_the_general_budget`, `metrics_recorder_renders_business_counters_and_folds_unmatched_paths`, `public_readiness_says_ready_without_naming_dependencies`, `the_export_names_no_administrator_nor_their_address` |
 | SEC-57 | Secrets can stay out of the process environment: each variable can be read from the file named by `X_FILE`, and a variable set both ways refuses to start | `a_variable_can_come_from_a_file`, `a_variable_and_its_file_together_are_refused`, `an_unreadable_secret_file_stops_the_start` |
 | SEC-58 | Guessing a password cannot keep its owner out: the lock is bounded in time, restarted by any sign-in, a reset or its own end, limited to the password, announced to the owner, and recovery links and second-factor budgets are counted per address | `a_locked_password_answers_like_a_wrong_one_and_tells_the_owner`, `a_lock_does_not_outlive_itself`, `any_completed_sign_in_restarts_the_count`, `old_failures_do_not_add_up_with_new_ones`, `the_other_ways_in_stay_open_while_the_password_is_locked`, `a_reset_lifts_the_lock`, `someone_asking_for_links_neither_spends_nor_revokes_the_owners`, `guessing_codes_from_one_address_does_not_block_the_owner`, `signing_in_again_within_the_email_code_cooldown_still_challenges`, `a_second_factor_sign_in_without_redis_is_unavailable_not_broken` |
+| SEC-59 | No administrator grants themselves permissions, pushes the others out or acts unnoticed: held roles cannot gain what their holder lacks, the default role never administers, withdrawals and destructive actions need a re-authentication, owners are told, and administrators keep a second factor | `nobody_adds_to_a_role_they_hold_a_permission_they_lack`, `the_default_role_never_grants_administration`, `actions_that_push_out_or_reopen_need_a_recent_reauthentication`, `an_administrator_cannot_unlock_their_own_account`, `the_owner_hears_of_what_an_administrator_changed`, `deleting_a_role_leaves_a_trace_in_each_holders_history`, `an_administrator_keeps_a_second_factor` |
