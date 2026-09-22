@@ -189,6 +189,10 @@ pub struct SecurityConfig {
     /// Offer sign-in links by email (`/auth/magic-link`). Whoever reads the
     /// mailbox can then sign in without the password, so it is off by default.
     pub magic_links: bool,
+    /// Registrations accepted per client address (IPv6 /64) per hour; 0
+    /// removes the budget. Bounds how fast usernames can be squatted with
+    /// throwaway addresses. Default: 20.
+    pub registrations_per_ip_per_hour: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -549,6 +553,9 @@ impl Config {
                     .unwrap_or(600),
                 new_device_alerts: vars.parse("NEW_DEVICE_ALERTS_ENABLED")?.unwrap_or(true),
                 magic_links: vars.parse("MAGIC_LINK_ENABLED")?.unwrap_or(false),
+                registrations_per_ip_per_hour: vars
+                    .parse("REGISTRATIONS_PER_IP_PER_HOUR")?
+                    .unwrap_or(20),
             },
             mail: MailConfig {
                 smtp: SmtpConfig {
@@ -654,7 +661,7 @@ impl Config {
                     .unwrap_or(7),
                 unverified_accounts_retention_days: vars
                     .parse("CLEANUP_UNVERIFIED_ACCOUNT_DAYS")?
-                    .unwrap_or(7),
+                    .unwrap_or(2),
                 known_devices_retention_days: vars
                     .parse("CLEANUP_KNOWN_DEVICE_DAYS")?
                     .unwrap_or(90),

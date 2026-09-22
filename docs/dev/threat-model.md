@@ -133,7 +133,9 @@ at least once a year.
 - A username is an identifier others can learn exists: choosing one that is
   taken answers `username_taken`, whatever the case. Email addresses, the
   identifier that reaches a person, are never confirmed this way. Budgets on
-  registration bound how fast usernames can be tried; a deployment that treats
+  registration (`REGISTRATIONS_PER_IP_PER_HOUR`) bound how fast usernames can
+  be tried or squatted, and a pending account frees its username after
+  `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` (2 by default); a deployment that treats
   usernames as secret should let users sign in by email only.
 
 ## 6. Verification

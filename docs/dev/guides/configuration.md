@@ -128,6 +128,7 @@ and `occurred_at`. The broker ships in the compose files.
 | `LOCKOUT_DURATION_SECS` | `1800` | Lockout duration |
 | `SENSITIVE_ACTION_REAUTH_SECS` | `600` | How long a re-authentication (`POST /users/me/reauth`) covers sensitive actions |
 | `MAGIC_LINK_ENABLED` | `false` | Offer sign-in links by email (`/auth/magic-link`): whoever reads the mailbox can sign in without the password, the second factor still applies. Off, the routes answer `404` |
+| `REGISTRATIONS_PER_IP_PER_HOUR` | `20` | Registrations accepted per client address (IPv6 /64) per hour, `429` past it; `0` removes the budget. Usernames are reserved from registration, so this bounds how fast they can be squatted |
 | `NEW_DEVICE_ALERTS_ENABLED` | `true` | E-mail the owner when an account signs in from a browser and system family it never used (devices are recorded either way) |
 | `CAPTCHA_SECRET` | unset | hCaptcha secret; unset disables the check, which production refuses |
 | `CAPTCHA_VERIFY_URL` | `https://hcaptcha.com/siteverify` | Verification endpoint |
@@ -220,7 +221,7 @@ the audit log partitions.
 | `CLEANUP_RECOVERY_CODES_GRACE_DAYS` | `7` | Kept after expiry |
 | `CLEANUP_WEBHOOK_DELIVERY_DAYS` | `7` | Delivered and given-up webhook deliveries are deleted after this many days |
 | `CLEANUP_KNOWN_DEVICE_DAYS` | `90` | Devices unused for this many days are forgotten; a later sign-in from one alerts again |
-| `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` | `7` | Accounts whose address was never verified are deleted after this many days (audited, `user.deleted` published); `0` keeps them |
+| `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` | `2` | Accounts whose address was never verified are deleted after this many days (audited, `user.deleted` published); `0` keeps them |
 | `AUDIT_LOG_RETENTION_MONTHS` | `12` | Monthly audit partitions kept; `0` keeps every partition |
 | `AUDIT_IP_RETENTION_DAYS` | `90` | Client addresses of older audit entries keep only their network (/24, /48); `0` keeps full addresses |
 

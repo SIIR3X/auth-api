@@ -16,6 +16,22 @@ pub async fn register(
     user_agent: Option<&str>,
     request_id: Option<Uuid>,
 ) -> Result<Option<User>, AppError> {
+    // Before any work, and the same whatever the address: usernames are
+    // reserved from registration, so their pace from one address is bounded.
+    let per_hour = i64::from(state.config.security.registrations_per_ip_per_hour);
+    if let Some(ip_val) = ip
+        && per_hour > 0
+        && budget_exhausted(
+            state,
+            &format!("rg_req:{}", ip_bucket(ip_val.ip())),
+            per_hour,
+            3600,
+        )
+        .await
+    {
+        return Err(AppError::RateLimitExceeded);
+    }
+
     let started = std::time::Instant::now();
     let result = register_account(
         state,

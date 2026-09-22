@@ -369,3 +369,60 @@ async fn replayed_refresh_tokens_count_against_the_address() {
         .unwrap();
     assert_eq!(failures, Some(1));
 }
+
+/// Within the grace window, only the client that rotated the session may
+/// present the old token again; anyone else is a replay (SEC-61).
+#[tokio::test]
+async fn a_rotated_token_reused_from_another_client_revokes_the_family() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 722).await;
+    let rotated: Value = refresh(&app, &user.refresh_token)
+        .await
+        .json()
+        .await
+        .unwrap();
+
+    let b = uuid::Uuid::new_v4().into_bytes();
+    let elsewhere = format!("10.{}.{}.{}", 150 + b[0] % 50, b[1], 1 + b[2] % 254);
+    let res = app
+        .client
+        .post(app.url("/auth/refresh"))
+        .header("x-forwarded-for", &elsewhere)
+        .header("user-agent", "another-client/1.0")
+        .json(&json!({ "refresh_token": user.refresh_token }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status().as_u16(), 401);
+
+    let next = refresh(&app, rotated["refresh_token"].as_str().unwrap()).await;
+    assert_eq!(next.status().as_u16(), 401, "the family must be revoked");
+}
+
+/// Registrations from one address are budgeted per hour (SEC-61).
+#[tokio::test]
+async fn registrations_from_one_address_are_budgeted() {
+    let app = TestApp::spawn_with_config(|config| {
+        config.security.registrations_per_ip_per_hour = 2;
+    })
+    .await;
+    let b = uuid::Uuid::new_v4().into_bytes();
+    let from = format!("10.{}.{}.{}", 100 + b[0] % 50, b[1], 1 + b[2] % 254);
+    let mut statuses = Vec::new();
+    for n in 0..3 {
+        let res = app
+            .client
+            .post(app.url("/auth/register"))
+            .header("x-forwarded-for", &from)
+            .json(&json!({
+                "username": format!("squat{n}_{}", b[3]),
+                "email": format!("squat{n}_{}@example.com", uuid::Uuid::new_v4().simple()),
+                "password": "Squatting-Pass-1!",
+            }))
+            .send()
+            .await
+            .unwrap();
+        statuses.push(res.status().as_u16());
+    }
+    assert_eq!(statuses, [202, 202, 429]);
+}

@@ -16,6 +16,14 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- A rotated refresh token presented again within the 1-second grace window is
+  forgiven only from the network and user agent that rotated it; from anywhere
+  else the family is revoked as for any replay. Registrations are budgeted per
+  client address (`REGISTRATIONS_PER_IP_PER_HOUR`, 20 by default, `429` past
+  it), accounts never verified are purged after 2 days instead of 7
+  (`CLEANUP_UNVERIFIED_ACCOUNT_DAYS`), and failed sign-ins are budgeted under
+  the identifier they are recorded with.
+
 - `GET /users/me/audit` no longer shows the id and address of an administrator
   who changed the account, as the export already did. A refresh replay records
   `same_network` instead of the two addresses in its audit metadata, which is

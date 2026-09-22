@@ -382,6 +382,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             sensitive_action_reauth_secs: 600,
             new_device_alerts: true,
             magic_links: false,
+            registrations_per_ip_per_hour: 10_000,
         },
         captcha: CaptchaConfig {
             secret: None,

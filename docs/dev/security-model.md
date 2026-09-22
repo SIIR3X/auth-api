@@ -95,10 +95,10 @@ the database together, is out of scope.
   cannot overwrite with a stale "active".
 - **Refresh tokens** are opaque, stored as SHA-256 digests, and rotated on every
   use. Presenting a rotated token again revokes the whole session family and
-  ends the cached validity of its access tokens at once; within 1 second of
-  the rotation it is treated as a concurrent refresh from the same client (two
-  tabs), refused without revocation and counted
-  (`auth_refresh_concurrent_total`). Refused refreshes (unknown token, another
+  ends the cached validity of its access tokens at once. Within 1 second of
+  the rotation, and only from the network and user agent that rotated it, it is
+  treated as a concurrent refresh (two tabs), refused without revocation and
+  counted (`auth_refresh_concurrent_total`); from anywhere else it is a replay. Refused refreshes (unknown token, another
   client's session, a replay, another address) count against the address.
 - **Absolute lifetime.** A sign-in ends after `JWT_MAX_SESSION_LIFETIME_SECS`
   however often it is refreshed, and no rotation dates a session past that
@@ -403,3 +403,4 @@ when a cited test no longer exists.
 | SEC-58 | Guessing a password cannot keep its owner out: the lock is bounded in time, restarted by any sign-in, a reset or its own end, limited to the password, announced to the owner, and recovery links and second-factor budgets are counted per address | `a_locked_password_answers_like_a_wrong_one_and_tells_the_owner`, `a_lock_does_not_outlive_itself`, `any_completed_sign_in_restarts_the_count`, `old_failures_do_not_add_up_with_new_ones`, `the_other_ways_in_stay_open_while_the_password_is_locked`, `a_reset_lifts_the_lock`, `someone_asking_for_links_neither_spends_nor_revokes_the_owners`, `guessing_codes_from_one_address_does_not_block_the_owner`, `signing_in_again_within_the_email_code_cooldown_still_challenges`, `a_second_factor_sign_in_without_redis_is_unavailable_not_broken` |
 | SEC-59 | No administrator grants themselves permissions, pushes the others out or acts unnoticed: held roles cannot gain what their holder lacks, the default role never administers, withdrawals and destructive actions need a re-authentication, owners are told, and administrators keep a second factor | `nobody_adds_to_a_role_they_hold_a_permission_they_lack`, `the_default_role_never_grants_administration`, `actions_that_push_out_or_reopen_need_a_recent_reauthentication`, `an_administrator_cannot_unlock_their_own_account`, `the_owner_hears_of_what_an_administrator_changed`, `deleting_a_role_leaves_a_trace_in_each_holders_history`, `an_administrator_keeps_a_second_factor` |
 | SEC-60 | The owner's view of their data is complete and names no administrator, the audit metadata holds no address, and every deletion reaches the webhooks | `the_history_names_no_administrator_nor_their_address`, `the_export_names_no_administrator_nor_their_address`, `a_replay_is_audited_without_addresses_in_its_metadata`, `addresses_compare_by_network`, `purging_a_never_verified_account_reaches_the_webhooks`, `the_export_holds_every_way_in_and_where_links_were_asked_from` |
+| SEC-61 | A rotated refresh token is forgiven only to the client that rotated it, and registrations are budgeted per address | `a_rotated_token_reused_from_another_client_revokes_the_family`, `concurrent_refreshes_keep_the_family_alive`, `registrations_from_one_address_are_budgeted` |

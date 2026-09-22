@@ -64,10 +64,12 @@ pub async fn login(
             None => Ok(0),
         }
     };
+    // Counted under the value recorded for a failure: an identifier that is
+    // neither an address nor a username shares the `<unrecognized>` budget.
     let identifier_failures_fut = async {
         login_attempt::count_recent_failures_by_identifier(
             &state.db,
-            identifier,
+            crate::domain::login_attempt::storable_identifier(identifier),
             brute_force_cutoff,
             MAX_FAILURES_BY_IDENTIFIER,
         )

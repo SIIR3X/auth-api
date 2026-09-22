@@ -71,11 +71,36 @@ pub async fn refresh_token(
     };
     match session.refresh_verdict(state.clock.now(), ip.map(|n| n.ip()), &policy) {
         RefreshVerdict::Rotate => {}
-        RefreshVerdict::ConcurrentRefresh => {
-            // Two tabs, or a retried request - or a thief refreshing first,
-            // which leaves the owner signed out: measured, so a spike shows.
+        RefreshVerdict::ConcurrentRefresh
+            if rotated_by_this_client(state, &session, ip, user_agent).await =>
+        {
+            // Two tabs, or a retried request, from the client that rotated
+            // the session: refused, the family left alive.
             metrics::counter!("auth_refresh_concurrent_total").increment(1);
             tracing::info!(session_id = %session.id, "rotated refresh token presented within the grace window");
+            return Err(AppError::TokenInvalid);
+        }
+        RefreshVerdict::ConcurrentRefresh => {
+            // Within the grace window but from another network or client: the
+            // token is in two hands, and the family goes like on any replay.
+            note_refresh_failure(state, ip).await;
+            revoke_family(state, session.id).await?;
+            metrics::counter!("auth_session_replays_total").increment(1);
+            audit::append(
+                &state.db,
+                &NewAuditEntry {
+                    user_id: Some(session.user_id),
+                    request_id,
+                    action: AuditAction::SessionReplayDetected,
+                    ip_address: ip,
+                    metadata: json!({
+                        "session_id": session.id,
+                        "reason": "reused_by_another_client",
+                    }),
+                },
+            )
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
             return Err(AppError::TokenInvalid);
         }
         RefreshVerdict::Expired => return Err(AppError::TokenExpired),
@@ -168,6 +193,7 @@ pub async fn refresh_token(
             // lock. Moments ago: the same client refreshing twice.
             if let Ok(Some(current)) = session_repo::find_by_id(&state.db, session.id).await
                 && current.rotated_within(REFRESH_REUSE_GRACE, state.clock.now())
+                && rotated_by_this_client(state, &current, ip, user_agent).await
             {
                 return Err(AppError::TokenInvalid);
             }
@@ -274,6 +300,29 @@ pub async fn logout(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(())
+}
+
+/// Whether the rotation that replaced `session` came from the client now
+/// presenting its token again: the same network and the same user agent. Only
+/// then is a second use within the grace window a concurrent refresh; the
+/// comparison does not depend on how precisely the clocks agree.
+async fn rotated_by_this_client(
+    state: &AppState,
+    session: &Session,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+) -> bool {
+    let Some(next_id) = session.replaced_by_session_id else {
+        return false;
+    };
+    let Ok(Some(next)) = session_repo::find_by_id(&state.db, next_id).await else {
+        return false;
+    };
+    let network_matches = match (next.ip_address, ip) {
+        (None, None) => true,
+        (a, b) => same_network(a, b) == Some(true),
+    };
+    network_matches && next.user_agent.as_deref() == user_agent
 }
 
 /// Whether two client addresses fall in the same network (/24 for IPv4, /48
