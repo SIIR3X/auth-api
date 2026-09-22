@@ -64,9 +64,19 @@ BEGIN
     SELECT id, 'account_deleted', '{"reason": "never_verified"}'::JSONB
     FROM unnest(doomed) AS id;
 
-    INSERT INTO event_outbox (subject, payload)
-    SELECT 'events.auth.user.deleted', jsonb_build_object('user_id', id)
-    FROM unnest(doomed) AS id;
+    -- Announced like any deletion, webhooks included: an endpoint erasing the
+    -- account's data downstream hears of every deletion, not only the others.
+    WITH event AS (
+        INSERT INTO event_outbox (subject, payload)
+        SELECT 'events.auth.user.deleted', jsonb_build_object('user_id', id)
+        FROM unnest(doomed) AS id
+        RETURNING id, payload, created_at
+    )
+    INSERT INTO webhook_deliveries (endpoint_id, event_id, event_name, payload, occurred_at)
+    SELECT endpoint.id, event.id, 'user.deleted', event.payload, event.created_at
+    FROM event CROSS JOIN webhook_endpoints endpoint
+    WHERE endpoint.enabled
+      AND ('user.deleted' = ANY (endpoint.events) OR '*' = ANY (endpoint.events));
 
     DELETE FROM users WHERE id = ANY (doomed);
     GET DIAGNOSTICS purged = ROW_COUNT;

@@ -74,3 +74,18 @@ pub struct AuditLog {
     pub ip_address: Option<IpNetwork>,
     pub metadata: JsonValue,
 }
+
+/// An entry as the account's owner sees it: a change made by an administrator
+/// keeps what was done, not who did it nor from where.
+pub fn owner_view(
+    mut metadata: serde_json::Value,
+    ip_address: Option<ipnetwork::IpNetwork>,
+) -> (serde_json::Value, Option<ipnetwork::IpNetwork>) {
+    if metadata.get("by").and_then(|by| by.as_str()) != Some("administrator") {
+        return (metadata, ip_address);
+    }
+    if let Some(fields) = metadata.as_object_mut() {
+        fields.remove("administrator_id");
+    }
+    (metadata, None)
+}

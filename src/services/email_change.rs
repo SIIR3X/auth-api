@@ -365,7 +365,13 @@ pub async fn confirm_new(
         token_repo::revoke_mailbox_links(&mut tx, user_id).await?;
 
         // Ownership of the new address is proven via OTP, so it is verified at once.
-        user_repo::change_email(&mut *tx, user_id, new_email).await?;
+        // Two accounts confirming the same address at once: the constraint
+        // decides, and the loser hears the address is taken.
+        user_repo::change_email(&mut *tx, user_id, new_email)
+            .await
+            .map_err(|e| {
+                AppError::from_unique_violation(e, &[("users_email_key", "email_taken")])
+            })?;
 
         session_repo::revoke_others(&mut *tx, user_id, current_session_id).await?;
 

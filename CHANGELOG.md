@@ -16,6 +16,15 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- `GET /users/me/audit` no longer shows the id and address of an administrator
+  who changed the account, as the export already did. A refresh replay records
+  `same_network` instead of the two addresses in its audit metadata, which is
+  never coarsened nor erased. The purge of accounts never verified delivers
+  `user.deleted` to webhooks too. The export adds passkeys, personal access
+  tokens, linked identities and where each mailed link was asked from. Two
+  accounts confirming the same new address at once: the second gets `409
+  email_taken` instead of `500`.
+
 - Administration: nobody adds to a role they hold a permission they lack
   (`403`), the default role never grants an administrative permission (`409
   default_role_administration`), and an account holding administrative

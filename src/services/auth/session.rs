@@ -111,8 +111,9 @@ pub async fn refresh_token(
                     metadata: json!({
                         "reason": "ip_mismatch",
                         "session_id": session.id,
-                        "expected_ip": session.ip_address.map(|n| n.ip().to_string()),
-                        "actual_ip": ip.map(|n| n.ip().to_string()),
+                        // No address in the metadata, which is never coarsened
+                        // nor forgotten: the row's own address is the one used.
+                        "same_network": same_network(session.ip_address, ip),
                     }),
                 },
             )
@@ -273,4 +274,40 @@ pub async fn logout(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(())
+}
+
+/// Whether two client addresses fall in the same network (/24 for IPv4, /48
+/// for IPv6): what an investigation needs of a replay, without the addresses.
+fn same_network(a: Option<ipnetwork::IpNetwork>, b: Option<ipnetwork::IpNetwork>) -> Option<bool> {
+    let (a, b) = (a?.ip(), b?.ip());
+    let prefix = |ip: std::net::IpAddr| -> Option<ipnetwork::IpNetwork> {
+        let len = if ip.is_ipv4() { 24 } else { 48 };
+        ipnetwork::IpNetwork::new(ip, len)
+            .ok()
+            .and_then(|n| ipnetwork::IpNetwork::new(n.network(), len).ok())
+    };
+    Some(prefix(a)? == prefix(b)?)
+}
+
+#[cfg(test)]
+mod same_network_tests {
+    use super::same_network;
+
+    #[test]
+    fn addresses_compare_by_network() {
+        let net = |s: &str| Some(s.parse::<ipnetwork::IpNetwork>().unwrap());
+        assert_eq!(
+            same_network(net("203.0.113.7"), net("203.0.113.200")),
+            Some(true)
+        );
+        assert_eq!(
+            same_network(net("203.0.113.7"), net("198.51.100.7")),
+            Some(false)
+        );
+        assert_eq!(
+            same_network(net("2001:db8:1::1"), net("2001:db8:1:ff::2")),
+            Some(true)
+        );
+        assert_eq!(same_network(None, net("203.0.113.7")), None);
+    }
 }

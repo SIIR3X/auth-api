@@ -91,15 +91,21 @@ pub async fn list(
     Ok(Json(AuditPageResponse {
         entries: rows
             .into_iter()
-            .map(|entry| AuditEntryResponse {
-                id: entry.id,
-                created_at: entry.created_at.unix_timestamp(),
-                action: action_name(&entry.action),
-                // The address, not the network: every row is written from one
-                // address and a `/32` on each line says nothing.
-                ip_address: entry.ip_address.map(|net| net.ip().to_string()),
-                request_id: entry.request_id,
-                metadata: entry.metadata,
+            .map(|entry| {
+                // An administrator's change names neither the administrator
+                // nor the address they acted from, as in the export.
+                let (metadata, ip_address) =
+                    crate::domain::audit::owner_view(entry.metadata, entry.ip_address);
+                AuditEntryResponse {
+                    id: entry.id,
+                    created_at: entry.created_at.unix_timestamp(),
+                    action: action_name(&entry.action),
+                    // The address, not the network: every row is written from
+                    // one address and a `/32` on each line says nothing.
+                    ip_address: ip_address.map(|net| net.ip().to_string()),
+                    request_id: entry.request_id,
+                    metadata,
+                }
             })
             .collect(),
         next_cursor,

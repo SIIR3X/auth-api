@@ -268,14 +268,18 @@ the database together, is out of scope.
 
 - Every token, code and refresh token is stored as a digest.
 - The audit log is append-only (enforced by a trigger) and holds no personal
-  data such as addresses in its metadata. Its client addresses keep only their
-  network after 90 days and are removed when the account is deleted, with its
-  sign-in attempts ([personal data](privacy.md)). Users read their own history
-  through `GET /users/me/audit`.
+  data such as addresses in its metadata (a replay records only whether the
+  two addresses share a network). Its client addresses keep only their network
+  after 90 days and are removed when the account is deleted, with its sign-in
+  attempts ([personal data](privacy.md)). Users read their own history through
+  `GET /users/me/audit`, and their export, where a change made by an
+  administrator names neither the administrator nor the address they acted
+  from.
 - An email change is confirmed on both addresses, revokes the other sessions,
   and notifies the previous address.
-- Account deletion records `user.deleted` in the event outbox in the same
-  transaction as the deletion, so downstream erasure cannot be lost and is
+- Account deletion, by the owner, an administrator or the purge of accounts
+  never verified, records `user.deleted` in the event outbox and in the webhook
+  deliveries in the same transaction as the deletion, so downstream erasure cannot be lost and is
   never announced for an account that still exists; the relay delivers it to
   JetStream, waiting for the broker when it is down.
 - **Least privilege in the database.** The schema belongs to `auth_api_owner`,
@@ -398,3 +402,4 @@ when a cited test no longer exists.
 | SEC-57 | Secrets can stay out of the process environment: each variable can be read from the file named by `X_FILE`, and a variable set both ways refuses to start | `a_variable_can_come_from_a_file`, `a_variable_and_its_file_together_are_refused`, `an_unreadable_secret_file_stops_the_start` |
 | SEC-58 | Guessing a password cannot keep its owner out: the lock is bounded in time, restarted by any sign-in, a reset or its own end, limited to the password, announced to the owner, and recovery links and second-factor budgets are counted per address | `a_locked_password_answers_like_a_wrong_one_and_tells_the_owner`, `a_lock_does_not_outlive_itself`, `any_completed_sign_in_restarts_the_count`, `old_failures_do_not_add_up_with_new_ones`, `the_other_ways_in_stay_open_while_the_password_is_locked`, `a_reset_lifts_the_lock`, `someone_asking_for_links_neither_spends_nor_revokes_the_owners`, `guessing_codes_from_one_address_does_not_block_the_owner`, `signing_in_again_within_the_email_code_cooldown_still_challenges`, `a_second_factor_sign_in_without_redis_is_unavailable_not_broken` |
 | SEC-59 | No administrator grants themselves permissions, pushes the others out or acts unnoticed: held roles cannot gain what their holder lacks, the default role never administers, withdrawals and destructive actions need a re-authentication, owners are told, and administrators keep a second factor | `nobody_adds_to_a_role_they_hold_a_permission_they_lack`, `the_default_role_never_grants_administration`, `actions_that_push_out_or_reopen_need_a_recent_reauthentication`, `an_administrator_cannot_unlock_their_own_account`, `the_owner_hears_of_what_an_administrator_changed`, `deleting_a_role_leaves_a_trace_in_each_holders_history`, `an_administrator_keeps_a_second_factor` |
+| SEC-60 | The owner's view of their data is complete and names no administrator, the audit metadata holds no address, and every deletion reaches the webhooks | `the_history_names_no_administrator_nor_their_address`, `the_export_names_no_administrator_nor_their_address`, `a_replay_is_audited_without_addresses_in_its_metadata`, `addresses_compare_by_network`, `purging_a_never_verified_account_reaches_the_webhooks`, `the_export_holds_every_way_in_and_where_links_were_asked_from` |
