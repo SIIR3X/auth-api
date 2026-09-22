@@ -193,16 +193,24 @@ the database together, is out of scope.
 - **Device flow (RFC 8628):** user codes are reserved atomically, polling is
   paced, an approval is collected exactly once and only by the client that
   started the flow, and account status and session limits are rechecked when
-  tokens are issued. Approving a device of a client other than the instance's
-  own application requires a re-authentication, like consenting to it.
+  tokens are issued. Approving any device, the instance's own application
+  included, requires a re-authentication: a code handed over by someone else
+  is how a device flow is phished. The approval screen shows the scopes asked
+  for, those the user lacks, and whether the device would act as the account.
+  Unknown codes are budgeted per address and per signed-in user.
 - **Authorization code with PKCE:** S256 only, exact redirect URIs (loopback on
   any port only for a registered path, never `localhost`), single-use codes
-  consumed atomically, a replayed code revokes its session. The redemption
+  consumed atomically, a replayed code revokes its session (whoever presents
+  it: a code seen in a log or a Referer is dead either way). The redemption
   holds the code until its session is linked, so even a replay racing it finds
-  the session to revoke.
+  the session to revoke. The redirect URI is checked against the client as
+  registered at the approval and at the redemption too, and the redirect
+  carries `iss` (RFC 9207).
 - **Scopes:** a request may narrow the client's registered scopes, never widen
   them; a client's tokens carry only the consented permissions, re-derived from
-  the user's current permissions on every refresh, and no roles.
+  the user's current permissions and the client's current scopes on every
+  refresh, and no roles. Access tokens are typed `at+jwt` and name their
+  client; the metadata lists only the scopes some client may ask for.
 - **Refresh:** a client's session is refreshed only by that client at the token
   endpoint, with its authentication; the first-party route refuses it.
 - **OpenID Connect:** identity scopes grant no permission and release only
@@ -212,7 +220,10 @@ the database together, is out of scope.
   grant turned on obtains tokens for itself; they carry no user, so account
   routes refuse them, and they stop being active when the grant is turned off.
 - **Introspection and revocation:** only confidential clients introspect, and
-  an inactive token reveals nothing but `active: false`. A client revokes its
+  an inactive token reveals nothing but `active: false`. A refresh token is
+  introspected only by its own client, and personal access tokens never are.
+  Failures of client authentication all read `client authentication failed`,
+  and a public client's request budget is split by address. A client revokes its
   own tokens only; any other token gets the same answer and is left alone.
 
 ## Administration
@@ -404,3 +415,4 @@ when a cited test no longer exists.
 | SEC-59 | No administrator grants themselves permissions, pushes the others out or acts unnoticed: held roles cannot gain what their holder lacks, the default role never administers, withdrawals and destructive actions need a re-authentication, owners are told, and administrators keep a second factor | `nobody_adds_to_a_role_they_hold_a_permission_they_lack`, `the_default_role_never_grants_administration`, `actions_that_push_out_or_reopen_need_a_recent_reauthentication`, `an_administrator_cannot_unlock_their_own_account`, `the_owner_hears_of_what_an_administrator_changed`, `deleting_a_role_leaves_a_trace_in_each_holders_history`, `an_administrator_keeps_a_second_factor` |
 | SEC-60 | The owner's view of their data is complete and names no administrator, the audit metadata holds no address, and every deletion reaches the webhooks | `the_history_names_no_administrator_nor_their_address`, `the_export_names_no_administrator_nor_their_address`, `a_replay_is_audited_without_addresses_in_its_metadata`, `addresses_compare_by_network`, `purging_a_never_verified_account_reaches_the_webhooks`, `the_export_holds_every_way_in_and_where_links_were_asked_from` |
 | SEC-61 | A rotated refresh token is forgiven only to the client that rotated it, and registrations are budgeted per address | `a_rotated_token_reused_from_another_client_revokes_the_family`, `concurrent_refreshes_keep_the_family_alive`, `registrations_from_one_address_are_budgeted` |
+| SEC-62 | Delegation stays visible and current: every device approval needs a re-authentication and shows its scope, codes and tokens follow the client as registered now, introspection reveals no refresh token of another client nor any personal token, and a public client's budget cannot be spent from a few addresses | `the_device_approval_screen_shows_what_it_grants`, `approving_another_client_needs_a_recent_reauthentication`, `a_redirect_removed_from_the_client_receives_nothing`, `a_scope_taken_from_the_client_leaves_its_sessions`, `a_client_access_token_is_typed_and_names_its_client`, `introspection_reveals_no_personal_or_foreign_refresh_token`, `a_public_clients_budget_is_split_by_address`, `a_registered_redirect_keeps_its_query` |

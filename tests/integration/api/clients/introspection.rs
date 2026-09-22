@@ -64,6 +64,15 @@ async fn client_tokens(app: &TestApp, user: &AuthenticatedUser) -> Value {
     tokens
 }
 
+/// Sessions of `user_id` not revoked.
+async fn live_sessions(app: &TestApp, user_id: uuid::Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM sessions WHERE user_id = $1 AND revoked_at IS NULL")
+        .bind(user_id)
+        .fetch_one(&app.db)
+        .await
+        .unwrap()
+}
+
 async fn introspect(app: &TestApp, token: &str) -> Value {
     let (status, body) = form(
         app,
@@ -101,9 +110,9 @@ async fn a_resource_server_learns_what_a_token_is_worth() {
     assert_eq!(access["sub"], user.id.to_string());
     assert!(access["exp"].is_number() && access["jti"].is_string());
 
+    // A refresh token is its client's secret: another client learns nothing.
     let refresh = introspect(&app, tokens["refresh_token"].as_str().unwrap()).await;
-    assert_eq!(refresh["active"], true);
-    assert_eq!(refresh["token_type"], "refresh_token");
+    assert_eq!(refresh, json!({ "active": false }));
 
     // A first-party session has no client.
     let own = introspect(&app, &user.access_token).await;
@@ -182,8 +191,9 @@ async fn revoking_an_access_token_ends_that_token_only() {
     assert_eq!(introspect(&app, access).await["active"], false);
     assert_eq!(app.get_auth("/users/me", access).await.status(), 401);
     assert_eq!(
-        introspect(&app, tokens["refresh_token"].as_str().unwrap()).await["active"],
-        true
+        live_sessions(&app, user.id).await,
+        2,
+        "the session lives on"
     );
 }
 
@@ -201,6 +211,42 @@ async fn a_client_cannot_revoke_the_tokens_of_another() {
         user.refresh_token.as_str(),
     ] {
         assert_eq!(revoke(&app, token, "other-app").await, 200);
+    }
+    for token in [
+        tokens["access_token"].as_str().unwrap(),
+        user.access_token.as_str(),
+    ] {
         assert_eq!(introspect(&app, token).await["active"], true, "{token}");
+    }
+    assert_eq!(
+        live_sessions(&app, user.id).await,
+        2,
+        "no session was revoked"
+    );
+}
+
+/// Personal access tokens belong to accounts, and refresh tokens to their
+/// client: introspection by another client says nothing of either (SEC-62).
+#[tokio::test]
+async fn introspection_reveals_no_personal_or_foreign_refresh_token() {
+    let app = TestApp::spawn().await;
+    setup(&app).await;
+    let user = fixtures::authenticated_user(&app, 2).await;
+    let created: Value = app
+        .post_auth(
+            "/users/me/tokens",
+            &user.access_token,
+            &json!({ "name": "ci" }),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+
+    for token in [
+        created["secret"].as_str().unwrap(),
+        user.refresh_token.as_str(),
+    ] {
+        assert_eq!(introspect(&app, token).await, json!({ "active": false }));
     }
 }

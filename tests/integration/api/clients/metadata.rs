@@ -7,6 +7,13 @@ use crate::common::app::TestApp;
 #[tokio::test]
 async fn the_metadata_describes_the_endpoints_and_capabilities() {
     let app = TestApp::spawn().await;
+    sqlx::query(
+        "INSERT INTO registered_clients (client_id, display_name, scopes)
+         VALUES ('reporting', 'Reporting', ARRAY['users:read'])",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
     let response = app.get("/.well-known/oauth-authorization-server").await;
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["cache-control"], "public, max-age=300");
@@ -29,10 +36,13 @@ async fn the_metadata_describes_the_endpoints_and_capabilities() {
             .unwrap()
             .contains(&"urn:ietf:params:oauth:grant-type:device_code".into())
     );
-    assert!(
-        metadata["scopes_supported"]
-            .as_array()
-            .unwrap()
-            .contains(&"users:read".into())
+    // Only what some client may ask for: not the whole permission catalog.
+    assert_eq!(
+        metadata["scopes_supported"],
+        serde_json::json!(["users:read"])
+    );
+    assert_eq!(
+        metadata["authorization_response_iss_parameter_supported"],
+        true
     );
 }

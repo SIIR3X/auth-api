@@ -163,7 +163,18 @@ pub async fn authenticate_client(
             }
         }
         Ok(client) => {
-            let key = format!("oauth_client_rpm:{}", client.client_id);
+            // A confidential client proved its secret: its budget is its own.
+            // A public client is only named, by anyone: its budget is split
+            // by address, so a flood from a few addresses cannot spend the
+            // share of every one of its users.
+            let key = match ip {
+                Some(ip) if !client.is_confidential() => format!(
+                    "oauth_client_rpm:{}:{}",
+                    client.client_id,
+                    crate::middleware::rate_limit::ip_bucket(ip.ip())
+                ),
+                _ => format!("oauth_client_rpm:{}", client.client_id),
+            };
             let consumed = crate::utils::redis_counter::consume(
                 &state.redis,
                 &[crate::utils::redis_counter::Budget {
@@ -227,10 +238,12 @@ async fn identify_client(
         }
     };
 
+    // One description for every failure: which client ids exist, and which
+    // hold a secret, is not the caller's to learn.
     let Some(client) =
         crate::repositories::registered_client::find_by_id(&state.db, &client_id).await?
     else {
-        return Err(invalid("unknown client", basic.is_some()));
+        return Err(invalid("client authentication failed", basic.is_some()));
     };
     match (&client.client_secret_hash, secret) {
         (Some(expected), Some(secret)) => {
@@ -240,10 +253,10 @@ async fn identify_client(
             }
         }
         (Some(_), None) => {
-            return Err(invalid("this client must authenticate", basic.is_some()));
+            return Err(invalid("client authentication failed", basic.is_some()));
         }
         (None, Some(_)) => {
-            return Err(invalid("this client has no secret", basic.is_some()));
+            return Err(invalid("client authentication failed", basic.is_some()));
         }
         (None, None) => {}
     }
@@ -299,11 +312,14 @@ pub async fn start_authorization(
     authorize_svc::validate_redirect(&client, &redirect_uri)?;
 
     let client_state = param("state").filter(|s| s.len() <= oauth::MAX_STATE_LEN);
+    let issuer = state.config.server.public_url.as_str();
     let refuse = |code: ErrorCode, description: &str| {
         let mut response = vec![("error", code.as_str()), ("error_description", description)];
         if let Some(client_state) = client_state {
             response.push(("state", client_state));
         }
+        // RFC 9207: the client learns which server answered (mix-up defence).
+        response.push(("iss", issuer));
         oauth::redirect_with(&redirect_uri, &response)
             .map(AuthorizeOutcome::Refused)
             .ok_or_else(|| {
@@ -479,6 +495,9 @@ pub async fn approve_request(
     request_id: Option<Uuid>,
 ) -> Result<String, AppError> {
     let (request, client) = load_request(state, id).await?;
+    // The client as registered now: a redirect URI removed since the request
+    // was made no longer receives a code.
+    authorize_svc::validate_redirect(&client, &request.redirect_uri)?;
     // The password is checked before the request is taken: a missing or wrong
     // one leaves the request to approve once the user has confirmed it.
     if !client.is_primary {
@@ -513,6 +532,7 @@ pub async fn approve_request(
     if let Some(client_state) = request.state.as_deref() {
         response.push(("state", client_state));
     }
+    response.push(("iss", state.config.server.public_url.as_str()));
     oauth::redirect_with(&request.redirect_uri, &response)
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("stored redirect_uri does not parse")))
 }
@@ -528,6 +548,7 @@ pub async fn deny_request(state: &AppState, id: &str) -> Result<String, AppError
     if let Some(client_state) = request.state.as_deref() {
         response.push(("state", client_state));
     }
+    response.push(("iss", state.config.server.public_url.as_str()));
     oauth::redirect_with(&request.redirect_uri, &response)
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("stored redirect_uri does not parse")))
 }
@@ -792,13 +813,13 @@ pub struct Introspection {
 /// The kind of a presented token, from its shape.
 enum Presented<'a> {
     Access(&'a str),
-    Personal(&'a str),
+    Personal,
     Refresh(&'a str),
 }
 
 fn classify(token: &str) -> Presented<'_> {
     if crate::domain::personal_access_token::random_part(token).is_some() {
-        Presented::Personal(token)
+        Presented::Personal
     } else if token.split('.').count() == 3 {
         Presented::Access(token)
     } else {
@@ -872,7 +893,10 @@ pub async fn introspect(
                 &crypto::sha256(raw.as_bytes()),
             )
             .await?
-            .filter(|s| s.is_active(now) && s.rotated_at.is_none()) else {
+            .filter(|s| s.is_active(now) && s.rotated_at.is_none())
+            // A refresh token is its client's secret: only that client learns
+            // anything of it.
+            .filter(|s| s.client_id.as_deref() == Some(client.client_id.as_str())) else {
                 return Ok(Introspection::default());
             };
             Introspection {
@@ -886,27 +910,8 @@ pub async fn introspect(
                 ..Introspection::default()
             }
         }
-        Presented::Personal(secret) => {
-            let random =
-                crate::domain::personal_access_token::random_part(secret).unwrap_or_default();
-            let Some(found) = crate::repositories::personal_access_token::find_by_hash(
-                &state.db,
-                &crypto::sha256(random.as_bytes()),
-            )
-            .await?
-            .filter(|f| f.session_revoked_at.is_none() && f.token.expires_at > now) else {
-                return Ok(Introspection::default());
-            };
-            Introspection {
-                active: true,
-                token_type: Some("personal_access_token"),
-                scope: Some(found.token.scopes.join(" ")),
-                sub: Some(found.token.user_id),
-                exp: Some(found.token.expires_at.unix_timestamp()),
-                iat: Some(found.token.created_at.unix_timestamp()),
-                ..Introspection::default()
-            }
-        }
+        // Personal access tokens belong to accounts, not to clients.
+        Presented::Personal => Introspection::default(),
     };
     Ok(introspection)
 }
@@ -990,7 +995,7 @@ pub async fn revoke(
             }
         }
         // Personal access tokens belong to accounts, not clients.
-        Presented::Personal(_) => {}
+        Presented::Personal => {}
     }
     Ok(())
 }

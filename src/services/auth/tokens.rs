@@ -144,7 +144,14 @@ pub(crate) async fn issue_tokens(
     // password login, an approved device, a 2FA challenge) has not re-proven
     // knowledge of the password for sensitive actions. Only an explicit
     // `POST /users/me/reauth` or a `current_password` in the request does.
-    let access_token = build_access_token(user_id, session.id, scopes, state).await?;
+    let access_token = build_access_token(
+        user_id,
+        session.id,
+        scopes,
+        session.client_id.as_deref(),
+        state,
+    )
+    .await?;
 
     Ok(AuthTokens {
         access_token,
@@ -197,6 +204,7 @@ pub(crate) async fn build_access_token(
     user_id: Uuid,
     session_id: uuid::Uuid,
     scopes: Option<&[String]>,
+    client_id: Option<&str>,
     state: &AppState,
 ) -> Result<String, AppError> {
     let issued_at = state.clock.now();
@@ -214,11 +222,27 @@ pub(crate) async fn build_access_token(
     // that client, re-evaluated against the user's current permissions on every
     // issue and refresh. Roles are dropped: a resource server authorizing by
     // role would otherwise grant more than the consent covered.
-    let (role_names, permission_names) =
-        crate::domain::registered_client::restrict_to_consent(role_names, permission_names, scopes);
+    //
+    // The consent is also narrowed to what the client may ask for today: an
+    // administrator taking a scope back from a client takes it back from the
+    // sessions it already holds, at their next refresh.
+    let current = match client_id {
+        Some(client_id) => crate::repositories::registered_client::find_by_id(&state.db, client_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+            .map(|client| client.scopes),
+        None => None,
+    };
+    let narrowed = crate::domain::oauth::within_client_scopes(scopes, current.as_deref());
+    let (role_names, permission_names) = crate::domain::registered_client::restrict_to_consent(
+        role_names,
+        permission_names,
+        narrowed.as_deref(),
+    );
 
     let mut claims = Claims::new(user_id, session_id, issued_at.unix_timestamp(), exp)
         .with_rbac(role_names, permission_names);
+    claims.client_id = client_id.map(str::to_owned);
     // Stamp iss/aud so downstream resource servers can pin
     // the token to this issuer and to themselves. `aud` is emitted as a JSON
     // array so a single token can be accepted by multiple downstream services.

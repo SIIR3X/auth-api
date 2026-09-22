@@ -250,9 +250,84 @@ async fn approving_another_client_needs_a_recent_reauthentication() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    // The instance's own application needs none.
+    // The instance's own application too: a code handed over by someone
+    // else is how a device flow is phished (SEC-62).
     app.clear_recent_reauth(&user.access_token).await;
     let (_, user_code) = start_device_flow(&app, "primary-app").await;
     let (status, body) = approve(&app, &user.access_token, json!({ "user_code": user_code })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = approve(
+        &app,
+        &user.access_token,
+        json!({ "user_code": user_code, "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// The approval screen of a device says how much of the account it would get,
+/// like the consent of the authorization code flow (SEC-62).
+#[tokio::test]
+async fn the_device_approval_screen_shows_what_it_grants() {
+    let app = TestApp::spawn().await;
+    register_client(&app, "primary-app", true).await;
+    sqlx::query(
+        "INSERT INTO registered_clients (client_id, display_name, is_primary, default_max_sessions, scopes)
+         VALUES ('reporting', 'reporting', FALSE, 5, ARRAY['users:read'])",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let user = fixtures::authenticated_user(&app, 5).await;
+
+    let (_, user_code) = start_device_flow(&app, "primary-app").await;
+    let preview: Value = app
+        .get_auth(&format!("/oauth/device/{user_code}"), &user.access_token)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(preview["unrestricted"], true, "{preview}");
+
+    let (status, body) = form(
+        &app,
+        "/oauth/device_authorization",
+        &[("client_id", "reporting"), ("scope", "users:read")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let preview: Value = app
+        .get_auth(
+            &format!("/oauth/device/{}", body["user_code"].as_str().unwrap()),
+            &user.access_token,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(preview["unrestricted"], false, "{preview}");
+    assert_eq!(preview["unavailable_scopes"], json!(["users:read"]));
+}
+
+/// A public client is only named: a flood naming it from other addresses does
+/// not spend the budget of its users (SEC-62).
+#[tokio::test]
+async fn a_public_clients_budget_is_split_by_address() {
+    use deadpool_redis::redis::AsyncCommands;
+
+    let app = TestApp::spawn().await;
+    register_client(&app, "public-app", false).await;
+    let mut conn = app.redis.get().await.unwrap();
+    let _: () = conn
+        .set_ex("oauth_client_rpm:public-app", 1_000_000, 60)
+        .await
+        .unwrap();
+
+    let (status, body) = form(
+        &app,
+        "/oauth/device_authorization",
+        &[("client_id", "public-app")],
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }

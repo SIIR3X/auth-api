@@ -14,7 +14,6 @@ use serde_json::json;
 use crate::{
     domain::oauth::{self, ErrorCode},
     error::AppError,
-    repositories::role as role_repo,
     services::{
         device as device_svc,
         oauth::{self as oauth_svc, AuthorizeOutcome, EndpointError, OAuthError},
@@ -196,11 +195,9 @@ pub async fn metadata(State(state): State<AppState>) -> Result<impl IntoResponse
         .public_url
         .trim_end_matches('/')
         .to_owned();
-    let scopes: Vec<String> = role_repo::find_all_permissions(&state.db)
-        .await?
-        .into_iter()
-        .map(|p| p.name)
-        .collect();
+    // Only what a registered client may ask for: the full permission catalog
+    // would map the authorization model for anyone.
+    let scopes = crate::repositories::registered_client::assignable_scopes(&state.db).await?;
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=300")],
         Json(json!({
@@ -224,7 +221,7 @@ pub async fn metadata(State(state): State<AppState>) -> Result<impl IntoResponse
             ],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
             "code_challenge_methods_supported": ["S256"],
-            "authorization_response_iss_parameter_supported": false,
+            "authorization_response_iss_parameter_supported": true,
         })),
     ))
 }
@@ -250,12 +247,7 @@ pub async fn openid_configuration(
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
-    scopes.extend(
-        role_repo::find_all_permissions(&state.db)
-            .await?
-            .into_iter()
-            .map(|p| p.name),
-    );
+    scopes.extend(crate::repositories::registered_client::assignable_scopes(&state.db).await?);
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=300")],
         Json(json!({
@@ -585,7 +577,7 @@ pub async fn describe_device(
 ) -> Result<Json<device_svc::DevicePreview>, AppError> {
     validate_user_code(&user_code)?;
     Ok(Json(
-        device_svc::describe(&state, auth.session_id, &user_code, ip).await?,
+        device_svc::describe(&state, auth.user_id, auth.session_id, &user_code, ip).await?,
     ))
 }
 
@@ -624,7 +616,7 @@ pub async fn verify_device(
         )
         .await?;
     } else {
-        device_svc::deny(&state, &body.user_code, ip).await?;
+        device_svc::deny(&state, auth.user_id, &body.user_code, ip).await?;
     }
     Ok(StatusCode::OK)
 }

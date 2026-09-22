@@ -134,3 +134,13 @@ pub async fn set_client_credentials<'e>(
     .await?;
     Ok(result.rows_affected() == 1)
 }
+
+/// The scopes some registered client may ask for: what the metadata offers.
+/// Permissions no client can request stay unlisted.
+pub async fn assignable_scopes(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT scope FROM registered_clients, unnest(scopes) AS scope ORDER BY scope",
+    )
+    .fetch_all(pool)
+    .await
+}

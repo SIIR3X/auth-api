@@ -118,20 +118,23 @@ a failure answers `401 invalid_client`.
   `OAUTH_CONSENT_URI?request_id=...`. The consent page reads it with
   `GET /oauth/authorization-requests/{id}` (client, scopes, session limits,
   whether a re-authentication is needed) and approves or denies it; the answer
-  holds `redirect_to`, the client redirect carrying `code` and `state`, or
-  `error=access_denied`. A request is decided once.
+  holds `redirect_to`, the client redirect carrying `code`, `state` and `iss`
+  (RFC 9207), or `error=access_denied`. A request is decided once, and only
+  while its redirect URI is still registered.
 - The redirect URI must be registered exactly, or be a loopback
   `http://127.0.0.1:{port}/path` / `http://[::1]:{port}/path` for a registered
   path when the client allows it. `localhost` is refused.
 - The client redeems the code at `POST /oauth/token` with
   `grant_type=authorization_code`, `code`, `code_verifier` and `redirect_uri`.
   A code is single use: a failed redemption burns it, and a replayed code
-  revokes the session it produced.
+  revokes the session it produced, whoever presents it: keep codes out of logs
+  and Referer headers.
 
 **Scopes.** `scope` lists permissions. A client registered with scopes may ask
 for a subset of them; without `scope`, its registered scopes apply. Tokens carry
-the consented scopes the user holds, on issue and on every refresh, and no
-roles. The token response echoes `scope` when the session is restricted.
+the consented scopes the user holds and the client may still ask for, on
+issue and on every refresh, and no roles. `scopes_supported` in the metadata
+lists the scopes some registered client may ask for. The token response echoes `scope` when the session is restricted.
 
 **Refresh.** A client refreshes its sessions at `POST /oauth/token` with
 `grant_type=refresh_token`; `/auth/refresh` refuses them. The session must
@@ -158,9 +161,10 @@ included, and `GET /oauth/userinfo` for their access tokens. `profile` releases
 
 **Introspection (RFC 7662).** A confidential client (a resource server)
 posts `token` and learns `active`, and for an active token its `token_type`
-(`access_token`, `refresh_token`, `personal_access_token`), `scope`,
-`client_id`, `sub`, `exp`, `iat` and, for access tokens, `iss`, `aud` and `jti`.
-Anything unknown, expired or revoked is `{ "active": false }`.
+(`access_token`, `refresh_token`), `scope`, `client_id`, `sub`, `exp`, `iat`
+and, for access tokens, `iss`, `aud` and `jti`. A refresh token is described
+only to its own client, and a personal access token never. Anything unknown,
+expired, revoked or not the caller's is `{ "active": false }`.
 
 **Revocation (RFC 7009).** A client posts one of its tokens. A refresh token
 ends its session and every access token of it; an access token stops working
@@ -173,9 +177,11 @@ and are left alone.
 `POST /oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:device_code`:
 `authorization_pending`, `slow_down` when polling faster than the interval,
 `access_denied`, `expired_token`, or tokens. The signed-in user previews the
-request (`GET /oauth/device/{user_code}`) and approves or denies it
-(`POST /oauth/device/verify`; approving a client other than the instance's own
-application needs `current_password` or a recent re-authentication, which
+request (`GET /oauth/device/{user_code}`: the client, where it asked from,
+the `scopes` it would get, `unavailable_scopes`, `unrestricted` when it would
+act as the account, and the session allowance) and approves or denies it
+(`POST /oauth/device/verify`; every approval, the instance's own application
+included, needs `current_password` or a recent re-authentication, which
 `reauthentication_required` in the preview announces). An approval is collected once, by the client that
 started the flow; account status and the client's session limit are checked
 when tokens are issued (`invalid_grant` otherwise).

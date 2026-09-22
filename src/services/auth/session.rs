@@ -223,6 +223,7 @@ pub async fn refresh_token(
         user.id,
         new_session.id,
         new_session.scopes.as_deref(),
+        new_session.client_id.as_deref(),
         state,
     )
     .await?;

@@ -16,6 +16,24 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- Device flow: every approval needs a recent re-authentication, the instance's
+  own application included, and `GET /oauth/device/{user_code}` adds `scopes`,
+  `unavailable_scopes`, `unrestricted` and the session allowance. Unknown user
+  codes are budgeted per signed-in user as well as per address.
+- A public client's request budget is split by client address (a confidential
+  client keeps one budget, spent once it has authenticated), and every client
+  authentication failure reads `client authentication failed`.
+- Codes and approvals follow the client as registered now: a redirect URI
+  removed since the request receives no code and its codes no longer redeem,
+  and access tokens are narrowed to the client's current scopes at every
+  refresh. Authorization responses carry `iss` (RFC 9207). Access tokens carry
+  the header `typ: at+jwt` and a `client_id` claim for client sessions.
+- Introspection describes a refresh token only to its own client and never a
+  personal access token. The metadata's `scopes_supported` lists only the
+  scopes some registered client may ask for. Outgoing calls (CAPTCHA, breached
+  passwords, identity providers) no longer follow redirects, and a provider's
+  key set is fetched again once when an ID token names an unknown key.
+
 - A rotated refresh token presented again within the 1-second grace window is
   forgiven only from the network and user agent that rotated it; from anywhere
   else the family is revoked as for any replay. Registrations are budgeted per

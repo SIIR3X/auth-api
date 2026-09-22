@@ -258,3 +258,55 @@ mod tests {
         assert_eq!(redirect_with("not a url", &[]), None);
     }
 }
+
+/// A session's consented scopes, narrowed to the scopes its client is
+/// registered with now. `None` consent (a client without scopes) stays
+/// unrestricted only while the client still has none; identity scopes are
+/// kept, as they grant no permission.
+pub fn within_client_scopes(
+    consented: Option<&[String]>,
+    client_scopes: Option<&[String]>,
+) -> Option<Vec<String>> {
+    let registered = match client_scopes {
+        Some(registered) if !registered.is_empty() => registered,
+        _ => return consented.map(<[String]>::to_vec),
+    };
+    Some(match consented {
+        Some(consented) => consented
+            .iter()
+            .filter(|scope| crate::domain::oidc::is_oidc_scope(scope) || registered.contains(scope))
+            .cloned()
+            .collect(),
+        None => registered.to_vec(),
+    })
+}
+
+#[cfg(test)]
+mod client_scope_tests {
+    use super::within_client_scopes;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_scope_taken_from_the_client_leaves_its_sessions() {
+        let registered = v(&["users:read"]);
+        assert_eq!(
+            within_client_scopes(
+                Some(&v(&["users:read", "users:manage", "openid"])),
+                Some(&registered)
+            ),
+            Some(v(&["users:read", "openid"]))
+        );
+        assert_eq!(
+            within_client_scopes(None, Some(&registered)),
+            Some(registered.clone())
+        );
+        assert_eq!(within_client_scopes(None, Some(&[])), None);
+        assert_eq!(
+            within_client_scopes(Some(&v(&["a:b"])), None),
+            Some(v(&["a:b"]))
+        );
+    }
+}

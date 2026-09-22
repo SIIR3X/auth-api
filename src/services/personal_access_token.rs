@@ -203,6 +203,7 @@ pub async fn exchange(state: &AppState, presented: &str) -> Result<ExchangedToke
         user.id,
         found.token.session_id,
         Some(&found.token.scopes),
+        None,
         state,
     )
     .await?;

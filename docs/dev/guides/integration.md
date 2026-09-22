@@ -42,8 +42,11 @@ secret once.
    ```
 
    auth-api's frontend signs the user in if needed, shows the consent screen,
-   and the browser comes back to the redirect URI with `code` and `state`, or
-   with `error`. Check that `state` is the one you sent.
+   and the browser comes back to the redirect URI with `code`, `state` and
+   `iss`, or with `error`. Check that `state` is the one you sent and that
+   `iss` is auth-api's issuer (RFC 9207): a client registered with several
+   servers then cannot be fed another server's code. Keep the code out of logs
+   and Referer headers: a code presented twice ends the session it produced.
 3. Exchange the code, from your server for a confidential client:
 
    ```bash
@@ -129,7 +132,8 @@ claims. Libraries configure themselves from
 
 Every resource server:
 
-1. Reads `Authorization: Bearer <token>`.
+1. Reads `Authorization: Bearer <token>`. Access tokens carry the JOSE header
+   `typ: at+jwt` (RFC 9068); an ID token (`typ: JWT`) is not an access token.
 2. Verifies the ES256 signature with the key of the token's `kid` from
    `https://auth.example.com/.well-known/jwks.json`. Cache the key set; fetch it
    again when a `kid` is unknown, at most once a minute. Accept `ES256` only.
@@ -161,7 +165,7 @@ A token's claims:
 | `iss`, `aud`, `iat`, `nbf`, `exp` | Standard |
 | `roles` | Role names; absent from scoped and client credentials tokens |
 | `permissions` | Permission names, intersected with the consented scopes |
-| `client_id` | For client credentials tokens |
+| `client_id` | The client the token was issued to: client credentials, and sessions of client applications |
 
 ## 4. Following account changes
 

@@ -345,16 +345,24 @@ async fn verify_id_token(
         return Err("unsupported id token algorithm");
     }
     let jwks_uri = metadata["jwks_uri"].as_str().ok_or("no jwks uri")?;
-    let jwks = fetch_json(state, &format!("jwks:{}", provider.name), jwks_uri, false).await?;
-    let set: jsonwebtoken::jwk::JwkSet =
-        serde_json::from_value(jwks).map_err(|_| "malformed jwks")?;
-    let jwk = match header.kid.as_deref() {
-        Some(kid) => set.find(kid),
-        None if set.keys.len() == 1 => set.keys.first(),
-        None => None,
+    let cache_key = format!("jwks:{}", provider.name);
+    let find = |jwks: Value| -> Result<Option<jsonwebtoken::jwk::Jwk>, &'static str> {
+        let set: jsonwebtoken::jwk::JwkSet =
+            serde_json::from_value(jwks).map_err(|_| "malformed jwks")?;
+        Ok(match header.kid.as_deref() {
+            Some(kid) => set.find(kid).cloned(),
+            None if set.keys.len() == 1 => set.keys.first().cloned(),
+            None => None,
+        })
+    };
+    let mut jwk = find(fetch_json(state, &cache_key, jwks_uri, false).await?)?;
+    // A key the cached set does not hold may be a rotation at the provider:
+    // fetch the set again, at most once per JWKS_REFRESH_MIN_AGE.
+    if jwk.is_none() && forget_if_older(&cache_key, JWKS_REFRESH_MIN_AGE).await {
+        jwk = find(fetch_json(state, &cache_key, jwks_uri, false).await?)?;
     }
-    .ok_or("unknown signing key")?;
-    let key = jsonwebtoken::DecodingKey::from_jwk(jwk).map_err(|_| "unusable signing key")?;
+    let jwk = jwk.ok_or("unknown signing key")?;
+    let key = jsonwebtoken::DecodingKey::from_jwk(&jwk).map_err(|_| "unusable signing key")?;
     let mut validation = jsonwebtoken::Validation::new(header.alg);
     // Claims are checked against the application clock in the domain.
     validation.validate_exp = false;
@@ -367,6 +375,23 @@ async fn verify_id_token(
 
 static DISCOVERED: LazyLock<RwLock<HashMap<String, (std::time::Instant, Value)>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// How old a cached key set must be before an unknown key triggers a refetch:
+/// a stream of tokens with made-up key ids cannot hammer the provider.
+const JWKS_REFRESH_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Drop the cached value at `cache_key` if it was fetched at least `min_age`
+/// ago. Returns whether it was dropped.
+async fn forget_if_older(cache_key: &str, min_age: std::time::Duration) -> bool {
+    let mut cache = DISCOVERED.write().await;
+    match cache.get(cache_key) {
+        Some((fetched, _)) if fetched.elapsed() >= min_age => {
+            cache.remove(cache_key);
+            true
+        }
+        _ => false,
+    }
+}
 
 async fn discovery(state: &AppState, provider: &IdentityProviderConfig) -> Result<Value, AppError> {
     fetch_json(

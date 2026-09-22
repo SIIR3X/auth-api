@@ -217,6 +217,10 @@ pub async fn redeem(
 
     let checks = async {
         let client = load_client(state, &entry.client_id).await?;
+        // A redirect URI removed from the client since the approval no longer
+        // redeems its code.
+        validate_redirect(&client, &entry.redirect_uri)
+            .map_err(|_| AppError::InvalidAuthorizationCode)?;
         ensure_account_usable(state, entry.user_id).await?;
         lock_client_sessions_in(&mut tx, entry.user_id, &entry.client_id).await?;
         let (used, allowed) = session_allowance(state, entry.user_id, &client).await?;

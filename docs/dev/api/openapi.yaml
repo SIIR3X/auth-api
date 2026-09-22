@@ -6642,6 +6642,10 @@ components:
       - user_code
       - created_at
       - reauthentication_required
+      - scopes
+      - unrestricted
+      - unavailable_scopes
+      - sessions_used
       properties:
         client_id:
           type:
@@ -6657,12 +6661,37 @@ components:
         reauthentication_required:
           type: boolean
           description: |-
-            Approving needs `current_password` (or a recent `POST /users/me/reauth`):
-            the client is not the instance's own application.
+            Approving needs `current_password` (or a recent `POST /users/me/reauth`).
+            Every device approval does: typing a code someone handed over is how a
+            device flow is phished.
         requested_from_ip:
           type:
           - string
           - 'null'
+        scopes:
+          type: array
+          items:
+            type: string
+          description: |-
+            Permissions the approval would grant: the scopes asked for, intersected
+            with the user's. Empty with `unrestricted` when none were asked of a
+            client without scopes, in which case the device acts as the account.
+        sessions_allowed:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: '`None`: no session limit applies to this user and client.'
+        sessions_used:
+          type: integer
+          format: int64
+        unavailable_scopes:
+          type: array
+          items:
+            type: string
+          description: Scopes asked for that this user does not hold.
+        unrestricted:
+          type: boolean
         user_agent:
           type:
           - string

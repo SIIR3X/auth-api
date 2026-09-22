@@ -644,6 +644,65 @@ async fn a_registered_redirect_keeps_its_query() {
     let (_, body) = approve_raw(&app, &user, &request_id, json!({})).await;
     let url = reqwest::Url::parse(body["redirect_to"].as_str().unwrap()).unwrap();
     let names: Vec<String> = url.query_pairs().map(|(k, _)| k.into_owned()).collect();
-    assert_eq!(names, ["tenant", "code", "state"]);
+    assert_eq!(names, ["tenant", "code", "state", "iss"]);
     assert_eq!(query_param(url.as_str(), "tenant").as_deref(), Some("acme"));
+    // RFC 9207: the client can check which server answered.
+    assert_eq!(
+        query_param(url.as_str(), "iss").as_deref(),
+        Some(app.state.config.server.public_url.trim_end_matches('/'))
+    );
+}
+
+/// A redirect URI removed from the client since the request was made receives
+/// no code, and a code already issued for it no longer redeems (SEC-62).
+#[tokio::test]
+async fn a_redirect_removed_from_the_client_receives_nothing() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 60).await;
+    let pkce = super::pkce();
+
+    let issued = code_for(&app, &user, PARTNER, CALLBACK, &pkce).await;
+    let request_id = request(&app, PARTNER, CALLBACK, &pkce, &[]).await;
+    sqlx::query("UPDATE registered_clients SET redirect_uris = ARRAY[$2] WHERE client_id = $1")
+        .bind(PARTNER)
+        .bind(LOOPBACK)
+        .execute(&app.db)
+        .await
+        .unwrap();
+
+    let (status, body) = approve_raw(
+        &app,
+        &user,
+        &request_id,
+        json!({ "current_password": user.password }),
+    )
+    .await;
+    assert_ne!(status, 200, "{body}");
+    let (status, body) = redeem(&app, &issued, &pkce.verifier, PARTNER, CALLBACK).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (400, Some("invalid_grant")),
+        "{body}"
+    );
+}
+
+/// Access tokens are typed `at+jwt` and name their client (RFC 9068).
+#[tokio::test]
+async fn a_client_access_token_is_typed_and_names_its_client() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 61).await;
+    let pkce = super::pkce();
+    let code = code_for(&app, &user, PARTNER, CALLBACK, &pkce).await;
+    let (status, tokens) = redeem(&app, &code, &pkce.verifier, PARTNER, CALLBACK).await;
+    assert_eq!(status, 200, "{tokens}");
+
+    let access = tokens["access_token"].as_str().unwrap();
+    let header = jsonwebtoken::decode_header(access).unwrap();
+    assert_eq!(header.typ.as_deref(), Some("at+jwt"));
+    assert_eq!(
+        app.decode_access_token(access).client_id.as_deref(),
+        Some(PARTNER)
+    );
 }

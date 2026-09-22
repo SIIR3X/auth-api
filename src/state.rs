@@ -285,8 +285,13 @@ async fn build_pg_pool(cfg: &DatabaseConfig) -> Result<PgPool, sqlx::Error> {
         .await
 }
 
+/// The client for outgoing calls: CAPTCHA verification, the breached-password
+/// range API and external identity providers. Redirects are not followed: a
+/// token endpoint answering with one would otherwise receive the client
+/// secret, code and verifier again at whatever host it names.
 fn build_http_client(cfg: &CaptchaConfig) -> Result<Client, reqwest::Error> {
     Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(cfg.request_timeout_secs))
         .timeout(Duration::from_secs(cfg.request_timeout_secs))
         .build()

@@ -164,5 +164,9 @@ async fn the_provider_publishes_its_configuration() {
     );
     assert_eq!(configuration["subject_types_supported"], json!(["public"]));
     let scopes = configuration["scopes_supported"].as_array().unwrap();
-    assert!(scopes.contains(&json!("openid")) && scopes.contains(&json!("users:read")));
+    assert!(scopes.contains(&json!("openid")));
+    assert!(
+        !scopes.contains(&json!("roles:manage")),
+        "no client may ask for it: unlisted"
+    );
 }

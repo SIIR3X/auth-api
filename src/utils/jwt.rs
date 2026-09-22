@@ -112,6 +112,9 @@ pub fn encode_token(
     // Optional key identifier. When present, JWKS-based verifiers can pin
     // verification to a specific key, allowing safe key rotation.
     header.kid = kid.map(str::to_owned);
+    // An access token says so (RFC 9068): a resource server can tell it from
+    // an ID token, which keeps the plain `JWT` type.
+    header.typ = Some("at+jwt".to_owned());
 
     jsonwebtoken::encode(&header, claims, key).map_err(|e| JwtError::Encode(e.to_string()))
 }
