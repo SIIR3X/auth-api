@@ -109,7 +109,6 @@ fn percent_encode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::crypto;
 
     fn keyring() -> Keyring {
         Keyring::new(*KEY, None)
@@ -157,7 +156,9 @@ mod tests {
     }
 
     fn encrypted_rfc_secret() -> String {
-        crypto::encrypt(RFC_SECRET, KEY).unwrap()
+        Keyring::new(*KEY, None)
+            .encrypt(RFC_SECRET, uuid::Uuid::nil().as_bytes())
+            .unwrap()
     }
 
     #[test]

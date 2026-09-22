@@ -147,6 +147,24 @@ impl Config {
                 });
             }
 
+            // The database and the cache sit behind the private network only;
+            // a role or a user without a password would leave them open to
+            // anything that reaches that network.
+            for (key, url) in [
+                ("DATABASE_URL", Some(self.database.url.as_str())),
+                ("DATABASE_READ_URL", self.database.read_url.as_deref()),
+                ("REDIS_URL", Some(self.redis.url.as_str())),
+            ] {
+                if let Some(url) = url
+                    && !url_has_password(url)
+                {
+                    return Err(ConfigError::Invalid {
+                        key: key.into(),
+                        reason: "must carry a password in production".into(),
+                    });
+                }
+            }
+
             // Hardened-default switches: in production these MUST be set to the
             // secure value, even if an env override re-enables the permissive
             // behaviour. Refuse to boot rather than start in a degraded state.
@@ -564,4 +582,12 @@ pub(super) fn validate_cors(cors: &CorsConfig, is_production: bool) -> Result<()
     }
 
     Ok(())
+}
+
+/// Whether a connection URL carries a password (`scheme://user:password@host`).
+pub(super) fn url_has_password(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.password().map(|p| !p.is_empty()))
+        .unwrap_or(false)
 }

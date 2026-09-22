@@ -216,17 +216,22 @@ async fn security_headers_enable_hsts_for_https_production() {
         config.crypto.argon2_iterations = 2;
         // The committed development AES key is refused in production.
         config.crypto.encryption_key = "6M+xtK7VzYMoz/3mc3vJf2e6h9b9yLyx3Eabo/236YE=".into();
+        // Production requires a password in REDIS_URL; the test Redis has
+        // none, so this app only answers what needs no Redis (the probes).
+        let mut redis = reqwest::Url::parse(&config.redis.url).unwrap();
+        redis.set_password(Some("unused")).unwrap();
+        config.redis.url = redis.to_string();
     })
     .await;
 
     let res = app
         .client
-        .get(format!("{}/users/me", app.base_url))
+        .get(format!("{}/live", app.base_url))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(res.status().as_u16(), 401);
+    assert_eq!(res.status().as_u16(), 200);
     assert_eq!(
         res.headers()
             .get("strict-transport-security")

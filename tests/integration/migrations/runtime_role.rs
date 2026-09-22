@@ -68,6 +68,7 @@ async fn the_runtime_role_cannot_erase_the_audit_trail_or_alter_the_schema() {
         "DELETE FROM permissions",
         "UPDATE permissions SET description = 'planted'",
         "DELETE FROM _sqlx_migrations",
+        "UPDATE maintenance_floors SET audit_retention_months = 1",
         "CREATE TABLE planted (id INT)",
         "ALTER TABLE users ADD COLUMN planted TEXT",
     ] {
@@ -133,4 +134,52 @@ async fn the_runtime_role_does_everything_the_service_needs() {
     .await
     .unwrap();
     assert_eq!(orphaned, 1);
+}
+
+/// The maintenance functions run with the owner's privileges but keep the
+/// owner's floors: the runtime role cannot use them to drop recent audit
+/// partitions, coarsen fresh addresses or purge new pending accounts (SEC-63).
+#[tokio::test]
+async fn the_maintenance_functions_keep_the_owners_floors() {
+    let db = TestDb::new().await;
+    let three_months_ago: String = sqlx::query_scalar(
+        "SELECT to_char(date_trunc('month', NOW()) - INTERVAL '3 months', 'YYYY_MM')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(&format!(
+        "CREATE TABLE IF NOT EXISTS audit_log_{three_months_ago} PARTITION OF audit_log
+         FOR VALUES FROM (date_trunc('month', NOW()) - INTERVAL '3 months')
+         TO (date_trunc('month', NOW()) - INTERVAL '2 months')"
+    ))
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO users (username, email, password_hash)
+         VALUES ('fresh_pending', 'fresh.pending@example.com', repeat('h', 60))",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut runtime = runtime_connection(&db).await;
+
+    sqlx::raw_sql("SELECT rotate_audit_log_partitions(1)")
+        .execute(&mut runtime)
+        .await
+        .unwrap();
+    let kept: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+        .bind(format!("audit_log_{three_months_ago}"))
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(kept, "a partition within the floor was dropped");
+
+    let purged: i32 =
+        sqlx::query_scalar("SELECT purge_unverified_accounts('0 seconds'::interval, 10)")
+            .fetch_one(&mut runtime)
+            .await
+            .unwrap();
+    assert_eq!(purged, 0, "an account pending for minutes was purged");
 }

@@ -119,9 +119,6 @@ pub fn decode_encryption_key(b64: &str) -> Result<[u8; 32], CryptoError> {
 
 // Keyring
 
-/// Prefix of versioned ciphertexts without associated data:
-/// `v1:{kid}:{base64(nonce || ciphertext)}`. Still read, never written.
-const V1_PREFIX: &str = "v1:";
 /// Prefix of ciphertexts bound to their row: `v2:{kid}:{base64(...)}`, sealed
 /// with `V2_AAD_LABEL || context` as associated data.
 const V2_PREFIX: &str = "v2:";
@@ -226,25 +223,16 @@ impl Keyring {
         ))
     }
 
-    /// Decrypt a value written by [`Keyring::encrypt`] for `context`, or an
-    /// older value (`v1`, or unversioned) that carries no context.
+    /// Decrypt a value written by [`Keyring::encrypt`] for `context`. Only the
+    /// `v2` format is read: a value without its row bound in could be moved to
+    /// another account's row, and no deployment holds one.
     pub fn decrypt(&self, stored: &str, context: &[u8]) -> Result<String, CryptoError> {
-        if let Some(rest) = stored.strip_prefix(V2_PREFIX) {
-            let (kid, body) = rest.split_once(':').ok_or(CryptoError::InvalidInput)?;
-            let key = self.key_for(kid).ok_or(CryptoError::UnknownKey)?;
-            return decrypt_with_aad(body, key, &v2_aad(context));
-        }
-        match stored.strip_prefix(V1_PREFIX) {
-            Some(rest) => {
-                let (kid, body) = rest.split_once(':').ok_or(CryptoError::InvalidInput)?;
-                decrypt(body, self.key_for(kid).ok_or(CryptoError::UnknownKey)?)
-            }
-            // Legacy value: no key name, so try the keys in order.
-            None => decrypt(stored, &self.current.key).or_else(|err| match &self.previous {
-                Some(previous) => decrypt(stored, &previous.key),
-                None => Err(err),
-            }),
-        }
+        let rest = stored
+            .strip_prefix(V2_PREFIX)
+            .ok_or(CryptoError::InvalidInput)?;
+        let (kid, body) = rest.split_once(':').ok_or(CryptoError::InvalidInput)?;
+        let key = self.key_for(kid).ok_or(CryptoError::UnknownKey)?;
+        decrypt_with_aad(body, key, &v2_aad(context))
     }
 
     /// Whether `stored` still has to be rewritten: under another key, or in a
@@ -256,15 +244,13 @@ impl Keyring {
             .is_none_or(|(kid, _)| kid != self.current.kid)
     }
 
-    /// Whether `stored` names a key this keyring holds. Unversioned values name
-    /// none and are not judged.
+    /// Whether `stored` is a `v2` value under a key this keyring holds: what
+    /// [`Keyring::decrypt`] can read. Anything else stops the start-up.
     pub fn knows_key_of(&self, stored: &str) -> bool {
-        let named = stored
+        stored
             .strip_prefix(V2_PREFIX)
-            .or_else(|| stored.strip_prefix(V1_PREFIX))
             .and_then(|rest| rest.split_once(':'))
-            .map(|(kid, _)| kid);
-        named.is_none_or(|kid| self.key_for(kid).is_some())
+            .is_some_and(|(kid, _)| self.key_for(kid).is_some())
     }
 
     /// Identifiers of the keys this keyring holds, current first.
@@ -502,23 +488,27 @@ mod tests {
     }
 
     #[test]
-    fn keyring_reads_the_previous_key_and_the_older_formats() {
+    fn keyring_reads_the_previous_key_and_refuses_unbound_formats() {
         let old = Keyring::new([1u8; 32], None);
         let v2_old = old.encrypt("secret", b"row").unwrap();
-        let v1_old = format!(
+        let rotating = Keyring::new([2u8; 32], Some([1u8; 32]));
+        assert_eq!(rotating.decrypt(&v2_old, b"row").unwrap(), "secret");
+        assert!(rotating.needs_rotation(&v2_old));
+
+        // Values without their row bound in are not read, and stop the start.
+        let v1 = format!(
             "v1:{}:{}",
             old.current_kid(),
             encrypt("secret", &[1u8; 32]).unwrap()
         );
-        let legacy_old = encrypt("secret", &[1u8; 32]).unwrap();
-
-        let rotating = Keyring::new([2u8; 32], Some([1u8; 32]));
-        for stored in [&v2_old, &v1_old, &legacy_old] {
-            assert_eq!(rotating.decrypt(stored, b"row").unwrap(), "secret");
-            assert!(rotating.needs_rotation(stored));
+        let unversioned = encrypt("secret", &[1u8; 32]).unwrap();
+        for stored in [&v1, &unversioned] {
+            assert!(matches!(
+                old.decrypt(stored, b"row"),
+                Err(CryptoError::InvalidInput)
+            ));
+            assert!(!old.knows_key_of(stored));
         }
-        // A v1 value under the current key is rewritten too, to gain its context.
-        assert!(old.needs_rotation(&v1_old));
     }
 
     #[test]
@@ -532,7 +522,6 @@ mod tests {
             Err(CryptoError::UnknownKey)
         ));
         assert!(!other.knows_key_of(&stored));
-        assert!(other.knows_key_of(&encrypt("legacy", &[1u8; 32]).unwrap()));
     }
 
     #[test]

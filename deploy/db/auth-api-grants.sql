@@ -44,3 +44,6 @@ $$;
 -- The permission catalog and the migration history change with migrations only.
 REVOKE INSERT, UPDATE, DELETE ON permissions FROM auth_api;
 REVOKE INSERT, UPDATE, DELETE ON _sqlx_migrations FROM auth_api;
+-- The minimums of the maintenance functions are the owner's to change: the
+-- runtime role calls the functions but cannot lower what they keep.
+REVOKE INSERT, UPDATE, DELETE ON maintenance_floors FROM auth_api;

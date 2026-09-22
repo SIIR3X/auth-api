@@ -148,8 +148,9 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
     })
 }
 
-/// Secrets (TOTP, webhook) whose ciphertext names a key the keyring does not
-/// hold: they can no longer be read. Only versioned ciphertexts are judged.
+/// Secrets (TOTP, webhook) that cannot be read: under a key the keyring does
+/// not hold, or in a format older than `v2`, which does not bind a secret to
+/// its row and is no longer read.
 pub async fn secrets_under_unknown_keys(state: &AppState) -> Result<usize, AppError> {
     let kids: Vec<String> = state
         .keyring
@@ -160,9 +161,10 @@ pub async fn secrets_under_unknown_keys(state: &AppState) -> Result<usize, AppEr
     let count: i64 = sqlx::query_scalar(
         "SELECT
              (SELECT count(*) FROM two_factor_methods
-               WHERE totp_secret ~ '^v[12]:' AND split_part(totp_secret, ':', 2) <> ALL($1))
+               WHERE totp_secret IS NOT NULL
+                 AND (totp_secret !~ '^v2:' OR split_part(totp_secret, ':', 2) <> ALL($1)))
            + (SELECT count(*) FROM webhook_endpoints
-               WHERE secret ~ '^v[12]:' AND split_part(secret, ':', 2) <> ALL($1))",
+               WHERE secret !~ '^v2:' OR split_part(secret, ':', 2) <> ALL($1))",
     )
     .bind(&kids)
     .fetch_one(&state.db)

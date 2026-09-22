@@ -47,7 +47,8 @@ BEGIN
     SELECT array_agg(id) INTO doomed
     FROM (
         SELECT id FROM users
-        WHERE status = 'pending_verification' AND created_at < NOW() - age
+        WHERE status = 'pending_verification'
+          AND created_at < NOW() - GREATEST(age, (SELECT unverified_account_min_age FROM maintenance_floors))
         ORDER BY created_at
         LIMIT batch_size
         FOR UPDATE SKIP LOCKED
@@ -114,7 +115,7 @@ BEGIN
         SELECT created_at, id FROM audit_log
         WHERE ip_address IS NOT NULL
           AND masklen(ip_address) = CASE WHEN family(ip_address) = 4 THEN 32 ELSE 128 END
-          AND created_at < NOW() - age
+          AND created_at < NOW() - GREATEST(age, (SELECT audit_address_min_age FROM maintenance_floors))
         LIMIT batch_size
     ) AS due
     WHERE entry.created_at = due.created_at AND entry.id = due.id;

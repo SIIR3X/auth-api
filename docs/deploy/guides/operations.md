@@ -63,9 +63,10 @@ Refresh tokens are opaque (not JWT) and are unaffected by this rotation.
 
 ## 2. TOTP Encryption Key Rotation (AES-256-GCM)
 
-TOTP secrets are encrypted at rest. Each ciphertext names its key
-(`v1:{key id}:...`) and the service reads with `ENCRYPTION_KEY` and, when set,
-`PREVIOUS_ENCRYPTION_KEY`. A rotation needs no downtime and can be interrupted
+TOTP secrets and webhook signing secrets are encrypted at rest. Each
+ciphertext names its key and is bound to its row (`v2:{key id}:...`); the
+service reads with `ENCRYPTION_KEY` and, when set, `PREVIOUS_ENCRYPTION_KEY`,
+and refuses to start while a secret is under neither. A rotation needs no downtime and can be interrupted
 and resumed.
 
 **On the API VPS:**
@@ -93,10 +94,6 @@ and resumed.
    Run it until it reports `rotated=0 failed=0`: secrets already under the new
    key are skipped, and a secret changed during the run is left as the service
    wrote it.
-
-   Without `PREVIOUS_ENCRYPTION_KEY`, the same command rewrites secrets written
-   before 2.1.0 in the current format, which binds each one to its account or
-   endpoint; run it once after upgrading.
 4. Remove the previous key and redeploy:
    `pass rm prod/auth-api/previous-encryption-key`, then the update guide's
    exports again (the previous key is now unset).

@@ -84,10 +84,30 @@ WITH (
     autovacuum_analyze_threshold = 1000
 );
 
+-- Minimums the maintenance functions apply whatever their caller asks: the
+-- runtime role calls them with the configured retention, but cannot lower
+-- these (deploy/db/auth-api-grants.sql leaves it read access only), so an SQL
+-- injection or a compromised service cannot use them to erase the audit trail
+-- or delete accounts. The owner changes them with an UPDATE.
+CREATE TABLE maintenance_floors (
+    id BOOLEAN PRIMARY KEY DEFAULT TRUE,
+    -- Audit partitions younger than this are never dropped.
+    audit_retention_months INTEGER NOT NULL DEFAULT 6,
+    -- Audit addresses younger than this are never coarsened.
+    audit_address_min_age INTERVAL NOT NULL DEFAULT '30 days',
+    -- Accounts pending verification for less than this are never purged.
+    unverified_account_min_age INTERVAL NOT NULL DEFAULT '1 day',
+
+    CONSTRAINT maintenance_floors_single_row CHECK (id),
+    CONSTRAINT maintenance_floors_audit_retention_positive CHECK (audit_retention_months >= 1)
+);
+
+INSERT INTO maintenance_floors DEFAULT VALUES;
+
 -- Creates the monthly partitions from last month to lookahead_months ahead (at
--- least one), and drops those older than retention_months; retention_months <= 0
--- keeps every partition. Concurrent callers (instances starting together) are
--- serialized.
+-- least one), and drops those older than retention_months, never fewer than the
+-- floor; retention_months <= 0 keeps every partition. Concurrent callers
+-- (instances starting together) are serialized.
 CREATE OR REPLACE FUNCTION rotate_audit_log_partitions(
     retention_months INTEGER DEFAULT 6,
     lookahead_months INTEGER DEFAULT 12
@@ -96,7 +116,9 @@ RETURNS VOID AS $$
 DECLARE
     create_start DATE := (date_trunc('month', NOW()) - INTERVAL '1 month')::DATE;
     create_end DATE := (date_trunc('month', NOW()) + make_interval(months => GREATEST(lookahead_months, 1)))::DATE;
-    keep_from DATE := (date_trunc('month', NOW()) - make_interval(months => GREATEST(retention_months, 0)))::DATE;
+    floor_months INTEGER := (SELECT audit_retention_months FROM maintenance_floors);
+    keep_from DATE := (date_trunc('month', NOW())
+        - make_interval(months => GREATEST(retention_months, floor_months, 0)))::DATE;
     month_start DATE;
     part_name TEXT;
     rel_name TEXT;

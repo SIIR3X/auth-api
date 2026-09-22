@@ -116,6 +116,15 @@ pub(super) fn values_from_files(
     Ok(values)
 }
 
+/// The value of a variable: set in the environment, or read from its
+/// `X_FILE`. A blank variable counts as unset and leaves the file its place,
+/// as `values_from_files` already judged it.
+pub(super) fn env_or_file(value: Option<String>, from_file: Option<&String>) -> Option<String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| from_file.cloned())
+}
+
 pub(super) fn default_argon2_max_concurrency() -> u32 {
     std::thread::available_parallelism()
         .map(|n| n.get() as u32)

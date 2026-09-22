@@ -1,0 +1,7 @@
+# Redis users of auth-api, installed as /etc/redis/users.acl (mode 0600, owner
+# redis) by docs/deploy/database/deployment.md, section 3.1, which replaces
+# REDIS_PASSWORD_SHA256 with the SHA-256 of the password kept in pass. The
+# default user is off: a connection without the password can do nothing. The
+# API's user runs every command but the administrative and dangerous ones.
+user default off
+user auth_api on #REDIS_PASSWORD_SHA256 ~* &* +@all -@dangerous -@admin

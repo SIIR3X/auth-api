@@ -440,7 +440,7 @@ impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
         let files = values_from_files(std::env::vars(), |path| std::fs::read_to_string(path))?;
-        Self::from_lookup(|key| std::env::var(key).ok().or_else(|| files.get(key).cloned()))
+        Self::from_lookup(|key| env_or_file(std::env::var(key).ok(), files.get(key)))
     }
 
     /// Load configuration from `lookup`, which returns the value of a variable:

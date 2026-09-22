@@ -16,6 +16,16 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- The maintenance functions keep minimums only the schema owner can lower
+  (`maintenance_floors`: six months of audit partitions, 30 days before an
+  audit address is coarsened, a day before a pending account is purged): the
+  runtime role can no longer use them to erase the audit trail. Only `v2`
+  ciphertexts (bound to their row) are read, and a secret in another format
+  stops the start. In production `DATABASE_URL`, `DATABASE_READ_URL` and
+  `REDIS_URL` must carry a password; `deploy/db/pg_hba.auth-api.conf` and
+  `deploy/db/users.acl.template` hold the rules to install. A blank variable
+  leaves its place to `X_FILE`.
+
 - Device flow: every approval needs a recent re-authentication, the instance's
   own application included, and `GET /oauth/device/{user_code}` adds `scopes`,
   `unavailable_scopes`, `unrestricted` and the session allowance. Unknown user
@@ -173,8 +183,6 @@ from scratch (read **Upgrading**).
   after `deploy/db/auth-api-grants.sql`.
 - Check the settings refused at start-up (listed under Security) against your
   environment before upgrading.
-- Run `auth-api --rotate-totp-keys` once, without `PREVIOUS_ENCRYPTION_KEY`, to
-  bind the secrets written before the upgrade to their rows.
 - Monitoring that reads the dependencies from the public `/ready` must query
   the internal listener instead (`http://10.0.0.1:9465/ready`).
 - Copy the new `log_parameter_max_length` lines of

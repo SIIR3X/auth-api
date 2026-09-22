@@ -140,8 +140,9 @@ the database together, is out of scope.
 - TOTP secrets are encrypted with AES-256-GCM. Ciphertexts name their key, so
   the key can be rotated without downtime and the rotation can be resumed, and
   each is bound to its account (webhook secrets to their endpoint) as
-  associated data: a ciphertext copied onto another row does not decrypt. The
-  service refuses to start while a secret names a key it no longer holds.
+  associated data: a ciphertext copied onto another row does not decrypt. Only
+  that format is read, and the service refuses to start while a secret names a
+  key it no longer holds or is in another format.
 - Email codes (sign-in and email change) are stored as HMAC-SHA256 digests
   under a key derived from `ENCRYPTION_KEY` (HKDF), bound to the flow and the
   account: a copy of the database or of Redis does not give live codes away,
@@ -299,8 +300,13 @@ the database together, is out of scope.
   append-only for it, the permission catalog and migration history read-only;
   creating and dropping audit partitions, coarsening addresses, erasing an
   account's traces and purging unverified accounts run in functions holding
-  the owner's privileges. PostgreSQL logs slow statements without their bound
-  values.
+  the owner's privileges, which keep minimums only the owner can lower
+  (`maintenance_floors`: six months of audit partitions, 30 days before an
+  address is coarsened, a day before a pending account is purged), so the
+  runtime role cannot use them to erase the audit trail. PostgreSQL logs slow
+  statements without their bound values. In production the database and Redis
+  URLs must carry a password; `deploy/db` holds the `pg_hba.conf` rules and the
+  Redis ACL they are installed from.
 
 ## Network edge
 
@@ -416,3 +422,4 @@ when a cited test no longer exists.
 | SEC-60 | The owner's view of their data is complete and names no administrator, the audit metadata holds no address, and every deletion reaches the webhooks | `the_history_names_no_administrator_nor_their_address`, `the_export_names_no_administrator_nor_their_address`, `a_replay_is_audited_without_addresses_in_its_metadata`, `addresses_compare_by_network`, `purging_a_never_verified_account_reaches_the_webhooks`, `the_export_holds_every_way_in_and_where_links_were_asked_from` |
 | SEC-61 | A rotated refresh token is forgiven only to the client that rotated it, and registrations are budgeted per address | `a_rotated_token_reused_from_another_client_revokes_the_family`, `concurrent_refreshes_keep_the_family_alive`, `registrations_from_one_address_are_budgeted` |
 | SEC-62 | Delegation stays visible and current: every device approval needs a re-authentication and shows its scope, codes and tokens follow the client as registered now, introspection reveals no refresh token of another client nor any personal token, and a public client's budget cannot be spent from a few addresses | `the_device_approval_screen_shows_what_it_grants`, `approving_another_client_needs_a_recent_reauthentication`, `a_redirect_removed_from_the_client_receives_nothing`, `a_scope_taken_from_the_client_leaves_its_sessions`, `a_client_access_token_is_typed_and_names_its_client`, `introspection_reveals_no_personal_or_foreign_refresh_token`, `a_public_clients_budget_is_split_by_address`, `a_registered_redirect_keeps_its_query` |
+| SEC-63 | The runtime role cannot turn the maintenance functions against the data, secrets are read only bound to their row, and production connections need a password | `the_maintenance_functions_keep_the_owners_floors`, `the_runtime_role_cannot_erase_the_audit_trail_or_alter_the_schema`, `keyring_reads_the_previous_key_and_refuses_unbound_formats`, `secrets_in_an_unbound_format_stop_the_start`, `a_blank_variable_defers_to_its_file`, `validate_rejects_production_connections_without_a_password` |

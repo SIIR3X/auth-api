@@ -160,7 +160,13 @@ profile M; the comments give the values of the other profiles (see
 sudo cp deploy/db/postgresql.auth-api.conf /etc/postgresql/17/main/conf.d/auth-api.conf
 ```
 
-Edit `/etc/postgresql/17/main/pg_hba.conf` - allow the API VPS via its VPN IP only:
+Append `deploy/db/pg_hba.auth-api.conf` to `/etc/postgresql/17/main/pg_hba.conf`
+and check nothing above it grants more (no `trust`, no wider network): the API
+VPS via its VPN IP only, with a password.
+
+```bash
+sudo tee -a /etc/postgresql/17/main/pg_hba.conf < deploy/db/pg_hba.auth-api.conf > /dev/null
+```
 
 ```conf
 host    auth_api    auth_api          10.0.0.1/32    scram-sha-256
@@ -307,7 +313,7 @@ every command but the administrative and dangerous ones (`FLUSHALL`, `CONFIG`,
 
 ```bash
 REDIS_PASSWORD_SHA=$(pass prod/auth-api/redis-password | tr -d '\n' | sha256sum | cut -d' ' -f1)
-printf 'user default off\nuser auth_api on #%s ~* &* +@all -@dangerous -@admin\n' "$REDIS_PASSWORD_SHA" \
+grep -v '^#' deploy/db/users.acl.template | sed "s/REDIS_PASSWORD_SHA256/$REDIS_PASSWORD_SHA/" \
   | sudo tee /etc/redis/users.acl > /dev/null
 sudo chown redis:redis /etc/redis/users.acl && sudo chmod 600 /etc/redis/users.acl
 sudo systemctl restart redis-server

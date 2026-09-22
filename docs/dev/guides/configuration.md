@@ -257,7 +257,8 @@ With `APP_ENV=production` the service refuses to start when:
 - `WEBHOOK_ALLOW_HTTP` or `WEBHOOK_ALLOW_PRIVATE_NETWORKS` is `true`;
 - `WEBAUTHN_ORIGINS` is empty, or lists an origin that is not HTTPS or not on
   `WEBAUTHN_RP_ID`;
-- `ARGON2_MEMORY_KIB` is under `19456` or `ARGON2_ITERATIONS` under `2`.
+- `ARGON2_MEMORY_KIB` is under `19456` or `ARGON2_ITERATIONS` under `2`;
+- `DATABASE_URL`, `DATABASE_READ_URL` or `REDIS_URL` carries no password.
 
 In every environment, the service also refuses to start when:
 

@@ -27,7 +27,7 @@ fn valid_config() -> Config {
             read_url: None,
         },
         redis: RedisConfig {
-            url: "redis://127.0.0.1:6379".into(),
+            url: "redis://auth_api:redis-pass@127.0.0.1:6379".into(),
             pool_size: 5,
             wait_timeout_ms: 2000,
         },
@@ -1215,4 +1215,33 @@ fn an_unreadable_secret_file_stops_the_start() {
     let error =
         values_from_files(file_vars(&[("CAPTCHA_SECRET_FILE", "/nope")]), read).unwrap_err();
     assert!(error.to_string().contains("CAPTCHA_SECRET_FILE"), "{error}");
+}
+
+#[test]
+fn a_blank_variable_defers_to_its_file() {
+    let file = "from-file".to_owned();
+    assert_eq!(
+        env_or_file(Some("  ".into()), Some(&file)),
+        Some(file.clone())
+    );
+    assert_eq!(
+        env_or_file(Some("set".into()), Some(&file)),
+        Some("set".into())
+    );
+    assert_eq!(env_or_file(None, None), None);
+}
+
+#[test]
+fn validate_rejects_production_connections_without_a_password() {
+    let mut config = valid_config();
+    config.database.url = "postgres://auth_api@10.0.0.2/auth_api".into();
+    assert!(
+        matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "DATABASE_URL")
+    );
+
+    let mut config = valid_config();
+    config.redis.url = "redis://10.0.0.2:6379".into();
+    assert!(
+        matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "REDIS_URL")
+    );
 }
