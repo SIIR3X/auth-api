@@ -54,6 +54,10 @@ impl Config {
             validate_https_url("APP_PUBLIC_URL", &self.server.public_url)?;
             validate_https_url("FRONTEND_URL", &self.server.frontend_url)?;
             validate_https_url("OAUTH_CONSENT_URI", &self.device_auth.consent_uri)?;
+            validate_https_url(
+                "DEVICE_AUTH_VERIFICATION_URI",
+                &self.device_auth.verification_uri,
+            )?;
 
             // TLS terminates at a reverse proxy in production. With no trusted
             // CIDR every request resolves to the proxy's address: one rate-limit
@@ -62,6 +66,21 @@ impl Config {
                 return Err(ConfigError::Invalid {
                     key: "TRUSTED_PROXY_CIDRS".into(),
                     reason: "must not be empty in production -- without it every client is rate-limited and audited as the reverse proxy".into(),
+                });
+            }
+            if let Some(wide) = self.server.trusted_proxy_cidrs.iter().find(|cidr| {
+                cidr.prefix()
+                    < if cidr.is_ipv4() {
+                        MIN_TRUSTED_PROXY_PREFIX_V4
+                    } else {
+                        MIN_TRUSTED_PROXY_PREFIX_V6
+                    }
+            }) {
+                return Err(ConfigError::Invalid {
+                    key: "TRUSTED_PROXY_CIDRS".into(),
+                    reason: format!(
+                        "{wide} is too wide -- name the reverse proxies, or any peer can forge X-Forwarded-For"
+                    ),
                 });
             }
 
@@ -116,6 +135,10 @@ impl Config {
                 });
             }
 
+            // PWNED_PASSWORDS_FAIL_OPEN stays allowed in production, unlike the
+            // other fail-open switches: failing closed would make registration,
+            // password changes and resets depend on a third-party service. An
+            // alert (AuthApiPwnedPasswordsUnavailable) shows the degraded mode.
             if self.pwned_passwords.enabled {
                 validate_https_url("PWNED_PASSWORDS_URL", &self.pwned_passwords.api_url)?;
             }
@@ -460,6 +483,13 @@ pub(super) fn validate_security(security: &SecurityConfig) -> Result<(), ConfigE
             reason: "must be at least 1".into(),
         });
     }
+    // A lock shorter than a minute is no lock: it ends before the next guess.
+    if security.lockout_duration_secs < MIN_LOCKOUT_DURATION_SECS {
+        return Err(ConfigError::Invalid {
+            key: "LOCKOUT_DURATION_SECS".into(),
+            reason: format!("must be at least {MIN_LOCKOUT_DURATION_SECS}"),
+        });
+    }
 
     if security.sensitive_action_reauth_secs == 0
         || security.sensitive_action_reauth_secs > MAX_REAUTH_WINDOW_SECS
@@ -475,10 +505,11 @@ pub(super) fn validate_security(security: &SecurityConfig) -> Result<(), ConfigE
 
 /// A device flow needs a code that lives long enough to be polled at least once.
 pub(super) fn validate_device_auth(device: &DeviceAuthConfig) -> Result<(), ConfigError> {
-    if device.ttl_secs == 0 {
+    // A device code is a bearer of the approval to come: it lives minutes.
+    if device.ttl_secs == 0 || device.ttl_secs > MAX_DEVICE_AUTH_TTL_SECS {
         return Err(ConfigError::Invalid {
             key: "DEVICE_AUTH_TTL_SECS".into(),
-            reason: "must be greater than 0".into(),
+            reason: format!("must be between 1 and {MAX_DEVICE_AUTH_TTL_SECS}"),
         });
     }
     // 0 was advertised to clients as is, while polling was paced at one second:
@@ -497,6 +528,17 @@ pub(super) fn validate_device_auth(device: &DeviceAuthConfig) -> Result<(), Conf
     }
     Ok(())
 }
+
+/// Shortest lockout that still holds a guesser back.
+const MIN_LOCKOUT_DURATION_SECS: u64 = 60;
+
+/// Longest life of a device code (RFC 8628 suggests minutes).
+const MAX_DEVICE_AUTH_TTL_SECS: u64 = 1800;
+
+/// Widest trusted proxy network: anything wider lets arbitrary peers forge
+/// `X-Forwarded-For` and pick their own address.
+const MIN_TRUSTED_PROXY_PREFIX_V4: u8 = 8;
+const MIN_TRUSTED_PROXY_PREFIX_V6: u8 = 32;
 
 /// Longest re-authentication window: a proof of the password stands for
 /// sensitive actions only for a few minutes.

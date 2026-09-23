@@ -19,8 +19,11 @@ impl<L: Fn(&str) -> Option<String>> Env<L> {
         Self { lookup }
     }
 
+    /// A required variable. Blank counts as missing, like everywhere else: a
+    /// required secret set to "" must stop the start, not pass as configured.
     pub(super) fn require(&self, key: &str) -> Result<String, ConfigError> {
-        (self.lookup)(key).ok_or_else(|| ConfigError::Missing(key.into()))
+        self.string(key)
+            .ok_or_else(|| ConfigError::Missing(key.into()))
     }
 
     /// Optional string variable. A blank value counts as unset: a secret that

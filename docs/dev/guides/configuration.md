@@ -244,8 +244,11 @@ session it produced) and TOTP replay records 90 seconds; neither is configurable
 
 With `APP_ENV=production` the service refuses to start when:
 
-- `APP_PUBLIC_URL`, `FRONTEND_URL`, `OAUTH_CONSENT_URI` or `CAPTCHA_VERIFY_URL` is not HTTPS;
-- `TRUSTED_PROXY_CIDRS` is empty (every client would share the proxy's address);
+- `APP_PUBLIC_URL`, `FRONTEND_URL`, `OAUTH_CONSENT_URI`,
+  `DEVICE_AUTH_VERIFICATION_URI` or `CAPTCHA_VERIFY_URL` is not HTTPS;
+- `TRUSTED_PROXY_CIDRS` is empty (every client would share the proxy's
+  address), or holds a network wider than `/8` (IPv4) or `/32` (IPv6), from
+  which any peer could forge `X-Forwarded-For`;
 - the JWT keys do not form a pair, or are the committed development pair;
 - `ENCRYPTION_KEY` is not 32 bytes, is a committed development key, or is an
   arithmetic sequence;
@@ -268,4 +271,12 @@ In every environment, the service also refuses to start when:
 - `JWT_ACCESS_EXPIRY_SECS` is outside `60`-`3600`,
   `JWT_SHORT_SESSION_EXPIRY_SECS` is `0`, or `JWT_REFRESH_EXPIRY_SECS` is below
   `JWT_SHORT_SESSION_EXPIRY_SECS`;
-- `RATE_LIMIT_RPM` or `RATE_LIMIT_AUTH_RPM` is `0`.
+- `RATE_LIMIT_RPM` or `RATE_LIMIT_AUTH_RPM` is `0`;
+- `LOCKOUT_DURATION_SECS` is under `60`, or `DEVICE_AUTH_TTL_SECS` is `0` or
+  above `1800`;
+- a required variable is blank (it counts as missing).
+
+`PWNED_PASSWORDS_FAIL_OPEN=true` stays allowed in production, unlike the other
+fail-open switches: failing closed would make registration, password changes
+and resets depend on the breached-password service. The
+`AuthApiPwnedPasswordsUnavailable` alert shows when checks are skipped.

@@ -16,6 +16,13 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- Refused at start-up: `LOCKOUT_DURATION_SECS` under 60, `DEVICE_AUTH_TTL_SECS`
+  above 1800, a blank required variable (it counted as set), and in
+  production `DEVICE_AUTH_VERIFICATION_URI` without HTTPS and a
+  `TRUSTED_PROXY_CIDRS` network wider than `/8` (IPv4) or `/32` (IPv6).
+  `PWNED_PASSWORDS_FAIL_OPEN` stays allowed in production, documented as the
+  one fail-open switch kept, with its alert.
+
 - The maintenance functions keep minimums only the schema owner can lower
   (`maintenance_floors`: six months of audit partitions, 30 days before an
   audit address is coarsened, a day before a pending account is purged): the

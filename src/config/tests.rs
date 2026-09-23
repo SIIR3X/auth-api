@@ -1245,3 +1245,38 @@ fn validate_rejects_production_connections_without_a_password() {
         matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "REDIS_URL")
     );
 }
+
+#[test]
+fn validate_rejects_settings_that_undo_their_control() {
+    let invalid_key = |config: Config| match config.validate() {
+        Err(ConfigError::Invalid { key, .. }) => key,
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+
+    let mut config = valid_config();
+    config.security.lockout_duration_secs = 0;
+    assert_eq!(invalid_key(config), "LOCKOUT_DURATION_SECS");
+
+    let mut config = valid_config();
+    config.device_auth.ttl_secs = 86_400;
+    assert_eq!(invalid_key(config), "DEVICE_AUTH_TTL_SECS");
+
+    let mut config = valid_config();
+    config.device_auth.verification_uri = "http://auth.example.com/device".into();
+    assert_eq!(invalid_key(config), "DEVICE_AUTH_VERIFICATION_URI");
+
+    for wide in ["0.0.0.0/0", "::/0", "10.0.0.0/7"] {
+        let mut config = valid_config();
+        config.server.trusted_proxy_cidrs = vec![wide.parse().unwrap()];
+        assert_eq!(invalid_key(config), "TRUSTED_PROXY_CIDRS", "{wide}");
+    }
+}
+
+#[test]
+fn a_blank_required_variable_is_missing() {
+    let result = load(&[("SMTP_PASSWORD", "")], &[]);
+    assert!(
+        matches!(&result, Err(ConfigError::Missing(key)) if key == "SMTP_PASSWORD"),
+        "{result:?}"
+    );
+}
