@@ -20,6 +20,8 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./rules:/etc/prometheus/rules:ro
+      # The API's METRICS_TOKEN, one line, mode 0400 (monitoring guide).
+      - ./secrets:/etc/prometheus/secrets:ro
       - prometheus_data:/prometheus
     read_only: true
     cap_drop: [ALL]

@@ -287,6 +287,14 @@ mod tests {
 
     /// Every `.route(...)` of the router, with its nesting prefix.
     fn routed_endpoints() -> BTreeSet<(String, String)> {
+        routes()
+            .into_iter()
+            .map(|(method, full, _)| (method, full))
+            .collect()
+    }
+
+    /// Every `.route(...)` of the router: `(method, full path, router function)`.
+    fn routes() -> Vec<(String, String, String)> {
         let source = include_str!("handlers/mod.rs");
         // The unit tests at the end build routers of their own.
         let source = source.split("#[cfg(test)]").next().expect("source");
@@ -301,7 +309,7 @@ mod tests {
             })
             .collect();
 
-        let mut routes = BTreeSet::new();
+        let mut routes = Vec::new();
         for (at, _) in source.match_indices(".route(") {
             let call = &source[at..];
             let open = call.find('"').expect("route path") + 1;
@@ -331,10 +339,79 @@ mod tests {
                 _ => format!("{prefix}{route}"),
             };
             if full != "/metrics" {
-                routes.insert((method, full));
+                routes.push((method, full, enclosing.to_owned()));
             }
         }
         routes
+    }
+
+    /// nginx limits strictly exactly the requests the API does: the patterns of
+    /// `$auth_limit_key` in `nginx/nginx.conf` against the routers holding the
+    /// strict bucket, method by method.
+    #[test]
+    fn nginx_limits_strictly_what_the_api_does() {
+        let conf = include_str!("../nginx/nginx.conf");
+        let map = conf
+            .split("map \"$request_method $uri\" $auth_limit_key {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("the $auth_limit_key map");
+        let patterns: Vec<(regex::Regex, bool)> = map
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("\"~"))
+            .map(|line| {
+                let end = line[1..].find('"').expect("closing quote") + 1;
+                let pattern = regex::Regex::new(&line[2..end]).expect("a valid pattern");
+                (
+                    pattern,
+                    line[end + 1..].trim().trim_end_matches(';') != "\"\"",
+                )
+            })
+            .collect();
+        assert!(patterns.len() >= 5, "found {} patterns", patterns.len());
+
+        let mut mismatches = Vec::new();
+        for (method, path, router) in routes() {
+            let method = method
+                .rsplit("::")
+                .next()
+                .unwrap_or(&method)
+                .to_ascii_uppercase();
+            let concrete: String = path
+                .split('/')
+                .map(|segment| {
+                    if segment.starts_with('{') {
+                        "x1"
+                    } else {
+                        segment
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            let key = format!("{method} {concrete}");
+            let nginx_strict = patterns
+                .iter()
+                .find(|(pattern, _)| pattern.is_match(&key))
+                .is_some_and(|(_, strict)| *strict);
+            let api_strict = matches!(
+                router.as_str(),
+                "auth_router" | "oauth_router" | "me_strict_router"
+            );
+            if nginx_strict != api_strict {
+                mismatches.push(format!("{key}: nginx {nginx_strict}, API {api_strict}"));
+            }
+        }
+        assert_eq!(mismatches, Vec::<String>::new());
+
+        // Every proxied location but the probes and the discovery documents
+        // applies the strict zone too.
+        let catch_all = conf
+            .split("location / {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("the catch-all location");
+        assert!(catch_all.contains("zone=api_auth"), "{catch_all}");
     }
 
     fn documented_endpoints() -> BTreeSet<(String, String)> {

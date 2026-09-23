@@ -117,9 +117,8 @@ on the DB VPS die with it - configure this for production.
 **Restore** (DB VPS, or any machine with `psql` access):
 
 ```bash
-scripts/restore-db.sh -i /path/to/backup.key \
-  -f auth_api_YYYYMMDD_HHMMSS.sql.gz.age \
-  -d postgres://auth_api:...@10.0.0.2:5432/auth_api
+RESTORE_DATABASE_URL="$(pass prod/auth-api/database-owner-url)" \
+  scripts/restore-db.sh -i /path/to/backup.key -f auth_api_YYYYMMDD_HHMMSS.sql.gz.age
 ```
 
 The script refuses to restore into a non-empty database unless `--force` is
@@ -154,8 +153,9 @@ deliberate.
 | Pre-auth (2FA challenge) tokens | Stored in Redis: in-flight 2FA logins fail; users retry after recovery |
 | CAPTCHA / lockout counters | Various counters degrade fail-open; account lockout (DB-based) still works |
 
-**Response:** restart/restore Redis, then verify `curl -f 10.0.0.1:9465/ready`
-and `curl -f 10.0.0.1:9466/ready` on the API VPS (each dependency listed) and watch `auth_logins_total` on the metrics endpoint resume. No application
+**Response:** restart/restore Redis, then verify
+`curl -f -H "Authorization: Bearer $(pass prod/auth-api/metrics-token)" 10.0.0.1:9465/ready`
+(and `9466`) on the API VPS (each dependency listed) and watch `auth_logins_total` on the metrics endpoint resume. No application
 restart is needed - pools reconnect automatically.
 
 **Redis full.** Redis runs with `maxmemory-policy noeviction`: evicting a
@@ -206,7 +206,7 @@ UPDATE users SET status = 'suspended' WHERE email = 'user@example.com';
 
 Prometheus metrics are exposed on an internal listener
 (`10.0.0.1:9465/metrics` and `10.0.0.1:9466/metrics` on the API VPS - WireGuard
-only, never behind nginx). Key series:
+only, never behind nginx), with `Authorization: Bearer <METRICS_TOKEN>`. Key series:
 
 - `auth_logins_total{outcome=...}` - success / invalid_credentials / locked / two_factor_required
 - `auth_lockouts_total`, `auth_session_replays_total`, `auth_2fa_failures_total{method=...}`

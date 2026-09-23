@@ -170,6 +170,22 @@ impl Config {
                 });
             }
 
+            // The internal listener answers only to the monitoring's token.
+            if self.metrics.enabled
+                && self
+                    .metrics
+                    .token
+                    .as_deref()
+                    .is_none_or(|token| token.len() < MIN_METRICS_TOKEN_LEN)
+            {
+                return Err(ConfigError::Invalid {
+                    key: "METRICS_TOKEN".into(),
+                    reason: format!(
+                        "must be set in production, at least {MIN_METRICS_TOKEN_LEN} characters (openssl rand -hex 32)"
+                    ),
+                });
+            }
+
             // The database and the cache sit behind the private network only;
             // a role or a user without a password would leave them open to
             // anything that reaches that network.
@@ -528,6 +544,9 @@ pub(super) fn validate_device_auth(device: &DeviceAuthConfig) -> Result<(), Conf
     }
     Ok(())
 }
+
+/// Shortest bearer token of the internal listener.
+const MIN_METRICS_TOKEN_LEN: usize = 32;
 
 /// Shortest lockout that still holds a guesser back.
 const MIN_LOCKOUT_DURATION_SECS: u64 = 60;

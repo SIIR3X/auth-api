@@ -146,6 +146,7 @@ fn valid_config() -> Config {
         metrics: MetricsConfig {
             enabled: true,
             port: 9464,
+            token: Some("metrics-token-0123456789abcdef0123456789".into()),
         },
     }
 }

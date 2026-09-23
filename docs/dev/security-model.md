@@ -318,8 +318,13 @@ the database together, is out of scope.
   HSTS, CSP `default-src 'none'`, `nosniff`, `DENY` framing and `no-store`.
 - Logs record route templates, never raw paths carrying codes; metrics label
   unmatched paths `<unmatched>`. Metrics and the readiness of each dependency
-  are served on an internal listener; the public `/ready` says only whether
-  the instance is ready.
+  are served on an internal listener that requires `METRICS_TOKEN`; the public
+  `/ready` says only whether the instance is ready, and reuses its answer for
+  a second. nginx limits strictly the same requests as the API, by method and
+  path, which a test checks against the routers, and serves the discovery
+  documents and the administration's `PUT` routes. The production compose
+  file hands the secrets to the instances as files, out of `docker inspect`
+  and the process environment.
 
 ## Configuration
 
@@ -424,3 +429,4 @@ when a cited test no longer exists.
 | SEC-62 | Delegation stays visible and current: every device approval needs a re-authentication and shows its scope, codes and tokens follow the client as registered now, introspection reveals no refresh token of another client nor any personal token, and a public client's budget cannot be spent from a few addresses | `the_device_approval_screen_shows_what_it_grants`, `approving_another_client_needs_a_recent_reauthentication`, `a_redirect_removed_from_the_client_receives_nothing`, `a_scope_taken_from_the_client_leaves_its_sessions`, `a_client_access_token_is_typed_and_names_its_client`, `introspection_reveals_no_personal_or_foreign_refresh_token`, `a_public_clients_budget_is_split_by_address`, `a_registered_redirect_keeps_its_query` |
 | SEC-63 | The runtime role cannot turn the maintenance functions against the data, secrets are read only bound to their row, and production connections need a password | `the_maintenance_functions_keep_the_owners_floors`, `the_runtime_role_cannot_erase_the_audit_trail_or_alter_the_schema`, `keyring_reads_the_previous_key_and_refuses_unbound_formats`, `secrets_in_an_unbound_format_stop_the_start`, `a_blank_variable_defers_to_its_file`, `validate_rejects_production_connections_without_a_password` |
 | SEC-64 | Settings that would undo a control stop the start: a lock under a minute, a device code living hours, a trusted proxy network any peer belongs to, an HTTP verification page, a blank required secret | `validate_rejects_settings_that_undo_their_control`, `a_blank_required_variable_is_missing` |
+| SEC-65 | The edge matches the API: nginx limits strictly what the API does, the internal listener needs its token, and the public readiness probe costs the dependencies at most one check per second | `nginx_limits_strictly_what_the_api_does`, `the_internal_listener_needs_its_token`, `public_readiness_says_ready_without_naming_dependencies` |

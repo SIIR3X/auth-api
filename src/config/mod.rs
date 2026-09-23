@@ -376,7 +376,7 @@ pub struct CorsConfig {
     pub allow_credentials: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MetricsConfig {
     /// When true, Prometheus metrics are collected and served on `port`.
     pub enabled: bool,
@@ -384,6 +384,20 @@ pub struct MetricsConfig {
     /// (Prometheus exporter range). Must never be exposed publicly: publish it
     /// on loopback only in docker-compose, never through the reverse proxy.
     pub port: u16,
+    /// Bearer token the internal listener requires (`METRICS_TOKEN`): the
+    /// traffic per route and the state of each dependency are not for every
+    /// host of the private network. Required in production.
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for MetricsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MetricsConfig")
+            .field("enabled", &self.enabled)
+            .field("port", &self.port)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -706,6 +720,7 @@ impl Config {
             metrics: MetricsConfig {
                 enabled: vars.parse("METRICS_ENABLED")?.unwrap_or(true),
                 port: vars.parse("METRICS_PORT")?.unwrap_or(9464),
+                token: vars.string("METRICS_TOKEN"),
             },
         };
 

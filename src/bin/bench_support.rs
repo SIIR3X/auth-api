@@ -458,6 +458,7 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
         metrics: MetricsConfig {
             enabled: false,
             port: 9464,
+            token: None,
         },
     }
 }

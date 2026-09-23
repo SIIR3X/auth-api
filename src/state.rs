@@ -77,6 +77,9 @@ pub struct AppState {
     /// JWKS document served at /.well-known/jwks.json, precomputed at startup
     /// (current key first, previous key appended during rotation windows).
     pub jwt_jwks: Arc<serde_json::Value>,
+    /// The last public readiness answer and when it was taken: a flood of
+    /// `GET /ready` costs one database query and one Redis ping per second.
+    pub readiness_cache: Arc<tokio::sync::Mutex<Option<(std::time::Instant, bool)>>>,
 }
 
 /// JWT key material parsed once at startup.
@@ -166,6 +169,7 @@ impl AppState {
             jwt_verifying_keys: Arc::new(jwt_keys.verifying_keys),
             jwt_kid: jwt_keys.kid,
             jwt_jwks: jwt_keys.jwks,
+            readiness_cache: Arc::default(),
             config: Arc::new(config),
         })
     }

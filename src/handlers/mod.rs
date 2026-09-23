@@ -155,14 +155,29 @@ fn ready_status(readiness: &Readiness) -> axum::http::StatusCode {
 pub async fn ready(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> (axum::http::StatusCode, axum::Json<ReadyResponse>) {
-    let readiness = readiness(&state).await;
-    (
-        ready_status(&readiness),
-        axum::Json(ReadyResponse {
-            status: readiness.status,
-        }),
-    )
+    // Anyone may poll it: the answer is reused for a second, so a flood costs
+    // the dependencies one check per second and no pool connections.
+    let ready = {
+        let mut cached = state.readiness_cache.lock().await;
+        match *cached {
+            Some((taken, ready)) if taken.elapsed() < READY_CACHE_TTL => ready,
+            _ => {
+                let ready = readiness(&state).await.is_ready();
+                *cached = Some((std::time::Instant::now(), ready));
+                ready
+            }
+        }
+    };
+    let (status, word) = if ready {
+        (axum::http::StatusCode::OK, "ready")
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+    };
+    (status, axum::Json(ReadyResponse { status: word }))
 }
+
+/// How long the public readiness answer is reused.
+const READY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The readiness of each dependency, on the internal listener.
 async fn ready_detail(
@@ -170,6 +185,29 @@ async fn ready_detail(
 ) -> (axum::http::StatusCode, axum::Json<Readiness>) {
     let readiness = readiness(&state).await;
     (ready_status(&readiness), axum::Json(readiness))
+}
+
+/// The internal listener answers only with `Authorization: Bearer
+/// <METRICS_TOKEN>` when a token is configured (always, in production).
+async fn internal_bearer(
+    axum::extract::State(token): axum::extract::State<Option<String>>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    if let Some(token) = token.as_deref() {
+        let presented = request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .unwrap_or_default();
+        if !crate::utils::crypto::constant_time_eq(presented.as_bytes(), token.as_bytes()) {
+            return axum::response::IntoResponse::into_response(
+                axum::http::StatusCode::UNAUTHORIZED,
+            );
+        }
+    }
+    next.run(request).await
 }
 
 /// The endpoint label of requests no route matched: the raw path would give
@@ -235,6 +273,10 @@ pub fn router_with_metrics(state: AppState) -> (Router, Router) {
             }),
         )
         .route("/ready", get(ready_detail))
+        .layer(middleware::from_fn_with_state(
+            state.config.metrics.token.clone(),
+            internal_bearer,
+        ))
         .with_state(state);
 
     (app, internal)
@@ -654,6 +696,34 @@ fn me_router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use tower::ServiceExt;
+
+    /// The internal listener answers only with its bearer token (SEC-65).
+    #[tokio::test]
+    async fn the_internal_listener_needs_its_token() {
+        let app = axum::Router::new()
+            .route("/ready", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                Some("metrics-token".to_owned()),
+                super::internal_bearer,
+            ));
+        let status = |authorization: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let mut request = axum::http::Request::get("/ready");
+                if let Some(value) = authorization {
+                    request = request.header("authorization", value);
+                }
+                app.oneshot(request.body(axum::body::Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+                    .as_u16()
+            }
+        };
+        assert_eq!(status(None).await, 401);
+        assert_eq!(status(Some("Bearer wrong")).await, 401);
+        assert_eq!(status(Some("Bearer metrics-token")).await, 200);
+    }
 
     #[tokio::test]
     async fn metrics_recorder_renders_business_counters_and_folds_unmatched_paths() {

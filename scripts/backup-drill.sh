@@ -153,11 +153,11 @@ create_app_database "$DST"
 DST_URL=$(pg_url "$DST" auth_api "$APP_PASS" auth_api)
 
 log "restoring with scripts/restore-db.sh as auth_api"
-"$ROOT_DIR/scripts/restore-db.sh" -i "$WORK_DIR/backup.key" -f "$BACKUP_FILE" -d "$DST_URL"
+RESTORE_DATABASE_URL="$DST_URL" "$ROOT_DIR/scripts/restore-db.sh" -i "$WORK_DIR/backup.key" -f "$BACKUP_FILE"
 verify_counts "restore" "$DST_URL"
 
 log "a second restore without --force must be refused"
-if "$ROOT_DIR/scripts/restore-db.sh" -i "$WORK_DIR/backup.key" -f "$BACKUP_FILE" -d "$DST_URL" >/dev/null 2>&1; then
+if RESTORE_DATABASE_URL="$DST_URL" "$ROOT_DIR/scripts/restore-db.sh" -i "$WORK_DIR/backup.key" -f "$BACKUP_FILE" >/dev/null 2>&1; then
     verify "restore over a database without --force" "refused" "accepted"
 fi
 

@@ -16,6 +16,24 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- nginx: `PUT` is allowed (the administration's role, client and webhook
+  updates answered `405`), `/.well-known/` serves the OAuth and OpenID Connect
+  metadata (they answered `403`), and the strict zone follows the API's strict
+  bucket by method and path through a map that a test checks against the
+  routers (it named routes that do not exist and missed most credential
+  routes).
+- The internal listener (`/metrics`, detailed `/ready`) requires
+  `Authorization: Bearer <METRICS_TOKEN>`, required in production; Prometheus
+  reads it from a file. The public `/ready` reuses its answer for a second.
+- `docker-compose.api.yml` mounts the secrets as files written by
+  `scripts/write-secrets.sh` to `/etc/auth-api/secrets` (root-only directory,
+  files readable by the image's user only): they no longer appear in `docker
+  inspect` or the process environment.
+- `restore-db.sh` takes the database URL from `RESTORE_DATABASE_URL` or a file
+  (`-D`) instead of `-d <url>`, out of `ps` and the shell history.
+  `pgbackrest.conf` is installed mode 600 and carries a commented offsite
+  repository.
+
 - Refused at start-up: `LOCKOUT_DURATION_SECS` under 60, `DEVICE_AUTH_TTL_SECS`
   above 1800, a blank required variable (it counted as set), and in
   production `DEVICE_AUTH_VERIFICATION_URI` without HTTPS and a
@@ -191,7 +209,11 @@ from scratch (read **Upgrading**).
 - Check the settings refused at start-up (listed under Security) against your
   environment before upgrading.
 - Monitoring that reads the dependencies from the public `/ready` must query
-  the internal listener instead (`http://10.0.0.1:9465/ready`).
+  the internal listener instead (`http://10.0.0.1:9465/ready`), with the new
+  `METRICS_TOKEN` (`pass insert prod/auth-api/metrics-token`, `openssl rand -hex
+  32`); install it for Prometheus as the monitoring guide shows.
+- Deployments export the secrets as before, then run `./write-secrets.sh`
+  before `./rolling-update.sh` (update guide, section 4).
 - Copy the new `log_parameter_max_length` lines of
   `deploy/db/postgresql.auth-api.conf` and reload PostgreSQL.
 

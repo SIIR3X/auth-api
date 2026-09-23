@@ -40,7 +40,7 @@ R=releases/auth-api-X.Y.Z
 diff config.prod.env $R/config.prod.env
 diff profile.env $R/deploy/profiles/m.env           # the profile this server uses
 for f in docker-compose.api.yml nats.conf; do diff "$f" "$R/$f"; done
-cp $R/docker-compose.api.yml $R/nats.conf $R/scripts/rolling-update.sh .
+cp $R/docker-compose.api.yml $R/nats.conf $R/scripts/rolling-update.sh $R/scripts/write-secrets.sh .
 # Profile L only:
 cp $R/docker-compose.api.l.yml .
 ```
@@ -75,9 +75,18 @@ export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
 export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
 export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
 export NATS_URL=$(pass prod/auth-api/nats-url)
+export METRICS_TOKEN=$(pass prod/auth-api/metrics-token)
 
+./write-secrets.sh
 ./rolling-update.sh
 ```
+
+`write-secrets.sh` writes the values to `/etc/auth-api/secrets` (a directory
+only root enters, files only the container's user reads), which compose mounts
+as secrets: the instances read each variable `X` from the file named by
+`X_FILE`, so the values appear neither in `docker inspect` nor in the process
+environment. The files survive a reboot, so Docker restarts the instances; run
+the script again whenever a secret changes.
 
 `rolling-update.sh` recreates the instances one at a time and moves on only
 once the new one is healthy and answers `/ready`. The instance being replaced

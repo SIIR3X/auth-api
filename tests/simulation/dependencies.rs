@@ -236,7 +236,9 @@ async fn readiness_follows_each_dependency() {
             _ => &dependencies(&app).nats,
         };
         proxy.set(Fault::Refuse);
-        let (status, body) = ready_until(&app, |_, body| body[name] == "down").await;
+        // The public answer is reused for a second: wait for both to agree.
+        let (status, body) =
+            ready_until(&app, |status, body| status == 503 && body[name] == "down").await;
         assert_eq!(
             (status, body[name].as_str()),
             (503, Some("down")),

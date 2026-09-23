@@ -86,11 +86,12 @@ Two zones mirror the API's own rate limiting as a first line of defense:
 
 | Zone | Limit | Applied to |
 |------|-------|------------|
-| `api_auth` | 40 req/min | Credential-bearing routes: register, login, refresh, email verification, password reset, 2FA completion, device and authorization code token routes, re-authentication and email change |
-| `api_general` | 600 req/min | Every other route, logout, probes and the JWKS included |
+| `api_auth` | 40 req/min | The requests the API holds to its strict bucket, by method and path (the `$auth_limit_key` map): every `/auth/*` route but logout, every `/oauth/*` route but token, introspection and revocation, and every `/users/me` route taking a password or a one-time code. A test checks the map against the API's routers |
+| `api_general` | 600 req/min | Every request, the strict ones included, probes and discovery documents |
 
-The route patterns are anchored on both ends, so `/auth/login-anything` is not
-a login route.
+Methods other than `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` and
+`OPTIONS` answer `405`. Hidden files (`/.env`, `/.git`...) are denied, except
+the discovery documents under `/.well-known/`.
 
 The zones allow twice `RATE_LIMIT_RPM` and `RATE_LIMIT_AUTH_RPM` of
 `config.prod.env`: they only absorb floods, and a client over its limit gets the
@@ -113,7 +114,7 @@ to the upstream.
 |----------|--------------:|-----|
 | Credential routes and everything else | 35 s | Above the API's 30-second request timeout: a sign-in queued behind Argon2 during a storm completes instead of ending in a 504 the client retries |
 | `/live`, `/ready`, `/health` | 5 s | Probes; not logged |
-| `/.well-known/jwks.json` | 10 s | |
+| `/.well-known/*` (JWKS, OAuth and OpenID Connect metadata) | 10 s | Discovery documents, `GET` only |
 
 ### Logs
 

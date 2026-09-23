@@ -72,10 +72,10 @@ fi
 # --- static -----------------------------------------------------------------
 
 if selected static; then
-  # Placeholders for the variables the compose files require.
+  # Placeholders for the variables the compose files require; the secrets are
+  # files (scripts/write-secrets.sh), not variables.
   compose_env() {
-    env AUTH_API_VERSION=check DATABASE_URL=x REDIS_URL=x JWT_PRIVATE_KEY=x JWT_PUBLIC_KEY=x \
-      ENCRYPTION_KEY=x SMTP_USERNAME=x SMTP_PASSWORD=x CAPTCHA_SECRET=x NATS_URL=x "$@"
+    env AUTH_API_VERSION=check "$@"
   }
 
   for profile in s m l xl; do

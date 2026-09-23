@@ -485,11 +485,13 @@ privileges of the API role: nothing is left to grant after a restore.
 
 ```bash
 sudo -u postgres psql -c "CREATE DATABASE auth_api_restore OWNER auth_api_owner"
-scripts/restore-db.sh -i backup.key -f auth_api_YYYYMMDD_HHMMSS.sql.gz.age \
-  -d "postgres://auth_api_owner:<password>@10.0.0.2/auth_api_restore"
+RESTORE_DATABASE_URL="$(pass prod/auth-api/database-owner-url | sed 's|/auth_api$|/auth_api_restore|')" \
+  scripts/restore-db.sh -i backup.key -f auth_api_YYYYMMDD_HHMMSS.sql.gz.age
 ```
 
-Check the restored data, then point `DATABASE_URL` at it (or rename the
+The URL never appears on a command line (`ps`, shell history): the script
+reads it from `RESTORE_DATABASE_URL` or from a file (`-D`). Check the restored
+data, then point `DATABASE_URL` at it (or rename the
 databases while the API is stopped). `--force` restores over an existing
 database after emptying it.
 
@@ -511,7 +513,7 @@ so any moment of about the last two weeks can be restored.
 ```bash
 sudo apt install -y pgbackrest
 sudo install -d -o postgres -g postgres -m 750 /var/lib/pgbackrest /var/spool/pgbackrest /var/log/pgbackrest
-sudo install -o postgres -g postgres -m 640 deploy/db/pgbackrest.conf /etc/pgbackrest/pgbackrest.conf
+sudo install -o postgres -g postgres -m 600 deploy/db/pgbackrest.conf /etc/pgbackrest/pgbackrest.conf
 sudo sed -i "s|^repo1-cipher-pass=.*|repo1-cipher-pass=$(pass prod/auth-api/pgbackrest-cipher-pass)|" \
   /etc/pgbackrest/pgbackrest.conf
 sudo cp deploy/db/postgresql.pitr.conf /etc/postgresql/17/main/conf.d/auth-api-pitr.conf
