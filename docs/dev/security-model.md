@@ -189,8 +189,9 @@ the database together, is out of scope.
   compared in constant time.
 - **Authorization endpoint:** an unknown client or an unregistered redirect URI
   is answered directly, never redirected; the stored request lives ten minutes
-  and is decided once. Consenting to a third-party client requires a
-  re-authentication, checked before the request is used up.
+  and is decided once. Consenting to any client, the instance's own
+  application included, requires a re-authentication, checked before the
+  request is used up: an access token alone cannot mint a long-lived session.
 - **Device flow (RFC 8628):** user codes are reserved atomically, polling is
   paced, an approval is collected exactly once and only by the client that
   started the flow, and account status and session limits are rechecked when
@@ -430,3 +431,4 @@ when a cited test no longer exists.
 | SEC-63 | The runtime role cannot turn the maintenance functions against the data, secrets are read only bound to their row, and production connections need a password | `the_maintenance_functions_keep_the_owners_floors`, `the_runtime_role_cannot_erase_the_audit_trail_or_alter_the_schema`, `keyring_reads_the_previous_key_and_refuses_unbound_formats`, `secrets_in_an_unbound_format_stop_the_start`, `a_blank_variable_defers_to_its_file`, `validate_rejects_production_connections_without_a_password` |
 | SEC-64 | Settings that would undo a control stop the start: a lock under a minute, a device code living hours, a trusted proxy network any peer belongs to, an HTTP verification page, a blank required secret | `validate_rejects_settings_that_undo_their_control`, `a_blank_required_variable_is_missing` |
 | SEC-65 | The edge matches the API: nginx limits strictly what the API does, the internal listener needs its token, and the public readiness probe costs the dependencies at most one check per second | `nginx_limits_strictly_what_the_api_does`, `the_internal_listener_needs_its_token`, `public_readiness_says_ready_without_naming_dependencies` |
+| SEC-66 | No new session without the password: every OAuth consent needs a re-authentication, the instance's own application included, and so does signing an account out from the administration | `a_primary_client_signs_in_end_to_end`, `approving_another_client_needs_a_recent_reauthentication`, `actions_that_push_out_or_reopen_need_a_recent_reauthentication` |

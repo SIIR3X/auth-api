@@ -165,6 +165,9 @@ pub async fn revoke_sessions(
     user_id: Uuid,
 ) -> Result<u64, AppError> {
     refuse_own_account(actor, user_id)?;
+    // Signing others out in a loop is how a stolen administrator token would
+    // push the other administrators out.
+    require_reauth(state, actor, "admin_revoke_sessions").await?;
     find(state, user_id).await?;
 
     let mut tx = state.db.begin().await?;
@@ -190,7 +193,9 @@ pub async fn revoke_sessions(
     events::wake();
 
     forget_sessions(state, &active).await;
-    super::notify_owner(state, user_id, "sessions_revoked", None).await;
+    if count > 0 {
+        super::notify_owner(state, user_id, "sessions_revoked", None).await;
+    }
     Ok(count)
 }
 

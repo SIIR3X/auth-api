@@ -17,6 +17,12 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- Every OAuth consent needs a recent re-authentication, the instance's own
+  application included: an access token alone could approve an authorization
+  request for it and obtain a new, long-lived session. Signing an account out
+  from the administration needs one too, and mails the owner only when
+  sessions were actually ended.
+
 - nginx: `PUT` is allowed (the administration's role, client and webhook
   updates answered `405`), `/.well-known/` serves the OAuth and OpenID Connect
   metadata (they answered `403`), and the strict zone follows the API's strict

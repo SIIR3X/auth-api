@@ -333,7 +333,7 @@ are regenerated.
 | POST | `/admin/users/{id}/suspend` | Admin `users:manage` + reauth | General |
 | POST | `/admin/users/{id}/reactivate` | Admin `users:manage` + reauth | General |
 | POST | `/admin/users/{id}/unlock` | Admin `users:manage` + reauth | General |
-| DELETE | `/admin/users/{id}/sessions` | Admin `users:manage` | General |
+| DELETE | `/admin/users/{id}/sessions` | Admin `users:manage` + reauth | General |
 | POST | `/admin/users/{id}/password-reset` | Admin `users:manage` + reauth | General |
 | DELETE | `/admin/users/{id}` | Admin `users:manage` + reauth | General |
 | POST | `/admin/users/{id}/roles` | Admin `roles:manage` + reauth | General |

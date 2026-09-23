@@ -102,12 +102,8 @@ pub async fn describe(
 }
 
 /// Whether approving for `client` needs a recent re-authentication first.
-pub async fn requires_reauthentication(
-    state: &AppState,
-    session_id: Uuid,
-    client: &RegisteredClient,
-) -> bool {
-    !client.is_primary && !reauth_svc::has_recent_reauth(state, session_id).await
+pub async fn requires_reauthentication(state: &AppState, session_id: Uuid) -> bool {
+    !reauth_svc::has_recent_reauth(state, session_id).await
 }
 
 /// Mint a single-use code for an approval the user has just given. Returns the
@@ -115,21 +111,19 @@ pub async fn requires_reauthentication(
 pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String, AppError> {
     let client = approval.client;
 
-    // A third-party client obtains a long-lived session on the user's behalf:
-    // consenting to one requires a fresh proof of the password, exactly like
-    // other sensitive actions. The primary client is the instance's own app.
-    if !client.is_primary {
-        reauth_svc::require_recent_reauth_or_password(
-            state,
-            approval.user_id,
-            approval.session_id,
-            approval.current_password,
-            approval.ip,
-            approval.request_id,
-            "authorize_client",
-        )
-        .await?;
-    }
+    // Every client obtains a long-lived session on the user's behalf: consenting
+    // requires a fresh proof of the password, the instance's own application
+    // included, exactly like other sensitive actions.
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        approval.user_id,
+        approval.session_id,
+        approval.current_password,
+        approval.ip,
+        approval.request_id,
+        "authorize_client",
+    )
+    .await?;
 
     ensure_account_usable(state, approval.user_id).await?;
 

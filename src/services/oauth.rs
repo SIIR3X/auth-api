@@ -477,10 +477,8 @@ pub async fn describe_request(
     Ok(RequestDescription {
         request: description,
         redirect_uri: request.redirect_uri,
-        reauthentication_required: authorize_svc::requires_reauthentication(
-            state, session_id, &client,
-        )
-        .await,
+        reauthentication_required: authorize_svc::requires_reauthentication(state, session_id)
+            .await,
     })
 }
 
@@ -499,19 +497,20 @@ pub async fn approve_request(
     // was made no longer receives a code.
     authorize_svc::validate_redirect(&client, &request.redirect_uri)?;
     // The password is checked before the request is taken: a missing or wrong
-    // one leaves the request to approve once the user has confirmed it.
-    if !client.is_primary {
-        crate::services::reauth::require_recent_reauth_or_password(
-            state,
-            user_id,
-            session_id,
-            current_password,
-            ip,
-            request_id,
-            "authorize_client",
-        )
-        .await?;
-    }
+    // one leaves the request to approve once the user has confirmed it. Every
+    // client needs it, the instance's own application included: an approval
+    // mints a new, long-lived session, and an access token alone must not be
+    // enough to obtain one.
+    crate::services::reauth::require_recent_reauth_or_password(
+        state,
+        user_id,
+        session_id,
+        current_password,
+        ip,
+        request_id,
+        "authorize_client",
+    )
+    .await?;
     take_request(state, id).await?;
     let approval = authorize_svc::Approval {
         user_id,

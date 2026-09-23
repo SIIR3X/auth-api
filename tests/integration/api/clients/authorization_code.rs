@@ -170,6 +170,7 @@ async fn a_primary_client_signs_in_end_to_end() {
     let user = fixtures::authenticated_user(&app, 720).await;
     let p = pkce();
     let request_id = request(&app, PRIMARY, CALLBACK, &p, &[]).await;
+    app.clear_recent_reauth(&user.access_token).await;
 
     let described: Value = app
         .get_auth(
@@ -183,12 +184,24 @@ async fn a_primary_client_signs_in_end_to_end() {
     assert_eq!(described["client_name"], PRIMARY);
     assert_eq!(described["redirect_uri"], CALLBACK);
     assert_eq!(described["unrestricted"], true);
-    assert_eq!(described["reauthentication_required"], false);
+    assert_eq!(described["reauthentication_required"], true);
     assert!(described.get("sessions_allowed").is_none());
 
-    // The primary client needs no fresh re-authentication.
-    app.clear_recent_reauth(&user.access_token).await;
+    // The primary client too needs a fresh re-authentication: an access token
+    // alone must not mint a new, long-lived session (SEC-66). A refusal leaves
+    // the request to approve.
     let (status, body) = approve_raw(&app, &user, &request_id, json!({})).await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (403, Some("reauthentication_required"))
+    );
+    let (status, body) = approve_raw(
+        &app,
+        &user,
+        &request_id,
+        json!({ "current_password": user.password }),
+    )
+    .await;
     assert_eq!(status, 200, "{body}");
     let code = query_param(body["redirect_to"].as_str().unwrap(), "code").unwrap();
 
