@@ -134,6 +134,29 @@ pub async fn peek(redis: &RedisPool, key: &str) -> Result<i64, AppError> {
 /// before the guarded action: concurrent requests cannot all see the key free
 /// and all act. Fails open (a Redis outage claims nothing and allows the
 /// action), like the volume budgets.
+/// [`claim_cooldown`] for actions whose repetition does harm (regenerating
+/// recovery codes replaces the owner's): a Redis outage refuses the action.
+pub async fn claim_cooldown_strict(
+    redis: &RedisPool,
+    key: &str,
+    ttl_secs: u64,
+) -> Result<bool, AppError> {
+    let mut conn = redis
+        .get()
+        .await
+        .map_err(|_| redis_failure("redis_unavailable"))?;
+    let claimed: Option<String> = deadpool_redis::redis::cmd("SET")
+        .arg(key)
+        .arg(1)
+        .arg("NX")
+        .arg("EX")
+        .arg(ttl_secs)
+        .query_async(&mut *conn)
+        .await
+        .map_err(|_| redis_failure("redis_query_failed"))?;
+    Ok(claimed.is_some())
+}
+
 pub async fn claim_cooldown(redis: &RedisPool, key: &str, ttl_secs: u64) -> bool {
     let Ok(mut conn) = redis.get().await else {
         return true;
@@ -169,5 +192,22 @@ pub async fn reset(redis: &RedisPool, keys: &[&str]) {
     }
     if let Ok(mut conn) = redis.get().await {
         let _: Result<(), _> = conn.del(keys).await;
+    }
+}
+
+#[cfg(test)]
+mod cooldown_tests {
+    /// A cooldown guarding a harmful repetition refuses when Redis is down;
+    /// a volume cooldown lets the action through (SEC-68).
+    #[tokio::test]
+    async fn a_strict_cooldown_fails_closed() {
+        let pool = crate::utils::redis_pool::build(&crate::config::RedisConfig {
+            url: "redis://127.0.0.1:1".into(),
+            pool_size: 1,
+            wait_timeout_ms: 100,
+        })
+        .unwrap();
+        assert!(super::claim_cooldown_strict(&pool, "k", 60).await.is_err());
+        assert!(super::claim_cooldown(&pool, "k", 60).await);
     }
 }

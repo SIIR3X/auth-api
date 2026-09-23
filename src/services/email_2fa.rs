@@ -270,6 +270,9 @@ async fn verify_otp(
     }));
     let attempt = redis_counter::consume(&state.redis, &budgets).await?;
     if attempt.exceeded {
+        if crate::services::auth::account_budget_exceeded(&attempt.counts, account_keys[0].1) {
+            crate::services::auth::notify_second_factor_pressure(state, user_id).await;
+        }
         return Err(AppError::RateLimitExceeded);
     }
 

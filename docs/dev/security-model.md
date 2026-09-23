@@ -74,8 +74,12 @@ the database together, is out of scope.
   until one is used, and their budget counts per client address before the
   account's: someone asking again and again neither revokes the owner's link
   nor spends the owner's share. Second-factor failure budgets count per
-  address too, with a wider ceiling for the account, and a reset restarts
-  them.
+  address too, with a ceiling three times higher for the account (30 TOTP
+  codes an hour); spending it mails the owner, and a reset restarts them.
+  Recovery codes are budgeted per hour. A resent e-mail code leaves the
+  previous one usable (both end when one is used), and a challenge resends at
+  most twice. A password change ends the challenges opened with the old one,
+  as a reset does.
 - **Brute force** is bounded per identifier and per address (database counters),
   across identifiers from one address (HyperLogLog), and per submitted token. A
   password attempt is also reserved atomically in Redis, against the account
@@ -440,3 +444,4 @@ when a cited test no longer exists.
 | SEC-65 | The edge matches the API: nginx limits strictly what the API does, the internal listener needs its token, and the public readiness probe costs the dependencies at most one check per second | `nginx_limits_strictly_what_the_api_does`, `the_internal_listener_needs_its_token`, `public_readiness_says_ready_without_naming_dependencies` |
 | SEC-66 | No new session without the password: every OAuth consent needs a re-authentication, the instance's own application included, and so does signing an account out from the administration | `a_primary_client_signs_in_end_to_end`, `approving_another_client_needs_a_recent_reauthentication`, `actions_that_push_out_or_reopen_need_a_recent_reauthentication` |
 | SEC-67 | Password guesses cannot outrun their budget nor keep the owner out: attempts are reserved atomically before the hash, the CAPTCHA replaces the identifier budget, and challenges are capped per account | `a_burst_of_guesses_cannot_outrun_the_budget`, `the_captcha_replaces_the_identifier_budget`, `open_challenges_are_capped_per_account` |
+| SEC-68 | Someone holding the password cannot search the second factor nor wear out the owner: tight account budgets that mail the owner, resends that neither flood nor kill the owner's code, challenges ended by a password change, and regeneration refused without Redis | `a_spent_second_factor_budget_warns_the_owner`, `a_resend_keeps_the_previous_code_and_is_budgeted`, `a_new_code_keeps_only_the_previous_one`, `a_password_change_ends_open_challenges`, `a_strict_cooldown_fails_closed` |

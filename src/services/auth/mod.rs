@@ -66,7 +66,8 @@ mod tokens;
 
 use guards::*;
 pub(crate) use guards::{
-    ensure_account_usable, ensure_status_allows_sign_in, second_factor_budget_keys,
+    account_budget_exceeded, budget_email_resend, ensure_account_usable,
+    ensure_status_allows_sign_in, notify_second_factor_pressure, second_factor_budget_keys,
 };
 pub use login::*;
 pub use magic_link::*;
@@ -139,7 +140,7 @@ const MAX_TOTP_FAILURES: i64 = 5;
 /// Max TOTP code failures per account per window, across every pre-auth token.
 /// A new token only costs the password, so the per-token budget alone does not
 /// bound a search of the code space.
-const MAX_TOTP_FAILURES_BY_USER: i64 = 20;
+const MAX_TOTP_FAILURES_BY_USER: i64 = 10;
 
 /// Redis key prefix for the per-account TOTP failure budget.
 pub(crate) const TOTP_USER_FAIL_PREFIX: &str = "totp_user_fail:";
@@ -149,7 +150,11 @@ pub(crate) const EMAIL_2FA_USER_FAIL_PREFIX: &str = "email2fa_user_fail:";
 
 /// How many times the per-address second-factor budget the account's budget
 /// allows, across every address.
-pub(crate) const SECOND_FACTOR_ACCOUNT_FACTOR: i64 = 5;
+pub(crate) const SECOND_FACTOR_ACCOUNT_FACTOR: i64 = 3;
+
+/// Resends of an e-mail code per challenge and per account (per hour).
+const MAX_EMAIL_RESENDS_PER_CHALLENGE: i64 = 2;
+const MAX_EMAIL_RESENDS_PER_ACCOUNT: i64 = 10;
 
 /// Rolling window of the per-account second-factor budgets (1 hour).
 const SECOND_FACTOR_USER_WINDOW_SECS: u64 = 3600;
@@ -161,10 +166,11 @@ const TOTP_USED_PREFIX: &str = "totp_used:";
 const MAX_RECOVERY_FAILURES: i64 = 5;
 
 /// Max recovery code failures per user in a rolling window (cross-session protection).
-pub(crate) const MAX_RECOVERY_FAILURES_BY_USER: i64 = 10;
+pub(crate) const MAX_RECOVERY_FAILURES_BY_USER: i64 = 5;
 
-/// Rolling window for the per-user recovery code failure counter (24 hours).
-pub(crate) const RECOVERY_FAILURE_USER_WINDOW_SECS: u64 = 86400;
+/// Rolling window for the per-user recovery code failure counter (1 hour):
+/// short, so exhausting it cannot keep the owner out for a day.
+pub(crate) const RECOVERY_FAILURE_USER_WINDOW_SECS: u64 = 3600;
 
 /// Redis key prefix for the per-user recovery code failure counter. Recovery
 /// codes guessed at sign-in and through the authenticated route share it.

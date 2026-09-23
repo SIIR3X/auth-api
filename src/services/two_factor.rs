@@ -297,7 +297,9 @@ pub async fn generate_recovery_codes(
     // Claimed before regenerating: concurrent requests cannot each replace
     // the codes the previous one just showed.
     let cooldown_key = format!("rc_regen:{}", user_id);
-    if !redis_counter::claim_cooldown(&state.redis, &cooldown_key, RC_REGEN_COOLDOWN_SECS).await {
+    if !redis_counter::claim_cooldown_strict(&state.redis, &cooldown_key, RC_REGEN_COOLDOWN_SECS)
+        .await?
+    {
         return Err(AppError::RateLimitExceeded);
     }
 

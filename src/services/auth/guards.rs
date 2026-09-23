@@ -13,10 +13,71 @@ pub(super) fn redis_unavailable(error: impl std::fmt::Display) -> AppError {
     AppError::ServiceUnavailable("redis_unavailable")
 }
 
+/// Resends of an e-mail code: twice per challenge, ten times an hour per
+/// account. Refused past either, fail closed like the code budgets.
+pub(crate) async fn budget_email_resend(
+    state: &AppState,
+    pre_auth_token: &str,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    let challenge_key = format!("email2fa_resend:{pre_auth_token}");
+    let account_key = format!("email2fa_resend_user:{user_id}");
+    let attempt = redis_counter::consume(
+        &state.redis,
+        &[
+            Budget {
+                key: &challenge_key,
+                limit: MAX_EMAIL_RESENDS_PER_CHALLENGE,
+                window_secs: PRE_AUTH_TTL_SECS,
+            },
+            Budget {
+                key: &account_key,
+                limit: MAX_EMAIL_RESENDS_PER_ACCOUNT,
+                window_secs: SECOND_FACTOR_USER_WINDOW_SECS,
+            },
+        ],
+    )
+    .await?;
+    if attempt.exceeded {
+        return Err(AppError::RateLimitExceeded);
+    }
+    let user = user_repo::find_by_id(&state.db, user_id)
+        .await?
+        .ok_or(AppError::TokenInvalid)?;
+    ensure_account_usable(&user)
+}
+
+/// Mail the owner that their second factor is being guessed, once an hour at
+/// most: an account budget exhausted means someone holds the password.
+pub(crate) async fn notify_second_factor_pressure(state: &AppState, user_id: Uuid) {
+    let key = format!("2fa_pressure_notice:{user_id}");
+    if !redis_counter::claim_cooldown(&state.redis, &key, SECOND_FACTOR_USER_WINDOW_SECS).await {
+        return;
+    }
+    let Ok(Some(user)) = user_repo::find_by_id(&state.db, user_id).await else {
+        return;
+    };
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    email::dispatch_best_effort("second_factor_attempts_email", async move {
+        email::send_second_factor_attempts(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &user.email,
+            &user.username,
+            &user.preferred_locale,
+        )
+        .await
+    });
+}
+
 /// The failure budgets of a second factor at sign-in, beside the budget of
 /// the challenge itself: `limit` failures per window from one client address,
 /// and `SECOND_FACTOR_ACCOUNT_FACTOR` times as many for the account from every
-/// address. Someone holding the password and guessing from their own address
+/// address (30 an hour for TOTP codes: a search of the code space stays
+/// hopeless, and the owner is mailed when it is spent). Someone holding the password and guessing from their own address
 /// exhausts only their share, not the owner's.
 pub(crate) fn second_factor_budget_keys(
     prefix: &str,
@@ -32,6 +93,12 @@ pub(crate) fn second_factor_budget_keys(
         keys.push((format!("{prefix}{user_id}:{}", ip_bucket(ip.ip())), limit));
     }
     keys
+}
+
+/// Whether the account's budget (the first of `second_factor_budget_keys`,
+/// behind the challenge's) is the one exceeded.
+pub(crate) fn account_budget_exceeded(counts: &[i64], account_limit: i64) -> bool {
+    counts.get(1).is_some_and(|count| *count > account_limit)
 }
 
 /// The budget of links mailed to `user_id` (`prefix` names the kind): per

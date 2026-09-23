@@ -624,3 +624,61 @@ async fn open_challenges_are_capped_per_account() {
         .unwrap();
     assert!(open <= 5, "{open} challenges open");
 }
+
+/// An account whose second-factor budget is spent is told by mail: someone
+/// holds the password (SEC-68).
+#[tokio::test]
+async fn a_spent_second_factor_budget_warns_the_owner() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 607).await;
+    let (secret, _) = enable_totp(&app, &user).await;
+    let mut conn = app.redis.get().await.unwrap();
+    let _: () = conn
+        .set_ex(format!("totp_user_fail:{}", user.id), 30, 3600)
+        .await
+        .unwrap();
+
+    let challenge = login_challenge(&app, &user).await;
+    let res = app
+        .post(
+            "/auth/two-factor/complete",
+            &json!({
+                "pre_auth_token": challenge["pre_auth_token"],
+                "code": totp_code(&secret, 1),
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 429);
+    app.mail
+        .wait_for(&user.email, "Someone is guessing your second factor")
+        .await;
+}
+
+/// A challenge opened with the old password dies when the password changes
+/// (SEC-68).
+#[tokio::test]
+async fn a_password_change_ends_open_challenges() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 608).await;
+    let (secret, _) = enable_totp(&app, &user).await;
+    let challenge = login_challenge(&app, &user).await;
+
+    let res = app
+        .patch_auth(
+            "/users/me/password",
+            &user.access_token,
+            &json!({ "current_password": user.password, "new_password": "Changed-Pass-608!" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204, "{}", res.text().await.unwrap());
+    let res = app
+        .post(
+            "/auth/two-factor/complete",
+            &json!({
+                "pre_auth_token": challenge["pre_auth_token"],
+                "code": totp_code(&secret, 1),
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 401);
+}

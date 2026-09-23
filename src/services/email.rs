@@ -30,6 +30,7 @@ const TNAME_PASSWORD_CHANGED: &str = "password_changed";
 const TNAME_TWO_FACTOR_DISABLED: &str = "two_factor_disabled";
 const TNAME_ACCOUNT_LOCKED: &str = "account_locked";
 const TNAME_CHANGED_BY_ADMINISTRATOR: &str = "changed_by_administrator";
+const TNAME_SECOND_FACTOR_ATTEMPTS: &str = "second_factor_attempts";
 const TNAME_TWO_FACTOR_ENABLED: &str = "two_factor_enabled";
 const TNAME_ACCOUNT_EXISTS: &str = "account_exists";
 const TNAME_EMAIL_CHANGED: &str = "email_changed";
@@ -633,6 +634,35 @@ pub async fn send_changed_by_administrator(
     let subject = render_subject(
         templates,
         TNAME_CHANGED_BY_ADMINISTRATOR,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
+pub async fn send_second_factor_attempts(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_SECOND_FACTOR_ATTEMPTS,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_SECOND_FACTOR_ATTEMPTS,
         locale,
         &mail_cfg.default_locale,
         &ctx,

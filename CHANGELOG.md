@@ -17,6 +17,14 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- Second factors: 10 wrong TOTP codes an hour per address and 30 per account
+  (100 before); spending the account budget mails the owner (new
+  `second_factor_attempts` template). Recovery-code budgets cover an hour
+  instead of a day. `POST /auth/two-factor/email/resend` is limited to 2 per
+  challenge and 10 an hour per account, keeps the previous code usable, and
+  checks the account status. A password change ends the open second-factor
+  challenges. Regenerating recovery codes is refused while Redis is down.
+
 - A password attempt is reserved atomically in Redis (per account and per
   address) before the hash is computed: a burst of simultaneous guesses no
   longer outruns the budgets, which were read before the hash and written

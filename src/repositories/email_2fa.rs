@@ -62,16 +62,29 @@ pub async fn find_active_by_user_and_hash(
 
 /// Marks a code as used. Returns true if the row was updated, false if it was
 /// already used or expired in the meantime.
+/// Mark the code used, and the other live code of its account with it: the
+/// previous code, kept alive by a resend, ends with the one that worked.
 pub async fn consume(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
+    let mut tx = pool.begin().await?;
+    let user_id: Option<Uuid> = sqlx::query_scalar(
         "UPDATE email_2fa_codes SET used_at = now()
-         WHERE id = $1 AND used_at IS NULL AND expires_at > now()",
+         WHERE id = $1 AND used_at IS NULL AND expires_at > now()
+         RETURNING user_id",
     )
     .bind(id)
-    .execute(pool)
+    .fetch_optional(&mut *tx)
     .await?;
-
-    Ok(result.rows_affected() == 1)
+    let Some(user_id) = user_id else {
+        return Ok(false);
+    };
+    sqlx::query(
+        "UPDATE email_2fa_codes SET used_at = now() WHERE user_id = $1 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -98,10 +111,22 @@ pub async fn replace_active_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     input: &NewEmail2faCode<'_>,
 ) -> Result<Uuid, sqlx::Error> {
-    sqlx::query("DELETE FROM email_2fa_codes WHERE user_id = $1 AND used_at IS NULL")
-        .bind(input.user_id)
-        .execute(&mut **tx)
-        .await?;
+    // The latest unused code survives the new one: a resend, possibly asked
+    // by someone else holding the challenge, must not kill the code its owner
+    // is typing. Two codes at most are live, and both end when one is used.
+    sqlx::query(
+        "DELETE FROM email_2fa_codes
+         WHERE user_id = $1 AND used_at IS NULL
+           AND id <> COALESCE((
+               SELECT id FROM email_2fa_codes
+               WHERE user_id = $1 AND used_at IS NULL
+               ORDER BY created_at DESC
+               LIMIT 1
+           ), '00000000-0000-0000-0000-000000000000')",
+    )
+    .bind(input.user_id)
+    .execute(&mut **tx)
+    .await?;
 
     let row: (Uuid,) = sqlx::query_as(
         "INSERT INTO email_2fa_codes (user_id, code_hash, expires_at)

@@ -45,6 +45,9 @@ pub async fn complete_two_factor_login(
     }));
     let attempt = redis_counter::consume(&state.redis, &budgets).await?;
     if attempt.exceeded {
+        if account_budget_exceeded(&attempt.counts, account_keys[0].1) {
+            notify_second_factor_pressure(state, user_id).await;
+        }
         return Err(AppError::RateLimitExceeded);
     }
 
@@ -242,6 +245,9 @@ pub async fn complete_login_with_recovery(
     }));
     let attempt = redis_counter::consume(&state.redis, &budgets).await?;
     if attempt.exceeded {
+        if account_budget_exceeded(&attempt.counts, account_keys[0].1) {
+            notify_second_factor_pressure(state, user_id).await;
+        }
         return Err(AppError::RateLimitExceeded);
     }
 

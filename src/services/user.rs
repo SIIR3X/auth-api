@@ -257,6 +257,9 @@ pub async fn change_password(
     events::wake();
 
     auth_svc::invalidate_session_caches(state, &revoked_session_ids).await;
+    // A second-factor challenge opened with the old password dies with it, as
+    // after a reset: it would otherwise still open a session.
+    auth_svc::purge_user_pre_auth_and_email_change(state, user.id).await;
 
     notify_password_changed(state, &user).await;
 

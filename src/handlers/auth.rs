@@ -589,6 +589,9 @@ pub async fn resend_email_two_factor(
     // TOTP challenge would let a mailbox stand in for the authenticator app.
     pre_auth.expect_method(auth_svc::ChallengeMethod::Email)?;
     let user_id = pre_auth.user_id;
+    // A challenge resends at most twice, an account a few times an hour: a
+    // holder of the password cannot flood the owner's mailbox.
+    auth_svc::budget_email_resend(&state, &body.pre_auth_token, user_id).await?;
 
     // Fire-and-forget: errors are non-fatal to avoid enumeration via timing.
     let _ = email_2fa_svc::send_code(&state, user_id).await;
