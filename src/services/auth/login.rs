@@ -85,10 +85,25 @@ pub async fn login(
         distinct_identifiers_by_ip: distinct_identifiers,
         by_identifier: failures,
     };
+    // With a CAPTCHA required, every attempt already costs a solved challenge:
+    // the budget of an identifier stops refusing, so that guessing someone's
+    // password does not also keep them from signing in. The lockout still
+    // bounds the guesses.
+    let captcha_enforced = state
+        .config
+        .captcha
+        .secret
+        .as_deref()
+        .is_some_and(|secret| !secret.is_empty());
+    let identifier_ceiling = if captcha_enforced {
+        i64::MAX
+    } else {
+        MAX_FAILURES_BY_IDENTIFIER
+    };
     let ceilings = FailureCeilings {
         by_ip: MAX_FAILURES_BY_IP,
         distinct_identifiers_by_ip: CS_MAX_DISTINCT_IDENTIFIERS,
-        by_identifier: MAX_FAILURES_BY_IDENTIFIER,
+        by_identifier: identifier_ceiling,
     };
     if recent.reach(&ceilings) {
         return Err(AppError::RateLimitExceeded);
@@ -96,6 +111,19 @@ pub async fn login(
 
     // User lookup stays index-friendly by branching on email vs username format.
     let user_opt = user_repo::find_by_identifier(&state.db, identifier).await?;
+
+    // The counts above are read before the hash and written after it: many
+    // attempts sent at once would all pass them. Reserve this attempt
+    // atomically first, against the address and the account; it is given
+    // back if the password is right. Without Redis the database counts above
+    // still apply, as they did before.
+    let reserved = reserve_attempt(
+        state,
+        user_opt.as_ref().map(|u| u.id),
+        ip,
+        identifier_ceiling,
+    )
+    .await?;
 
     // Always verify a password hash to prevent timing-based enumeration.
     let (user, password_ok) = match user_opt {
@@ -152,6 +180,14 @@ pub async fn login(
                 ),
                 track_credential_stuffing(state, ip, identifier),
             );
+            // The lockout count an existing account runs, run here too: the
+            // answer takes the same database work whether the account exists.
+            let _ = login_attempt::count_consecutive_failures_by_user(
+                &state.db,
+                Uuid::nil(),
+                i64::from(state.config.security.lockout_threshold),
+            )
+            .await;
             metrics::counter!("auth_logins_total", "outcome" => "invalid_credentials").increment(1);
             apply_backoff(failures + 1).await;
             return Err(AppError::InvalidCredentials);
@@ -219,6 +255,8 @@ pub async fn login(
             return Err(AppError::InvalidCredentials);
         }
         (Some(u), true) => {
+            let keys: Vec<&str> = reserved.iter().map(String::as_str).collect();
+            redis_counter::release(&state.redis, &keys).await;
             rehash_if_weaker(state, &u, password_plaintext);
             u
         }
@@ -307,8 +345,17 @@ pub(crate) async fn first_factor_proven(
         // Maintain a per-user index so reset_password (and other revocation
         // hooks) can purge active pre-auth tokens without SCAN. Best-effort:
         // a stale entry is harmless because the token itself expires after
-        // PRE_AUTH_TTL_SECS, and DEL on a missing key is a no-op.
+        // PRE_AUTH_TTL_SECS, and DEL on a missing key is a no-op. At most
+        // MAX_OPEN_CHALLENGES stay open per account: someone holding the
+        // password cannot open challenges without end to feed guesses or fill
+        // Redis; one of the open ones goes to make room.
         let user_index_key = user_pre_auth_index_key(user.id);
+        let open: i64 = conn.scard(&user_index_key).await.unwrap_or(0);
+        for _ in MAX_OPEN_CHALLENGES - 1..open {
+            let dropped: Option<String> = conn.spop(&user_index_key).await.unwrap_or(None);
+            let Some(dropped) = dropped else { break };
+            let _: Result<(), _> = conn.del(&challenge_keys(&dropped)[..]).await;
+        }
         let _: Result<(), _> = conn
             .sadd::<_, _, ()>(&user_index_key, &pre_auth_token)
             .await;
@@ -357,6 +404,49 @@ pub(crate) async fn first_factor_proven(
 
     metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
     Ok(LoginResult::Complete(tokens))
+}
+
+/// Reserve one password attempt against the budgets of the client address
+/// and of the account, atomically, before the hash is computed. Returns the
+/// keys to give back on success. A budget past its limit refuses the attempt;
+/// Redis being unavailable reserves nothing (the database counts still hold).
+async fn reserve_attempt(
+    state: &AppState,
+    account: Option<Uuid>,
+    ip: Option<IpNetwork>,
+    identifier_ceiling: i64,
+) -> Result<Vec<String>, AppError> {
+    // An unknown identifier cannot sign in: the database counts bound it.
+    let mut keys: Vec<(String, i64)> = account
+        .map(|id| (format!("login_try:{id}"), identifier_ceiling))
+        .into_iter()
+        .collect();
+    if let Some(ip) = ip {
+        keys.push((
+            format!("login_try_ip:{}", ip_bucket(ip.ip())),
+            MAX_FAILURES_BY_IP,
+        ));
+    }
+    let budgets: Vec<Budget> = keys
+        .iter()
+        .map(|(key, limit)| Budget {
+            key,
+            limit: *limit,
+            window_secs: BRUTE_FORCE_WINDOW_SECS as u64,
+        })
+        .collect();
+    match redis_counter::consume(&state.redis, &budgets).await {
+        Ok(consumed) if consumed.exceeded => {
+            let reserved: Vec<&str> = keys.iter().map(|(key, _)| key.as_str()).collect();
+            redis_counter::release(&state.redis, &reserved).await;
+            Err(AppError::RateLimitExceeded)
+        }
+        Ok(_) => Ok(keys.into_iter().map(|(key, _)| key).collect()),
+        Err(error) => {
+            tracing::warn!(error = %error, "sign-in attempt budget unavailable, database counts only");
+            Ok(Vec::new())
+        }
+    }
 }
 
 /// Tell the owner their password is locked, and until when: a lock they did

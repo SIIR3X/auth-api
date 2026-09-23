@@ -224,3 +224,27 @@ async fn someone_asking_for_links_neither_spends_nor_revokes_the_owners() {
         "the owner's first link survived"
     );
 }
+
+/// Attempts sent at once are reserved one by one before the hash is computed:
+/// a burst cannot slip past the budget of an identifier (SEC-67).
+#[tokio::test]
+async fn a_burst_of_guesses_cannot_outrun_the_budget() {
+    let app = TestApp::spawn_with_config(|c| c.security.lockout_threshold = 50).await;
+    let user = fixtures::authenticated_user(&app, 807).await;
+
+    let attempts = (0..16).map(|_| login(&app, &user.email, WRONG));
+    let statuses: Vec<u16> = futures::future::join_all(attempts)
+        .await
+        .into_iter()
+        .map(|(status, _)| status)
+        .collect();
+    let evaluated = statuses.iter().filter(|s| **s == 401).count();
+    assert!(
+        evaluated <= 10,
+        "{evaluated} guesses evaluated: {statuses:?}"
+    );
+    assert!(
+        statuses.iter().filter(|s| **s == 429).count() >= 6,
+        "{statuses:?}"
+    );
+}

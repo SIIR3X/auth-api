@@ -17,6 +17,14 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- A password attempt is reserved atomically in Redis (per account and per
+  address) before the hash is computed: a burst of simultaneous guesses no
+  longer outruns the budgets, which were read before the hash and written
+  after. With a CAPTCHA required, the identifier's budget no longer answers
+  `429` (every attempt already costs a challenge); the lockout still applies.
+  An unknown identifier costs the same database work as a wrong password, and
+  at most five second-factor challenges stay open per account.
+
 - Every OAuth consent needs a recent re-authentication, the instance's own
   application included: an access token alone could approve an authorization
   request for it and obtain a new, long-lived session. Signing an account out

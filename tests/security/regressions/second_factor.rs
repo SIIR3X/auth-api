@@ -606,3 +606,21 @@ async fn signing_in_again_within_the_email_code_cooldown_still_challenges() {
     let second = login_challenge(&app, &user).await;
     assert_ne!(first["pre_auth_token"], second["pre_auth_token"]);
 }
+
+/// At most five second-factor challenges stay open per account: someone
+/// holding the password cannot open them without end (SEC-67).
+#[tokio::test]
+async fn open_challenges_are_capped_per_account() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 606).await;
+    let (_secret, _) = enable_totp(&app, &user).await;
+    for _ in 0..8 {
+        login_challenge(&app, &user).await;
+    }
+    let mut conn = app.redis.get().await.unwrap();
+    let open: i64 = conn
+        .scard(format!("user_pre_auth:{}", user.id))
+        .await
+        .unwrap();
+    assert!(open <= 5, "{open} challenges open");
+}

@@ -149,6 +149,18 @@ pub async fn claim_cooldown(redis: &RedisPool, key: &str, ttl_secs: u64) -> bool
     claimed.map(|reply| reply.is_some()).unwrap_or(true)
 }
 
+/// Give back one attempt on each budget, after the guarded action turned out
+/// legitimate. Best-effort, like `reset`.
+pub async fn release(redis: &RedisPool, keys: &[&str]) {
+    use deadpool_redis::redis::AsyncCommands;
+
+    if let Ok(mut conn) = redis.get().await {
+        for key in keys {
+            let _: Result<i64, _> = conn.decr(*key, 1).await;
+        }
+    }
+}
+
 pub async fn reset(redis: &RedisPool, keys: &[&str]) {
     use deadpool_redis::redis::AsyncCommands;
 

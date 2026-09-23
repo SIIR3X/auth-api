@@ -77,7 +77,14 @@ the database together, is out of scope.
   address too, with a wider ceiling for the account, and a reset restarts
   them.
 - **Brute force** is bounded per identifier and per address (database counters),
-  across identifiers from one address (HyperLogLog), and per submitted token.
+  across identifiers from one address (HyperLogLog), and per submitted token. A
+  password attempt is also reserved atomically in Redis, against the account
+  and the address, before the hash is computed, so a burst sent at once cannot
+  outrun the budget. With a CAPTCHA required, the identifier's budget no longer
+  refuses (every attempt costs a solved challenge, and guessing must not keep
+  the owner out); the lockout still bounds the guesses. An unknown identifier
+  costs the same database work as a wrong password. At most five second-factor
+  challenges stay open per account.
   Budgets are consumed atomically in Redis before the guarded check runs, so
   parallel requests cannot all pass; they fail closed when Redis is down.
 
@@ -432,3 +439,4 @@ when a cited test no longer exists.
 | SEC-64 | Settings that would undo a control stop the start: a lock under a minute, a device code living hours, a trusted proxy network any peer belongs to, an HTTP verification page, a blank required secret | `validate_rejects_settings_that_undo_their_control`, `a_blank_required_variable_is_missing` |
 | SEC-65 | The edge matches the API: nginx limits strictly what the API does, the internal listener needs its token, and the public readiness probe costs the dependencies at most one check per second | `nginx_limits_strictly_what_the_api_does`, `the_internal_listener_needs_its_token`, `public_readiness_says_ready_without_naming_dependencies` |
 | SEC-66 | No new session without the password: every OAuth consent needs a re-authentication, the instance's own application included, and so does signing an account out from the administration | `a_primary_client_signs_in_end_to_end`, `approving_another_client_needs_a_recent_reauthentication`, `actions_that_push_out_or_reopen_need_a_recent_reauthentication` |
+| SEC-67 | Password guesses cannot outrun their budget nor keep the owner out: attempts are reserved atomically before the hash, the CAPTCHA replaces the identifier budget, and challenges are capped per account | `a_burst_of_guesses_cannot_outrun_the_budget`, `the_captcha_replaces_the_identifier_budget`, `open_challenges_are_capped_per_account` |

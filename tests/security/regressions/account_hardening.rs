@@ -254,11 +254,18 @@ async fn a_wrong_reauthentication_password_has_its_own_code() {
 #[tokio::test]
 async fn rotating_ipv6_addresses_within_a_64_does_not_reset_the_failure_budget() {
     let app = TestApp::spawn().await;
+    // A /64 of its own per run: address budgets live in the shared Redis.
+    let b = uuid::Uuid::new_v4().into_bytes();
+    let prefix = format!(
+        "2001:db8:{:x}:{:x}",
+        u16::from_be_bytes([b[0], b[1]]),
+        u16::from_be_bytes([b[2], b[3]])
+    );
     let attempt = |n: u32| {
         let request = app
             .client
             .post(app.url("/auth/login"))
-            .header("x-forwarded-for", format!("2001:db8:77:1::{n:x}"))
+            .header("x-forwarded-for", format!("{prefix}::{n:x}"))
             .json(&json!({
                 "identifier": format!("nobody{n}@example.com"),
                 "password": "Wrong-password1!",

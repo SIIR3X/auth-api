@@ -97,6 +97,9 @@ const MAX_FAILURES_BY_IP: i64 = 30;
 /// Lookback window for brute-force counting (15 minutes).
 const BRUTE_FORCE_WINDOW_SECS: i64 = 900;
 
+/// Second-factor challenges open at once per account.
+const MAX_OPEN_CHALLENGES: i64 = 5;
+
 /// Redis key prefix for the credential-stuffing HyperLogLog counter (per IP).
 const CS_HLL_PREFIX: &str = "cs_hll:";
 

@@ -375,3 +375,67 @@ async fn a_token_solved_on_another_site_is_refused() {
         "solved on the host of FRONTEND_URL"
     );
 }
+
+/// With a CAPTCHA required, the budget of an identifier stops refusing: every
+/// attempt already costs a solved challenge, and guessing someone's password
+/// must not also keep them from signing in (SEC-67). The lockout still bounds
+/// the guesses.
+#[tokio::test]
+async fn the_captcha_replaces_the_identifier_budget() {
+    let verify_url = spawn_captcha_mock(true).await;
+    let app = TestApp::spawn_with_config(|c| {
+        c.captcha.secret = Some("test_secret".into());
+        c.captcha.verify_url = verify_url.clone();
+        c.captcha.fail_open_on_error = false;
+        c.captcha.request_timeout_secs = 5;
+        c.security.lockout_threshold = 50;
+    })
+    .await;
+    let email = "captcha.budget70@example.com";
+    let password = "Password70!okay";
+    let registered = app
+        .post(
+            "/auth/register",
+            &serde_json::json!({
+                "username": "captcha_budget70",
+                "email": email,
+                "password": password,
+                "captcha_token": "valid-token-xyz",
+            }),
+        )
+        .await;
+    assert_eq!(registered.status().as_u16(), 202);
+    let id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    fixtures::activate_user(&app.db, id).await;
+    let login = |password: &str| {
+        serde_json::json!({
+            "identifier": email,
+            "password": password,
+            "captcha_token": "valid-token-xyz",
+        })
+    };
+
+    // The identifier's budget is spent (10 failures this quarter of an hour).
+    for _ in 0..10 {
+        sqlx::query(
+            "INSERT INTO login_attempts (user_id, attempted_identifier, was_successful, failure_reason)
+             VALUES ($1, $2, FALSE, 'invalid_password')",
+        )
+        .bind(id)
+        .bind(email)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    }
+    let status = app
+        .post("/auth/login", &login("Wrong-Password-70!"))
+        .await
+        .status();
+    assert_eq!(status.as_u16(), 401, "a solved challenge is not refused");
+    let status = app.post("/auth/login", &login(password)).await.status();
+    assert_eq!(status.as_u16(), 200, "the owner still signs in");
+}
