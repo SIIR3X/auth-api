@@ -59,6 +59,7 @@ HIGH or CRITICAL vulnerability with a fix stops the release.
 | `docker-compose.api.yml`, `config.prod.env` | Deployment files of this version |
 | `nginx/nginx.conf` | Reverse proxy configuration |
 | `scripts/backup-db.sh`, `scripts/restore-db.sh`, `scripts/backup-drill.sh` | Database backup, restore and drill (DB VPS) |
+| `scripts/rolling-update.sh`, `scripts/write-secrets.sh` | Rolling update and the secret files it mounts (API VPS) |
 | `docs/deploy/guides/prometheus-alerts.yml` | Alert rules for the monitoring host |
 | `SHA256SUMS` | Checksums of every file above |
 | `SHA256SUMS.sig` | Signature of `SHA256SUMS` by the release key |
