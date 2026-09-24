@@ -255,8 +255,9 @@ the database together, is out of scope.
 - An administrative role goes only to an active account that has a verified
   second factor or a passkey, over HTTP and from the command line, checked
   under the account's lock; such an account cannot remove its last factor.
-  Nobody grants a role to their own account, nor adds to a role they hold a
-  permission they lack, and the default role never grants administration.
+  Nobody grants a role to their own account, nor grants any role a
+  permission they do not hold themselves, and the default role never grants
+  administration.
 - Administrators cannot suspend, sign out, reset or delete their own account
   from `/admin`, and deleting an account needs their recent re-authentication.
 - Every change is audited on the account it changed, with the administrator's
@@ -273,8 +274,12 @@ the database together, is out of scope.
   account, changes its roles or signs it out; deleting a role records the
   withdrawal in each holder's history. The command line audits its client
   registrations and role grants in the transaction of the change.
-- Every change is audited in the same transaction; a webhook's audit keeps the
-  host it points to (never the path or query), and redeliveries are audited.
+- Every change is audited in the same transaction, and so are a rename, a
+  session revoked by its owner and a re-authentication; a webhook's audit keeps
+  the host it points to (never the path or query), a client's the settings
+  that changed (redirect hosts, scopes, primary, grants), and redeliveries are
+  audited. A failed webhook delivery records a fixed message, never the URL.
+  A reset forced by an administrator records no address in its link.
 - No change may leave the deployment without an active account holding
   `roles:manage`: not a change of roles, not suspending or deleting that
   account, by an administrator or by its owner. These checks take a shared
@@ -451,3 +456,4 @@ when a cited test no longer exists.
 | SEC-67 | Password guesses cannot outrun their budget nor keep the owner out: attempts are reserved atomically before the hash, the CAPTCHA replaces the identifier budget, and challenges are capped per account | `a_burst_of_guesses_cannot_outrun_the_budget`, `the_captcha_replaces_the_identifier_budget`, `open_challenges_are_capped_per_account` |
 | SEC-68 | Someone holding the password cannot search the second factor nor wear out the owner: tight account budgets that mail the owner, resends that neither flood nor kill the owner's code, challenges ended by a password change, and regeneration refused without Redis | `a_spent_second_factor_budget_warns_the_owner`, `a_resend_keeps_the_previous_code_and_is_budgeted`, `a_new_code_keeps_only_the_previous_one`, `a_password_change_ends_open_challenges`, `a_strict_cooldown_fails_closed` |
 | SEC-69 | Ways in planted by someone who held the password do not survive its recovery: a reset removes those added just before it, and an administrator can remove them all | `a_reset_removes_the_ways_in_added_just_before_it`, `an_administrator_removes_the_ways_in_of_a_compromised_account` |
+| SEC-70 | Administration delegates only what it holds and leaves traces of the change, not of the administrator nor of endpoint secrets; strangers show in exports by network only | `nobody_grants_a_permission_they_lack`, `administrative_traces_describe_the_change_not_the_administrator`, `a_failed_delivery_never_records_the_endpoint_url`, `the_export_shows_only_the_network_of_strangers` |

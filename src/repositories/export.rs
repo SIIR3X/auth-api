@@ -116,7 +116,10 @@ SELECT jsonb_build_object(
         SELECT jsonb_agg(jsonb_build_object(
             'kind', r.kind,
             'requested_at', floor(extract(epoch FROM r.created_at))::bigint,
-            'ip_address', host(r.request_ip),
+            -- Anyone knowing the address can ask for a link: only the network
+            -- of the asker is shown, not a stranger's exact address.
+            'ip_address', host(network(set_masklen(r.request_ip,
+                CASE WHEN family(r.request_ip) = 4 THEN 24 ELSE 48 END))),
             'user_agent', r.request_user_agent
         ) ORDER BY r.created_at)
         FROM (
@@ -138,7 +141,11 @@ SELECT jsonb_build_object(
             'identifier', a.attempted_identifier,
             'successful', a.was_successful,
             'failure_reason', a.failure_reason,
-            'ip_address', host(a.request_ip),
+            -- A failed attempt may be anyone's: its network only. A successful
+            -- one was the owner's.
+            'ip_address', CASE WHEN a.was_successful THEN host(a.request_ip)
+                ELSE host(network(set_masklen(a.request_ip,
+                    CASE WHEN family(a.request_ip) = 4 THEN 24 ELSE 48 END))) END,
             'user_agent', a.request_user_agent
         ) ORDER BY a.attempted_at)
         FROM login_attempts a WHERE a.user_id = $1

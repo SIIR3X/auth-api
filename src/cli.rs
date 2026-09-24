@@ -241,6 +241,9 @@ pub async fn register_client(
     let existed = registered_client::lock_existing(&mut *tx, client.client_id)
         .await
         .map_err(|e| e.to_string())?;
+    let previous = registered_client::find_by_id(&mut *tx, client.client_id)
+        .await
+        .map_err(|e| e.to_string())?;
     let saved = registered_client::upsert(&mut *tx, &client)
         .await
         .map_err(|e| e.to_string())?;
@@ -255,7 +258,12 @@ pub async fn register_client(
                 AuditAction::ClientRegistered
             },
             ip_address: None,
-            metadata: json!({ "client_id": saved.client_id, "by": "command_line" }),
+            metadata: {
+                let mut metadata =
+                    crate::domain::registered_client::audit_changes(previous.as_ref(), &saved);
+                metadata["by"] = json!("command_line");
+                metadata
+            },
         },
     )
     .await

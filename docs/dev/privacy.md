@@ -58,7 +58,7 @@ erase their own data about that user id.
 
 | Right | How |
 |-------|-----|
-| Access and portability | `GET /users/me/export`: one JSON document with everything listed above that auth-api stores about the account (passkeys, personal access tokens, linked identities and where each mailed link was asked from included), secrets excepted; the other `GET /users/me/*` routes show each part. Failed sign-ins typed for the account are part of its security history, including those of other people. A change made by an administrator names neither the administrator nor their address |
+| Access and portability | `GET /users/me/export`: one JSON document with everything listed above that auth-api stores about the account (passkeys, personal access tokens, linked identities and where each mailed link was asked from included), secrets excepted; the other `GET /users/me/*` routes show each part. Failed sign-ins typed for the account are part of its security history, including those of other people: for them, and for the requests of mailed links, only the network (/24, /48) is shown. A change made by an administrator names neither the administrator nor their address |
 | Rectification | `PATCH /users/me/username`, `PATCH /users/me/locale`, the email change flow (`/users/me/email/*`) |
 | Erasure | `DELETE /users/me`; for an account the user cannot reach, an administrator deletes it (`DELETE /admin/users/{id}`) |
 | Restriction | An administrator suspends the account (`POST /admin/users/{id}/suspend`) |

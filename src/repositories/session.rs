@@ -183,10 +183,10 @@ pub async fn rotate(
     Ok(new_session)
 }
 
-pub async fn revoke(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn revoke<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE sessions SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL")
         .bind(id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }

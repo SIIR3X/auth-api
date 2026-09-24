@@ -17,6 +17,17 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- Nobody grants a role a permission they do not hold (`403`), whether they
+  hold the role or not: `roles:manage` alone no longer lets two accounts give
+  each other every permission. A client's audit entry lists the settings that
+  changed. A rename, a session revoked by its owner and a re-authentication
+  are written with their audit entry. A failed webhook delivery records a fixed
+  message instead of the client error, which carried the URL. A forced reset
+  records no administrator address. Status and permissions checked before a
+  suspension, an erasure or a role grant are read under the account's lock.
+  The export shows only the network of failed sign-ins and of mailed-link
+  requests.
+
 - A password reset removes the second factors, passkeys and external
   identities added in the 72 hours before it was asked for
   (`RESET_REVOKES_FACTORS_ADDED_HOURS`) and lists them in its mail. New `DELETE

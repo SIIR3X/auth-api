@@ -64,8 +64,11 @@ pub async fn reauthenticate(
     reason: &'static str,
 ) -> Result<(), AppError> {
     user_svc::verify_password(state, user_id, session_id, current_password).await?;
+    // Audited first: a proof of the password that left no trace grants
+    // nothing.
+    record_reauth_event(state, user_id, ip, request_id, reason).await?;
     mark_recent_reauth(state, session_id).await;
-    record_reauth_event(state, user_id, ip, request_id, reason).await
+    Ok(())
 }
 
 pub async fn require_recent_reauth_or_password(

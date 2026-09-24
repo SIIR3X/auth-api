@@ -128,8 +128,8 @@ pub async fn find_permissions_by_user(
 }
 
 /// Single-query permission check; avoids loading the full permission list.
-pub async fn user_has_permission(
-    pool: &PgPool,
+pub async fn user_has_permission<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     user_id: Uuid,
     permission_name: &str,
 ) -> Result<bool, sqlx::Error> {
@@ -145,7 +145,7 @@ pub async fn user_has_permission(
     )
     .bind(user_id)
     .bind(permission_name)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await?;
     Ok(row.0)
 }

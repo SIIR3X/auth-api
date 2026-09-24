@@ -56,17 +56,13 @@ pub async fn revoke(
         return Err(AppError::Forbidden);
     }
 
-    session_repo::revoke(&state.db, session_id)
+    // The revocation and its audit entry commit together.
+    let mut tx = state.db.begin().await?;
+    session_repo::revoke(&mut *tx, session_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-
-    // Blacklist the refresh token so it cannot be used even before DB TTL expires.
-    auth_svc::blocklist_refresh_token(state, &session.token_hash, session.expires_at).await;
-    auth_svc::invalidate_session_cache(state, session.id).await;
-    reauth_svc::clear_recent_reauth(state, session.id).await;
-
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
@@ -77,6 +73,12 @@ pub async fn revoke(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
+
+    // Blacklist the refresh token so it cannot be used even before DB TTL expires.
+    auth_svc::blocklist_refresh_token(state, &session.token_hash, session.expires_at).await;
+    auth_svc::invalidate_session_cache(state, session.id).await;
+    reauth_svc::clear_recent_reauth(state, session.id).await;
 
     Ok(())
 }

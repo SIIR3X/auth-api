@@ -44,6 +44,7 @@ pub async fn create(
         ));
     }
     let permissions = known_permissions(state, permissions).await?;
+    ensure_actor_holds(state, actor, &permissions).await?;
     require_reauth(state, actor, "admin_create_role").await?;
 
     let mut tx = state.db.begin().await?;
@@ -73,21 +74,21 @@ pub async fn set_permissions(
 ) -> Result<(Role, Vec<String>), AppError> {
     let role = find(state, name).await?;
     let permissions = known_permissions(state, permissions).await?;
-    // Adding to a role one holds a permission one lacks would be granting it
-    // to oneself (every account holds the default role, so this covers it).
-    if role_repo::holds_role(&state.db, actor.user_id, role.id).await? {
-        let current = role_repo::find_all_with_permissions(&state.db)
-            .await?
-            .into_iter()
-            .find(|(r, _)| r.id == role.id)
-            .map(|(_, granted)| granted)
-            .unwrap_or_default();
-        for added in permissions.iter().filter(|p| !current.contains(p)) {
-            if !role_repo::user_has_permission(&state.db, actor.user_id, added).await? {
-                return Err(AppError::Forbidden);
-            }
-        }
-    }
+    // Nobody delegates what they do not hold: a role manager adding to any
+    // role a permission they lack could grant it to an accomplice, who would
+    // grant it back.
+    let current = role_repo::find_all_with_permissions(&state.db)
+        .await?
+        .into_iter()
+        .find(|(r, _)| r.id == role.id)
+        .map(|(_, granted)| granted)
+        .unwrap_or_default();
+    let added: Vec<String> = permissions
+        .iter()
+        .filter(|p| !current.contains(p))
+        .cloned()
+        .collect();
+    ensure_actor_holds(state, actor, &added).await?;
     // Every account holds the default role: administration in it would make
     // every new account an administrator.
     if role.is_default
@@ -159,7 +160,8 @@ pub async fn assign(
 ) -> Result<(), AppError> {
     refuse_own_account(actor, user_id)?;
     let role = find(state, name).await?;
-    let user = user_repo::find_by_id(&state.db, user_id)
+    // A missing account answers 404 before the re-authentication is asked.
+    user_repo::find_by_id(&state.db, user_id)
         .await?
         .ok_or(AppError::NotFound)?;
     require_reauth(state, actor, "admin_assign_role").await?;
@@ -168,6 +170,10 @@ pub async fn assign(
     // Checked under the account's lock: its last second factor cannot go
     // between the check and the grant.
     user_repo::lock_row(&mut *tx, user_id).await?;
+    // Read again under the lock: the status may have changed since.
+    let user = user_repo::find_by_id(&mut *tx, user_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     ensure_can_administer(&mut tx, &user, &role).await?;
     match role_repo::assign_to_user(&mut *tx, user_id, role.id, Some(actor.user_id)).await {
         Ok(_) => {}
@@ -241,6 +247,20 @@ pub(crate) async fn ensure_can_administer(
         || !user_repo::has_second_factor(&mut *tx, user.id).await?
     {
         return Err(AppError::Conflict("administrator_without_second_factor"));
+    }
+    Ok(())
+}
+
+/// Refuse to grant a permission the administrator does not hold.
+async fn ensure_actor_holds(
+    state: &AppState,
+    actor: &Actor,
+    permissions: &[String],
+) -> Result<(), AppError> {
+    for permission in permissions {
+        if !role_repo::user_has_permission(&state.db, actor.user_id, permission).await? {
+            return Err(AppError::Forbidden);
+        }
     }
     Ok(())
 }

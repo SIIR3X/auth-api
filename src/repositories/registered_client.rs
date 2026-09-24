@@ -16,13 +16,13 @@ pub struct NewRegisteredClient<'a> {
 }
 
 /// Find a registered client by its client_id.
-pub async fn find_by_id(
-    pool: &PgPool,
+pub async fn find_by_id<'e>(
+    executor: impl PgExecutor<'e>,
     client_id: &str,
 ) -> Result<Option<RegisteredClient>, sqlx::Error> {
     sqlx::query_as::<_, RegisteredClient>("SELECT * FROM registered_clients WHERE client_id = $1")
         .bind(client_id)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await
 }
 

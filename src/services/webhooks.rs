@@ -165,8 +165,12 @@ async fn attempt(state: &AppState, delivery: &ClaimedDelivery) -> Outcome {
             Some(response.status().as_u16()),
             format!("endpoint answered {}", response.status()),
         ),
+        // Fixed messages: the error of the HTTP client carries the full URL,
+        // whose path or query may hold a token of the endpoint's own.
         Err(e) if e.is_timeout() => failed(None, "timed out".into()),
-        Err(e) => failed(None, format!("request failed: {e}")),
+        Err(e) if e.is_connect() => failed(None, "connection failed".into()),
+        Err(e) if e.is_redirect() => failed(None, "redirect refused".into()),
+        Err(_) => failed(None, "request failed".into()),
     }
 }
 

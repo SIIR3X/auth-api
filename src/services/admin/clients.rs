@@ -59,6 +59,7 @@ pub async fn save(
 
     let mut tx = state.db.begin().await?;
     let existed = client_repo::lock_existing(&mut *tx, client.client_id).await?;
+    let previous = client_repo::find_by_id(&mut *tx, client.client_id).await?;
     let mut saved = client_repo::upsert(&mut *tx, client).await.map_err(|e| {
         let scoped = matches!(&e, sqlx::Error::Database(db)
             if db.constraint() == Some("registered_clients_client_credentials_scoped"));
@@ -90,7 +91,7 @@ pub async fn save(
             } else {
                 AuditAction::ClientRegistered
             },
-            json!({ "client_id": saved.client_id }),
+            client_domain::audit_changes(previous.as_ref(), &saved),
         ),
     )
     .await?;

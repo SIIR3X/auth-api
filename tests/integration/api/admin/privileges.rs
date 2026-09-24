@@ -265,3 +265,92 @@ async fn an_administrator_removes_the_ways_in_of_a_compromised_account() {
 async fn admin_with_index(app: &TestApp, index: usize) -> Admin {
     admin(app, index).await
 }
+
+/// Nobody grants a permission they do not hold, to any role: a role manager
+/// cannot create or extend a role with more than they have (SEC-70).
+#[tokio::test]
+async fn nobody_grants_a_permission_they_lack() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let (_, token) = role_manager(&app, &admin).await;
+
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        "/admin/roles",
+        &token,
+        json!({ "name": "superadmin", "permissions": ["roles:manage", "users:manage"] }),
+    )
+    .await;
+    assert_eq!(status, 403);
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        "/admin/roles",
+        &admin.token,
+        json!({ "name": "empty", "permissions": [] }),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (status, _) = send(
+        &app,
+        Method::PUT,
+        "/admin/roles/empty/permissions",
+        &token,
+        json!({ "permissions": ["audit:read"] }),
+    )
+    .await;
+    assert_eq!(
+        status, 403,
+        "a role the manager does not hold is no exception"
+    );
+}
+
+/// A forced reset leaves no trace of the administrator's address in the link
+/// the owner exports, and a client change is audited as a diff (SEC-70).
+#[tokio::test]
+async fn administrative_traces_describe_the_change_not_the_administrator() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let target = fixtures::authenticated_user(&app, 2).await;
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        &format!("/admin/users/{}/password-reset", target.id),
+        &admin.token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let addresses: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM password_reset_tokens WHERE user_id = $1 AND request_ip IS NOT NULL",
+    )
+    .bind(target.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(addresses, 0);
+
+    for uri in ["https://one.example.com/cb", "https://two.example.com/cb"] {
+        let (status, body) = send(
+            &app,
+            Method::PUT,
+            "/admin/clients/audited-app",
+            &admin.token,
+            json!({ "display_name": "Audited", "redirect_uris": [uri] }),
+        )
+        .await;
+        assert!(status == 200 || status == 201, "{status} {body}");
+    }
+    let changes: Value = sqlx::query_scalar(
+        "SELECT metadata->'changes' FROM audit_log WHERE action = 'client_updated'
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        changes["redirect_hosts"],
+        json!({ "before": ["one.example.com"], "after": ["two.example.com"] })
+    );
+}

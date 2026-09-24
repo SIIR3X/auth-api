@@ -105,3 +105,29 @@ async fn the_export_names_no_administrator_nor_their_address() {
     );
     assert_eq!(entry["ip_address"], Value::Null);
 }
+
+/// Failed sign-ins typed for the account may be anyone's: the export shows
+/// their network, not a stranger's exact address (SEC-70).
+#[tokio::test]
+async fn the_export_shows_only_the_network_of_strangers() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 1).await;
+    sqlx::query(
+        "INSERT INTO login_attempts (user_id, attempted_identifier, was_successful, failure_reason, request_ip)
+         VALUES ($1, $2, FALSE, 'invalid_password', '203.0.113.77')",
+    )
+    .bind(user.id)
+    .bind(&user.email)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let text = app
+        .get_auth("/users/me/export", &user.access_token)
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(!text.contains("203.0.113.77"), "{text}");
+    assert!(text.contains("203.0.113.0"), "{text}");
+}

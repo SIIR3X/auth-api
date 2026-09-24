@@ -69,11 +69,15 @@ pub async fn update_password_hash<'e>(
     Ok(())
 }
 
-pub async fn update_username(pool: &PgPool, id: Uuid, username: &str) -> Result<(), sqlx::Error> {
+pub async fn update_username<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+    username: &str,
+) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE users SET username = $2 WHERE id = $1")
         .bind(id)
         .bind(username)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }
@@ -302,10 +306,13 @@ pub async fn verify_if_pending<'e>(
 
 // Reads
 
-pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<User>, sqlx::Error> {
+pub async fn find_by_id<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await
 }
 

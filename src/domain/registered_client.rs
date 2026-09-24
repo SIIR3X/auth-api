@@ -120,6 +120,63 @@ pub fn check_settings(
     Ok(())
 }
 
+/// Audit metadata of a saved client: its id, and for each setting that
+/// changed, the value before and after. Redirect URIs are reduced to their
+/// hosts: a path or query may carry something of the client's own.
+pub fn audit_changes(
+    previous: Option<&RegisteredClient>,
+    saved: &RegisteredClient,
+) -> serde_json::Value {
+    fn hosts(uris: &[String]) -> Vec<String> {
+        let mut hosts: Vec<String> = uris
+            .iter()
+            .filter_map(|uri| reqwest::Url::parse(uri).ok())
+            .filter_map(|url| url.host_str().map(str::to_owned))
+            .collect();
+        hosts.sort();
+        hosts.dedup();
+        hosts
+    }
+    let mut changes = serde_json::Map::new();
+    let mut compare = |field: &str, before: serde_json::Value, after: serde_json::Value| {
+        if before != after {
+            changes.insert(
+                field.to_owned(),
+                serde_json::json!({ "before": before, "after": after }),
+            );
+        }
+    };
+    let null = serde_json::Value::Null;
+    compare(
+        "redirect_hosts",
+        previous.map_or(null.clone(), |p| serde_json::json!(hosts(&p.redirect_uris))),
+        serde_json::json!(hosts(&saved.redirect_uris)),
+    );
+    compare(
+        "scopes",
+        previous.map_or(null.clone(), |p| serde_json::json!(p.scopes)),
+        serde_json::json!(saved.scopes),
+    );
+    compare(
+        "is_primary",
+        previous.map_or(null.clone(), |p| serde_json::json!(p.is_primary)),
+        serde_json::json!(saved.is_primary),
+    );
+    compare(
+        "allows_client_credentials",
+        previous.map_or(null.clone(), |p| {
+            serde_json::json!(p.allows_client_credentials)
+        }),
+        serde_json::json!(saved.allows_client_credentials),
+    );
+    compare(
+        "allows_loopback_redirect",
+        previous.map_or(null, |p| serde_json::json!(p.allows_loopback_redirect)),
+        serde_json::json!(saved.allows_loopback_redirect),
+    );
+    serde_json::json!({ "client_id": saved.client_id, "changes": changes })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

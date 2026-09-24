@@ -141,7 +141,9 @@ pub async fn change_username(
         return Err(AppError::Conflict("username_taken"));
     }
 
-    user_repo::update_username(&state.db, user_id, new_username)
+    // The rename and its audit entry commit together.
+    let mut tx = state.db.begin().await?;
+    user_repo::update_username(&mut *tx, user_id, new_username)
         .await
         // The pre-check can race with another rename; the constraint decides.
         .map_err(|e| {
@@ -149,7 +151,7 @@ pub async fn change_username(
         })?;
 
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
@@ -160,6 +162,7 @@ pub async fn change_username(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
 
     Ok(())
 }
@@ -430,14 +433,15 @@ pub(crate) async fn erase_account(
     // while NATS is down.
     // Deleting the last active account able to manage roles would leave the
     // deployment without one: refused, whoever asks (the owner or an admin).
+    let mut tx = state.db.begin().await?;
+    // Read under the account's lock: a role granted meanwhile is seen.
+    user_repo::lock_row(&mut *tx, user_id).await?;
     let manages_roles = crate::repositories::role::user_has_permission(
-        &state.db,
+        &mut *tx,
         user_id,
         crate::domain::role::ROLES_MANAGE,
     )
     .await?;
-
-    let mut tx = state.db.begin().await?;
 
     // Appended before the deletion: the foreign key then sets its user_id to NULL.
     audit::append(

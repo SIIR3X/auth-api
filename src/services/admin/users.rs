@@ -70,13 +70,15 @@ pub async fn suspend(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(
         ));
     }
 
-    let manages_roles =
-        role_repo::user_has_permission(&state.db, user_id, crate::domain::role::ROLES_MANAGE)
-            .await?;
     let mut tx = state.db.begin().await?;
     if !user_repo::suspend(&mut *tx, user_id).await? {
         return Ok(());
     }
+    // Read in the transaction, after the row is locked by the update: a role
+    // granted meanwhile is seen.
+    let manages_roles =
+        role_repo::user_has_permission(&mut *tx, user_id, crate::domain::role::ROLES_MANAGE)
+            .await?;
     if manages_roles {
         super::roles::keep_an_administrator(&mut tx).await?;
     }
@@ -241,7 +243,9 @@ pub async fn force_password_reset(
         let revoked = drop_access_factors_in(state, actor, user_id).await?;
         forget_sessions(state, &revoked).await;
     }
-    auth_svc::send_reset_link(state, &user, actor.ip, None, true).await
+    // The link records no address: it would show the administrator's in the
+    // owner's export.
+    auth_svc::send_reset_link(state, &user, None, None, true).await
 }
 
 /// Remove every way into the account other than its password: second

@@ -484,3 +484,41 @@ async fn a_redelivery_is_audited() {
     .unwrap();
     assert_eq!(redelivered, 1);
 }
+
+/// A failed delivery records a fixed message: the HTTP client's error carries
+/// the full URL, whose query may hold the endpoint's own token (SEC-70).
+#[tokio::test]
+async fn a_failed_delivery_never_records_the_endpoint_url() {
+    let app = TestApp::spawn_with_config(|c| {
+        c.webhooks.allow_private_networks = true;
+        c.webhooks.allow_http = true;
+    })
+    .await;
+    let admin = admin(&app, 1).await;
+    let (_, created) = send(
+        &app,
+        Method::POST,
+        "/admin/webhooks",
+        &admin.token,
+        json!({ "url": "http://127.0.0.1:9/hook?token=endpoint-secret", "events": ["user.created"] }),
+    )
+    .await;
+
+    fixtures::register_user(&app, 2).await;
+    webhooks::deliver_once(&app.state).await.unwrap();
+    let id = created["id"].as_str().unwrap();
+    let mut deliveries = delivery_state(&app, &admin.token, id).await;
+    for _ in 0..50 {
+        if deliveries[0]["last_error"].is_string() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        deliveries = delivery_state(&app, &admin.token, id).await;
+    }
+    let error = deliveries[0]["last_error"].as_str().unwrap_or_default();
+    assert!(!error.is_empty(), "{deliveries}");
+    assert!(
+        !error.contains("endpoint-secret") && !error.contains("127.0.0.1"),
+        "{error}"
+    );
+}
