@@ -182,6 +182,7 @@ pub(crate) fn action_name(action: &AuditAction) -> &'static str {
         A::EncryptionKeyRotated => "encryption_key_rotated",
         A::AccountUnlocked => "account_unlocked",
         A::PasswordResetForced => "password_reset_forced",
+        A::AccessFactorsRemoved => "access_factors_removed",
         A::RoleCreated => "role_created",
         A::RoleDeleted => "role_deleted",
         A::RolePermissionsChanged => "role_permissions_changed",

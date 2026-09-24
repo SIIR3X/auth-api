@@ -17,6 +17,14 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- A password reset removes the second factors, passkeys and external
+  identities added in the 72 hours before it was asked for
+  (`RESET_REVOKES_FACTORS_ADDED_HOURS`) and lists them in its mail. New `DELETE
+  /admin/users/{id}/access-factors` (re-authentication, audited as
+  `access_factors_removed`) and `revoke_access_factors` on `POST
+  /admin/users/{id}/password-reset` remove every way in but the password; an
+  administrator's last second factor stays. The owner is mailed of an unlock.
+
 - Second factors: 10 wrong TOTP codes an hour per address and 30 per account
   (100 before); spending the account budget mails the owner (new
   `second_factor_attempts` template). Recovery-code budgets cover an hour

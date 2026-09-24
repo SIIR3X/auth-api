@@ -6,6 +6,8 @@
 {% elif change == "reactivated" %}<p>Un administrateur a réactivé votre compte {{ app_name }} : vous pouvez de nouveau vous connecter.</p>
 {% elif change == "role_granted" %}<p>Un administrateur a attribué le rôle <strong>{{ role }}</strong> à votre compte {{ app_name }}.</p>
 {% elif change == "role_revoked" %}<p>Votre compte {{ app_name }} ne détient plus le rôle <strong>{{ role }}</strong>.</p>
+{% elif change == "unlocked" %}<p>Un administrateur a débloqué la connexion par mot de passe à votre compte {{ app_name }}.</p>
+{% elif change == "access_removed" %}<p>Un administrateur a retiré les seconds facteurs, passkeys, comptes liés et jetons personnels de votre compte {{ app_name }} : ajoutez de nouveau ceux qui étaient les vôtres.</p>
 {% else %}<p>Un administrateur a déconnecté votre compte {{ app_name }} de tous vos appareils.</p>
 {% endif %}<p>L'historique de votre compte mentionne ce changement. Si vous ne vous y attendiez pas, contactez le support.</p>
 </body>

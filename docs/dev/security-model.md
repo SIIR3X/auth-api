@@ -60,8 +60,13 @@ the database together, is out of scope.
 - **Access that outlives the password is visible.** Passkeys, personal access
   tokens and external identities survive a password reset, and anyone holding
   the password can add one. Each addition mails the owner; every password
-  change or reset mails the list of what still opens the account. A pending
-  account taken back by a reset loses all of them.
+  change or reset mails the list of what still opens the account. A reset
+  removes the second factors, passkeys and external identities added in the
+  `RESET_REVOKES_FACTORS_ADDED_HOURS` (72) before it was asked for, and lists
+  them. A pending account taken back by a reset loses all of them. An
+  administrator can remove them all (`DELETE /admin/users/{id}/access-factors`,
+  or `revoke_access_factors` on a forced reset), never an administrator's last
+  second factor.
 - **Lockout** after `LOCKOUT_THRESHOLD` consecutive wrong passwords within a
   day. It locks the password only: passkeys, sign-in links, external
   identities and personal access tokens still open the account. Any completed
@@ -445,3 +450,4 @@ when a cited test no longer exists.
 | SEC-66 | No new session without the password: every OAuth consent needs a re-authentication, the instance's own application included, and so does signing an account out from the administration | `a_primary_client_signs_in_end_to_end`, `approving_another_client_needs_a_recent_reauthentication`, `actions_that_push_out_or_reopen_need_a_recent_reauthentication` |
 | SEC-67 | Password guesses cannot outrun their budget nor keep the owner out: attempts are reserved atomically before the hash, the CAPTCHA replaces the identifier budget, and challenges are capped per account | `a_burst_of_guesses_cannot_outrun_the_budget`, `the_captcha_replaces_the_identifier_budget`, `open_challenges_are_capped_per_account` |
 | SEC-68 | Someone holding the password cannot search the second factor nor wear out the owner: tight account budgets that mail the owner, resends that neither flood nor kill the owner's code, challenges ended by a password change, and regeneration refused without Redis | `a_spent_second_factor_budget_warns_the_owner`, `a_resend_keeps_the_previous_code_and_is_budgeted`, `a_new_code_keeps_only_the_previous_one`, `a_password_change_ends_open_challenges`, `a_strict_cooldown_fails_closed` |
+| SEC-69 | Ways in planted by someone who held the password do not survive its recovery: a reset removes those added just before it, and an administrator can remove them all | `a_reset_removes_the_ways_in_added_just_before_it`, `an_administrator_removes_the_ways_in_of_a_compromised_account` |

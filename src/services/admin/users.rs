@@ -155,6 +155,7 @@ pub async fn unlock(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<()
     .await?;
     tx.commit().await?;
     redis_counter::reset(&state.redis, &[&user_svc::reauth_fail_key(user_id)]).await;
+    super::notify_owner(state, user_id, "unlocked", None).await;
     Ok(())
 }
 
@@ -205,6 +206,7 @@ pub async fn force_password_reset(
     state: &AppState,
     actor: &Actor,
     user_id: Uuid,
+    revoke_access_factors: bool,
 ) -> Result<(), AppError> {
     refuse_own_account(actor, user_id)?;
     require_reauth(state, actor, "admin_force_password_reset").await?;
@@ -233,7 +235,51 @@ pub async fn force_password_reset(
     events::wake();
 
     forget_sessions(state, &active).await;
+    // Whoever knew the password may have added their own ways in: on request,
+    // they go with it.
+    if revoke_access_factors {
+        let revoked = drop_access_factors_in(state, actor, user_id).await?;
+        forget_sessions(state, &revoked).await;
+    }
     auth_svc::send_reset_link(state, &user, actor.ip, None, true).await
+}
+
+/// Remove every way into the account other than its password: second
+/// factors, recovery codes, passkeys, external identities and personal access
+/// tokens. For an account whose password was known to someone else, after a
+/// forced reset: what they planted goes too. An account holding
+/// administrative permissions keeps its second factor.
+pub async fn remove_access_factors(
+    state: &AppState,
+    actor: &Actor,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    refuse_own_account(actor, user_id)?;
+    require_reauth(state, actor, "admin_remove_access_factors").await?;
+    find(state, user_id).await?;
+    let revoked = drop_access_factors_in(state, actor, user_id).await?;
+    forget_sessions(state, &revoked).await;
+    super::notify_owner(state, user_id, "access_removed", None).await;
+    Ok(())
+}
+
+async fn drop_access_factors_in(
+    state: &AppState,
+    actor: &Actor,
+    user_id: Uuid,
+) -> Result<Vec<crate::domain::session::Session>, AppError> {
+    let mut tx = state.db.begin().await?;
+    user_repo::lock_row(&mut *tx, user_id).await?;
+    let revoked = session_repo::revoke_personal_access_sessions(&mut *tx, user_id).await?;
+    user_repo::drop_access_factors(&mut *tx, user_id).await?;
+    crate::services::user::keep_a_second_factor_for_administrators(&mut tx, user_id).await?;
+    audit::append(
+        &mut *tx,
+        &entry(actor, user_id, AuditAction::AccessFactorsRemoved, json!({})),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(revoked)
 }
 
 /// Delete the account like its owner would, after a recent re-authentication of

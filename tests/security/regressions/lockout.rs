@@ -248,3 +248,63 @@ async fn a_burst_of_guesses_cannot_outrun_the_budget() {
         "{statuses:?}"
     );
 }
+
+/// A reset removes the second factors and passkeys added shortly before it
+/// was asked for (whoever held the password may have planted them), keeps the
+/// older ones, and says so in the mail (SEC-69).
+#[tokio::test]
+async fn a_reset_removes_the_ways_in_added_just_before_it() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 808).await;
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified, created_at)
+         VALUES ($1, 'email', TRUE, TRUE, NOW() - INTERVAL '10 days')",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO passkeys (user_id, credential_id, public_key, algorithm, aaguid, name)
+         VALUES ($1, '\\x0102', '\\x0304', -7, gen_random_uuid(), 'planted')",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    app.post("/auth/forgot-password", &json!({ "email": user.email }))
+        .await;
+    let token = app
+        .mail
+        .wait_for(&user.email, RESET_SUBJECT)
+        .await
+        .value_after("token=")
+        .unwrap();
+    let res = app
+        .post(
+            "/auth/reset-password",
+            &json!({ "token": token, "new_password": "Brand-New-Pass-808!" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+
+    let (methods, passkeys): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM two_factor_methods WHERE user_id = $1),
+                (SELECT count(*) FROM passkeys WHERE user_id = $1)",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        (methods, passkeys),
+        (1, 0),
+        "the old method stays, the new passkey goes"
+    );
+    let mail = app
+        .mail
+        .wait_for(&user.email, "Your password has been changed")
+        .await;
+    assert!(mail.html.contains("planted"), "{}", mail.html);
+}

@@ -102,6 +102,7 @@ use utoipa::{
         crate::handlers::admin::users::unlock,
         crate::handlers::admin::users::revoke_sessions,
         crate::handlers::admin::users::force_password_reset,
+        crate::handlers::admin::users::remove_access_factors,
         crate::handlers::admin::users::delete,
         crate::handlers::admin::roles::permissions,
         crate::handlers::admin::roles::list,

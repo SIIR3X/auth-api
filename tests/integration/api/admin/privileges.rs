@@ -216,3 +216,52 @@ async fn an_administrator_keeps_a_second_factor() {
         (409, Some("administrator_needs_second_factor"))
     );
 }
+
+/// An administrator can remove what someone who knew the password may have
+/// added; the owner is told (SEC-69).
+#[tokio::test]
+async fn an_administrator_removes_the_ways_in_of_a_compromised_account() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let target = fixtures::authenticated_user(&app, 2).await;
+    enroll_second_factor(&app, target.id).await;
+
+    let (status, response) = send(
+        &app,
+        Method::DELETE,
+        &format!("/admin/users/{}/access-factors", target.id),
+        &admin.token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 204, "{response}");
+    let methods: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM two_factor_methods WHERE user_id = $1")
+            .bind(target.id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert_eq!(methods, 0);
+    app.mail
+        .wait_for(&target.email, "An administrator changed your account")
+        .await;
+
+    // An administrator's own second factor stays.
+    let other = admin_with_index(&app, 3).await;
+    let (status, response) = send(
+        &app,
+        Method::DELETE,
+        &format!("/admin/users/{}/access-factors", other.user.id),
+        &admin.token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        (status, response["code"].as_str()),
+        (409, Some("administrator_needs_second_factor"))
+    );
+}
+
+async fn admin_with_index(app: &TestApp, index: usize) -> Admin {
+    admin(app, index).await
+}

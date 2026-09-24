@@ -277,11 +277,13 @@ pub async fn send_password_changed(
     username: &str,
     locale: &str,
     access: &[AccessItem],
+    removed: &[AccessItem],
 ) -> Result<(), AppError> {
     let mut ctx = Context::new();
     ctx.insert("username", username);
     ctx.insert("app_name", &mail_cfg.smtp.from_name);
     ctx.insert("access", access);
+    ctx.insert("removed", removed);
 
     let body = render_with_fallback(
         templates,

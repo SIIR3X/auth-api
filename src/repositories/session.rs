@@ -204,6 +204,21 @@ pub async fn revoke_all_by_user<'e>(
     Ok(result.rows_affected())
 }
 
+/// Revoke the sessions of a user's personal access tokens and return them.
+pub async fn revoke_personal_access_sessions<'e>(
+    executor: impl PgExecutor<'e>,
+    user_id: Uuid,
+) -> Result<Vec<Session>, sqlx::Error> {
+    sqlx::query_as::<_, Session>(
+        "UPDATE sessions SET revoked_at = NOW()
+         WHERE user_id = $1 AND session_type = 'personal_access_token' AND revoked_at IS NULL
+         RETURNING *",
+    )
+    .bind(user_id)
+    .fetch_all(executor)
+    .await
+}
+
 /// Revoke every active session of a user and return them: the sessions to
 /// forget in caches are exactly those this statement revoked.
 pub async fn revoke_all_by_user_returning<'e>(

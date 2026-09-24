@@ -43,6 +43,7 @@ pub enum AuditAction {
     EncryptionKeyRotated,
     AccountUnlocked,
     PasswordResetForced,
+    AccessFactorsRemoved,
     RoleCreated,
     RoleDeleted,
     RolePermissionsChanged,

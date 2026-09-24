@@ -193,6 +193,10 @@ pub struct SecurityConfig {
     /// removes the budget. Bounds how fast usernames can be squatted with
     /// throwaway addresses. Default: 20.
     pub registrations_per_ip_per_hour: u32,
+    /// A password reset removes the second factors, passkeys and external
+    /// identities added in this many hours before it was asked for: whoever
+    /// held the password may have planted them. 0 keeps them. Default: 72.
+    pub reset_revokes_factors_added_hours: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -570,6 +574,9 @@ impl Config {
                 registrations_per_ip_per_hour: vars
                     .parse("REGISTRATIONS_PER_IP_PER_HOUR")?
                     .unwrap_or(20),
+                reset_revokes_factors_added_hours: vars
+                    .parse("RESET_REVOKES_FACTORS_ADDED_HOURS")?
+                    .unwrap_or(72),
             },
             mail: MailConfig {
                 smtp: SmtpConfig {

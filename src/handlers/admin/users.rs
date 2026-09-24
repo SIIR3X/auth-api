@@ -282,11 +282,13 @@ pub async fn revoke_sessions(
     path = "/admin/users/{id}/password-reset",
     tag = "admin",
     params(("id" = Uuid, Path, description = "Account id")),
+    request_body = Option<ForcePasswordResetRequest>,
     responses(
         (status = 204, description = "Signed out everywhere and a reset link mailed to the owner"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Missing `users:manage`, no second factor proven by the session, or the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_needs_second_factor`: `revoke_access_factors` on an account holding administrative permissions", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -295,9 +297,45 @@ pub async fn force_password_reset(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     Path(user_id): Path<Uuid>,
+    body: Option<Json<ForcePasswordResetRequest>>,
 ) -> Result<StatusCode, AppError> {
     admin.require(&state, "users:manage").await?;
-    admin_users::force_password_reset(&state, &actor(&admin, ip), user_id).await?;
+    let revoke = body.is_some_and(|Json(b)| b.revoke_access_factors);
+    admin_users::force_password_reset(&state, &actor(&admin, ip), user_id, revoke).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+pub struct ForcePasswordResetRequest {
+    /// Also remove the account's second factors, passkeys, external
+    /// identities and personal access tokens: what someone who knew the
+    /// password may have added.
+    #[serde(default)]
+    pub revoke_access_factors: bool,
+}
+
+#[utoipa::path(
+    delete,
+    path = "/admin/users/{id}/access-factors",
+    tag = "admin",
+    params(("id" = Uuid, Path, description = "Account id")),
+    responses(
+        (status = 204, description = "Second factors, recovery codes, passkeys, external identities and personal access tokens removed; the owner is mailed"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, no second factor proven by the session, the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
+        (status = 404, description = "No such account", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_needs_second_factor`: the account holds administrative permissions", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
+pub async fn remove_access_factors(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    Path(user_id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    admin.require(&state, "users:manage").await?;
+    admin_users::remove_access_factors(&state, &actor(&admin, ip), user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -228,6 +228,63 @@ pub async fn drop_access_factors<'e>(
     Ok(())
 }
 
+/// Delete the second factors, passkeys and external identities added since
+/// `since`, and return what went as `(kind, name)`: `totp`, `email`,
+/// `passkey` with its name, `identity` with its provider. The remaining
+/// verified method becomes primary if the primary went, and recovery codes go
+/// when no verified method remains.
+pub async fn drop_access_factors_since(
+    tx: &mut sqlx::PgConnection,
+    id: Uuid,
+    since: OffsetDateTime,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    let mut removed: Vec<(String, String)> = sqlx::query_as(
+        "DELETE FROM two_factor_methods WHERE user_id = $1 AND created_at > $2
+         RETURNING method_type::text, ''",
+    )
+    .bind(id)
+    .bind(since)
+    .fetch_all(&mut *tx)
+    .await?;
+    removed.extend(
+        sqlx::query_as::<_, (String, String)>(
+            "DELETE FROM passkeys WHERE user_id = $1 AND created_at > $2
+             RETURNING 'passkey', name::text",
+        )
+        .bind(id)
+        .bind(since)
+        .fetch_all(&mut *tx)
+        .await?,
+    );
+    removed.extend(
+        sqlx::query_as::<_, (String, String)>(
+            "DELETE FROM external_identities WHERE user_id = $1 AND created_at > $2
+             RETURNING 'identity', provider::text",
+        )
+        .bind(id)
+        .bind(since)
+        .fetch_all(&mut *tx)
+        .await?,
+    );
+    sqlx::query(
+        "UPDATE two_factor_methods SET is_primary = TRUE
+         WHERE id = (SELECT id FROM two_factor_methods
+                     WHERE user_id = $1 AND is_verified ORDER BY created_at LIMIT 1)
+           AND NOT EXISTS (SELECT 1 FROM two_factor_methods WHERE user_id = $1 AND is_primary)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM recovery_codes WHERE user_id = $1
+           AND NOT EXISTS (SELECT 1 FROM two_factor_methods WHERE user_id = $1 AND is_verified)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    Ok(removed)
+}
+
 pub async fn verify_if_pending<'e>(
     executor: impl PgExecutor<'e>,
     id: Uuid,

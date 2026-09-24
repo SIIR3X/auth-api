@@ -50,6 +50,7 @@ CREATE TYPE audit_action AS ENUM (
     -- Administrative changes.
     'account_unlocked',
     'password_reset_forced',
+    'access_factors_removed',
     'role_created',
     'role_deleted',
     'role_permissions_changed',

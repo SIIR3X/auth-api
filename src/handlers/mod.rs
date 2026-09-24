@@ -522,6 +522,10 @@ fn admin_router() -> Router<AppState> {
         .route("/users/{id}/reactivate", post(admin::users::reactivate))
         .route("/users/{id}/unlock", post(admin::users::unlock))
         .route(
+            "/users/{id}/access-factors",
+            delete(admin::users::remove_access_factors),
+        )
+        .route(
             "/users/{id}/sessions",
             delete(admin::users::revoke_sessions),
         )

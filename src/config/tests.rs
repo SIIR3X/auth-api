@@ -71,6 +71,7 @@ fn valid_config() -> Config {
             new_device_alerts: true,
             magic_links: false,
             registrations_per_ip_per_hour: 20,
+            reset_revokes_factors_added_hours: 72,
         },
         mail: MailConfig {
             smtp: SmtpConfig {

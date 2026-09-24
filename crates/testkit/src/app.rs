@@ -526,6 +526,7 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             new_device_alerts: true,
             magic_links: true,
             registrations_per_ip_per_hour: 10_000,
+            reset_revokes_factors_added_hours: 72,
         },
         captcha: CaptchaConfig {
             secret: None,

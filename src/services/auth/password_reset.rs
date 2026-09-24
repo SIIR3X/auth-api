@@ -170,6 +170,16 @@ pub async fn reset_password(
     // locked by the guesses that locked the old one.
     user_repo::clear_lockout(&mut *tx, record.user_id).await?;
 
+    // Ways in added shortly before the reset was asked for may have been
+    // planted by whoever held the password: they go, and the mail lists them.
+    let window = state.config.security.reset_revokes_factors_added_hours;
+    let removed = if window > 0 {
+        let since = record.created_at - ::time::Duration::hours(i64::from(window));
+        user_repo::drop_access_factors_since(&mut tx, record.user_id, since).await?
+    } else {
+        Vec::new()
+    };
+
     // Invalidate all active sessions to force re-login with the new password
     session_repo::revoke_all_by_user(&mut *tx, record.user_id).await?;
 
@@ -245,7 +255,19 @@ pub async fn reset_password(
     // The owner learns what still opens the account: a passkey or token added
     // by whoever held the old password survives the reset.
     if let Ok(Some(user)) = user_repo::find_by_id(&state.db, record.user_id).await {
-        crate::services::user::notify_password_changed(state, &user).await;
+        let removed = removed
+            .into_iter()
+            .map(|(kind, name)| crate::services::email::AccessItem {
+                kind: match kind.as_str() {
+                    "totp" => "totp",
+                    "email" => "email",
+                    "passkey" => "passkey",
+                    _ => "identity",
+                },
+                name,
+            })
+            .collect();
+        crate::services::user::notify_password_changed(state, &user, removed).await;
     }
 
     Ok(())

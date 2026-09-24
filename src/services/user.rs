@@ -261,7 +261,7 @@ pub async fn change_password(
     // after a reset: it would otherwise still open a session.
     auth_svc::purge_user_pre_auth_and_email_change(state, user.id).await;
 
-    notify_password_changed(state, &user).await;
+    notify_password_changed(state, &user, Vec::new()).await;
 
     Ok(())
 }
@@ -321,8 +321,13 @@ pub(crate) async fn access_summary(state: &AppState, user_id: Uuid) -> Vec<Acces
     access
 }
 
-/// Tell the owner their password changed, listing what still opens the account.
-pub(crate) async fn notify_password_changed(state: &AppState, user: &User) {
+/// Tell the owner their password changed, listing what still opens the account
+/// and what the change removed.
+pub(crate) async fn notify_password_changed(
+    state: &AppState,
+    user: &User,
+    removed: Vec<super::email::AccessItem>,
+) {
     let access = access_summary(state, user.id).await;
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();
@@ -339,6 +344,7 @@ pub(crate) async fn notify_password_changed(state: &AppState, user: &User) {
             &username,
             &locale,
             &access,
+            &removed,
         )
         .await
     });
