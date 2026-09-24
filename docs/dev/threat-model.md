@@ -137,7 +137,8 @@ at least once a year.
   monitoring host only (firewall rules of the monitoring guide).
 - A username is an identifier others can learn exists: choosing one that is
   taken answers `username_taken`, whatever the case. Email addresses, the
-  identifier that reaches a person, are never confirmed this way. Budgets on
+  identifier that reaches a person, are never confirmed this way (kept after
+  the third audit: usernames are public in this product). Budgets on
   registration (`REGISTRATIONS_PER_IP_PER_HOUR`) bound how fast usernames can
   be tried or squatted, and a pending account frees its username after
   `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` (2 by default); a deployment that treats

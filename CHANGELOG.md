@@ -8,7 +8,7 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 ## [2.1.0] - 2026-09-26
 
 Security release: fixes every finding of the security audit of 2026-09-26
-and of the independent re-audit that followed it.
+and of the two independent re-audits that followed it.
 Some fixes refuse what was unsafe to accept, as the versioning policy allows
 for security fixes: each such change is listed under **Security**. No
 deployment exists yet, so the migrations were consolidated: each table is
