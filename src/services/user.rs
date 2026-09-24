@@ -461,8 +461,7 @@ pub(crate) async fn erase_account(
 
     events::enqueue(&mut *tx, "user.deleted", &events::UserDeleted { user_id }).await?;
 
-    user_repo::forget_traces(&mut *tx, user_id).await?;
-    user_repo::delete(&mut *tx, user_id).await?;
+    user_repo::erase(&mut *tx, user_id).await?;
     if manages_roles {
         super::admin::roles::keep_an_administrator(&mut tx).await?;
     }

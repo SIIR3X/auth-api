@@ -183,3 +183,53 @@ async fn the_maintenance_functions_keep_the_owners_floors() {
             .unwrap();
     assert_eq!(purged, 0, "an account pending for minutes was purged");
 }
+
+/// Partitions created after the grants lose UPDATE and DELETE for the runtime
+/// role, the lookahead is bounded, and erasing an account's traces deletes
+/// the account: none rewrites the audit trail of an account that stays
+/// (SEC-71).
+#[tokio::test]
+async fn the_audit_trail_stays_out_of_the_runtime_roles_reach() {
+    let db = TestDb::new().await;
+    let user_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO users (username, email, password_hash)
+         VALUES ('trail_keeper', 'trail.keeper@example.com', repeat('h', 60)) RETURNING id",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let mut runtime = runtime_connection(&db).await;
+
+    sqlx::raw_sql("SELECT rotate_audit_log_partitions(12, 1000)")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let (partitions, writable): (i64, i64) = sqlx::query_as(
+        "SELECT count(*),
+                count(*) FILTER (WHERE has_table_privilege('auth_api', c.oid, 'UPDATE')
+                                    OR has_table_privilege('auth_api', c.oid, 'DELETE'))
+         FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+         JOIN pg_class p ON p.oid = i.inhparent
+         WHERE p.relname = 'audit_log'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(
+        partitions <= 27,
+        "{partitions} partitions: the lookahead is bounded"
+    );
+    assert_eq!(writable, 0, "a partition is writable by the runtime role");
+
+    sqlx::query("SELECT forget_account_traces($1)")
+        .bind(user_id)
+        .execute(&mut runtime)
+        .await
+        .unwrap();
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "the traces go only with the account");
+}

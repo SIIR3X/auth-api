@@ -17,6 +17,14 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- Audit partitions created after `deploy/db/auth-api-grants.sql` ran lose
+  `UPDATE` and `DELETE` for the runtime role (the owner's default privileges
+  granted them), and partitions are created two years ahead at most.
+  `forget_account_traces` deletes the account with its traces, so it can no
+  longer anonymize the audit trail of an account that stays. Key identifiers
+  in ciphertexts are derived by HKDF. A stored password hash asking for far
+  more than the configured Argon2 cost is refused before any work.
+
 - Nobody grants a role a permission they do not hold (`403`), whether they
   hold the role or not: `roles:manage` alone no longer lets two accounts give
   each other every permission. A client's audit entry lists the settings that

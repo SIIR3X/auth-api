@@ -96,6 +96,23 @@ pub fn needs_rehash(hash: &str, cfg: &CryptoConfig) -> bool {
     }
 }
 
+/// Whether the parameters written in `hash` would cost far more than the
+/// configured ones: a hash planted in the database with, say, 4 GiB of memory
+/// would take an instance down at each sign-in attempt. The bound leaves room
+/// for configured costs lowered since: four times the configuration, and at
+/// least 256 MiB, 16 iterations and 16 lanes.
+pub fn exceeds_configured_cost(hash: &str, cfg: &CryptoConfig) -> bool {
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        return false;
+    };
+    let Ok(params) = Params::try_from(&parsed) else {
+        return false;
+    };
+    params.m_cost() > (cfg.argon2_memory_kib.saturating_mul(4)).max(262_144)
+        || params.t_cost() > (cfg.argon2_iterations.saturating_mul(4)).max(16)
+        || params.p_cost() > (cfg.argon2_parallelism.saturating_mul(4)).max(16)
+}
+
 /// Runs Argon2id hashing on the blocking threadpool so authentication work
 /// does not stall the async runtime under load. Concurrency is bounded by
 /// the global Argon2 semaphore (see `argon2_semaphore`).
@@ -130,6 +147,10 @@ pub async fn verify_async(
     hash_value: &str,
     cfg: &CryptoConfig,
 ) -> Result<bool, PasswordError> {
+    if exceeds_configured_cost(hash_value, cfg) {
+        tracing::error!("stored password hash asks for far more than the configured cost: refused");
+        return Ok(false);
+    }
     let semaphore = argon2_semaphore(cfg);
     let permit = semaphore
         .acquire()
@@ -245,6 +266,22 @@ mod rehash_tests {
             "stronger than asked"
         );
         assert!(!needs_rehash("not a phc string", &config(8, 1, 1)));
+    }
+
+    /// A hash asking for far more than the configured cost is refused before
+    /// any work (SEC-71).
+    #[tokio::test]
+    async fn a_hash_costing_far_more_than_configured_is_refused() {
+        let cfg = config(19_456, 2, 1);
+        let planted = "$argon2id$v=19$m=4194304,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaA";
+        assert!(exceeds_configured_cost(planted, &cfg));
+        assert!(!verify_async("Password-1!", planted, &cfg).await.unwrap());
+
+        let lowered = hash("Password-1!", &config(65_536, 3, 4)).unwrap();
+        assert!(
+            !exceeds_configured_cost(&lowered, &cfg),
+            "a cost lowered since stays readable"
+        );
     }
 }
 

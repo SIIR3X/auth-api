@@ -26,7 +26,9 @@ the database together, is out of scope.
   iterations in production; hashes run on a bounded pool
   (`ARGON2_MAX_CONCURRENCY`) so a login storm queues instead of exhausting
   memory. A stored hash weaker than the configured parameters is replaced after
-  the next successful sign-in.
+  the next successful sign-in; one asking for far more than the configuration
+  (four times, and at least 256 MiB) is refused before any work, so a hash
+  planted in the database cannot exhaust an instance's memory.
 - **No account oracle.** An unknown identifier still pays a full hash against a
   decoy. A locked password answers like a wrong one (`401 invalid_credentials`)
   and is recorded like one, so budgets read the same too. Registration
@@ -156,7 +158,9 @@ the database together, is out of scope.
 - TOTP secrets are encrypted with AES-256-GCM. Ciphertexts name their key, so
   the key can be rotated without downtime and the rotation can be resumed, and
   each is bound to its account (webhook secrets to their endpoint) as
-  associated data: a ciphertext copied onto another row does not decrypt. Only
+  associated data: a ciphertext copied onto another row does not decrypt. The
+  key identifier written in ciphertexts is derived by HKDF, not a hash that
+  would check a guessed key. Only
   that format is read, and the service refuses to start while a secret names a
   key it no longer holds or is in another format.
 - Email codes (sign-in and email change) are stored as HMAC-SHA256 digests
@@ -325,7 +329,11 @@ the database together, is out of scope.
   the owner's privileges, which keep minimums only the owner can lower
   (`maintenance_floors`: six months of audit partitions, 30 days before an
   address is coarsened, a day before a pending account is purged), so the
-  runtime role cannot use them to erase the audit trail. PostgreSQL logs slow
+  runtime role cannot use them to erase the audit trail. Partitions created
+  later lose `UPDATE` and `DELETE` for the runtime role, partitions are created
+  two years ahead at most, and the function erasing an account's traces deletes
+  the account with them: it cannot rewrite the trail of an account that
+  stays. PostgreSQL logs slow
   statements without their bound values. In production the database and Redis
   URLs must carry a password; `deploy/db` holds the `pg_hba.conf` rules and the
   Redis ACL they are installed from.
@@ -457,3 +465,4 @@ when a cited test no longer exists.
 | SEC-68 | Someone holding the password cannot search the second factor nor wear out the owner: tight account budgets that mail the owner, resends that neither flood nor kill the owner's code, challenges ended by a password change, and regeneration refused without Redis | `a_spent_second_factor_budget_warns_the_owner`, `a_resend_keeps_the_previous_code_and_is_budgeted`, `a_new_code_keeps_only_the_previous_one`, `a_password_change_ends_open_challenges`, `a_strict_cooldown_fails_closed` |
 | SEC-69 | Ways in planted by someone who held the password do not survive its recovery: a reset removes those added just before it, and an administrator can remove them all | `a_reset_removes_the_ways_in_added_just_before_it`, `an_administrator_removes_the_ways_in_of_a_compromised_account` |
 | SEC-70 | Administration delegates only what it holds and leaves traces of the change, not of the administrator nor of endpoint secrets; strangers show in exports by network only | `nobody_grants_a_permission_they_lack`, `administrative_traces_describe_the_change_not_the_administrator`, `a_failed_delivery_never_records_the_endpoint_url`, `the_export_shows_only_the_network_of_strangers` |
+| SEC-71 | The database and stored secrets resist a compromised service: new audit partitions stay append-only for it, trace erasure only goes with the account, key ids check no key, and planted hashes cannot exhaust memory | `the_audit_trail_stays_out_of_the_runtime_roles_reach`, `the_key_id_is_not_a_hash_of_the_key`, `a_hash_costing_far_more_than_configured_is_refused` |

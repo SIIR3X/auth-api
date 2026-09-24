@@ -334,9 +334,12 @@ pub async fn find_by_identifier(
     }
 }
 
-/// Forget what the account leaves outside its own rows: client addresses in its
-/// audit entries and its sign-in attempts. Call it in the deletion's transaction.
-pub async fn forget_traces<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), sqlx::Error> {
+/// Delete the account and forget what it leaves outside its own rows: client
+/// addresses in its audit entries and its sign-in attempts. One function, with
+/// the owner's privileges, so it can never rewrite the traces of an account
+/// that stays. Call it in the deletion's transaction, after the entries that
+/// announce it.
+pub async fn erase<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT forget_account_traces($1)")
         .bind(id)
         .execute(executor)

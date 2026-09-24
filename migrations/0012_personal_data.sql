@@ -3,8 +3,7 @@
 -- audit rows and delete accounts, so they run with their owner's privileges
 -- like rotate_audit_log_partitions.
 
--- Forget what an account leaves outside its own rows, in the transaction that
--- deletes it and before its row goes: the client addresses of its audit
+-- Delete an account and forget what it leaves outside its own rows: the client addresses of its audit
 -- entries, and its sign-in attempts, recorded under its id or under the
 -- identifiers typed for it before it existed. The audit entries themselves stay,
 -- without identity, for the retention period.
@@ -13,7 +12,10 @@ RETURNS VOID AS $$
 DECLARE
     identity RECORD;
 BEGIN
-    SELECT email, username INTO identity FROM users WHERE id = p_user_id;
+    SELECT email, username INTO identity FROM users WHERE id = p_user_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'account % does not exist', p_user_id;
+    END IF;
 
     UPDATE audit_log SET ip_address = NULL
     WHERE user_id = p_user_id AND ip_address IS NOT NULL;
@@ -26,6 +28,11 @@ BEGIN
         WHERE was_successful = FALSE
           AND attempted_identifier IN (identity.email, identity.username::CITEXT);
     END IF;
+
+    -- The account goes with its traces: the function, running with the
+    -- owner's privileges, cannot be used to rewrite the audit trail of an
+    -- account that stays.
+    DELETE FROM users WHERE id = p_user_id;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
@@ -58,8 +65,6 @@ BEGIN
         RETURN 0;
     END IF;
 
-    PERFORM forget_account_traces(id) FROM unnest(doomed) AS id;
-
     -- Written before the deletion: the foreign key then sets user_id to NULL.
     INSERT INTO audit_log (user_id, action, metadata)
     SELECT id, 'account_deleted', '{"reason": "never_verified"}'::JSONB
@@ -79,8 +84,9 @@ BEGIN
     WHERE endpoint.enabled
       AND ('user.deleted' = ANY (endpoint.events) OR '*' = ANY (endpoint.events));
 
-    DELETE FROM users WHERE id = ANY (doomed);
-    GET DIAGNOSTICS purged = ROW_COUNT;
+    -- Each account goes with its traces.
+    PERFORM forget_account_traces(id) FROM unnest(doomed) AS id;
+    purged := cardinality(doomed);
     RETURN purged;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;

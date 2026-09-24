@@ -123,6 +123,8 @@ pub fn decode_encryption_key(b64: &str) -> Result<[u8; 32], CryptoError> {
 /// with `V2_AAD_LABEL || context` as associated data.
 const V2_PREFIX: &str = "v2:";
 const V2_AAD_LABEL: &[u8] = b"auth-api v2:";
+/// HKDF label of the key identifier written in ciphertexts.
+const KID_INFO: &[u8] = b"key id";
 /// HKDF parameters of the key that digests one-time codes.
 const OTP_KEY_SALT: &[u8] = b"auth-api keyring";
 const OTP_KEY_INFO: &[u8] = b"auth-api otp v1";
@@ -153,13 +155,15 @@ struct KeyEntry {
 
 impl KeyEntry {
     fn new(key: [u8; 32]) -> Self {
-        // First 8 bytes of the key's SHA-256: identifies it without revealing it.
-        let kid = sha256(&key)[..8]
-            .iter()
-            .fold(String::with_capacity(16), |mut out, byte| {
+        // Derived with its own HKDF label: names the key in every ciphertext
+        // without handing out a hash that checks a guessed key.
+        let kid = hkdf_sha256(&key, OTP_KEY_SALT, KID_INFO)[..8].iter().fold(
+            String::with_capacity(16),
+            |mut out, byte| {
                 let _ = write!(out, "{byte:02x}");
                 out
-            });
+            },
+        );
         Self {
             kid,
             key,
@@ -365,6 +369,20 @@ pub fn decrypt_with_aad(encoded: &str, key: &[u8; 32], aad: &[u8]) -> Result<Str
 
 #[cfg(test)]
 mod tests {
+    /// The key identifier is not a plain hash of the key: it cannot check a
+    /// guessed key offline (SEC-71).
+    #[test]
+    fn the_key_id_is_not_a_hash_of_the_key() {
+        let key = [9u8; 32];
+        let keyring = super::Keyring::new(key, None);
+        let plain: String = super::sha256(&key)[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_ne!(keyring.current_kid(), plain);
+        assert_eq!(keyring.current_kid().len(), 16);
+    }
+
     use super::*;
 
     const KEY: &[u8; 32] = &[42u8; 32];

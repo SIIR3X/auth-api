@@ -116,7 +116,9 @@ CREATE OR REPLACE FUNCTION rotate_audit_log_partitions(
 RETURNS VOID AS $$
 DECLARE
     create_start DATE := (date_trunc('month', NOW()) - INTERVAL '1 month')::DATE;
-    create_end DATE := (date_trunc('month', NOW()) + make_interval(months => GREATEST(lookahead_months, 1)))::DATE;
+    -- Two years ahead at most: a caller cannot fill the catalog with tables.
+    create_end DATE := (date_trunc('month', NOW())
+        + make_interval(months => LEAST(GREATEST(lookahead_months, 1), 24)))::DATE;
     floor_months INTEGER := (SELECT audit_retention_months FROM maintenance_floors);
     keep_from DATE := (date_trunc('month', NOW())
         - make_interval(months => GREATEST(retention_months, floor_months, 0)))::DATE;
@@ -136,6 +138,13 @@ BEGIN
             month_start,
             (month_start + INTERVAL '1 month')::DATE
         );
+        -- The owner's default privileges hand every new table to the runtime
+        -- role with UPDATE and DELETE: a partition must not have them.
+        IF current_user <> 'auth_api'
+           AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'auth_api') THEN
+            EXECUTE format('REVOKE UPDATE, DELETE ON %I FROM auth_api',
+                'audit_log_' || to_char(month_start, 'YYYY_MM'));
+        END IF;
     END LOOP;
 
     IF retention_months <= 0 THEN
