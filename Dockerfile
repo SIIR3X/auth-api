@@ -31,11 +31,11 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 
 # Cache layer: compile dependencies only
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json
 
 # Compile the binary
 COPY . .
-RUN cargo build --release --bin auth-api
+RUN cargo build --release --locked --bin auth-api
 
 # =============================================================================
 # Stage 4: Runtime

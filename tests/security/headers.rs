@@ -215,6 +215,7 @@ async fn security_headers_enable_hsts_for_https_production() {
         config.webhooks.allow_private_networks = false;
         config.crypto.argon2_memory_kib = 19_456;
         config.crypto.argon2_iterations = 2;
+        config.pwned_passwords.enabled = true;
         // The committed development AES key is refused in production.
         config.crypto.encryption_key = "6M+xtK7VzYMoz/3mc3vJf2e6h9b9yLyx3Eabo/236YE=".into();
         // Production requires a password in REDIS_URL; the test Redis has

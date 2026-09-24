@@ -83,6 +83,7 @@ impl Config {
                     ),
                 });
             }
+            validate_production_ceilings(self)?;
 
             validate_production_argon2(&self.crypto)?;
             validate_production_encryption_key("ENCRYPTION_KEY", &self.crypto.encryption_key)?;
@@ -475,6 +476,56 @@ pub(super) fn validate_production_argon2(crypto: &CryptoConfig) -> Result<(), Co
     Ok(())
 }
 
+/// Settings a typo could push so far that their control no longer works:
+/// refused in production.
+pub(super) fn validate_production_ceilings(config: &Config) -> Result<(), ConfigError> {
+    let too_high = |key: &str, max: String| ConfigError::Invalid {
+        key: key.into(),
+        reason: format!("must be at most {max} in production"),
+    };
+    if config.security.lockout_threshold > MAX_LOCKOUT_THRESHOLD {
+        return Err(too_high(
+            "LOCKOUT_THRESHOLD",
+            MAX_LOCKOUT_THRESHOLD.to_string(),
+        ));
+    }
+    for (key, value) in [
+        ("RATE_LIMIT_RPM", config.rate_limit.requests_per_minute),
+        (
+            "RATE_LIMIT_AUTH_RPM",
+            config.rate_limit.auth_requests_per_minute,
+        ),
+    ] {
+        if value > MAX_REQUESTS_PER_MINUTE {
+            return Err(too_high(key, MAX_REQUESTS_PER_MINUTE.to_string()));
+        }
+    }
+    for (key, value) in [
+        ("JWT_REFRESH_EXPIRY_SECS", config.jwt.refresh_expiry_secs),
+        (
+            "JWT_MAX_SESSION_LIFETIME_SECS",
+            config.jwt.max_session_lifetime_secs,
+        ),
+    ] {
+        if value > MAX_SESSION_SECS {
+            return Err(too_high(key, format!("{MAX_SESSION_SECS} (a year)")));
+        }
+    }
+    if config.security.registrations_per_ip_per_hour == 0 {
+        return Err(ConfigError::Invalid {
+            key: "REGISTRATIONS_PER_IP_PER_HOUR".into(),
+            reason: "must be at least 1 in production".into(),
+        });
+    }
+    if !config.pwned_passwords.enabled {
+        return Err(ConfigError::Invalid {
+            key: "PWNED_PASSWORDS_ENABLED".into(),
+            reason: "must be true in production -- breached passwords would be accepted".into(),
+        });
+    }
+    Ok(())
+}
+
 /// A limit of zero refuses every request.
 pub(super) fn validate_rate_limits(limits: &RateLimitConfig) -> Result<(), ConfigError> {
     for (key, value) in [
@@ -556,8 +607,14 @@ const MAX_DEVICE_AUTH_TTL_SECS: u64 = 1800;
 
 /// Widest trusted proxy network: anything wider lets arbitrary peers forge
 /// `X-Forwarded-For` and pick their own address.
-const MIN_TRUSTED_PROXY_PREFIX_V4: u8 = 8;
-const MIN_TRUSTED_PROXY_PREFIX_V6: u8 = 32;
+const MIN_TRUSTED_PROXY_PREFIX_V4: u8 = 24;
+const MIN_TRUSTED_PROXY_PREFIX_V6: u8 = 64;
+
+/// Production ceilings of the anti-abuse settings: a typo must not turn a
+/// control off.
+const MAX_LOCKOUT_THRESHOLD: u32 = 50;
+const MAX_REQUESTS_PER_MINUTE: u64 = 10_000;
+const MAX_SESSION_SECS: u64 = 365 * 86_400;
 
 /// Longest re-authentication window: a proof of the password stands for
 /// sensitive actions only for a few minutes.

@@ -17,6 +17,15 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- Production refuses `LOCKOUT_THRESHOLD` above 50, request limits above
+  10 000 a minute, refresh or session lifetimes above a year,
+  `REGISTRATIONS_PER_IP_PER_HOUR=0`, `PWNED_PASSWORDS_ENABLED=false`, and a
+  `TRUSTED_PROXY_CIDRS` network wider than `/24` (IPv4) or `/64` (IPv6). New
+  `deploy/api/nftables-auth-api.conf` lets only nginx and root reach the
+  published ports; nginx masks the codes carried by URLs in its access log;
+  the internal listener refuses bodies and slow requests; the image is built
+  with `--locked`; the Redis ACL template allows the Lua scripts by name.
+
 - Introspection of the access tokens of others is reserved to resource servers
   (new `allows_introspection` client setting; register yours with it), and a
   resource server registered with scopes sees only those. Access tokens carry
@@ -274,6 +283,9 @@ from scratch (read **Upgrading**).
   the internal listener instead (`http://10.0.0.1:9465/ready`), with the new
   `METRICS_TOKEN` (`pass insert prod/auth-api/metrics-token`, `openssl rand -hex
   32`); install it for Prometheus as the monitoring guide shows.
+- Install `deploy/api/nftables-auth-api.conf` on the API VPS and run the
+  rolling update with `sudo -E` (update guide); copy the new ACL template line
+  to `/etc/redis/users.acl`.
 - Resource servers that introspect access tokens need `allows_introspection`
   (`PUT /admin/clients/{client_id}`).
 - Deployments export the secrets as before, then run `./write-secrets.sh`

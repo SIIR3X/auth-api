@@ -362,9 +362,13 @@ the database together, is out of scope.
   `/ready` says only whether the instance is ready, and reuses its answer for
   a second. nginx limits strictly the same requests as the API, by method and
   path, which a test checks against the routers, and serves the discovery
-  documents and the administration's `PUT` routes. The production compose
-  file hands the secrets to the instances as files, out of `docker inspect`
-  and the process environment.
+  documents and the administration's `PUT` routes; its access log masks the
+  codes carried by URLs. The production compose file hands the secrets to the
+  instances as files, out of `docker inspect` and the process environment. An
+  nftables rule lets only nginx and root reach the published ports, so no
+  other local process can forge `X-Forwarded-For`. The internal listener
+  refuses bodies and slow requests. The image is built from the committed
+  lockfile (`--locked`).
 
 ## Configuration
 
@@ -477,3 +481,4 @@ when a cited test no longer exists.
 | SEC-70 | Administration delegates only what it holds and leaves traces of the change, not of the administrator nor of endpoint secrets; strangers show in exports by network only | `nobody_grants_a_permission_they_lack`, `administrative_traces_describe_the_change_not_the_administrator`, `a_failed_delivery_never_records_the_endpoint_url`, `the_export_shows_only_the_network_of_strangers` |
 | SEC-71 | The database and stored secrets resist a compromised service: new audit partitions stay append-only for it, trace erasure only goes with the account, key ids check no key, and planted hashes cannot exhaust memory | `the_audit_trail_stays_out_of_the_runtime_roles_reach`, `the_key_id_is_not_a_hash_of_the_key`, `a_hash_costing_far_more_than_configured_is_refused` |
 | SEC-72 | OAuth honours what it claims: only resource servers introspect others' tokens, tokens say who and when, OIDC parameters are refused or honoured, requests belong to their viewer, foreign replays revoke nothing, device consents are frozen | `only_resource_servers_introspect_the_tokens_of_others`, `unsupported_oidc_parameters_are_refused_and_max_age_is_honoured`, `a_request_is_decided_by_its_viewer_and_a_foreign_replay_revokes_nothing`, `tokens_say_when_and_who`, `a_device_consent_is_frozen_at_the_approval` |
+| SEC-73 | Production refuses settings past their ceiling and proxy networks wider than a /24, and the internal listener refuses large bodies | `validate_rejects_production_settings_past_their_ceiling`, `validate_rejects_settings_that_undo_their_control`, `the_internal_listener_refuses_large_bodies` |

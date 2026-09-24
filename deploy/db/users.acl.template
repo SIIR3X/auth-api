@@ -2,6 +2,8 @@
 # redis) by docs/deploy/database/deployment.md, section 3.1, which replaces
 # REDIS_PASSWORD_SHA256 with the SHA-256 of the password kept in pass. The
 # default user is off: a connection without the password can do nothing. The
-# API's user runs every command but the administrative and dangerous ones.
+# API's user runs every command but the administrative and dangerous ones;
+# the scripts of the rate limiter and the budgets (EVAL, EVALSHA, SCRIPT LOAD)
+# are allowed by name, whatever category a Redis version files them under.
 user default off
-user auth_api on #REDIS_PASSWORD_SHA256 ~* &* +@all -@dangerous -@admin
+user auth_api on #REDIS_PASSWORD_SHA256 ~* &* +@all -@dangerous -@admin +eval +evalsha +script|load +eval +evalsha +script|load

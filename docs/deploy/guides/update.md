@@ -78,7 +78,7 @@ export NATS_URL=$(pass prod/auth-api/nats-url)
 export METRICS_TOKEN=$(pass prod/auth-api/metrics-token)
 
 ./write-secrets.sh
-./rolling-update.sh
+sudo -E ./rolling-update.sh
 ```
 
 `write-secrets.sh` writes the values to `/etc/auth-api/secrets` (a directory

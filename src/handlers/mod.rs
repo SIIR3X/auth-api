@@ -187,6 +187,17 @@ async fn ready_detail(
     (ready_status(&readiness), axum::Json(readiness))
 }
 
+/// Nothing on the internal listener takes a body or should take long: slow or
+/// large requests from the private network cannot pile up.
+fn internal_limits(router: Router) -> Router {
+    router
+        .layer(DefaultBodyLimit::max(1024))
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            std::time::Duration::from_secs(10),
+        ))
+}
+
 /// The internal listener answers only with `Authorization: Bearer
 /// <METRICS_TOKEN>` when a token is configured (always, in production).
 async fn internal_bearer(
@@ -278,6 +289,7 @@ pub fn router_with_metrics(state: AppState) -> (Router, Router) {
             internal_bearer,
         ))
         .with_state(state);
+    let internal = internal_limits(internal);
 
     (app, internal)
 }
@@ -700,6 +712,26 @@ fn me_router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use tower::ServiceExt;
+
+    /// The internal listener refuses large bodies (SEC-73).
+    #[tokio::test]
+    async fn the_internal_listener_refuses_large_bodies() {
+        let app = super::internal_limits(axum::Router::new().route(
+            "/metrics",
+            axum::routing::post(|body: axum::body::Bytes| async move { body.len().to_string() }),
+        ));
+        let status = app
+            .oneshot(
+                axum::http::Request::post("/metrics")
+                    .body(axum::body::Body::from(vec![b'x'; 4096]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+            .as_u16();
+        assert_eq!(status, 413);
+    }
 
     /// The internal listener answers only with its bearer token (SEC-65).
     #[tokio::test]

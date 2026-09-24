@@ -131,6 +131,10 @@ at least once a year.
   magic links are enabled, and as its identity provider when one is linked.
 - Passkey attestation is not verified.
 - Email one-time codes have 6 digits; their budgets and lifetime make them hold.
+- Traffic to PostgreSQL and Redis is protected by the WireGuard tunnel, not by
+  TLS; `hostssl` with `sslmode=verify-full` is documented for deployments
+  where the tunnel is not the trust boundary. Monitoring ports answer the
+  monitoring host only (firewall rules of the monitoring guide).
 - A username is an identifier others can learn exists: choosing one that is
   taken answers `username_taken`, whatever the case. Email addresses, the
   identifier that reaches a person, are never confirmed this way. Budgets on

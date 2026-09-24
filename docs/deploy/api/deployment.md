@@ -132,10 +132,16 @@ printf 'authorization { token: "%s" }\n' "$(pass prod/auth-api/nats-auth-token)"
   | sudo tee nats-auth.conf > /dev/null
 
 docker compose --env-file profile.env -f docker-compose.api.yml up -d --wait
-curl -fsS http://127.0.0.1:3001/ready && curl -fsS http://127.0.0.1:3002/ready
+sudo curl -fsS http://127.0.0.1:3001/ready && sudo curl -fsS http://127.0.0.1:3002/ready
 ```
 
 Both instances must answer `/ready` before nginx is pointed at them.
+
+Only nginx and root may connect to the published ports: the application
+trusts `X-Forwarded-For` from them, so any other local process could forge a
+client address. Install the rule of `deploy/api/nftables-auth-api.conf` (its
+header gives the commands and the check); the rolling update runs as root
+(`sudo -E ./rolling-update.sh`) for its readiness checks.
 
 ---
 

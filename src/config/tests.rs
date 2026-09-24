@@ -17,7 +17,7 @@ fn valid_config() -> Config {
             port: 3000,
             public_url: "https://api.example.com".into(),
             frontend_url: "https://api.example.com".into(),
-            trusted_proxy_cidrs: vec!["10.0.0.0/8".parse().unwrap()],
+            trusted_proxy_cidrs: vec!["10.0.0.0/24".parse().unwrap()],
         },
         database: DatabaseConfig {
             url: "postgres://user:pass@localhost/db".into(),
@@ -1267,7 +1267,7 @@ fn validate_rejects_settings_that_undo_their_control() {
     config.device_auth.verification_uri = "http://auth.example.com/device".into();
     assert_eq!(invalid_key(config), "DEVICE_AUTH_VERIFICATION_URI");
 
-    for wide in ["0.0.0.0/0", "::/0", "10.0.0.0/7"] {
+    for wide in ["0.0.0.0/0", "::/0", "10.0.0.0/7", "10.0.0.0/8", "fd00::/48"] {
         let mut config = valid_config();
         config.server.trusted_proxy_cidrs = vec![wide.parse().unwrap()];
         assert_eq!(invalid_key(config), "TRUSTED_PROXY_CIDRS", "{wide}");
@@ -1281,4 +1281,28 @@ fn a_blank_required_variable_is_missing() {
         matches!(&result, Err(ConfigError::Missing(key)) if key == "SMTP_PASSWORD"),
         "{result:?}"
     );
+}
+
+#[test]
+fn validate_rejects_production_settings_past_their_ceiling() {
+    let invalid_key = |config: Config| match config.validate() {
+        Err(ConfigError::Invalid { key, .. }) => key,
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+    let mut config = valid_config();
+    config.security.lockout_threshold = 100_000;
+    assert_eq!(invalid_key(config), "LOCKOUT_THRESHOLD");
+    let mut config = valid_config();
+    config.rate_limit.auth_requests_per_minute = 200_000;
+    assert_eq!(invalid_key(config), "RATE_LIMIT_AUTH_RPM");
+    let mut config = valid_config();
+    config.jwt.refresh_expiry_secs = 3 * 365 * 86_400;
+    config.jwt.max_session_lifetime_secs = 3 * 365 * 86_400;
+    assert_eq!(invalid_key(config), "JWT_REFRESH_EXPIRY_SECS");
+    let mut config = valid_config();
+    config.security.registrations_per_ip_per_hour = 0;
+    assert_eq!(invalid_key(config), "REGISTRATIONS_PER_IP_PER_HOUR");
+    let mut config = valid_config();
+    config.pwned_passwords.enabled = false;
+    assert_eq!(invalid_key(config), "PWNED_PASSWORDS_ENABLED");
 }

@@ -248,7 +248,7 @@ With `APP_ENV=production` the service refuses to start when:
 - `APP_PUBLIC_URL`, `FRONTEND_URL`, `OAUTH_CONSENT_URI`,
   `DEVICE_AUTH_VERIFICATION_URI` or `CAPTCHA_VERIFY_URL` is not HTTPS;
 - `TRUSTED_PROXY_CIDRS` is empty (every client would share the proxy's
-  address), or holds a network wider than `/8` (IPv4) or `/32` (IPv6), from
+  address), or holds a network wider than `/24` (IPv4) or `/64` (IPv6), from
   which any peer could forge `X-Forwarded-For`;
 - the JWT keys do not form a pair, or are the committed development pair;
 - `ENCRYPTION_KEY` is not 32 bytes, is a committed development key, or is an
@@ -262,7 +262,11 @@ With `APP_ENV=production` the service refuses to start when:
 - `WEBAUTHN_ORIGINS` is empty, or lists an origin that is not HTTPS or not on
   `WEBAUTHN_RP_ID`;
 - `ARGON2_MEMORY_KIB` is under `19456` or `ARGON2_ITERATIONS` under `2`;
-- `DATABASE_URL`, `DATABASE_READ_URL` or `REDIS_URL` carries no password.
+- `DATABASE_URL`, `DATABASE_READ_URL` or `REDIS_URL` carries no password;
+- `LOCKOUT_THRESHOLD` is above `50`, `RATE_LIMIT_RPM` or `RATE_LIMIT_AUTH_RPM`
+  above `10000`, `JWT_REFRESH_EXPIRY_SECS` or `JWT_MAX_SESSION_LIFETIME_SECS`
+  above a year, `REGISTRATIONS_PER_IP_PER_HOUR` is `0`, or
+  `PWNED_PASSWORDS_ENABLED` is `false`.
 
 In every environment, the service also refuses to start when:
 
