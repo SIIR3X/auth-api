@@ -48,6 +48,16 @@ pub enum SessionType {
     PersonalAccessToken,
 }
 
+impl SessionType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Web => "web",
+            Self::Device => "device",
+            Self::PersonalAccessToken => "personal_access_token",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, sqlx::Type)]
 #[sqlx(type_name = "session_compromise_reason", rename_all = "snake_case")]
 pub enum SessionCompromiseReason {
@@ -86,6 +96,9 @@ pub struct Session {
     pub compromise_reason: Option<SessionCompromiseReason>,
     /// The sign-in that started the session proved a second factor.
     pub mfa: bool,
+    /// When the password was last proved for the consent the session came
+    /// from (OpenID Connect `auth_time`).
+    pub auth_time: Option<OffsetDateTime>,
 }
 
 impl Session {
@@ -261,6 +274,7 @@ mod tests {
             client_id: None,
             compromise_reason: None,
             mfa: false,
+            auth_time: None,
         }
     }
 

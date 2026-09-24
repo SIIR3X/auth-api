@@ -166,6 +166,8 @@ A token's claims:
 | `roles` | Role names; absent from scoped and client credentials tokens |
 | `permissions` | Permission names, intersected with the consented scopes |
 | `client_id` | The client the token was issued to: client credentials, and sessions of client applications |
+| `sub_type` | `user`, or `client` for client credentials: check it before authorizing on `sub` |
+| `session_type` | `web`, `device`, or `personal_access_token` for a script |
 
 ## 4. Following account changes
 

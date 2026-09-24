@@ -118,6 +118,21 @@ pub async fn set_secret_hash<'e>(
     Ok(result.rows_affected() == 1)
 }
 
+/// Make the client a resource server, or not. Returns whether it exists.
+pub async fn set_introspection<'e>(
+    executor: impl PgExecutor<'e>,
+    client_id: &str,
+    allowed: bool,
+) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("UPDATE registered_clients SET allows_introspection = $2 WHERE client_id = $1")
+            .bind(client_id)
+            .bind(allowed)
+            .execute(executor)
+            .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Allow or forbid the client credentials grant. Returns whether the client
 /// exists.
 pub async fn set_client_credentials<'e>(

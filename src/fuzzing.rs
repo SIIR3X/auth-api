@@ -143,6 +143,7 @@ pub fn redirect_uri(data: &[u8]) {
         default_max_sessions: 1,
         client_secret_hash: None,
         allows_client_credentials: false,
+        allows_introspection: false,
     };
 
     if validate_redirect(&client, candidate).is_err() || registered.iter().any(|r| r == candidate) {

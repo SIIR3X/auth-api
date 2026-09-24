@@ -17,6 +17,8 @@ CREATE TABLE authorization_codes (
     consumed_at TIMESTAMPTZ,
     -- OpenID Connect: the nonce of the authentication request, into the ID token.
     nonce TEXT,
+    -- When the approving user last proved their password (`auth_time`).
+    auth_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- Session issued from the code, revoked if the code is ever replayed.
     session_id UUID REFERENCES sessions (id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

@@ -331,3 +331,48 @@ async fn a_public_clients_budget_is_split_by_address() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+/// A device's consent is what the user held when approving: a permission the
+/// user obtains later does not reach the device without a new consent
+/// (SEC-72).
+#[tokio::test]
+async fn a_device_consent_is_frozen_at_the_approval() {
+    let app = TestApp::spawn().await;
+    sqlx::query(
+        "INSERT INTO registered_clients (client_id, display_name, is_primary, default_max_sessions, scopes)
+         VALUES ('reporting', 'reporting', FALSE, 5, ARRAY['users:read'])",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let user = fixtures::authenticated_user(&app, 6).await;
+
+    let (status, started) = form(
+        &app,
+        "/oauth/device_authorization",
+        &[("client_id", "reporting"), ("scope", "users:read")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let (status, body) = approve(
+        &app,
+        &user.access_token,
+        json!({ "user_code": started["user_code"], "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = poll(&app, started["device_code"].as_str().unwrap(), "reporting").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let scopes: Vec<String> = sqlx::query_scalar(
+        "SELECT scopes FROM sessions WHERE user_id = $1 AND client_id = 'reporting'",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert!(
+        scopes.is_empty(),
+        "consented beyond what the user held: {scopes:?}"
+    );
+}

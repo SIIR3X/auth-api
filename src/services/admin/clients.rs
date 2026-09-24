@@ -31,6 +31,7 @@ pub async fn save(
     actor: &Actor,
     client: &NewRegisteredClient<'_>,
     allows_client_credentials: Option<bool>,
+    allows_introspection: Option<bool>,
 ) -> Result<(RegisteredClient, bool), AppError> {
     client_domain::check_settings(
         client.client_id,
@@ -81,6 +82,10 @@ pub async fn save(
         }
         client_repo::set_client_credentials(&mut *tx, &saved.client_id, allowed).await?;
         saved.allows_client_credentials = allowed;
+    }
+    if let Some(allowed) = allows_introspection {
+        client_repo::set_introspection(&mut *tx, &saved.client_id, allowed).await?;
+        saved.allows_introspection = allowed;
     }
     audit::append(
         &mut *tx,

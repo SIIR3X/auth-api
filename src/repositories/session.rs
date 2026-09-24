@@ -147,8 +147,8 @@ pub async fn rotate(
 
     let new_session = sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes, mfa)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes, mfa, auth_time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -164,6 +164,7 @@ pub async fn rotate(
     .bind(input.family_created_at.unwrap_or(old_session.family_created_at))
     .bind(input.scopes.map(<[String]>::to_vec).or(old_session.scopes))
     .bind(old_session.mfa)
+    .bind(old_session.auth_time)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -381,4 +382,18 @@ pub async fn revoke_by_client<'e>(
     .bind(client_id)
     .fetch_all(executor)
     .await
+}
+
+/// Record when the password was proved for the consent a session came from.
+pub async fn set_auth_time<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+    auth_time: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE sessions SET auth_time = $2 WHERE id = $1")
+        .bind(id)
+        .bind(auth_time)
+        .execute(executor)
+        .await?;
+    Ok(())
 }

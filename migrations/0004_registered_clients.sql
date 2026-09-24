@@ -16,7 +16,10 @@
 --     random bits, so its SHA-256 digest is stored, not a slow hash;
 --   - allows_client_credentials: the client credentials grant, where a
 --     confidential client obtains tokens for itself, carrying its registered
---     scopes and no user.
+--     scopes and no user;
+--   - allows_introspection: a resource server, which may introspect the
+--     access tokens of other clients and of first-party sessions (any other
+--     confidential client introspects its own tokens only).
 -- user_client_quotas: per-user override of a client's session limit.
 CREATE TABLE registered_clients (
     client_id VARCHAR(100) PRIMARY KEY,
@@ -28,6 +31,7 @@ CREATE TABLE registered_clients (
     default_max_sessions SMALLINT NOT NULL DEFAULT 5,
     client_secret_hash BYTEA,
     allows_client_credentials BOOLEAN NOT NULL DEFAULT FALSE,
+    allows_introspection BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT registered_clients_client_id_format CHECK (client_id ~ '^[A-Za-z0-9._-]{1,100}$'),

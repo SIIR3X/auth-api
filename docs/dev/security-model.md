@@ -225,9 +225,15 @@ the database together, is out of scope.
   consumed atomically, a replayed code revokes its session (whoever presents
   it: a code seen in a log or a Referer is dead either way). The redemption
   holds the code until its session is linked, so even a replay racing it finds
-  the session to revoke. The redirect URI is checked against the client as
-  registered at the approval and at the redemption too, and the redirect
-  carries `iss` (RFC 9207).
+  the session to revoke, when its own client presents it (a replay under
+  another client's id is logged and revokes nothing). The redirect URI is
+  checked against the client as registered at the approval and at the
+  redemption too, and the redirect carries `iss` (RFC 9207). A request belongs
+  to the first signed-in user who looks at it. `prompt=none`, request objects
+  and response modes other than `query` are refused; `max_age` and
+  `prompt=login` ask for the password again, and the ID token's `auth_time` is
+  when it was proved. A device's consent is intersected with what the user
+  holds at the approval.
 - **Scopes:** a request may narrow the client's registered scopes, never widen
   them; a client's tokens carry only the consented permissions, re-derived from
   the user's current permissions and the client's current scopes on every
@@ -242,8 +248,12 @@ the database together, is out of scope.
   grant turned on obtains tokens for itself; they carry no user, so account
   routes refuse them, and they stop being active when the grant is turned off.
 - **Introspection and revocation:** only confidential clients introspect, and
-  an inactive token reveals nothing but `active: false`. A refresh token is
-  introspected only by its own client, and personal access tokens never are.
+  an inactive token reveals nothing but `active: false`. Only a resource
+  server (`allows_introspection`) introspects the access tokens of others, and
+  one registered with scopes learns only those; any other client introspects
+  its own tokens. A refresh token is introspected only by its own client, and
+  personal access tokens never are. Access tokens carry `sub_type` (`user` or
+  `client`) and `session_type`, which introspection reports too.
   Failures of client authentication all read `client authentication failed`,
   and a public client's request budget is split by address. A client revokes its
   own tokens only; any other token gets the same answer and is left alone.
@@ -466,3 +476,4 @@ when a cited test no longer exists.
 | SEC-69 | Ways in planted by someone who held the password do not survive its recovery: a reset removes those added just before it, and an administrator can remove them all | `a_reset_removes_the_ways_in_added_just_before_it`, `an_administrator_removes_the_ways_in_of_a_compromised_account` |
 | SEC-70 | Administration delegates only what it holds and leaves traces of the change, not of the administrator nor of endpoint secrets; strangers show in exports by network only | `nobody_grants_a_permission_they_lack`, `administrative_traces_describe_the_change_not_the_administrator`, `a_failed_delivery_never_records_the_endpoint_url`, `the_export_shows_only_the_network_of_strangers` |
 | SEC-71 | The database and stored secrets resist a compromised service: new audit partitions stay append-only for it, trace erasure only goes with the account, key ids check no key, and planted hashes cannot exhaust memory | `the_audit_trail_stays_out_of_the_runtime_roles_reach`, `the_key_id_is_not_a_hash_of_the_key`, `a_hash_costing_far_more_than_configured_is_refused` |
+| SEC-72 | OAuth honours what it claims: only resource servers introspect others' tokens, tokens say who and when, OIDC parameters are refused or honoured, requests belong to their viewer, foreign replays revoke nothing, device consents are frozen | `only_resource_servers_introspect_the_tokens_of_others`, `unsupported_oidc_parameters_are_refused_and_max_age_is_honoured`, `a_request_is_decided_by_its_viewer_and_a_foreign_replay_revokes_nothing`, `tokens_say_when_and_who`, `a_device_consent_is_frozen_at_the_approval` |

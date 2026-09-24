@@ -6473,11 +6473,15 @@ components:
       - default_max_sessions
       - confidential
       - allows_client_credentials
+      - allows_introspection
       - created_at
       properties:
         allows_client_credentials:
           type: boolean
           description: May obtain tokens for itself with the client credentials grant.
+        allows_introspection:
+          type: boolean
+          description: 'A resource server: may introspect the access tokens of others.'
         allows_loopback_redirect:
           type: boolean
         client_id:
@@ -6969,6 +6973,13 @@ components:
           type:
           - string
           - 'null'
+        session_type:
+          type:
+          - string
+          - 'null'
+          description: |-
+            For a user's token, the session it comes from: `web`, `device`, or
+            `personal_access_token` for a script.
         sub:
           type:
           - string
@@ -6978,7 +6989,7 @@ components:
           type:
           - string
           - 'null'
-          description: '`access_token`, `refresh_token` or `personal_access_token`.'
+          description: '`access_token` or `refresh_token`.'
     LoginRequest:
       type: object
       required:
@@ -7462,6 +7473,13 @@ components:
           description: |-
             Allow the client credentials grant; needs a secret and scopes. Omitted:
             unchanged (false for a new client).
+        allows_introspection:
+          type:
+          - boolean
+          - 'null'
+          description: |-
+            Make the client a resource server, allowed to introspect the access
+            tokens of others. Omitted: unchanged (false for a new client).
         allows_loopback_redirect:
           type: boolean
         default_max_sessions:

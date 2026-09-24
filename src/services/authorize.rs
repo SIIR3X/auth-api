@@ -56,6 +56,8 @@ pub struct Approval<'a> {
     pub requested: Option<&'a [String]>,
     /// OpenID Connect nonce, echoed in the ID token.
     pub nonce: Option<&'a str>,
+    /// When the approving user last proved their password.
+    pub auth_time: ::time::OffsetDateTime,
     pub current_password: Option<&'a str>,
     pub ip: Option<IpNetwork>,
     pub request_id: Option<Uuid>,
@@ -145,6 +147,7 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
             code_challenge: approval.code_challenge,
             scopes: scopes.as_deref(),
             nonce: approval.nonce,
+            auth_time: approval.auth_time,
             expires_at: state.clock.in_secs(CODE_TTL_SECS),
         },
     )
@@ -157,7 +160,7 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
 /// What an approval grants: the requested scopes the user holds, and the
 /// OpenID Connect scopes; or `None` (unrestricted) when the request named none
 /// and the client has none.
-fn consent(requested: Option<&[String]>, held: &[String]) -> Option<Vec<String>> {
+pub(crate) fn consent(requested: Option<&[String]>, held: &[String]) -> Option<Vec<String>> {
     requested.map(|requested| {
         requested
             .iter()
@@ -194,7 +197,7 @@ pub async fn redeem(
         .map_err(|e| AppError::Internal(e.into()))?
     else {
         drop(tx);
-        revoke_on_replay(state, &hash).await;
+        revoke_on_replay(state, &hash, request.client_id).await;
         return Err(AppError::InvalidAuthorizationCode);
     };
 
@@ -248,6 +251,11 @@ pub async fn redeem(
     code_repo::attach_session(&mut *tx, entry.id, tokens.session.id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+    session_repo::set_auth_time(&mut *tx, tokens.session.id, entry.auth_time)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut tokens = tokens;
+    tokens.session.auth_time = Some(entry.auth_time);
     tx.commit()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -257,11 +265,23 @@ pub async fn redeem(
 
 /// RFC 6749 section 4.1.2: a code presented again after redemption means it
 /// leaked; the tokens issued from it are revoked.
-async fn revoke_on_replay(state: &AppState, code_hash: &[u8]) {
+///
+/// Only when the code's own client presents it: a code seen in a Referer or a
+/// history, replayed under another public client's id, must not end the
+/// session of the client that redeemed it. Such a replay is logged.
+async fn revoke_on_replay(state: &AppState, code_hash: &[u8], presented_by: &str) {
     let Ok(Some(seen)) = code_repo::find(&state.db, code_hash).await else {
         return;
     };
     if seen.consumed_at.is_none() {
+        return;
+    }
+    if seen.client_id != presented_by {
+        tracing::warn!(
+            client_id = %seen.client_id,
+            presented_by,
+            "authorization code replayed by another client; session left alone"
+        );
         return;
     }
     tracing::warn!(client_id = %seen.client_id, "authorization code replayed after redemption");
@@ -424,7 +444,10 @@ pub(crate) async fn load_client(
         .ok_or(AppError::DeviceClientUnknown)
 }
 
-async fn permission_names(state: &AppState, user_id: Uuid) -> Result<Vec<String>, AppError> {
+pub(crate) async fn permission_names(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<Vec<String>, AppError> {
     Ok(role_repo::find_permissions_by_user(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
@@ -449,6 +472,7 @@ mod tests {
             default_max_sessions: 5,
             client_secret_hash: None,
             allows_client_credentials: false,
+            allows_introspection: false,
         }
     }
 

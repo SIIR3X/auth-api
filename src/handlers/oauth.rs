@@ -419,10 +419,10 @@ pub async fn approve_request(
 )]
 pub async fn deny_request(
     State(state): State<AppState>,
-    _auth: FirstPartyUser,
+    auth: FirstPartyUser,
     Path(id): Path<String>,
 ) -> Result<Json<AuthorizationDecisionResponse>, AppError> {
-    let redirect_to = oauth_svc::deny_request(&state, &id).await?;
+    let redirect_to = oauth_svc::deny_request(&state, auth.user_id, &id).await?;
     Ok(Json(AuthorizationDecisionResponse { redirect_to }))
 }
 

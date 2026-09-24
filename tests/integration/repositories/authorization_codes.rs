@@ -40,6 +40,7 @@ async fn code(db: &TestDb, user_id: Uuid, hash: &[u8; 32], expires_at: OffsetDat
             code_challenge: CHALLENGE,
             scopes: None,
             nonce: None,
+            auth_time: OffsetDateTime::now_utc(),
             expires_at,
         },
     )

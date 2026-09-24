@@ -76,8 +76,8 @@ async fn forged_expired_and_foreign_tokens_are_refused() {
 async fn introspection_catches_a_token_revoked_before_it_expires() {
     let app = TestApp::spawn().await;
     sqlx::query(
-        "INSERT INTO registered_clients (client_id, display_name, client_secret_hash)
-         VALUES ('resource-server', 'Resource server', $1)",
+        "INSERT INTO registered_clients (client_id, display_name, client_secret_hash, allows_introspection)
+         VALUES ('resource-server', 'Resource server', $1, TRUE)",
     )
     .bind(auth_api::utils::crypto::sha256(b"aacs_rs-secret").to_vec())
     .execute(&app.db)

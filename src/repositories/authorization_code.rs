@@ -19,6 +19,7 @@ pub struct AuthorizationCode {
     pub consumed_at: Option<OffsetDateTime>,
     pub session_id: Option<Uuid>,
     pub nonce: Option<String>,
+    pub auth_time: OffsetDateTime,
 }
 
 pub struct NewAuthorizationCode<'a> {
@@ -29,16 +30,17 @@ pub struct NewAuthorizationCode<'a> {
     pub code_challenge: &'a str,
     pub scopes: Option<&'a [String]>,
     pub nonce: Option<&'a str>,
+    pub auth_time: OffsetDateTime,
     pub expires_at: OffsetDateTime,
 }
 
-const COLUMNS: &str = "id, user_id, client_id, redirect_uri, code_challenge, scopes, expires_at, consumed_at, session_id, nonce";
+const COLUMNS: &str = "id, user_id, client_id, redirect_uri, code_challenge, scopes, expires_at, consumed_at, session_id, nonce, auth_time";
 
 pub async fn create(pool: &PgPool, input: &NewAuthorizationCode<'_>) -> Result<Uuid, sqlx::Error> {
     sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO authorization_codes
-             (code_hash, user_id, client_id, redirect_uri, code_challenge, scopes, expires_at, nonce)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             (code_hash, user_id, client_id, redirect_uri, code_challenge, scopes, expires_at, nonce, auth_time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id",
     )
     .bind(input.code_hash)
@@ -49,6 +51,7 @@ pub async fn create(pool: &PgPool, input: &NewAuthorizationCode<'_>) -> Result<U
     .bind(input.scopes)
     .bind(input.expires_at)
     .bind(input.nonce)
+    .bind(input.auth_time)
     .fetch_one(pool)
     .await
 }

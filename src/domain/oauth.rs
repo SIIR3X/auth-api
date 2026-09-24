@@ -18,6 +18,9 @@ pub enum ErrorCode {
     AuthorizationPending,
     SlowDown,
     ExpiredToken,
+    InteractionRequired,
+    RequestNotSupported,
+    RequestUriNotSupported,
 }
 
 impl ErrorCode {
@@ -34,6 +37,9 @@ impl ErrorCode {
             Self::AuthorizationPending => "authorization_pending",
             Self::SlowDown => "slow_down",
             Self::ExpiredToken => "expired_token",
+            Self::InteractionRequired => "interaction_required",
+            Self::RequestNotSupported => "request_not_supported",
+            Self::RequestUriNotSupported => "request_uri_not_supported",
         }
     }
 }

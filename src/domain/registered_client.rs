@@ -29,6 +29,8 @@ pub struct RegisteredClient {
     pub client_secret_hash: Option<Vec<u8>>,
     /// May obtain tokens for itself with the client credentials grant.
     pub allows_client_credentials: bool,
+    /// A resource server: may introspect the access tokens of others.
+    pub allows_introspection: bool,
 }
 
 impl RegisteredClient {
@@ -170,6 +172,11 @@ pub fn audit_changes(
         serde_json::json!(saved.allows_client_credentials),
     );
     compare(
+        "allows_introspection",
+        previous.map_or(null.clone(), |p| serde_json::json!(p.allows_introspection)),
+        serde_json::json!(saved.allows_introspection),
+    );
+    compare(
         "allows_loopback_redirect",
         previous.map_or(null, |p| serde_json::json!(p.allows_loopback_redirect)),
         serde_json::json!(saved.allows_loopback_redirect),
@@ -193,6 +200,7 @@ mod tests {
             default_max_sessions: 2,
             client_secret_hash: None,
             allows_client_credentials: false,
+            allows_introspection: false,
         }
     }
 

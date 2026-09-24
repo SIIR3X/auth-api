@@ -204,6 +204,7 @@ pub async fn exchange(state: &AppState, presented: &str) -> Result<ExchangedToke
         found.token.session_id,
         Some(&found.token.scopes),
         None,
+        &crate::domain::session::SessionType::PersonalAccessToken,
         state,
     )
     .await?;

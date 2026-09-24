@@ -40,6 +40,10 @@ CREATE TABLE sessions (
     -- email code, recovery code, or a passkey with user verification). The
     -- administration requires it of the session itself; rotations inherit it.
     mfa BOOLEAN NOT NULL DEFAULT FALSE,
+    -- When the user last proved their password for the consent this session
+    -- came from (OpenID Connect `auth_time`); rotations inherit it. NULL for
+    -- sessions that did not come from a consent.
+    auth_time TIMESTAMPTZ,
 
     CONSTRAINT sessions_token_hash_key UNIQUE (token_hash),
     CONSTRAINT sessions_expires_after_creation CHECK (expires_at > created_at),

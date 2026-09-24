@@ -65,6 +65,14 @@ pub struct Claims {
     /// token belongs to no user and no session: `sid` is nil.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    /// What `sub` names: `user`, or `client` for a client credentials token.
+    /// A resource server authorizing by `sub` tells them apart with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_type: Option<String>,
+    /// The kind of session a user's token comes from: `web`, `device`, or
+    /// `personal_access_token` for a script.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_type: Option<String>,
 }
 
 impl Claims {
@@ -82,6 +90,8 @@ impl Claims {
             roles: Vec::new(),
             permissions: Vec::new(),
             client_id: None,
+            sub_type: Some("user".to_owned()),
+            session_type: None,
         }
     }
 
@@ -422,6 +432,8 @@ mod tests {
             roles: Vec::new(),
             permissions: Vec::new(),
             client_id: None,
+            sub_type: None,
+            session_type: None,
         };
         let token = encode_token(&claims, &sk, None).unwrap();
         assert!(matches!(
@@ -446,6 +458,8 @@ mod tests {
             roles: Vec::new(),
             permissions: Vec::new(),
             client_id: None,
+            sub_type: None,
+            session_type: None,
         };
         let token = encode_token(&claims, &sk, None).unwrap();
         assert!(matches!(
@@ -640,6 +654,8 @@ mod tests {
                 roles: Vec::new(),
                 permissions: Vec::new(),
                 client_id: None,
+                sub_type: None,
+                session_type: None,
             };
 
             let token = encode_token(&claims, &sk, None).unwrap();
@@ -673,6 +689,8 @@ mod tests {
                 roles: Vec::new(),
                 permissions: Vec::new(),
                 client_id: None,
+                sub_type: None,
+                session_type: None,
             };
 
             let token = encode_token(&claims, &sk, None).unwrap();

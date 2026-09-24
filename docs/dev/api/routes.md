@@ -159,11 +159,14 @@ included, and `GET /oauth/userinfo` for their access tokens. `profile` releases
 `email_verified`. Not supported: implicit and hybrid flows, request objects,
 `prompt`, `max_age`, dynamic registration.
 
-**Introspection (RFC 7662).** A confidential client (a resource server)
-posts `token` and learns `active`, and for an active token its `token_type`
-(`access_token`, `refresh_token`), `scope`, `client_id`, `sub`, `exp`, `iat`
-and, for access tokens, `iss`, `aud` and `jti`. A refresh token is described
-only to its own client, and a personal access token never. Anything unknown,
+**Introspection (RFC 7662).** A confidential client posts `token` and learns
+`active`, and for an active token its `token_type` (`access_token`,
+`refresh_token`), `session_type`, `scope`, `client_id`, `sub`, `exp`, `iat`
+and, for access tokens, `iss`, `aud` and `jti`. Only a resource server
+(`allows_introspection`, set with `PUT /admin/clients/{client_id}`) learns
+about the access tokens of others, and one registered with scopes sees only
+those in `scope`; any other client, only about its own tokens. A refresh token
+is described only to its own client, and a personal access token never. Anything unknown,
 expired, revoked or not the caller's is `{ "active": false }`.
 
 **Revocation (RFC 7009).** A client posts one of its tokens. A refresh token

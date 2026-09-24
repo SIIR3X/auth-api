@@ -32,6 +32,8 @@ pub struct ClientResponse {
     pub confidential: bool,
     /// May obtain tokens for itself with the client credentials grant.
     pub allows_client_credentials: bool,
+    /// A resource server: may introspect the access tokens of others.
+    pub allows_introspection: bool,
     pub created_at: i64,
 }
 
@@ -57,12 +59,16 @@ pub struct SaveClientRequest {
     /// Allow the client credentials grant; needs a secret and scopes. Omitted:
     /// unchanged (false for a new client).
     pub allows_client_credentials: Option<bool>,
+    /// Make the client a resource server, allowed to introspect the access
+    /// tokens of others. Omitted: unchanged (false for a new client).
+    pub allows_introspection: Option<bool>,
 }
 
 fn client_response(client: RegisteredClient) -> ClientResponse {
     ClientResponse {
         confidential: client.is_confidential(),
         allows_client_credentials: client.allows_client_credentials,
+        allows_introspection: client.allows_introspection,
         created_at: client.created_at.unix_timestamp(),
         client_id: client.client_id,
         display_name: client.display_name,
@@ -131,6 +137,7 @@ pub async fn save(
             default_max_sessions: body.default_max_sessions.unwrap_or(5),
         },
         body.allows_client_credentials,
+        body.allows_introspection,
     )
     .await?;
     let status = if created {

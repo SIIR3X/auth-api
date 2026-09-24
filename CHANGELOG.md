@@ -17,6 +17,18 @@ from scratch (read **Upgrading**).
 
 ### Security
 
+- Introspection of the access tokens of others is reserved to resource servers
+  (new `allows_introspection` client setting; register yours with it), and a
+  resource server registered with scopes sees only those. Access tokens carry
+  `sub_type` and `session_type`, also reported by introspection. The ID
+  token's `auth_time` is when the password was proved for the consent.
+  `prompt=none`, `request`, `request_uri` and response modes other than
+  `query` are refused; `max_age` and `prompt=login` ask for the password
+  again. An authorization request belongs to the first user who looks at it.
+  A code replayed under another client's id revokes nothing (it is logged). A
+  device's consent is intersected with the user's permissions at the
+  approval.
+
 - Audit partitions created after `deploy/db/auth-api-grants.sql` ran lose
   `UPDATE` and `DELETE` for the runtime role (the owner's default privileges
   granted them), and partitions are created two years ahead at most.
@@ -262,6 +274,8 @@ from scratch (read **Upgrading**).
   the internal listener instead (`http://10.0.0.1:9465/ready`), with the new
   `METRICS_TOKEN` (`pass insert prod/auth-api/metrics-token`, `openssl rand -hex
   32`); install it for Prometheus as the monitoring guide shows.
+- Resource servers that introspect access tokens need `allows_introspection`
+  (`PUT /admin/clients/{client_id}`).
 - Deployments export the secrets as before, then run `./write-secrets.sh`
   before `./rolling-update.sh` (update guide, section 4).
 - Copy the new `log_parameter_max_length` lines of

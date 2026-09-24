@@ -551,6 +551,12 @@ async fn update_status(
     }
 
     entry.user_id = (new_status == DeviceAuthStatus::Authorized).then_some(user_id);
+    // The consent is what the user held when approving, as in the code flow:
+    // a permission obtained later does not reach the device without a new one.
+    if new_status == DeviceAuthStatus::Authorized && entry.scopes.is_some() {
+        let held = authorize_svc::permission_names(state, user_id).await?;
+        entry.scopes = authorize_svc::consent(entry.scopes.as_deref(), &held);
+    }
     entry.status = new_status;
     let updated = serde_json::to_string(&entry).map_err(|e| AppError::Internal(e.into()))?;
 

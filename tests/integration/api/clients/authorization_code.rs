@@ -719,3 +719,124 @@ async fn a_client_access_token_is_typed_and_names_its_client() {
         Some(PARTNER)
     );
 }
+
+/// OpenID Connect parameters this server does not honour are refused, not
+/// ignored, and `max_age` / `prompt=login` ask for the password again at the
+/// approval (SEC-72).
+#[tokio::test]
+async fn unsupported_oidc_parameters_are_refused_and_max_age_is_honoured() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 62).await;
+    let p = pkce();
+
+    for (extra, error) in [
+        (("prompt", "none"), "interaction_required"),
+        (("request", "eyJ..."), "request_not_supported"),
+        (
+            ("request_uri", "https://x/req"),
+            "request_uri_not_supported",
+        ),
+        (("response_mode", "fragment"), "invalid_request"),
+    ] {
+        let (status, location, _) =
+            authorize(&app, &parameters(PARTNER, CALLBACK, &p.challenge, &[extra])).await;
+        assert_eq!(status, 303, "{extra:?}");
+        assert_eq!(
+            query_param(&location, "error").as_deref(),
+            Some(error),
+            "{extra:?}"
+        );
+    }
+
+    // The fixture's session proved its password moments ago, yet not within
+    // max_age=0: the approval asks for it again.
+    let request_id = request(&app, PARTNER, CALLBACK, &p, &[("max_age", "0")]).await;
+    let (status, body) = approve_raw(&app, &user, &request_id, json!({})).await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (403, Some("reauthentication_required"))
+    );
+    let (status, body) = approve_raw(
+        &app,
+        &user,
+        &request_id,
+        json!({ "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+}
+
+/// A request belongs to the first signed-in user who looks at it, and a code
+/// replayed by another client leaves the session of its own client alone
+/// (SEC-72).
+#[tokio::test]
+async fn a_request_is_decided_by_its_viewer_and_a_foreign_replay_revokes_nothing() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &[], 5).await;
+    register_client(&app, PRIMARY, true, &[], 5).await;
+    let owner = fixtures::authenticated_user(&app, 63).await;
+    let stranger = fixtures::authenticated_user(&app, 64).await;
+    let p = pkce();
+
+    let request_id = request(&app, PARTNER, CALLBACK, &p, &[]).await;
+    let seen = app
+        .get_auth(
+            &format!("/oauth/authorization-requests/{request_id}"),
+            &owner.access_token,
+        )
+        .await;
+    assert_eq!(seen.status().as_u16(), 200);
+    let (status, _) = approve_raw(
+        &app,
+        &stranger,
+        &request_id,
+        json!({ "current_password": stranger.password }),
+    )
+    .await;
+    assert_eq!(status, 404, "another user cannot decide it");
+
+    let code = code_for(&app, &owner, PARTNER, CALLBACK, &p).await;
+    let (status, tokens) = redeem(&app, &code, &p.verifier, PARTNER, CALLBACK).await;
+    assert_eq!(status, 200, "{tokens}");
+    let (status, _) = redeem(&app, &code, &p.verifier, PRIMARY, CALLBACK).await;
+    assert_eq!(status, 400);
+    let (status, _) = refresh(&app, tokens["refresh_token"].as_str().unwrap(), PARTNER).await;
+    assert_eq!(
+        status, 200,
+        "a replay under another client's id revoked nothing"
+    );
+}
+
+/// The ID token says when the password was proved for the consent, and an
+/// access token says what its subject is (SEC-72).
+#[tokio::test]
+async fn tokens_say_when_and_who() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &["openid"], 5).await;
+    let user = fixtures::authenticated_user(&app, 65).await;
+    let p = pkce();
+    let before = time::OffsetDateTime::now_utc().unix_timestamp() - 5;
+    let request_id = request(&app, PARTNER, CALLBACK, &p, &[("scope", "openid")]).await;
+    let (status, body) = approve_raw(
+        &app,
+        &user,
+        &request_id,
+        json!({ "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let code = query_param(body["redirect_to"].as_str().unwrap(), "code").unwrap();
+    let (status, tokens) = redeem(&app, &code, &p.verifier, PARTNER, CALLBACK).await;
+    assert_eq!(status, 200, "{tokens}");
+
+    let id_token = claims(tokens["id_token"].as_str().unwrap());
+    assert!(
+        id_token["auth_time"].as_i64().unwrap() >= before,
+        "{id_token}"
+    );
+    assert_eq!(
+        claims(tokens["access_token"].as_str().unwrap())["sub_type"],
+        "user"
+    );
+}

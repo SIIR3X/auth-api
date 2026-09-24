@@ -149,6 +149,7 @@ pub(crate) async fn issue_tokens(
         session.id,
         scopes,
         session.client_id.as_deref(),
+        &session.session_type,
         state,
     )
     .await?;
@@ -205,6 +206,7 @@ pub(crate) async fn build_access_token(
     session_id: uuid::Uuid,
     scopes: Option<&[String]>,
     client_id: Option<&str>,
+    session_type: &SessionType,
     state: &AppState,
 ) -> Result<String, AppError> {
     let issued_at = state.clock.now();
@@ -243,6 +245,7 @@ pub(crate) async fn build_access_token(
     let mut claims = Claims::new(user_id, session_id, issued_at.unix_timestamp(), exp)
         .with_rbac(role_names, permission_names);
     claims.client_id = client_id.map(str::to_owned);
+    claims.session_type = Some(session_type.as_str().to_owned());
     // Stamp iss/aud so downstream resource servers can pin
     // the token to this issuer and to themselves. `aud` is emitted as a JSON
     // array so a single token can be accepted by multiple downstream services.

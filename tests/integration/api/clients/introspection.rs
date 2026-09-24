@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use super::form;
+use super::{claims, form};
 use crate::common::{
     app::TestApp,
     fixtures::{self, AuthenticatedUser},
@@ -12,8 +12,8 @@ const RESOURCE_SERVER: (&str, &str) = ("resource-server", "aacs_resource-server-
 
 async fn setup(app: &TestApp) {
     sqlx::query(
-        "INSERT INTO registered_clients (client_id, display_name, is_primary, client_secret_hash)
-         VALUES ($1, 'Resource server', FALSE, $2)",
+        "INSERT INTO registered_clients (client_id, display_name, is_primary, client_secret_hash, allows_introspection)
+         VALUES ($1, 'Resource server', FALSE, $2, TRUE)",
     )
     .bind(RESOURCE_SERVER.0)
     .bind(auth_api::utils::crypto::sha256(RESOURCE_SERVER.1.as_bytes()).to_vec())
@@ -249,4 +249,72 @@ async fn introspection_reveals_no_personal_or_foreign_refresh_token() {
     ] {
         assert_eq!(introspect(&app, token).await, json!({ "active": false }));
     }
+}
+
+/// Only a resource server introspects the tokens of others; another
+/// confidential client learns nothing of them. A resource server registered
+/// with scopes learns only those, and the session a token comes from shows
+/// (SEC-72).
+#[tokio::test]
+async fn only_resource_servers_introspect_the_tokens_of_others() {
+    let app = TestApp::spawn().await;
+    setup(&app).await;
+    let plain = ("plain-confidential", "aacs_plain-confidential-secret");
+    sqlx::query(
+        "INSERT INTO registered_clients (client_id, display_name, client_secret_hash)
+         VALUES ($1, $1, $2)",
+    )
+    .bind(plain.0)
+    .bind(auth_api::utils::crypto::sha256(plain.1.as_bytes()).to_vec())
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let user = fixtures::authenticated_user(&app, 3).await;
+
+    let (status, body) = form(
+        &app,
+        "/oauth/introspect",
+        &[("token", user.access_token.as_str())],
+        Some(plain),
+    )
+    .await;
+    assert_eq!((status, body), (200, json!({ "active": false })));
+
+    let seen = introspect(&app, &user.access_token).await;
+    assert_eq!(seen["active"], true);
+    assert_eq!(seen["session_type"], "web");
+
+    sqlx::query("UPDATE registered_clients SET scopes = ARRAY['audit:read'] WHERE client_id = $1")
+        .bind(RESOURCE_SERVER.0)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let narrowed = introspect(&app, &user.access_token).await;
+    assert!(narrowed.get("scope").is_none(), "{narrowed}");
+
+    let created: Value = app
+        .post_auth(
+            "/users/me/tokens",
+            &user.access_token,
+            &json!({ "name": "ci" }),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let exchanged: Value = app
+        .post(
+            "/auth/personal-access-tokens/exchange",
+            &json!({ "token": created["secret"] }),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let script = introspect(&app, exchanged["access_token"].as_str().unwrap()).await;
+    assert_eq!(script["session_type"], "personal_access_token");
+    assert_eq!(
+        claims(exchanged["access_token"].as_str().unwrap())["session_type"],
+        "personal_access_token"
+    );
 }
