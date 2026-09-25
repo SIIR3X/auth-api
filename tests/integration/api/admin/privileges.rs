@@ -242,6 +242,16 @@ async fn an_administrator_removes_the_ways_in_of_a_compromised_account() {
             .await
             .unwrap();
     assert_eq!(methods, 0);
+    // Every session goes, the browser one included: whoever planted a factor
+    // may be signed in through it.
+    let me = app
+        .client
+        .get(app.url("/users/me"))
+        .bearer_auth(&target.access_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 401);
     app.mail
         .wait_for(&target.email, "An administrator changed your account")
         .await;
@@ -422,4 +432,34 @@ async fn nobody_grants_or_withdraws_a_role_holding_more_than_they_have() {
     )
     .await;
     assert_eq!(status, 204, "{response}");
+}
+
+/// A forced reset asking for the access factors to go is one change: refused
+/// for an administrator's last second factor, it revokes nothing (SEC-75).
+#[tokio::test]
+async fn a_refused_forced_reset_revokes_nothing() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let other = admin_with_index(&app, 3).await;
+
+    let (status, response) = send(
+        &app,
+        Method::POST,
+        &format!("/admin/users/{}/password-reset", other.user.id),
+        &admin.token,
+        json!({ "revoke_access_factors": true }),
+    )
+    .await;
+    assert_eq!(
+        (status, response["code"].as_str()),
+        (409, Some("administrator_needs_second_factor"))
+    );
+    let me = app
+        .client
+        .get(app.url("/users/me"))
+        .bearer_auth(&other.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200, "the sessions stay");
 }

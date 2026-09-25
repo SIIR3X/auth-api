@@ -129,6 +129,7 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
             action: AuditAction::EncryptionKeyRotated,
             ip_address: None,
             metadata: json!({
+                "origin": crate::cli::command_line_origin(),
                 "scope": "totp_and_webhook_secrets",
                 "key_id": keyring.current_kid(),
                 "total": total,

@@ -277,6 +277,8 @@ pub async fn submit_new(
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
 
+    // Written whether a code leaves or not: the requester reads their own
+    // history, and a missing entry would tell them the address has an account.
     if taken {
         return Ok(());
     }

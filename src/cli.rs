@@ -208,13 +208,34 @@ pub async fn grant_role(pool: &PgPool, grant: &RoleGrant) -> Result<(), String> 
             request_id: None,
             action: AuditAction::RoleAssigned,
             ip_address: None,
-            metadata: json!({ "role": granted.name, "by": "command_line" }),
+            metadata: {
+                let mut metadata = command_line_origin();
+                metadata["role"] = json!(granted.name);
+                metadata
+            },
         },
     )
     .await
     .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Who ran a command-line change: the account on the server (the one behind
+/// `sudo` when there is one) and the host. Command-line changes have no
+/// administrator account; this is what the audit log can tell of them.
+pub fn command_line_origin() -> serde_json::Value {
+    let operator = ["SUDO_USER", "USER", "LOGNAME"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|v| !v.is_empty()))
+        .unwrap_or_else(|| "unknown".to_owned());
+    let host = std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|h| h.trim().to_owned())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned());
+    json!({ "by": "command_line", "operator": operator, "host": host })
 }
 
 /// Save a client application from the command line, validated like the
@@ -261,7 +282,9 @@ pub async fn register_client(
             metadata: {
                 let mut metadata =
                     crate::domain::registered_client::audit_changes(previous.as_ref(), &saved);
-                metadata["by"] = json!("command_line");
+                for (key, value) in command_line_origin().as_object().unwrap() {
+                    metadata[key] = value.clone();
+                }
                 metadata
             },
         },
@@ -275,6 +298,14 @@ pub async fn register_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_line_change_names_its_operator_and_host() {
+        let origin = command_line_origin();
+        assert_eq!(origin["by"], "command_line");
+        assert!(origin["operator"].as_str().is_some_and(|o| !o.is_empty()));
+        assert!(origin["host"].as_str().is_some_and(|h| !h.is_empty()));
+    }
 
     fn args(line: &str) -> Vec<String> {
         line.split(' ').map(str::to_owned).collect()

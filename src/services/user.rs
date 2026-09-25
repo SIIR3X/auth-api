@@ -157,6 +157,8 @@ pub async fn change_username(
             request_id,
             action: AuditAction::UsernameChanged,
             ip_address: ip,
+            // Neither name: audit metadata cannot be rewritten, and the entry
+            // outlives an erased account without identifying it.
             metadata: json!({}),
         },
     )
@@ -416,16 +418,6 @@ pub(crate) async fn erase_account(
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
-    // Collect active session IDs before deletion so we can invalidate their
-    // Redis cache entries - otherwise the session validity cache would stay
-    // warm for up to SESSION_CACHE_TTL_SECS after the account is gone.
-    let session_ids: Vec<_> = session_repo::find_active_by_user(&state.db, user_id)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| s.id)
-        .collect();
-
     // Downstream services erase their data on `user.deleted`, and the user id is
     // the only key to it. The audit entry, the event and the deletion commit
     // together: the account is never gone without its event, and the event
@@ -436,6 +428,14 @@ pub(crate) async fn erase_account(
     let mut tx = state.db.begin().await?;
     // Read under the account's lock: a role granted meanwhile is seen.
     user_repo::lock_row(&mut *tx, user_id).await?;
+    // The sessions whose caches go with the account, read under its lock: one
+    // opened meanwhile is forgotten like the others, instead of staying warm
+    // for SESSION_CACHE_TTL_SECS after the account is gone.
+    let session_ids: Vec<_> = session_repo::find_active_by_user(&mut *tx, user_id)
+        .await?
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
     let manages_roles = crate::repositories::role::user_has_permission(
         &mut *tx,
         user_id,

@@ -248,7 +248,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '409':
-          description: '`primary_client_exists`'
+          description: '`primary_client_managed_by_command_line`: the primary client changes only through `auth-api --register-client`'
           content:
             application/json:
               schema:
@@ -7492,6 +7492,9 @@ components:
           type: string
         is_primary:
           type: boolean
+          description: |-
+            Refused when true: the primary client is designated from the command
+            line only (`auth-api --register-client --primary`).
         redirect_uris:
           type: array
           items:

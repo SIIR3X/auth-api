@@ -61,6 +61,13 @@ pub async fn save(
     let mut tx = state.db.begin().await?;
     let existed = client_repo::lock_existing(&mut *tx, client.client_id).await?;
     let previous = client_repo::find_by_id(&mut *tx, client.client_id).await?;
+    // The primary client's sessions are first-party and skip consent: an
+    // administrator holding `clients:manage` could otherwise point it, or make
+    // their own client primary, at redirect URIs of their choosing. It is
+    // designated and changed from the command line, on the server.
+    if client.is_primary || previous.as_ref().is_some_and(|p| p.is_primary) {
+        return Err(AppError::Conflict("primary_client_managed_by_command_line"));
+    }
     let mut saved = client_repo::upsert(&mut *tx, client).await.map_err(|e| {
         let scoped = matches!(&e, sqlx::Error::Database(db)
             if db.constraint() == Some("registered_clients_client_credentials_scoped"));

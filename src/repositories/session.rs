@@ -316,13 +316,13 @@ pub async fn find_validation_by_id(
 }
 
 /// Returns non-revoked sessions ordered by most recently used.
-pub async fn find_active_by_user(
-    pool: &PgPool,
+pub async fn find_active_by_user<'e>(
+    executor: impl PgExecutor<'e>,
     user_id: Uuid,
 ) -> Result<Vec<Session>, sqlx::Error> {
     sqlx::query_as::<_, Session>(FIND_ACTIVE_BY_USER_SQL)
         .bind(user_id)
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
 }
 

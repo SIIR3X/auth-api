@@ -46,6 +46,8 @@ pub struct ClientSecretResponse {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct SaveClientRequest {
     pub display_name: String,
+    /// Refused when true: the primary client is designated from the command
+    /// line only (`auth-api --register-client --primary`).
     #[serde(default)]
     pub is_primary: bool,
     #[serde(default)]
@@ -111,7 +113,7 @@ pub async fn list(
         (status = 201, description = "Client registered", body = ClientResponse),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Missing `clients:manage`, no second factor, or re-authentication required", body = crate::error::ErrorBody),
-        (status = 409, description = "`primary_client_exists`", body = crate::error::ErrorBody),
+        (status = 409, description = "`primary_client_managed_by_command_line`: the primary client changes only through `auth-api --register-client`", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid settings or unknown scope", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),

@@ -136,24 +136,36 @@ async fn invalid_client_settings_are_refused() {
         assert_eq!(status, 422, "{settings}: {response}");
     }
 
-    let primary = json!({ "display_name": "App", "is_primary": true });
-    let (status, _) = send(
+    // The primary client is the command line's: the administration neither
+    // designates one nor changes it (SEC-75).
+    let (status, response) = send(
         &app,
         Method::PUT,
         "/admin/clients/first",
         &admin.token,
-        primary.clone(),
+        json!({ "display_name": "App", "is_primary": true }),
     )
     .await;
-    assert_eq!(status, 201);
+    assert_eq!(
+        (status, response["code"].as_str()),
+        (409, Some("primary_client_managed_by_command_line"))
+    );
+    sqlx::query(
+        "INSERT INTO registered_clients (client_id, display_name, is_primary) VALUES ('first', 'App', TRUE)",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
     let (status, response) = send(
         &app,
         Method::PUT,
-        "/admin/clients/second",
+        "/admin/clients/first",
         &admin.token,
-        primary,
+        json!({ "display_name": "App", "redirect_uris": ["https://evil.example/cb"] }),
     )
     .await;
-    assert_eq!(status, 409);
-    assert_eq!(response["code"], "primary_client_exists");
+    assert_eq!(
+        (status, response["code"].as_str()),
+        (409, Some("primary_client_managed_by_command_line"))
+    );
 }

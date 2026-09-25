@@ -214,7 +214,10 @@ pub async fn force_password_reset(
     require_reauth(state, actor, "admin_force_password_reset").await?;
     let user = find(state, user_id).await?;
 
+    // One transaction: when the access factors cannot go (an administrator
+    // keeps a second factor), nothing is revoked either.
     let mut tx = state.db.begin().await?;
+    user_repo::lock_row(&mut *tx, user_id).await?;
     let active = session_repo::revoke_all_by_user_returning(&mut *tx, user_id).await?;
     let count = active.len();
     audit::append(
@@ -227,6 +230,11 @@ pub async fn force_password_reset(
         ),
     )
     .await?;
+    // Whoever knew the password may have added their own ways in: on request,
+    // they go with it.
+    if revoke_access_factors {
+        drop_access_factors_in(&mut tx, actor, user_id).await?;
+    }
     events::enqueue(
         &mut *tx,
         "user.sessions_revoked",
@@ -237,12 +245,6 @@ pub async fn force_password_reset(
     events::wake();
 
     forget_sessions(state, &active).await;
-    // Whoever knew the password may have added their own ways in: on request,
-    // they go with it.
-    if revoke_access_factors {
-        let revoked = drop_access_factors_in(state, actor, user_id).await?;
-        forget_sessions(state, &revoked).await;
-    }
     // The link records no address: it would show the administrator's in the
     // owner's export.
     auth_svc::send_reset_link(state, &user, None, None, true).await
@@ -261,29 +263,40 @@ pub async fn remove_access_factors(
     refuse_own_account(actor, user_id)?;
     require_reauth(state, actor, "admin_remove_access_factors").await?;
     find(state, user_id).await?;
-    let revoked = drop_access_factors_in(state, actor, user_id).await?;
+    let mut tx = state.db.begin().await?;
+    user_repo::lock_row(&mut *tx, user_id).await?;
+    // Every session goes, not only those of personal access tokens: whoever
+    // planted a factor may be signed in through the browser or a device.
+    let revoked = session_repo::revoke_all_by_user_returning(&mut *tx, user_id).await?;
+    drop_access_factors_in(&mut tx, actor, user_id).await?;
+    events::enqueue(
+        &mut *tx,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked { user_id },
+    )
+    .await?;
+    tx.commit().await?;
+    events::wake();
     forget_sessions(state, &revoked).await;
     super::notify_owner(state, user_id, "access_removed", None).await;
     Ok(())
 }
 
+/// Drop the account's access factors in the caller's transaction, which holds
+/// the account's lock and revokes its sessions.
 async fn drop_access_factors_in(
-    state: &AppState,
+    tx: &mut sqlx::PgConnection,
     actor: &Actor,
     user_id: Uuid,
-) -> Result<Vec<crate::domain::session::Session>, AppError> {
-    let mut tx = state.db.begin().await?;
-    user_repo::lock_row(&mut *tx, user_id).await?;
-    let revoked = session_repo::revoke_personal_access_sessions(&mut *tx, user_id).await?;
+) -> Result<(), AppError> {
     user_repo::drop_access_factors(&mut *tx, user_id).await?;
-    crate::services::user::keep_a_second_factor_for_administrators(&mut tx, user_id).await?;
+    crate::services::user::keep_a_second_factor_for_administrators(&mut *tx, user_id).await?;
     audit::append(
         &mut *tx,
         &entry(actor, user_id, AuditAction::AccessFactorsRemoved, json!({})),
     )
     .await?;
-    tx.commit().await?;
-    Ok(revoked)
+    Ok(())
 }
 
 /// Delete the account like its owner would, after a recent re-authentication of
