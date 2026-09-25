@@ -390,7 +390,11 @@ fn scan_keys(ip: Option<IpNetwork>, user_id: Uuid) -> Vec<String> {
 
 /// Count a lookup of a code that is not live. Only misses are counted: a
 /// legitimate approval resolves on the first try.
-async fn note_unknown_code(state: &AppState, ip: Option<IpNetwork>, user_id: Uuid) {
+async fn note_unknown_code(
+    state: &AppState,
+    ip: Option<IpNetwork>,
+    user_id: Uuid,
+) -> Result<(), AppError> {
     let keys = scan_keys(ip, user_id);
     let budgets: Vec<Budget> = keys
         .iter()
@@ -400,9 +404,10 @@ async fn note_unknown_code(state: &AppState, ip: Option<IpNetwork>, user_id: Uui
             window_secs: SCAN_WINDOW_SECS,
         })
         .collect();
-    if let Err(e) = redis_counter::consume(&state.redis, &budgets).await {
-        tracing::warn!(error = %e, "could not record an unknown device code lookup");
-    }
+    // A miss that cannot be counted is refused: the budget is what keeps the
+    // code space from being searched.
+    redis_counter::consume(&state.redis, &budgets).await?;
+    Ok(())
 }
 
 /// Load the live entry a user code points at: `(device key, raw json, entry)`.
@@ -443,7 +448,7 @@ pub async fn describe(
     guard_code_scan(state, ip, user_id).await?;
 
     let Some((_, _, entry)) = load_entry(state, user_code).await? else {
-        note_unknown_code(state, ip, user_id).await;
+        note_unknown_code(state, ip, user_id).await?;
         return Err(AppError::NotFound);
     };
     if !entry.status.is_undecided() {
@@ -496,7 +501,7 @@ pub async fn describe(
 pub async fn verify(state: &AppState, approval: &Approval<'_>) -> Result<(), AppError> {
     guard_code_scan(state, approval.ip, approval.user_id).await?;
     if load_entry(state, approval.user_code).await?.is_none() {
-        note_unknown_code(state, approval.ip, approval.user_id).await;
+        note_unknown_code(state, approval.ip, approval.user_id).await?;
         return Err(AppError::NotFound);
     }
     crate::services::reauth::require_recent_reauth_or_password(
@@ -543,7 +548,7 @@ async fn update_status(
     guard_code_scan(state, ip, user_id).await?;
 
     let Some((dk, raw, mut entry)) = load_entry(state, user_code).await? else {
-        note_unknown_code(state, ip, user_id).await;
+        note_unknown_code(state, ip, user_id).await?;
         return Err(AppError::NotFound);
     };
     if !entry.status.is_undecided() {

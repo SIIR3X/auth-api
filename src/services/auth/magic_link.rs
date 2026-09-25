@@ -52,7 +52,7 @@ async fn send_link(
     user_agent: Option<&str>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
-    if mailbox_budget_exhausted(state, "ml_account", user.id, ip).await {
+    if mailbox_budget_exhausted(state, "ml_account", user.id, ip, MAGIC_LINK_EXPIRY_SECS).await {
         return Ok(());
     }
 

@@ -2,6 +2,7 @@ mod audit;
 mod audit_partitions;
 mod authorization_codes;
 mod email_2fa_codes;
+mod login_attempts;
 mod recovery_codes;
 mod registered_clients;
 mod role_grant;

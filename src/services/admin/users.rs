@@ -156,7 +156,14 @@ pub async fn unlock(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<()
     )
     .await?;
     tx.commit().await?;
-    redis_counter::reset(&state.redis, &[&user_svc::reauth_fail_key(user_id)]).await;
+    redis_counter::reset(
+        &state.redis,
+        &[
+            &user_svc::reauth_fail_key(user_id),
+            &format!("login_try:{user_id}"),
+        ],
+    )
+    .await;
     super::notify_owner(state, user_id, "unlocked", None).await;
     Ok(())
 }

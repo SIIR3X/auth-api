@@ -408,6 +408,13 @@ impl TestApp {
     pub async fn clear_email_change_cooldown(&self, user_id: uuid::Uuid) {
         self.delete_redis_key(&format!("email_change_cd:{user_id}"))
             .await;
+        self.clear_email_change_start_cooldown(user_id).await;
+    }
+
+    /// Lift the minute between two starts of an e-mail change.
+    pub async fn clear_email_change_start_cooldown(&self, user_id: uuid::Uuid) {
+        self.delete_redis_key(&format!("email_change_start_cd:{user_id}"))
+            .await;
     }
 
     pub async fn clear_recent_reauth(&self, access_token: &str) {

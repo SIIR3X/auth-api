@@ -73,8 +73,11 @@ pub async fn verify_password(
 
     // Reserve the attempt before Argon2 runs, in one atomic step: parallel
     // guesses cannot all read a count below the threshold. Fails closed when
-    // Redis is unavailable, like every budget guarding a secret.
-    let attempt = redis_counter::consume(
+    // Redis is unavailable, like every budget guarding a secret. The session's
+    // budget comes first: once it is exhausted, its attempts stop counting
+    // against the account, so one stolen session adds at most
+    // `LOCKOUT_THRESHOLD` to the account's budget and never locks the owner.
+    let attempt = redis_counter::consume_in_order(
         &state.redis,
         &[
             Budget {

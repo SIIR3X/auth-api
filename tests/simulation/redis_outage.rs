@@ -89,8 +89,9 @@ async fn a_second_factor_sign_in_without_redis_is_unavailable_not_broken() {
 // Email verification
 
 #[tokio::test]
-async fn email_verification_succeeds_when_redis_is_down() {
-    // Register then verify entirely within the no-redis app's own DB.
+async fn email_verification_waits_for_redis() {
+    // The budget per token hash is what makes guessing a link hopeless: while
+    // it cannot be counted, links are refused, not checked unbounded.
     let app = app_without_redis().await;
     let user = fixtures::register_user(&app, 372).await;
     let token = fixtures::create_email_verification_token(&app.db, user.id, &user.email).await;
@@ -101,7 +102,7 @@ async fn email_verification_succeeds_when_redis_is_down() {
             &serde_json::json!({ "token": token.raw, "password": user.password }),
         )
         .await;
-    assert_eq!(res.status().as_u16(), 200);
+    assert_eq!(res.status().as_u16(), 503);
 }
 
 // Rate limit fail-closed
@@ -137,8 +138,8 @@ async fn rate_limit_fail_closed_returns_503_when_redis_is_down() {
 // Password reset
 
 #[tokio::test]
-async fn password_reset_submit_succeeds_when_redis_is_down() {
-    // Register + activate + reset entirely within the no-redis app's own DB.
+async fn password_reset_submit_waits_for_redis() {
+    // Like every link: refused while its budget cannot be counted.
     let app = app_without_redis().await;
     let user = fixtures::register_user(&app, 373).await;
     fixtures::activate_user(&app.db, user.id).await;
@@ -153,5 +154,5 @@ async fn password_reset_submit_succeeds_when_redis_is_down() {
             }),
         )
         .await;
-    assert_eq!(res.status().as_u16(), 200);
+    assert_eq!(res.status().as_u16(), 503);
 }

@@ -49,7 +49,7 @@ pub(super) async fn issue_password_reset(
         return Ok(());
     };
 
-    if mailbox_budget_exhausted(state, "fp_account", user.id, ip).await {
+    if mailbox_budget_exhausted(state, "fp_account", user.id, ip, RESET_TOKEN_EXPIRY_SECS).await {
         return Ok(());
     }
 
@@ -248,6 +248,9 @@ pub async fn reset_password(
             &format!("{TOTP_USER_FAIL_PREFIX}{user_id}"),
             &format!("{RC_USER_FAIL_PREFIX}{user_id}"),
             &format!("{EMAIL_2FA_USER_FAIL_PREFIX}{user_id}"),
+            // The sign-in budget too: failures typed by whoever made the
+            // owner reset do not keep them from signing in afterwards.
+            &format!("login_try:{user_id}"),
         ],
     )
     .await;

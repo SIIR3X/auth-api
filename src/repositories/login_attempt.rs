@@ -11,11 +11,22 @@ use uuid::Uuid;
 
 use crate::domain::login_attempt::LoginFailureReason;
 
+/// Failures typed before the account last opened or was unlocked (a sign-in,
+/// an administrator's unlock, a password reset) no longer count: whoever typed
+/// them cannot keep the owner out past that.
 pub const COUNT_RECENT_FAILURES_BY_IDENTIFIER_SQL: &str = "SELECT COUNT(*) FROM (
          SELECT 1 FROM login_attempts
          WHERE attempted_identifier = $1::citext
            AND was_successful = FALSE
-           AND attempted_at > $2
+           AND attempted_at > GREATEST(
+               $2,
+               COALESCE(
+                   (SELECT lockout_cleared_at FROM users
+                    WHERE email = $1::citext OR lower(username) = lower($1)
+                    LIMIT 1),
+                   '-infinity'::timestamptz
+               )
+           )
          LIMIT $3
      ) sub";
 

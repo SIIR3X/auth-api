@@ -40,6 +40,12 @@ use super::{auth as auth_svc, email as email_svc, events};
 
 const FLOW_TTL_SECS: u64 = 60 * 15; // 15-minute window for the entire flow
 const MAX_OTP_FAILURES: i64 = 5;
+/// Wrong codes one account may submit per hour across its flows: starting a
+/// new flow opens a fresh budget of `MAX_OTP_FAILURES`, not a fresh search.
+const MAX_OTP_FAILURES_PER_ACCOUNT: i64 = MAX_OTP_FAILURES * 3;
+const OTP_ACCOUNT_WINDOW_SECS: u64 = 3600;
+/// A flow starts at most once a minute: each start mails the current address.
+const START_COOLDOWN_SECS: u64 = 60;
 
 /// Per-user cooldown between two completed email changes (prevents mailbox spam).
 const CHANGE_COOLDOWN_SECS: u64 = 300;
@@ -79,6 +85,18 @@ pub async fn start(
         "email_change_start",
     )
     .await?;
+
+    // Each start mails a code: at most one a minute, refused when Redis
+    // cannot tell.
+    if !redis_counter::claim_cooldown_strict(
+        &state.redis,
+        &format!("email_change_start_cd:{user_id}"),
+        START_COOLDOWN_SECS,
+    )
+    .await?
+    {
+        return Err(AppError::RateLimitExceeded);
+    }
 
     // Block if a change was completed recently.
     let cooldown_key = format!("email_change_cd:{}", user_id);
@@ -244,7 +262,9 @@ pub async fn submit_new(
     {
         Ok(attempt) if attempt.exceeded => return Err(AppError::RateLimitExceeded),
         Ok(_) => {}
-        Err(error) => tracing::warn!(%error, "email change budget unavailable, failing open"),
+        // The budget keeps codes from being mailed to anyone in bulk: without
+        // it, nothing is sent.
+        Err(error) => return Err(error),
     }
 
     let taken = user_repo::email_taken(&state.db, new_email, user_id)
@@ -516,13 +536,21 @@ async fn verify_otp(
 ) -> Result<(), AppError> {
     let expected = expected_hash.ok_or(AppError::Unauthorized)?;
 
+    let account_key = format!("email_change_fail_user:{user_id}");
     let attempt = redis_counter::consume(
         &state.redis,
-        &[Budget {
-            key: fail_key,
-            limit: MAX_OTP_FAILURES,
-            window_secs: FLOW_TTL_SECS,
-        }],
+        &[
+            Budget {
+                key: fail_key,
+                limit: MAX_OTP_FAILURES,
+                window_secs: FLOW_TTL_SECS,
+            },
+            Budget {
+                key: &account_key,
+                limit: MAX_OTP_FAILURES_PER_ACCOUNT,
+                window_secs: OTP_ACCOUNT_WINDOW_SECS,
+            },
+        ],
     )
     .await?;
     if attempt.exceeded {
@@ -543,7 +571,7 @@ async fn verify_otp(
         return Err(AppError::TwoFactorFailed);
     }
 
-    redis_counter::reset(&state.redis, &[fail_key]).await;
+    redis_counter::reset(&state.redis, &[fail_key, &account_key]).await;
     Ok(())
 }
 

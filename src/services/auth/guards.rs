@@ -103,11 +103,16 @@ pub(crate) fn account_budget_exceeded(counts: &[i64], account_limit: i64) -> boo
 
 /// The budget of links mailed to `user_id` (`prefix` names the kind): per
 /// client address, then for the account as a whole.
+///
+/// The window is the lifetime of the links: once someone else has spent the
+/// budget, the links their requests mailed to the owner stay valid until it
+/// opens again, so the owner is never left without one.
 pub(super) async fn mailbox_budget_exhausted(
     state: &AppState,
     prefix: &str,
     user_id: Uuid,
     ip: Option<IpNetwork>,
+    window_secs: u64,
 ) -> bool {
     if let Some(ip) = ip {
         let key = format!("{prefix}:{user_id}:{}", ip_bucket(ip.ip()));
@@ -115,7 +120,7 @@ pub(super) async fn mailbox_budget_exhausted(
             state,
             &key,
             MAX_MAILBOX_LINKS_BY_ACCOUNT_AND_IP,
-            MAILBOX_LINK_ACCOUNT_WINDOW_SECS,
+            window_secs,
         )
         .await
         {
@@ -126,7 +131,7 @@ pub(super) async fn mailbox_budget_exhausted(
         state,
         &format!("{prefix}:{user_id}"),
         MAX_MAILBOX_LINKS_BY_ACCOUNT,
-        MAILBOX_LINK_ACCOUNT_WINDOW_SECS,
+        window_secs,
     )
     .await
 }
@@ -161,8 +166,9 @@ pub(super) async fn budget_exhausted(
 }
 
 /// Throttle submissions of one-time tokens (email verification, password
-/// reset): per IP, and per token hash across every IP. Tokens carry 256 bits,
-/// so this is volume control, not the security boundary; it fails open.
+/// reset, magic link): per IP, and per token hash across every IP. Fails
+/// closed: the budget per token hash is what the guarantee on guessing a
+/// token rests on while Redis is under pressure.
 pub(super) async fn guard_token_submission(
     state: &AppState,
     kind: &str,
@@ -186,14 +192,11 @@ pub(super) async fn guard_token_submission(
         });
     }
 
-    match redis_counter::consume(&state.redis, &budgets).await {
-        Ok(attempt) if attempt.exceeded => Err(AppError::RateLimitExceeded),
-        Ok(_) => Ok(()),
-        Err(error) => {
-            tracing::warn!(error = %error, "token submission budget unavailable, failing open");
-            Ok(())
-        }
+    let attempt = redis_counter::consume(&state.redis, &budgets).await?;
+    if attempt.exceeded {
+        return Err(AppError::RateLimitExceeded);
     }
+    Ok(())
 }
 
 /// Add the attempted identifier to the per-IP HyperLogLog for credential-stuffing detection.

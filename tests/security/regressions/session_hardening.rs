@@ -263,8 +263,9 @@ async fn a_stolen_session_guessing_the_password_does_not_lock_the_owner_out() {
     let stolen_token = stolen["access_token"].as_str().unwrap();
     let stolen_sid = app.decode_access_token(stolen_token).sid;
 
-    // The test configuration locks after 3 failures.
-    for _ in 0..3 {
+    // The test configuration locks after 3 failures, and the account after
+    // 9: guessing on past the session's lock must not fill the account's.
+    for _ in 0..12 {
         app.post_auth(
             "/users/me/reauth",
             stolen_token,

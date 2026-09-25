@@ -44,6 +44,35 @@ return counts
     )
 });
 
+/// Like [`CONSUME`], but in order and stopping at the first budget past its
+/// limit: the budgets after it are left untouched (count 0).
+static CONSUME_IN_ORDER: LazyLock<Script> = LazyLock::new(|| {
+    Script::new(
+        r#"
+local exceeded = 0
+local counts = {}
+for i, key in ipairs(KEYS) do
+    counts[i] = 0
+end
+for i, key in ipairs(KEYS) do
+    local limit = tonumber(ARGV[2 * i - 1])
+    local window = tonumber(ARGV[2 * i])
+    local n = redis.call('INCR', key)
+    if n == 1 then
+        redis.call('EXPIRE', key, window)
+    end
+    counts[i] = n
+    if n > limit then
+        exceeded = 1
+        break
+    end
+end
+table.insert(counts, 1, exceeded)
+return counts
+"#,
+    )
+});
+
 /// One attempt budget: at most `limit` attempts on `key` per `window_secs`.
 #[derive(Debug, Clone, Copy)]
 pub struct Budget<'a> {
@@ -73,6 +102,26 @@ impl Consumed {
 /// Fails closed: when Redis cannot be reached the attempt is refused with
 /// `ServiceUnavailable`, because an unenforceable budget is no budget at all.
 pub async fn consume(redis: &RedisPool, budgets: &[Budget<'_>]) -> Result<Consumed, AppError> {
+    run(redis, &CONSUME, budgets).await
+}
+
+/// Reserve one attempt against the budgets in order, atomically, stopping at
+/// the first one already exhausted: an attempt refused by a narrow budget
+/// (one session) does not also count against a wider one (the account), so
+/// whoever exhausts their own budget cannot go on filling the owner's.
+/// Fails closed like [`consume`].
+pub async fn consume_in_order(
+    redis: &RedisPool,
+    budgets: &[Budget<'_>],
+) -> Result<Consumed, AppError> {
+    run(redis, &CONSUME_IN_ORDER, budgets).await
+}
+
+async fn run(
+    redis: &RedisPool,
+    script: &Script,
+    budgets: &[Budget<'_>],
+) -> Result<Consumed, AppError> {
     if budgets.is_empty() {
         return Ok(Consumed {
             exceeded: false,
@@ -85,7 +134,7 @@ pub async fn consume(redis: &RedisPool, budgets: &[Budget<'_>]) -> Result<Consum
         .await
         .map_err(|_| redis_failure("redis_unavailable"))?;
 
-    let mut invocation = CONSUME.prepare_invoke();
+    let mut invocation = script.prepare_invoke();
     for budget in budgets {
         invocation
             .key(budget.key)

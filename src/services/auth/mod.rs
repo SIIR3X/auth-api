@@ -213,7 +213,6 @@ const FORGOT_PASSWORD_IP_WINDOW_SECS: u64 = 900;
 /// their own share, and the owner asking from theirs still gets a link.
 const MAX_MAILBOX_LINKS_BY_ACCOUNT_AND_IP: i64 = 3;
 const MAX_MAILBOX_LINKS_BY_ACCOUNT: i64 = 10;
-const MAILBOX_LINK_ACCOUNT_WINDOW_SECS: u64 = 3600;
 
 /// Verification e-mail requests per client address (IPv6 /64) per window.
 const MAX_VERIFICATION_RESENDS_BY_IP: i64 = 5;

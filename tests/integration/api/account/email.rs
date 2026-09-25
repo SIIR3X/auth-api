@@ -246,6 +246,7 @@ async fn email_change_submissions_are_budgeted() {
     let user = fixtures::authenticated_user(&app, 60).await;
     let mut statuses = Vec::new();
     for attempt in 0..4 {
+        app.clear_email_change_start_cooldown(user.id).await;
         app.post_auth(
             "/users/me/reauth",
             &user.access_token,
@@ -581,4 +582,38 @@ async fn email_change_confirm_new_lockout_after_max_failures() {
         429,
         "6th wrong confirm OTP must return 429"
     );
+}
+
+/// A new flow opens no new search of the code space: wrong codes are budgeted
+/// per account across flows, and a flow starts at most once a minute (SEC-76).
+#[tokio::test]
+async fn email_change_codes_are_budgeted_across_flows() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 61).await;
+    let empty = serde_json::json!({});
+    let start = || app.post_auth("/users/me/email/start", &user.access_token, &empty);
+    assert_eq!(start().await.status().as_u16(), 200);
+    assert_eq!(start().await.status().as_u16(), 429, "one start a minute");
+
+    let mut last = 0;
+    for _ in 0..4 {
+        app.clear_email_change_start_cooldown(user.id).await;
+        let started = start().await;
+        let flow_token = started.json::<serde_json::Value>().await.unwrap()["flow_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for _ in 0..5 {
+            last = app
+                .post_auth(
+                    "/users/me/email/verify-current",
+                    &user.access_token,
+                    &serde_json::json!({ "flow_token": flow_token, "code": "000000" }),
+                )
+                .await
+                .status()
+                .as_u16();
+        }
+    }
+    assert_eq!(last, 429, "the account's budget outlives its flows");
 }
