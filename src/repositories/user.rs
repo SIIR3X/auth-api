@@ -182,7 +182,7 @@ pub async fn adopt_pending_credentials<'e>(
          SET password_hash = $2,
              preferred_locale = $4,
              username = CASE
-                 WHEN EXISTS (SELECT 1 FROM users o WHERE o.username = $3 AND o.id <> u.id)
+                 WHEN EXISTS (SELECT 1 FROM users o WHERE lower(o.username) = lower($3) AND o.id <> u.id)
                      THEN u.username
                  ELSE $3
              END
@@ -354,6 +354,37 @@ pub async fn delete<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), s
         .bind(id)
         .execute(executor)
         .await?;
+    Ok(())
+}
+
+/// Whether an account holds the username, or a registration reserved it
+/// (see `reserve_username`), whatever the case.
+pub async fn username_unavailable(pool: &PgPool, username: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE lower(username) = lower($1))
+             OR EXISTS (SELECT 1 FROM username_reservations
+                        WHERE lower(username) = lower($1) AND expires_at > NOW())",
+    )
+    .bind(username)
+    .fetch_one(pool)
+    .await
+}
+
+/// Reserve the username until `expires_at`, extending an earlier reservation.
+pub async fn reserve_username<'e>(
+    executor: impl PgExecutor<'e>,
+    username: &str,
+    expires_at: time::OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO username_reservations (username, expires_at) VALUES ($1, $2)
+         ON CONFLICT (lower(username))
+         DO UPDATE SET expires_at = GREATEST(username_reservations.expires_at, EXCLUDED.expires_at)",
+    )
+    .bind(username)
+    .bind(expires_at)
+    .execute(executor)
+    .await?;
     Ok(())
 }
 

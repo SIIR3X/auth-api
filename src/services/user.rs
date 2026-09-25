@@ -137,10 +137,9 @@ pub async fn change_username(
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
-    if user_repo::find_by_username(&state.db, new_username)
-        .await?
-        .is_some()
-    {
+    // Reserved names count as taken, as at registration: a rename accepted
+    // where a registration was refused would tell which address it named.
+    if user_repo::username_unavailable(&state.db, new_username).await? {
         return Err(AppError::Conflict("username_taken"));
     }
 

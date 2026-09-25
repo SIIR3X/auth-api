@@ -65,10 +65,10 @@ async fn register_account(
     // and must know to change. A taken email is not: answering differently
     // would let anyone test which addresses have an account. Its owner is told
     // by email instead, and the caller gets the same response as a new signup.
-    if user_repo::find_by_username(&state.db, username)
-        .await?
-        .is_some()
-    {
+    // A registration on a taken address reserves its username like a new
+    // account would, so asking for the same username again answers the same
+    // either way.
+    if user_repo::username_unavailable(&state.db, username).await? {
         return Err(AppError::Conflict("username_taken"));
     }
 
@@ -82,6 +82,12 @@ async fn register_account(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     if let Some(existing) = user_repo::find_by_email(&state.db, email).await? {
+        user_repo::reserve_username(
+            &state.db,
+            username,
+            state.clock.in_secs(EMAIL_TOKEN_EXPIRY_SECS),
+        )
+        .await?;
         // A pending account belongs to nobody yet: this registration gets its
         // own link, carrying the credentials it chose. The link activates the
         // account only with the password of that registration, so neither

@@ -379,12 +379,15 @@ async fn registration_takes_a_constant_minimum_time() {
     let owner = fixtures::register_user(&app, 662).await;
     fixtures::activate_user(&app.db, owner.id).await;
 
-    for email in [owner.email.clone(), "fresh662@example.com".to_owned()] {
+    for (username, email) in [
+        ("timing_662", owner.email.clone()),
+        ("timing_663", "fresh662@example.com".to_owned()),
+    ] {
         let started = Instant::now();
         let res = app
             .post(
                 "/auth/register",
-                &json!({ "username": "timing_662", "email": email, "password": "Password662!ok" }),
+                &json!({ "username": username, "email": email, "password": "Password662!ok" }),
             )
             .await;
         assert_eq!(res.status().as_u16(), 202);
@@ -445,4 +448,55 @@ async fn an_unrecognized_identifier_is_not_recorded() {
         "{recorded:?}"
     );
     assert!(recorded.iter().any(|value| value == "<unrecognized>"));
+}
+
+/// Whether a username is taken tells nothing of an address: a registration on
+/// a registered address reserves its username like a new account would, at
+/// registration and for a rename alike (SEC-77).
+#[tokio::test]
+async fn a_username_answers_the_same_whether_its_address_was_registered() {
+    let app = TestApp::spawn().await;
+    let owner = fixtures::register_user(&app, 671).await;
+    fixtures::activate_user(&app.db, owner.id).await;
+
+    let mut probes = Vec::new();
+    for email in [
+        owner.email.clone(),
+        fixtures::unique("fresh") + "@example.com",
+    ] {
+        let probe = fixtures::unique("probe_");
+        let res = app
+            .post(
+                "/auth/register",
+                &json!({ "username": probe, "email": email, "password": "Password671!ok" }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 202);
+        let again = app
+            .post(
+                "/auth/register",
+                &json!({
+                    "username": probe.to_uppercase(),
+                    "email": fixtures::unique("other") + "@example.com",
+                    "password": "Password671!ok",
+                }),
+            )
+            .await;
+        assert_eq!(again.status().as_u16(), 409, "after registering {email}");
+        probes.push(probe);
+    }
+
+    let renamer = fixtures::authenticated_user(&app, 672).await;
+    let res = app
+        .patch_auth(
+            "/users/me/username",
+            &renamer.access_token,
+            &json!({ "username": probes[0], "current_password": renamer.password }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        409,
+        "a reserved name is taken for a rename too"
+    );
 }
