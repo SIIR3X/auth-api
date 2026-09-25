@@ -47,6 +47,8 @@ CREATE TYPE audit_action AS ENUM (
     'passkey_removed',
     'external_identity_linked',
     'external_identity_unlinked',
+    'client_authorized',
+    'device_approved',
     -- Administrative changes.
     'account_unlocked',
     'password_reset_forced',

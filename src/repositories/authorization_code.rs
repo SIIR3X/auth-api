@@ -3,7 +3,7 @@
 //! Redemption is one statement that consumes and returns the code, so two
 //! concurrent redemptions cannot both succeed.
 
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -36,7 +36,10 @@ pub struct NewAuthorizationCode<'a> {
 
 const COLUMNS: &str = "id, user_id, client_id, redirect_uri, code_challenge, scopes, expires_at, consumed_at, session_id, nonce, auth_time";
 
-pub async fn create(pool: &PgPool, input: &NewAuthorizationCode<'_>) -> Result<Uuid, sqlx::Error> {
+pub async fn create<'e>(
+    executor: impl PgExecutor<'e>,
+    input: &NewAuthorizationCode<'_>,
+) -> Result<Uuid, sqlx::Error> {
     sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO authorization_codes
              (code_hash, user_id, client_id, redirect_uri, code_challenge, scopes, expires_at, nonce, auth_time)
@@ -52,7 +55,7 @@ pub async fn create(pool: &PgPool, input: &NewAuthorizationCode<'_>) -> Result<U
     .bind(input.expires_at)
     .bind(input.nonce)
     .bind(input.auth_time)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 

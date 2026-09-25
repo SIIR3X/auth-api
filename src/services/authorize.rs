@@ -14,9 +14,10 @@ use ipnetwork::IpNetwork;
 use uuid::Uuid;
 
 use crate::{
-    domain::{registered_client::RegisteredClient, session::SessionType},
+    domain::{audit::AuditAction, registered_client::RegisteredClient, session::SessionType},
     error::AppError,
     repositories::{
+        audit::{self, NewAuditEntry},
         authorization_code::{self as code_repo, NewAuthorizationCode},
         client_quota as quota_repo, registered_client as client_repo, role as role_repo,
         session as session_repo, user as user_repo,
@@ -137,8 +138,15 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
     );
 
     let code = crypto::generate_token();
+    // The code and the trace of the consent commit together: the owner's
+    // history names every client given access, and with which scopes.
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
     code_repo::create(
-        &state.db,
+        &mut *tx,
         &NewAuthorizationCode {
             code_hash: &crypto::sha256(code.as_bytes()),
             user_id: approval.user_id,
@@ -153,6 +161,24 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+    audit::append(
+        &mut *tx,
+        &NewAuditEntry {
+            user_id: Some(approval.user_id),
+            request_id: approval.request_id,
+            action: AuditAction::ClientAuthorized,
+            ip_address: approval.ip,
+            metadata: serde_json::json!({
+                "client_id": client.client_id,
+                "scopes": scopes,
+            }),
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(code)
 }
@@ -244,7 +270,17 @@ pub async fn redeem(
         SessionType::Device,
         Some(&entry.client_id),
         entry.scopes.as_deref(),
-        None,
+        // Handing a session to a client is a sign-in on the user's behalf:
+        // recorded, and announced like one from a new device.
+        Some(auth_svc::SignIn {
+            identifier: None,
+            request_id: None,
+            audit_metadata: serde_json::json!({
+                "method": "authorization_code",
+                "client_id": entry.client_id,
+            }),
+            second_factor: false,
+        }),
     )
     .await?;
 

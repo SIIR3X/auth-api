@@ -376,3 +376,53 @@ async fn a_device_consent_is_frozen_at_the_approval() {
         "consented beyond what the user held: {scopes:?}"
     );
 }
+
+/// A device approval leaves a trace naming the client and the device that
+/// asked, and handing the session over counts as a sign-in on the owner's
+/// behalf, with the time the password was proven (SEC-78).
+#[tokio::test]
+async fn a_delegated_session_leaves_a_trace_in_the_owners_history() {
+    let app = TestApp::spawn().await;
+    register_client(&app, "tv-app", false).await;
+    let user = fixtures::authenticated_user(&app, 7).await;
+    let (device_code, user_code) = start_device_flow(&app, "tv-app").await;
+    let (status, body) = approve(
+        &app,
+        &user.access_token,
+        json!({ "user_code": user_code, "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = poll(&app, &device_code, "tv-app").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let approved: Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE user_id = $1 AND action = 'device_approved'",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(approved["client_id"], "tv-app");
+    assert!(approved.get("device_address").is_some());
+    let signed_in: Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE user_id = $1 AND action = 'login'
+         AND metadata->>'method' = 'device_authorization'",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(signed_in["client_id"], "tv-app");
+    let auth_time_set: bool = sqlx::query_scalar(
+        "SELECT auth_time IS NOT NULL FROM sessions WHERE user_id = $1 AND client_id = 'tv-app'",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert!(
+        auth_time_set,
+        "the device's session carries the proof's time"
+    );
+}

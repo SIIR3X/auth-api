@@ -44,6 +44,10 @@ pub enum AuditAction {
     AccountUnlocked,
     PasswordResetForced,
     AccessFactorsRemoved,
+    /// The user approved a client application's authorization request.
+    ClientAuthorized,
+    /// The user approved a device authorization request.
+    DeviceApproved,
     RoleCreated,
     RoleDeleted,
     RolePermissionsChanged,

@@ -839,4 +839,16 @@ async fn tokens_say_when_and_who() {
         claims(tokens["access_token"].as_str().unwrap())["sub_type"],
         "user"
     );
+    // The consent and the session it handed over are in the owner's history
+    // (SEC-78).
+    let actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action::text FROM audit_log WHERE user_id = $1
+         AND (action = 'client_authorized' OR metadata->>'method' = 'authorization_code')
+         ORDER BY created_at",
+    )
+    .bind(user.id)
+    .fetch_all(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(actions, ["client_authorized", "login"]);
 }
