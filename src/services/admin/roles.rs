@@ -44,10 +44,10 @@ pub async fn create(
         ));
     }
     let permissions = known_permissions(state, permissions).await?;
-    ensure_actor_holds(state, actor, &permissions).await?;
     require_reauth(state, actor, "admin_create_role").await?;
 
     let mut tx = state.db.begin().await?;
+    ensure_actor_holds(&mut tx, actor, &permissions).await?;
     let role = role_repo::create(&mut *tx, name, description)
         .await
         .map_err(|e| AppError::from_unique_violation(e, &[("roles_name_key", "role_exists")]))?;
@@ -74,21 +74,6 @@ pub async fn set_permissions(
 ) -> Result<(Role, Vec<String>), AppError> {
     let role = find(state, name).await?;
     let permissions = known_permissions(state, permissions).await?;
-    // Nobody delegates what they do not hold: a role manager adding to any
-    // role a permission they lack could grant it to an accomplice, who would
-    // grant it back.
-    let current = role_repo::find_all_with_permissions(&state.db)
-        .await?
-        .into_iter()
-        .find(|(r, _)| r.id == role.id)
-        .map(|(_, granted)| granted)
-        .unwrap_or_default();
-    let added: Vec<String> = permissions
-        .iter()
-        .filter(|p| !current.contains(p))
-        .cloned()
-        .collect();
-    ensure_actor_holds(state, actor, &added).await?;
     // Every account holds the default role: administration in it would make
     // every new account an administrator.
     if role.is_default
@@ -101,6 +86,19 @@ pub async fn set_permissions(
     require_reauth(state, actor, "admin_change_role").await?;
 
     let mut tx = state.db.begin().await?;
+    // Nobody delegates what they do not hold, nor withdraws it: a role manager
+    // adding to any role a permission they lack could grant it to an
+    // accomplice, who would grant it back, and one removing it could strip the
+    // administrators above them. Checked on the grants read under the role's
+    // lock.
+    let current = role_repo::lock_permissions(&mut tx, role.id).await?;
+    let changed: Vec<String> = permissions
+        .iter()
+        .filter(|p| !current.contains(p))
+        .chain(current.iter().filter(|p| !permissions.contains(p)))
+        .cloned()
+        .collect();
+    ensure_actor_holds(&mut tx, actor, &changed).await?;
     role_repo::set_permissions(&mut tx, role.id, &permissions).await?;
     keep_an_administrator(&mut tx).await?;
     audit::append(
@@ -124,6 +122,9 @@ pub async fn delete(state: &AppState, actor: &Actor, name: &str) -> Result<(), A
     require_reauth(state, actor, "admin_delete_role").await?;
 
     let mut tx = state.db.begin().await?;
+    // Deleting a role withdraws its permissions from every holder.
+    let granted = role_repo::lock_permissions(&mut tx, role.id).await?;
+    ensure_actor_holds(&mut tx, actor, &granted).await?;
     // Each holder's history records the role going, like a withdrawal.
     let holders = role_repo::holders(&mut *tx, role.id).await?;
     role_repo::delete(&mut *tx, role.id).await?;
@@ -174,6 +175,10 @@ pub async fn assign(
     let user = user_repo::find_by_id(&mut *tx, user_id)
         .await?
         .ok_or(AppError::NotFound)?;
+    // Granting a role delegates every permission it holds: a role manager
+    // could otherwise give `admin` to an account they control.
+    let granted = role_repo::lock_permissions(&mut tx, role.id).await?;
+    ensure_actor_holds(&mut tx, actor, &granted).await?;
     ensure_can_administer(&mut tx, &user, &role).await?;
     match role_repo::assign_to_user(&mut *tx, user_id, role.id, Some(actor.user_id)).await {
         Ok(_) => {}
@@ -204,6 +209,10 @@ pub async fn unassign(
     require_reauth(state, actor, "admin_revoke_role").await?;
 
     let mut tx = state.db.begin().await?;
+    // Withdrawing a role withdraws its permissions: only someone holding them
+    // all may, so a lesser administrator cannot strip a greater one.
+    let granted = role_repo::lock_permissions(&mut tx, role.id).await?;
+    ensure_actor_holds(&mut tx, actor, &granted).await?;
     if !role_repo::unassign(&mut *tx, user_id, role.id).await? {
         return Ok(());
     }
@@ -251,14 +260,15 @@ pub(crate) async fn ensure_can_administer(
     Ok(())
 }
 
-/// Refuse to grant a permission the administrator does not hold.
+/// Refuse to grant or withdraw a permission the administrator does not hold.
+/// Read in the caller's transaction, after its locks.
 async fn ensure_actor_holds(
-    state: &AppState,
+    tx: &mut sqlx::PgConnection,
     actor: &Actor,
     permissions: &[String],
 ) -> Result<(), AppError> {
     for permission in permissions {
-        if !role_repo::user_has_permission(&state.db, actor.user_id, permission).await? {
+        if !role_repo::user_has_permission(&mut *tx, actor.user_id, permission).await? {
             return Err(AppError::Forbidden);
         }
     }

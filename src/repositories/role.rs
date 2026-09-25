@@ -191,6 +191,27 @@ pub async fn find_all_with_permissions(
         .collect())
 }
 
+/// The names of the permissions the role grants, locking the role's row
+/// until the transaction ends: its grants cannot change under a check.
+pub async fn lock_permissions(
+    tx: &mut sqlx::PgConnection,
+    role_id: Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query("SELECT id FROM roles WHERE id = $1 FOR UPDATE")
+        .bind(role_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query_scalar(
+        "SELECT p.name FROM role_permissions rp
+         JOIN permissions p ON p.id = rp.permission_id
+         WHERE rp.role_id = $1
+         ORDER BY p.name",
+    )
+    .bind(role_id)
+    .fetch_all(&mut *tx)
+    .await
+}
+
 pub async fn find_all_permissions(pool: &PgPool) -> Result<Vec<Permission>, sqlx::Error> {
     sqlx::query_as::<_, Permission>("SELECT * FROM permissions ORDER BY name")
         .fetch_all(pool)

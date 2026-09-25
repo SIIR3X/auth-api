@@ -354,3 +354,72 @@ async fn administrative_traces_describe_the_change_not_the_administrator() {
         json!({ "before": ["one.example.com"], "after": ["two.example.com"] })
     );
 }
+
+/// Granting or withdrawing a role delegates every permission it holds: a
+/// role manager can neither hand `admin` to an account they control nor
+/// strip it, or a permission of it, from anyone (SEC-74).
+#[tokio::test]
+async fn nobody_grants_or_withdraws_a_role_holding_more_than_they_have() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let (_, token) = role_manager(&app, &admin).await;
+    let puppet = fixtures::authenticated_user(&app, 31).await;
+    enroll_second_factor(&app, puppet.id).await;
+
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        &format!("/admin/users/{}/roles", puppet.id),
+        &token,
+        json!({ "role": "admin" }),
+    )
+    .await;
+    assert_eq!(status, 403, "admin goes to no puppet");
+    let (status, _) = send(
+        &app,
+        Method::DELETE,
+        &format!("/admin/users/{}/roles/admin", admin.user.id),
+        &token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 403, "nor is it taken from a greater administrator");
+    let (status, _) = send(
+        &app,
+        Method::PUT,
+        "/admin/roles/admin/permissions",
+        &token,
+        json!({ "permissions": ["roles:manage"] }),
+    )
+    .await;
+    assert_eq!(status, 403, "nor emptied of what the manager lacks");
+    let (status, _) = send(
+        &app,
+        Method::DELETE,
+        "/admin/roles/admin",
+        &token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 403, "nor deleted");
+
+    // What the manager holds stays theirs to delegate.
+    let (status, response) = send(
+        &app,
+        Method::POST,
+        &format!("/admin/users/{}/roles", puppet.id),
+        &token,
+        json!({ "role": "support" }),
+    )
+    .await;
+    assert_eq!(status, 204, "{response}");
+    let (status, response) = send(
+        &app,
+        Method::DELETE,
+        &format!("/admin/users/{}/roles/support", puppet.id),
+        &token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 204, "{response}");
+}
