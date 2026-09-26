@@ -120,8 +120,17 @@ to the upstream.
 
 `/var/log/nginx/auth-api.access.log` has one JSON line per request with its
 `request_id`, which nginx passes to the API as `X-Request-Id`: the API keeps it
-in every log line of that request. The nginx package's logrotate configuration
-already covers `/var/log/nginx/*.log`.
+in every log line of that request. The log holds client addresses and user
+agents: keep it 14 days at most, below the 90 days after which the audit log
+keeps only networks. Install the rotation of `deploy/api/logrotate-auth-api`
+(its header gives the commands), and leave this file out of the package's
+`/etc/logrotate.d/nginx` so it is rotated once:
+
+```bash
+sudo install -m 644 deploy/api/logrotate-auth-api /etc/logrotate.d/auth-api
+sudo sed -i 's|^/var/log/nginx/\*.log|/var/log/nginx/access.log /var/log/nginx/error.log|' /etc/logrotate.d/nginx
+sudo logrotate --debug /etc/logrotate.d/auth-api
+```
 
 ### Trusted proxy
 

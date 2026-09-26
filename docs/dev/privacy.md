@@ -32,8 +32,9 @@ processing, not a legal notice.
 | First five characters of a new password's SHA-1 | Pwned Passwords range API | Refusing breached passwords (k-anonymity: the password and its full hash never leave) | Not stored by auth-api | - |
 
 The application logs record the route, status, latency and request id of each
-request, not the client address. nginx records client addresses in its access
-log, rotated by the system's logrotate. Database backups are encrypted and kept
+request, not the client address. nginx records client addresses and user
+agents in its access log, rotated daily and kept 14 days
+(`deploy/api/logrotate-auth-api`). Database backups are encrypted and kept
 7 days on the server and 30 days offsite (`RETAIN_DAYS`, `OFFSITE_RETAIN_DAYS`);
 pgBackRest keeps the last two full backups and the WAL they need
 (`repo1-retention-full=2`). A deleted account disappears from backups when the

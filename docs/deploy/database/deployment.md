@@ -291,7 +291,12 @@ FROM pg_stat_database WHERE datname = 'auth_api';
 ```bash
 sudo apt update
 sudo apt install -y redis-server
+redis-server --version   # 7.0 or later
 ```
+
+Redis 7 or later is required: the ACL below lets the API run Lua scripts
+(`EVAL`, for the attempt budgets), and only from Redis 7 on do the commands a
+script calls stay subject to the user's ACL. Debian 12 and later ship it.
 
 ---
 
@@ -321,6 +326,14 @@ sudo systemctl restart redis-server
 
 The API connects as that user: store `redis://auth_api:<password>@10.0.0.2:6379`
 as `prod/auth-api/redis-url`.
+
+PostgreSQL and Redis speak without TLS: WireGuard is the boundary that
+encrypts and authenticates their traffic. Check that neither listens anywhere
+else - only the VPN address may appear:
+
+```bash
+sudo ss -ltnp | grep -E ':(5432|6379)\b'   # 10.0.0.2 only, never 0.0.0.0 or a public address
+```
 
 ---
 

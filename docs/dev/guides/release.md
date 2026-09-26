@@ -61,6 +61,7 @@ HIGH or CRITICAL vulnerability with a fix stops the release.
 | `scripts/backup-db.sh`, `scripts/restore-db.sh`, `scripts/backup-drill.sh` | Database backup, restore and drill (DB VPS) |
 | `scripts/rolling-update.sh`, `scripts/write-secrets.sh` | Rolling update and the secret files it mounts (API VPS) |
 | `deploy/api/nftables-auth-api.conf` | The rule letting only nginx and root reach the instances (API VPS) |
+| `deploy/api/logrotate-auth-api` | The 14-day rotation of the access log, which holds client addresses (API VPS) |
 | `docs/deploy/guides/prometheus-alerts.yml` | Alert rules for the monitoring host |
 | `SHA256SUMS` | Checksums of every file above |
 | `SHA256SUMS.sig` | Signature of `SHA256SUMS` by the release key |
