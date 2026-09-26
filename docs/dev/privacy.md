@@ -13,7 +13,7 @@ processing, not a legal notice.
 | Data | Where | Purpose | Kept | When the account is deleted |
 |------|-------|---------|------|-----------------------------|
 | Email address, username, password hash (Argon2id), locale, status, timestamps | `users` | Account and sign-in | Until the account is deleted | Deleted |
-| Accounts whose address was never verified | `users` | Letting the owner finish signing up | 7 days (`CLEANUP_UNVERIFIED_ACCOUNT_DAYS`), then deleted and announced like a deletion | - |
+| Accounts whose address was never verified | `users` | Letting the owner finish signing up | 2 days (`CLEANUP_UNVERIFIED_ACCOUNT_DAYS`), then deleted and announced like a deletion | - |
 | Sessions: client address, user agent, device name | `sessions` | Signed-in devices, revocation, replay detection | Until expiry or revocation, plus 7 days (`CLEANUP_SESSIONS_GRACE_DAYS`) | Deleted |
 | Devices signed in from: browser and system families, hashed | `known_devices` | Telling the owner about a sign-in from a new device | 90 days unused (`CLEANUP_KNOWN_DEVICE_DAYS`) | Deleted |
 | Sign-in attempts: identifier typed, client address, user agent of failures | `login_attempts` | Brute-force protection, lockout, security history | 90 days (`CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS`) | Deleted, including failed attempts typed with the account's address or username before it existed |

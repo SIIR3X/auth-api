@@ -340,7 +340,10 @@ accounts.
 | Per CPU | 13.7 | 12.5 | 12.0 | 11.2 |
 | Peak memory with 64 sign-ins at once | 78 / 384 MiB | 141 / 512 MiB | 209 / 512 MiB | 274 / 512 MiB |
 
-No error and no out-of-memory kill, including with 64 sign-ins at once. With the
+No error and no out-of-memory kill, including with 64 sign-ins at once. The
+limits have since been raised (M: 640 MiB, L and XL: 768 MiB) so that every
+concurrent hash can check a stored hash at twice the configured cost, the
+highest the service accepts, beside 256 MiB for the rest of the process. With the
 mixed traffic of profile M at 1 million accounts (291 requests per second):
 
 - **Redis** used 9 MiB for 50 000 keys, almost all of them rate-limit buckets,

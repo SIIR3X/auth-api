@@ -297,11 +297,13 @@ pub fn parse_verifying_key(pem: &str) -> Result<DecodingKey, JwtError> {
         .map_err(|e| JwtError::Decode(format!("invalid public key PEM: {e}")))
 }
 
-/// Compute a short key ID (first 8 hex chars of the SHA-256 of the uncompressed public point).
+/// Compute a key ID: the first 16 hex digits (64 bits) of the SHA-256 of the
+/// uncompressed public point. Wide enough that two keys held together never
+/// share one by chance; `parse_jwt_keys` refuses to start if they do.
 pub fn compute_kid(key: &VerifyingKey) -> String {
     let point = key.to_encoded_point(false);
     let hash = Sha256::digest(point.as_bytes());
-    hash[..4].iter().map(|b| format!("{b:02x}")).collect()
+    hash[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Build a JWK representation of a P-256 public key for the JWKS endpoint.
@@ -706,11 +708,11 @@ mod tests {
     }
 
     #[test]
-    fn a_kid_is_eight_lowercase_hex_digits_stable_per_key() {
+    fn a_kid_is_sixteen_lowercase_hex_digits_stable_per_key() {
         let (_, public) = test_key_pems();
         let key = parse_p256_verifying_key(&public).unwrap();
         let kid = compute_kid(&key);
-        assert_eq!(kid.len(), 8);
+        assert_eq!(kid.len(), 16);
         assert!(
             kid.bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),

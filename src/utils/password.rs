@@ -96,11 +96,17 @@ pub fn needs_rehash(hash: &str, cfg: &CryptoConfig) -> bool {
     }
 }
 
+/// How many times the configured cost a stored hash may take: room for a
+/// configuration halved since the hash was written (it is rehashed at the
+/// next sign-in), not for a hash planted to exhaust memory.
+pub const STORED_COST_FACTOR: u32 = 2;
+
 /// Whether the parameters written in `hash` would cost far more than the
-/// configured ones: a hash planted in the database with, say, 4 GiB of memory
-/// would take an instance down at each sign-in attempt. The bound leaves room
-/// for configured costs lowered since: four times the configuration, and at
-/// least 256 MiB, 16 iterations and 16 lanes.
+/// configured ones: a hash planted in the database with, say, 256 MiB of
+/// memory would take an instance down at each sign-in attempt, since every
+/// concurrent hash could cost that much. Bounded by `STORED_COST_FACTOR` times
+/// the configuration (at least 4 iterations and 4 lanes), so the memory the
+/// container needs is known: see `log_capacity`.
 pub fn exceeds_configured_cost(hash: &str, cfg: &CryptoConfig) -> bool {
     let Ok(parsed) = PasswordHash::new(hash) else {
         return false;
@@ -108,9 +114,9 @@ pub fn exceeds_configured_cost(hash: &str, cfg: &CryptoConfig) -> bool {
     let Ok(params) = Params::try_from(&parsed) else {
         return false;
     };
-    params.m_cost() > (cfg.argon2_memory_kib.saturating_mul(4)).max(262_144)
-        || params.t_cost() > (cfg.argon2_iterations.saturating_mul(4)).max(16)
-        || params.p_cost() > (cfg.argon2_parallelism.saturating_mul(4)).max(16)
+    params.m_cost() > cfg.argon2_memory_kib.saturating_mul(STORED_COST_FACTOR)
+        || params.t_cost() > (cfg.argon2_iterations.saturating_mul(STORED_COST_FACTOR)).max(4)
+        || params.p_cost() > (cfg.argon2_parallelism.saturating_mul(STORED_COST_FACTOR)).max(4)
 }
 
 /// Runs Argon2id hashing on the blocking threadpool so authentication work
@@ -207,11 +213,17 @@ pub fn log_capacity(cfg: &CryptoConfig) {
     }
 }
 
-/// Concurrent hashes, memory per hash and their total, in MiB.
+/// Concurrent hashes, memory per hash and their total, in MiB. The total is
+/// the worst case: every concurrent hash checking a stored hash at the highest
+/// cost `exceeds_configured_cost` accepts.
 fn argon2_budget(cfg: &CryptoConfig) -> (u64, u64, u64) {
     let concurrency = u64::from(cfg.argon2_max_concurrency.max(1));
     let per_hash_mib = u64::from(cfg.argon2_memory_kib) / 1024;
-    (concurrency, per_hash_mib, concurrency * per_hash_mib)
+    (
+        concurrency,
+        per_hash_mib,
+        concurrency * per_hash_mib * u64::from(STORED_COST_FACTOR),
+    )
 }
 
 /// Whether a memory limit leaves less than [`BASELINE_MIB`] beside the budget.
@@ -277,11 +289,15 @@ mod rehash_tests {
         assert!(exceeds_configured_cost(planted, &cfg));
         assert!(!verify_async("Password-1!", planted, &cfg).await.unwrap());
 
-        let lowered = hash("Password-1!", &config(65_536, 3, 4)).unwrap();
+        let lowered = hash("Password-1!", &config(38_912, 3, 2)).unwrap();
         assert!(
             !exceeds_configured_cost(&lowered, &cfg),
-            "a cost lowered since stays readable"
+            "a cost halved since stays readable"
         );
+        // 256 MiB per hash: three concurrent sign-ins would exhaust a 512 MiB
+        // container (C-04).
+        let heavy = "$argon2id$v=19$m=262144,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaA";
+        assert!(exceeds_configured_cost(heavy, &cfg));
     }
 }
 
@@ -364,13 +380,13 @@ mod tests {
     }
 
     #[test]
-    fn the_argon2_budget_is_concurrency_times_memory() {
+    fn the_argon2_budget_is_concurrency_times_the_highest_accepted_cost() {
         let mut cfg = test_config();
         cfg.argon2_memory_kib = 65_536;
         cfg.argon2_max_concurrency = 4;
-        assert_eq!(argon2_budget(&cfg), (4, 64, 256));
+        assert_eq!(argon2_budget(&cfg), (4, 64, 512));
         cfg.argon2_max_concurrency = 0;
-        assert_eq!(argon2_budget(&cfg), (1, 64, 64));
+        assert_eq!(argon2_budget(&cfg), (1, 64, 128));
     }
 
     #[test]

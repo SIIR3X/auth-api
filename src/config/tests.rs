@@ -1306,3 +1306,40 @@ fn validate_rejects_production_settings_past_their_ceiling() {
     config.pwned_passwords.enabled = false;
     assert_eq!(invalid_key(config), "PWNED_PASSWORDS_ENABLED");
 }
+
+#[test]
+fn validate_rejects_a_production_key_that_is_text() {
+    use base64::Engine;
+    let mut config = valid_config();
+    config.crypto.encryption_key =
+        base64::engine::general_purpose::STANDARD.encode("correct horse battery staple 42!");
+
+    let err = config.validate().expect_err("a passphrase is not a key");
+    match err {
+        ConfigError::Invalid { key, reason } => {
+            assert_eq!(key, "ENCRYPTION_KEY");
+            assert!(reason.contains("printable text"), "reason: {reason}");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn validate_rejects_cors_entries_that_are_not_origins() {
+    for entry in [
+        "https://app.example.com/",
+        "https://app.example.com/login",
+        "https://app.example.com?x=1",
+    ] {
+        let mut config = valid_config();
+        config.cors.allowed_origins = vec![entry.into()];
+        let err = config.validate().expect_err(entry);
+        match err {
+            ConfigError::Invalid { key, reason } => {
+                assert_eq!(key, "CORS_ALLOWED_ORIGINS");
+                assert!(reason.contains("https://app.example.com"), "{reason}");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+}

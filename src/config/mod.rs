@@ -262,7 +262,7 @@ pub struct CleanupConfig {
     /// Grace period in days after recovery code expiry before deletion. Default: 7.
     pub recovery_codes_grace_days: u32,
     /// Age in days after which an account whose address was never verified is
-    /// deleted; 0 keeps them. Default: 7.
+    /// deleted; 0 keeps them. Default: 2.
     pub unverified_accounts_retention_days: u32,
     /// Days after which a device unseen is forgotten (a sign-in from it alerts
     /// again). Default: 90.

@@ -251,6 +251,7 @@ fn parse_jwt_keys(config: &Config) -> Result<JwtKeys, AppStateError> {
     // (until the tokens it signed have expired).
     let mut jwks_keys = vec![jwt::public_key_to_jwk(&p256_key, &kid)];
     let mut verifying = vec![(kid.clone(), verifying_key.clone())];
+    let mut points = vec![(kid.clone(), p256_key.to_encoded_point(false))];
     for (variable, pem) in [
         ("JWT_NEXT_PUBLIC_KEY", config.jwt.next_public_key.as_deref()),
         (
@@ -262,9 +263,20 @@ fn parse_jwt_keys(config: &Config) -> Result<JwtKeys, AppStateError> {
         let key = jwt::parse_verifying_key(pem).map_err(|e| invalid(variable, e))?;
         let p256 = jwt::parse_p256_verifying_key(pem).map_err(|e| invalid(variable, e))?;
         let extra_kid = jwt::compute_kid(&p256);
-        if verifying.iter().any(|(held, _)| *held == extra_kid) {
-            continue;
+        let point = p256.to_encoded_point(false);
+        match points.iter().find(|(held, _)| *held == extra_kid) {
+            // The same key named twice (a rotation not started yet).
+            Some((_, held)) if *held == point => continue,
+            // Two keys under one kid: one of them would be silently ignored.
+            Some(_) => {
+                return Err(AppStateError::Config(ConfigError::Invalid {
+                    key: variable.into(),
+                    reason: "this key shares its key id with another configured key".into(),
+                }));
+            }
+            None => {}
         }
+        points.push((extra_kid.clone(), point));
         jwks_keys.push(jwt::public_key_to_jwk(&p256, &extra_kid));
         verifying.push((extra_kid, key));
     }

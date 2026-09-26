@@ -351,6 +351,16 @@ pub(super) fn validate_production_encryption_key(
         reason: format!("must be valid base64: {e}"),
     })?;
 
+    // Text encoded as base64 (a passphrase, a sentence) is 32 printable ASCII
+    // bytes: guessable from a dictionary, and all but impossible for random
+    // bytes ((95/256)^32, about 10^-14).
+    if decoded.iter().all(|b| (0x20..=0x7e).contains(b)) {
+        return Err(ConfigError::Invalid {
+            key: key_name.into(),
+            reason: "key is printable text, not random bytes: use a cryptographically random key (e.g. openssl rand -base64 32)".into(),
+        });
+    }
+
     let stride = decoded
         .windows(2)
         .next()
@@ -695,6 +705,16 @@ pub(super) fn validate_cors(cors: &CorsConfig, is_production: bool) -> Result<()
             return Err(ConfigError::Invalid {
                 key: "CORS_ALLOWED_ORIGINS".into(),
                 reason: format!("origin '{origin}' must use https in production"),
+            });
+        }
+        // A browser sends `Origin: scheme://host[:port]`, nothing more: an
+        // entry with a path, a query or a trailing slash never matches, and
+        // the front end would be refused without a word.
+        let serialized = parsed.origin().ascii_serialization();
+        if origin != &serialized || axum::http::HeaderValue::from_str(origin).is_err() {
+            return Err(ConfigError::Invalid {
+                key: "CORS_ALLOWED_ORIGINS".into(),
+                reason: format!("'{origin}' is not an origin: write it as '{serialized}'"),
             });
         }
     }
