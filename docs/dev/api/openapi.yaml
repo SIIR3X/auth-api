@@ -7503,6 +7503,12 @@ components:
           type: array
           items:
             type: string
+          description: Permissions its tokens may carry. Empty needs `unrestricted`.
+        unrestricted:
+          type: boolean
+          description: |-
+            Required to register or keep a client without scopes: its tokens then
+            carry every permission of the user who approves it (never the roles).
     SessionResponse:
       type: object
       required:

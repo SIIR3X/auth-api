@@ -38,6 +38,8 @@ struct Provider {
     grants: Arc<Mutex<HashMap<String, Grant>>>,
     /// Signs ID tokens with another key when set.
     forge: Arc<Mutex<bool>>,
+    /// Names another issuer in its discovery document when set.
+    foreign_issuer: Arc<Mutex<bool>>,
 }
 
 impl Provider {
@@ -48,6 +50,7 @@ impl Provider {
             key: Arc::new(SigningKey::random(&mut rand_core::OsRng)),
             grants: Arc::default(),
             forge: Arc::default(),
+            foreign_issuer: Arc::default(),
         };
         let app = Router::new()
             .route("/.well-known/openid-configuration", get(discovery))
@@ -91,8 +94,13 @@ impl Provider {
 }
 
 async fn discovery(State(provider): State<Provider>) -> Json<Value> {
+    let issuer = if *provider.foreign_issuer.lock().unwrap() {
+        "https://elsewhere.example".to_owned()
+    } else {
+        provider.base.clone()
+    };
     Json(json!({
-        "issuer": provider.base,
+        "issuer": issuer,
         "authorization_endpoint": format!("{}/authorize", provider.base),
         "token_endpoint": format!("{}/token", provider.base),
         "jwks_uri": format!("{}/jwks", provider.base),
@@ -515,4 +523,15 @@ async fn a_callback_alone_links_nothing() {
         .await
         .unwrap();
     assert_eq!(linked, 0);
+}
+
+/// A discovery document naming another issuer is not followed: its endpoints
+/// would receive the client secret and the codes (SEC-79).
+#[tokio::test]
+async fn metadata_of_another_issuer_is_not_followed() {
+    let mock = Provider::start().await;
+    *mock.foreign_issuer.lock().unwrap() = true;
+    let app = app_with(&mock, IdentityProviderKind::Oidc).await;
+    let (status, _) = post(&app, "/auth/external/corp/start", None, json!({})).await;
+    assert_eq!(status, 503);
 }

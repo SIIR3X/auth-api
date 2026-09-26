@@ -130,6 +130,22 @@ async fn invalid_client_settings_are_refused() {
             "/admin/clients/app",
             json!({ "display_name": "App", "scopes": ["planets:destroy"] }),
         ),
+        // A client acting with every permission of its users is never so by
+        // omission (SEC-79).
+        ("/admin/clients/app", json!({ "display_name": "App" })),
+        // Only https, loopback http and private-use schemes with a dot.
+        (
+            "/admin/clients/app",
+            json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["javascript:alert(1)//"] }),
+        ),
+        (
+            "/admin/clients/app",
+            json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["data:text/html,hi"] }),
+        ),
+        (
+            "/admin/clients/app",
+            json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["http://app.example.com/cb"] }),
+        ),
     ] {
         let (status, response) =
             send(&app, Method::PUT, path, &admin.token, settings.clone()).await;
@@ -143,7 +159,7 @@ async fn invalid_client_settings_are_refused() {
         Method::PUT,
         "/admin/clients/first",
         &admin.token,
-        json!({ "display_name": "App", "is_primary": true }),
+        json!({ "display_name": "App", "is_primary": true, "unrestricted": true }),
     )
     .await;
     assert_eq!(
@@ -161,7 +177,7 @@ async fn invalid_client_settings_are_refused() {
         Method::PUT,
         "/admin/clients/first",
         &admin.token,
-        json!({ "display_name": "App", "redirect_uris": ["https://evil.example/cb"] }),
+        json!({ "display_name": "App", "redirect_uris": ["https://evil.example/cb"], "unrestricted": true }),
     )
     .await;
     assert_eq!(

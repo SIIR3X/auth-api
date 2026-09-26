@@ -100,6 +100,27 @@ pub fn is_valid_client_id(client_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
+/// Whether a redirect URI may be registered: `https`, `http` on a loopback
+/// address, or a private-use scheme in reverse domain form (RFC 8252 section
+/// 7.1). `javascript:`, `data:`, `file:` and the like would run in, or read
+/// from, whatever the user agent follows them with.
+pub fn is_allowed_redirect_scheme(uri: &reqwest::Url) -> bool {
+    match uri.scheme() {
+        "https" => uri.host().is_some(),
+        "http" => uri
+            .host_str()
+            .map(|host| host.trim_start_matches('[').trim_end_matches(']'))
+            .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+            .is_some_and(|ip| ip.is_loopback()),
+        scheme => {
+            scheme.contains('.')
+                && !["javascript", "data", "vbscript", "file", "blob", "about"]
+                    .iter()
+                    .any(|forbidden| scheme.eq_ignore_ascii_case(forbidden))
+        }
+    }
+}
+
 /// Check client settings before they are stored, with a message for the caller.
 pub fn check_settings(
     client_id: &str,
@@ -114,7 +135,14 @@ pub fn check_settings(
         return Err("name must be 1 to 200 characters".into());
     }
     for uri in redirect_uris {
-        reqwest::Url::parse(uri).map_err(|e| format!("invalid redirect uri {uri}: {e}"))?;
+        let parsed =
+            reqwest::Url::parse(uri).map_err(|e| format!("invalid redirect uri {uri}: {e}"))?;
+        if !is_allowed_redirect_scheme(&parsed) {
+            return Err(format!(
+                "redirect uri {uri}: use https, http on 127.0.0.1 or [::1], or a private-use \
+                 scheme containing a dot (RFC 8252)"
+            ));
+        }
     }
     if default_max_sessions <= 0 {
         return Err("max sessions must be a positive number".into());
@@ -187,6 +215,34 @@ pub fn audit_changes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_safe_redirect_schemes_are_registered() {
+        for allowed in [
+            "https://app.example.com/cb",
+            "http://127.0.0.1/cb",
+            "http://[::1]:8080/cb",
+            "com.example.app:/callback",
+        ] {
+            assert!(
+                is_allowed_redirect_scheme(&reqwest::Url::parse(allowed).unwrap()),
+                "{allowed}"
+            );
+        }
+        for refused in [
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "file:///etc/passwd",
+            "vbscript:msgbox",
+            "http://app.example.com/cb",
+            "myapp:/callback",
+        ] {
+            assert!(
+                !is_allowed_redirect_scheme(&reqwest::Url::parse(refused).unwrap()),
+                "{refused}"
+            );
+        }
+    }
 
     fn client(is_primary: bool, scopes: &[&str]) -> RegisteredClient {
         RegisteredClient {

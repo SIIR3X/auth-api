@@ -228,19 +228,27 @@ pub(crate) async fn build_access_token(
     // The consent is also narrowed to what the client may ask for today: an
     // administrator taking a scope back from a client takes it back from the
     // sessions it already holds, at their next refresh.
-    let current = match client_id {
+    let client = match client_id {
         Some(client_id) => crate::repositories::registered_client::find_by_id(&state.db, client_id)
             .await
-            .map_err(|e| AppError::Internal(e.into()))?
-            .map(|client| client.scopes),
+            .map_err(|e| AppError::Internal(e.into()))?,
         None => None,
     };
+    let current = client.as_ref().map(|client| client.scopes.clone());
     let narrowed = crate::domain::oauth::within_client_scopes(scopes, current.as_deref());
     let (role_names, permission_names) = crate::domain::registered_client::restrict_to_consent(
         role_names,
         permission_names,
         narrowed.as_deref(),
     );
+    // A third-party client never carries the account's roles, even
+    // unrestricted: resource servers authorizing by role would treat it as the
+    // account. Only the instance's own application (the primary client) does.
+    let role_names = if client.as_ref().is_some_and(|client| !client.is_primary) {
+        Vec::new()
+    } else {
+        role_names
+    };
 
     let mut claims = Claims::new(user_id, session_id, issued_at.unix_timestamp(), exp)
         .with_rbac(role_names, permission_names);

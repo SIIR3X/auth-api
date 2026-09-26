@@ -347,7 +347,7 @@ async fn administrative_traces_describe_the_change_not_the_administrator() {
             Method::PUT,
             "/admin/clients/audited-app",
             &admin.token,
-            json!({ "display_name": "Audited", "redirect_uris": [uri] }),
+            json!({ "display_name": "Audited", "redirect_uris": [uri], "unrestricted": true }),
         )
         .await;
         assert!(status == 200 || status == 201, "{status} {body}");

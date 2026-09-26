@@ -223,7 +223,7 @@ pub async fn redeem(
         .map_err(|e| AppError::Internal(e.into()))?
     else {
         drop(tx);
-        revoke_on_replay(state, &hash, request.client_id).await;
+        revoke_on_replay(state, &hash, request.client_id, request.verifier).await;
         return Err(AppError::InvalidAuthorizationCode);
     };
 
@@ -305,7 +305,7 @@ pub async fn redeem(
 /// Only when the code's own client presents it: a code seen in a Referer or a
 /// history, replayed under another public client's id, must not end the
 /// session of the client that redeemed it. Such a replay is logged.
-async fn revoke_on_replay(state: &AppState, code_hash: &[u8], presented_by: &str) {
+async fn revoke_on_replay(state: &AppState, code_hash: &[u8], presented_by: &str, verifier: &str) {
     let Ok(Some(seen)) = code_repo::find(&state.db, code_hash).await else {
         return;
     };
@@ -317,6 +317,22 @@ async fn revoke_on_replay(state: &AppState, code_hash: &[u8], presented_by: &str
             client_id = %seen.client_id,
             presented_by,
             "authorization code replayed by another client; session left alone"
+        );
+        return;
+    }
+    // A public client's id is anyone's to claim: a code leaked after its
+    // redemption (a Referer, a history) must not let a stranger sign its owner
+    // out. From a public client, only a replay proving the verifier - the
+    // client's own secret for this code - revokes.
+    let authenticated = client_repo::find_by_id(&state.db, presented_by)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|client| client.is_confidential());
+    if !authenticated && !verifier_matches(&seen.code_challenge, verifier) {
+        tracing::warn!(
+            client_id = %seen.client_id,
+            "authorization code replayed without its verifier; session left alone"
         );
         return;
     }

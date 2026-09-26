@@ -287,6 +287,24 @@ async fn a_replayed_code_is_refused_and_revokes_its_session() {
     assert_eq!(status, 400, "the replayed code's session must be revoked");
 }
 
+/// A public client's id is anyone's: a leaked code replayed without its
+/// verifier signs nobody out (SEC-79).
+#[tokio::test]
+async fn a_leaked_code_replayed_without_its_verifier_revokes_nothing() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PRIMARY, true, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 723).await;
+    let p = pkce();
+    let code = code_for(&app, &user, PRIMARY, CALLBACK, &p).await;
+    let (_, tokens) = redeem(&app, &code, &p.verifier, PRIMARY, CALLBACK).await;
+
+    let stranger = pkce();
+    let (status, _) = redeem(&app, &code, &stranger.verifier, PRIMARY, CALLBACK).await;
+    assert_eq!(status, 400);
+    let (status, body) = refresh(&app, tokens["refresh_token"].as_str().unwrap(), PRIMARY).await;
+    assert_eq!(status, 200, "{body}");
+}
+
 /// A code replayed while its first redemption is still issuing the session
 /// waits for it, then revokes that session: the replay can never slip in before
 /// the code is linked to what it produced.

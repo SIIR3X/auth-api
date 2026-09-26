@@ -355,11 +355,11 @@ async fn verify_id_token(
             None => None,
         })
     };
-    let mut jwk = find(fetch_json(state, &cache_key, jwks_uri, false).await?)?;
+    let mut jwk = find(fetch_json(state, &cache_key, jwks_uri, None).await?)?;
     // A key the cached set does not hold may be a rotation at the provider:
     // fetch the set again, at most once per JWKS_REFRESH_MIN_AGE.
     if jwk.is_none() && forget_if_older(&cache_key, JWKS_REFRESH_MIN_AGE).await {
-        jwk = find(fetch_json(state, &cache_key, jwks_uri, false).await?)?;
+        jwk = find(fetch_json(state, &cache_key, jwks_uri, None).await?)?;
     }
     let jwk = jwk.ok_or("unknown signing key")?;
     let key = jsonwebtoken::DecodingKey::from_jwk(&jwk).map_err(|_| "unusable signing key")?;
@@ -398,7 +398,7 @@ async fn discovery(state: &AppState, provider: &IdentityProviderConfig) -> Resul
         state,
         &format!("discovery:{}", provider.issuer),
         &format!("{}/.well-known/openid-configuration", provider.issuer),
-        true,
+        Some(&provider.issuer),
     )
     .await
     .map_err(|reason| {
@@ -415,7 +415,7 @@ async fn fetch_json(
     state: &AppState,
     cache_key: &str,
     url: &str,
-    check_issuer: bool,
+    expected_issuer: Option<&str>,
 ) -> Result<Value, &'static str> {
     if let Some((fetched, value)) = DISCOVERED.read().await.get(cache_key)
         && fetched.elapsed() < DISCOVERY_TTL
@@ -433,8 +433,13 @@ async fn fetch_json(
         .json()
         .await
         .map_err(|_| "malformed metadata")?;
-    if check_issuer && value["issuer"].as_str().is_none() {
-        return Err("metadata without issuer");
+    // OpenID Connect Discovery section 4.3: the document is the issuer's only
+    // when it names that issuer exactly. Its endpoints receive the client
+    // secret and the codes: a document for another issuer is not followed.
+    if let Some(expected) = expected_issuer
+        && value["issuer"].as_str() != Some(expected)
+    {
+        return Err("metadata of another issuer");
     }
     DISCOVERED.write().await.insert(
         cache_key.to_owned(),

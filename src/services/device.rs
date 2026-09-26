@@ -334,6 +334,9 @@ pub async fn poll(
             // and client count their sessions one at a time.
             let mut lock = authorize_svc::lock_client_sessions(state, user_id, client_id).await?;
             let (used, allowed) = authorize_svc::session_allowance(state, user_id, &client).await?;
+            // Devices of the instance's own application are counted too: its
+            // default quota applies unless the user has one of their own.
+            let allowed = allowed.or(Some(i64::from(client.default_max_sessions)));
             if allowed.is_some_and(|allowed| used >= allowed) {
                 return Err(AppError::DeviceSessionLimitReached);
             }
@@ -528,10 +531,14 @@ pub async fn describe(
 /// device flow is phished, and the password is where the user notices.
 pub async fn verify(state: &AppState, approval: &Approval<'_>) -> Result<(), AppError> {
     guard_code_scan(state, approval.ip, approval.user_id).await?;
-    if load_entry(state, approval.user_code).await?.is_none() {
+    let Some((_, _, pending)) = load_entry(state, approval.user_code).await? else {
         note_unknown_code(state, approval.ip, approval.user_id).await?;
         return Err(AppError::NotFound);
-    }
+    };
+    // The instance's own application receives a first-party session: the most
+    // rewarding code to phish. An account with a second factor approves it
+    // only from a session that proved one.
+    ensure_second_factor_for_primary(state, approval, pending.client_id.as_deref()).await?;
     crate::services::reauth::require_recent_reauth_or_password(
         state,
         approval.user_id,
@@ -572,6 +579,36 @@ pub async fn verify(state: &AppState, approval: &Approval<'_>) -> Result<(), App
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
     Ok(())
+}
+
+async fn ensure_second_factor_for_primary(
+    state: &AppState,
+    approval: &Approval<'_>,
+    client_id: Option<&str>,
+) -> Result<(), AppError> {
+    let Some(client_id) = client_id else {
+        return Ok(());
+    };
+    let primary = client_repo::find_by_id(&state.db, client_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .is_some_and(|client| client.is_primary);
+    if !primary
+        || !user_repo::has_second_factor(&state.db, approval.user_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+    {
+        return Ok(());
+    }
+    let proven = crate::repositories::session::find_by_id(&state.db, approval.session_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .is_some_and(|session| session.mfa);
+    if proven {
+        Ok(())
+    } else {
+        Err(AppError::SecondFactorSessionRequired)
+    }
 }
 
 /// Deny a device authorization request. Called by an authenticated user.

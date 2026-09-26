@@ -50,8 +50,13 @@ pub struct SaveClientRequest {
     /// line only (`auth-api --register-client --primary`).
     #[serde(default)]
     pub is_primary: bool,
+    /// Permissions its tokens may carry. Empty needs `unrestricted`.
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// Required to register or keep a client without scopes: its tokens then
+    /// carry every permission of the user who approves it (never the roles).
+    #[serde(default)]
+    pub unrestricted: bool,
     #[serde(default)]
     pub redirect_uris: Vec<String>,
     #[serde(default)]
@@ -126,6 +131,15 @@ pub async fn save(
     Json(body): Json<SaveClientRequest>,
 ) -> Result<(StatusCode, Json<ClientResponse>), AppError> {
     admin.require(&state, "clients:manage").await?;
+    // A client without scopes acts with every permission of its users: never
+    // by omission.
+    if body.scopes.is_empty() && !body.unrestricted {
+        return Err(AppError::Validation(
+            "a client without scopes acts with every permission of its users: list its scopes, \
+             or set unrestricted to true"
+                .into(),
+        ));
+    }
     let (client, created) = admin_clients::save(
         &state,
         &actor(&admin, ip),

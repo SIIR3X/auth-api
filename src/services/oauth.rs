@@ -97,7 +97,16 @@ impl From<AppError> for EndpointError {
             | E::Forbidden => ErrorCode::InvalidGrant,
             _ => return Self::App(error),
         };
-        Self::OAuth(OAuthError::new(code, error.to_string()))
+        // Whoever holds a refresh token or a device code learns nothing of the
+        // account's state: suspended, locked, inactive or unverified all read
+        // the same.
+        let description = match &error {
+            E::AccountSuspended | E::AccountInactive | E::AccountLocked | E::EmailNotVerified => {
+                "the grant is not valid".to_owned()
+            }
+            _ => error.to_string(),
+        };
+        Self::OAuth(OAuthError::new(code, description))
     }
 }
 
@@ -119,11 +128,39 @@ const CLIENT_AUTH_FAILURE_WINDOW_SECS: u64 = 900;
 /// are bounded per client instead of by the strict per-address limit.
 const CLIENT_REQUESTS_PER_MINUTE: i64 = 1_200;
 
-fn client_failure_key(ip: IpNetwork) -> String {
+/// The budget of wrong secrets presented from `ip` for the client id the
+/// request claims: one address guessing one client's secret is throttled,
+/// without shutting the endpoints for the other clients and users behind the
+/// same address.
+fn client_failure_key(ip: IpNetwork, claimed_client_id: &str) -> String {
+    let claimed: String = crypto::sha256(claimed_client_id.as_bytes())[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     format!(
-        "oauth_client_fail:{}",
+        "oauth_client_fail:{}:{claimed}",
         crate::middleware::rate_limit::ip_bucket(ip.ip())
     )
+}
+
+/// The client id a request claims, and whether it presents a secret: only
+/// requests presenting one can guess one.
+fn claimed_secret_holder(
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+) -> Option<String> {
+    match authorization.filter(|h| h.to_ascii_lowercase().starts_with("basic ")) {
+        Some(header) => Some(
+            oauth::basic_credentials(header)
+                .map(|(id, _)| id)
+                .unwrap_or_default(),
+        ),
+        None => oauth::parameter(parameters, "client_secret").map(|_| {
+            oauth::parameter(parameters, "client_id")
+                .unwrap_or_default()
+                .to_owned()
+        }),
+    }
 }
 
 /// The client making a token or device authorization request: authenticated
@@ -138,8 +175,11 @@ pub async fn authenticate_client(
     parameters: &[(String, String)],
     ip: Option<IpNetwork>,
 ) -> Result<RegisteredClient, EndpointError> {
-    if let Some(ip) = ip
-        && crate::utils::redis_counter::peek(&state.redis, &client_failure_key(ip))
+    let failure_key = ip
+        .zip(claimed_secret_holder(authorization, parameters))
+        .map(|(ip, claimed)| client_failure_key(ip, &claimed));
+    if let Some(key) = &failure_key
+        && crate::utils::redis_counter::peek(&state.redis, key)
             .await
             .unwrap_or(0)
             >= MAX_CLIENT_AUTH_FAILURES_BY_IP
@@ -149,8 +189,7 @@ pub async fn authenticate_client(
     let client = identify_client(state, authorization, parameters).await;
     match &client {
         Err(EndpointError::OAuth(error)) if error.code == ErrorCode::InvalidClient => {
-            if let Some(ip) = ip {
-                let key = client_failure_key(ip);
+            if let Some(key) = &failure_key {
                 let _ = crate::utils::redis_counter::consume(
                     &state.redis,
                     &[crate::utils::redis_counter::Budget {
@@ -469,10 +508,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-async fn load_request(
-    state: &AppState,
-    id: &str,
-) -> Result<(StoredRequest, RegisteredClient), AppError> {
+async fn load_request(state: &AppState, id: &str) -> Result<(Loaded, RegisteredClient), AppError> {
     let mut conn = state
         .redis
         .get()
@@ -482,13 +518,35 @@ async fn load_request(
         .get(request_key(id))
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-    let request: StoredRequest = serde_json::from_str(&raw.ok_or(AppError::NotFound)?)
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let raw = raw.ok_or(AppError::NotFound)?;
+    let request: StoredRequest =
+        serde_json::from_str(&raw).map_err(|e| AppError::Internal(e.into()))?;
     let client = authorize_svc::load_client(state, &request.client_id)
         .await
         .map_err(|_| AppError::NotFound)?;
-    Ok((request, client))
+    Ok((Loaded { request, raw }, client))
 }
+
+/// A stored request as read, with the exact value read: claiming it swaps
+/// that value only if nobody changed it meanwhile.
+struct Loaded {
+    request: StoredRequest,
+    raw: String,
+}
+
+/// Replace a value only if it is still the one read, keeping its expiry.
+static CLAIM_REQUEST: std::sync::LazyLock<deadpool_redis::redis::Script> =
+    std::sync::LazyLock::new(|| {
+        deadpool_redis::redis::Script::new(
+            r#"
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
+    return 1
+end
+return 0
+"#,
+        )
+    });
 
 /// Remove the request: of concurrent decisions, only the one that removed it
 /// goes on.
@@ -541,9 +599,10 @@ pub async fn describe_request(
 async fn claim_request(
     state: &AppState,
     id: &str,
-    mut request: StoredRequest,
+    loaded: Loaded,
     user_id: Uuid,
 ) -> Result<StoredRequest, AppError> {
+    let Loaded { mut request, raw } = loaded;
     match request.viewer {
         Some(viewer) if viewer == user_id => Ok(request),
         Some(_) => Err(AppError::NotFound),
@@ -556,16 +615,16 @@ async fn claim_request(
                 .get()
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?;
-            // Only if still unclaimed, keeping the request's expiry.
-            let claimed: Option<String> = deadpool_redis::redis::cmd("SET")
-                .arg(request_key(id))
+            // Only if nobody claimed it since it was read, keeping its expiry:
+            // of two users reading it unclaimed, one gets it.
+            let claimed: i64 = CLAIM_REQUEST
+                .key(request_key(id))
+                .arg(&raw)
                 .arg(stored)
-                .arg("XX")
-                .arg("KEEPTTL")
-                .query_async(&mut *conn)
+                .invoke_async(&mut *conn)
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?;
-            if claimed.is_none() {
+            if claimed != 1 {
                 return Err(AppError::NotFound);
             }
             Ok(request)
@@ -856,10 +915,24 @@ async fn client_credentials(
         )
         .into());
     }
-    let scopes = check_scopes(state, client, scope)
+    // No user takes part: the OpenID Connect scopes, which describe one, have
+    // no meaning here and are refused rather than issued as permissions.
+    if scope.is_some_and(|scope| {
+        scope
+            .split_ascii_whitespace()
+            .any(crate::domain::oidc::is_oidc_scope)
+    }) {
+        return Err(OAuthError::new(
+            ErrorCode::InvalidScope,
+            "OpenID Connect scopes need a user: not with the client credentials grant",
+        )
+        .into());
+    }
+    let mut scopes = check_scopes(state, client, scope)
         .await?
         .map_err(|message| OAuthError::new(ErrorCode::InvalidScope, message))?
         .unwrap_or_default();
+    scopes.retain(|scope| !crate::domain::oidc::is_oidc_scope(scope));
 
     let issuer = state.config.server.public_url.clone();
     let now = state.clock.now().unix_timestamp();
@@ -1143,4 +1216,29 @@ pub async fn revoke(
         Presented::Personal => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_states_read_the_same_to_a_client() {
+        let descriptions: Vec<Option<String>> = [
+            AppError::AccountSuspended,
+            AppError::AccountInactive,
+            AppError::AccountLocked,
+            AppError::EmailNotVerified,
+        ]
+        .into_iter()
+        .map(|error| match EndpointError::from(error) {
+            EndpointError::OAuth(error) => {
+                assert_eq!(error.code, ErrorCode::InvalidGrant);
+                error.description
+            }
+            EndpointError::App(_) => panic!("not an OAuth error"),
+        })
+        .collect();
+        assert!(descriptions.windows(2).all(|pair| pair[0] == pair[1]));
+    }
 }

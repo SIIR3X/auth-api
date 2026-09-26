@@ -55,6 +55,13 @@ async fn a_client_obtains_a_token_for_itself_with_its_scopes() {
         (400, Some("invalid_scope"))
     );
 
+    // No user takes part: OpenID Connect scopes are refused (SEC-79).
+    let (status, refused) = token(&app, &[("scope", "openid users:read")]).await;
+    assert_eq!(
+        (status, refused["error"].as_str()),
+        (400, Some("invalid_scope"))
+    );
+
     // Not a user: the account routes refuse it.
     assert_eq!(app.get_auth("/users/me", access).await.status(), 401);
 }

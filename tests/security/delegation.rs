@@ -426,3 +426,49 @@ async fn a_delegated_session_leaves_a_trace_in_the_owners_history() {
         "the device's session carries the proof's time"
     );
 }
+
+/// A third-party client never carries the account's roles, even without
+/// scopes; the instance's own application asks for a session that proved a
+/// second factor when the account has one (SEC-79).
+#[tokio::test]
+async fn third_parties_carry_no_roles_and_the_primary_device_flow_needs_a_second_factor() {
+    let app = TestApp::spawn().await;
+    register_client(&app, "wide-app", false).await;
+    register_client(&app, "own-app", true).await;
+    let user = fixtures::authenticated_user(&app, 8).await;
+
+    let token = client_session(&app, &user, "wide-app").await;
+    let claims = app.decode_access_token(&token);
+    assert!(claims.roles.is_empty(), "{:?}", claims.roles);
+
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified)
+         VALUES ($1, 'email', TRUE, TRUE)",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let (_, user_code) = start_device_flow(&app, "own-app").await;
+    let (status, body) = approve(
+        &app,
+        &user.access_token,
+        json!({ "user_code": user_code, "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "second_factor_session_required");
+
+    sqlx::query("UPDATE sessions SET mfa = TRUE WHERE id = $1")
+        .bind(app.decode_access_token(&user.access_token).sid)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let (status, body) = approve(
+        &app,
+        &user.access_token,
+        json!({ "user_code": user_code, "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}

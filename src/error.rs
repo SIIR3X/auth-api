@@ -71,6 +71,8 @@ pub enum AppError {
     ReauthenticationRequired,
     #[error("a session of the account itself is required")]
     FirstPartySessionRequired,
+    #[error("a session that proved a second factor is required")]
+    SecondFactorSessionRequired,
 
     // 404
     #[error("resource not found")]
@@ -223,6 +225,13 @@ impl IntoResponse for AppError {
                     "Recent re-authentication is required for this action.",
                 ),
             ),
+            Self::SecondFactorSessionRequired => (
+                StatusCode::FORBIDDEN,
+                ErrorBody::new(
+                    "second_factor_session_required",
+                    "Sign in with your second factor to approve this.",
+                ),
+            ),
             Self::FirstPartySessionRequired => (
                 StatusCode::FORBIDDEN,
                 ErrorBody::new(
@@ -256,6 +265,9 @@ impl IntoResponse for AppError {
                     }
                     "external_identity_already_linked" => {
                         "This identity is already linked to an account."
+                    }
+                    "primary_client_managed_by_command_line" => {
+                        "The primary client is designated and changed from the command line only."
                     }
                     _ => "A resource with this value already exists.",
                 };
@@ -554,6 +566,7 @@ mod tests {
     fn reauthentication_required_is_403() {
         assert_eq!(status(AppError::ReauthenticationRequired), 403);
         assert_eq!(status(AppError::FirstPartySessionRequired), 403);
+        assert_eq!(status(AppError::SecondFactorSessionRequired), 403);
     }
 
     // 404
