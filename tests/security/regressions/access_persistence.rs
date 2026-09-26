@@ -138,3 +138,43 @@ async fn a_pending_account_taken_back_by_a_reset_keeps_no_other_access() {
         assert_eq!(left, 0, "{table} survived the owner's reset");
     }
 }
+
+/// A reset never takes the last second factor of an account holding
+/// administration: whoever reads an administrator's mailbox must not remove
+/// the factor the administration requires and enroll their own (SEC-82).
+#[tokio::test]
+async fn a_reset_keeps_the_last_second_factor_of_an_administrator() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 3).await;
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified)
+         VALUES ($1, 'email', TRUE, TRUE)",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE name = 'admin'",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let token = fixtures::create_password_reset_token(&app.db, user.id).await;
+    let reset = app
+        .post(
+            "/auth/reset-password",
+            &json!({ "token": token.raw, "new_password": "Owner-Takes-Back-8!" }),
+        )
+        .await;
+    assert_eq!(reset.status().as_u16(), 200);
+    let methods: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM two_factor_methods WHERE user_id = $1")
+            .bind(user.id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert_eq!(methods, 1, "the administrator's only second factor stays");
+}

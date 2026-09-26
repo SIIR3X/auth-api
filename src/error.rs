@@ -266,6 +266,9 @@ impl IntoResponse for AppError {
                     "external_identity_already_linked" => {
                         "This identity is already linked to an account."
                     }
+                    "holders_without_second_factor" => {
+                        "Every holder of this role must be an active account with a second factor before it grants administration."
+                    }
                     "primary_client_managed_by_command_line" => {
                         "The primary client is designated and changed from the command line only."
                     }

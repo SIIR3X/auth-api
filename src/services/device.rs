@@ -538,7 +538,19 @@ pub async fn verify(state: &AppState, approval: &Approval<'_>) -> Result<(), App
     // The instance's own application receives a first-party session: the most
     // rewarding code to phish. An account with a second factor approves it
     // only from a session that proved one.
-    ensure_second_factor_for_primary(state, approval, pending.client_id.as_deref()).await?;
+    if let Some(client_id) = pending.client_id.as_deref()
+        && let Some(client) = client_repo::find_by_id(&state.db, client_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+    {
+        authorize_svc::ensure_second_factor_for_primary(
+            state,
+            approval.user_id,
+            approval.session_id,
+            &client,
+        )
+        .await?;
+    }
     crate::services::reauth::require_recent_reauth_or_password(
         state,
         approval.user_id,
@@ -579,36 +591,6 @@ pub async fn verify(state: &AppState, approval: &Approval<'_>) -> Result<(), App
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
     Ok(())
-}
-
-async fn ensure_second_factor_for_primary(
-    state: &AppState,
-    approval: &Approval<'_>,
-    client_id: Option<&str>,
-) -> Result<(), AppError> {
-    let Some(client_id) = client_id else {
-        return Ok(());
-    };
-    let primary = client_repo::find_by_id(&state.db, client_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .is_some_and(|client| client.is_primary);
-    if !primary
-        || !user_repo::has_second_factor(&state.db, approval.user_id)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?
-    {
-        return Ok(());
-    }
-    let proven = crate::repositories::session::find_by_id(&state.db, approval.session_id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .is_some_and(|session| session.mfa);
-    if proven {
-        Ok(())
-    } else {
-        Err(AppError::SecondFactorSessionRequired)
-    }
 }
 
 /// Deny a device authorization request. Called by an authenticated user.

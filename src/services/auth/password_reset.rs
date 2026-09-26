@@ -175,7 +175,12 @@ pub async fn reset_password(
     let window = state.config.security.reset_revokes_factors_added_hours;
     let removed = if window > 0 {
         let since = record.created_at - ::time::Duration::hours(i64::from(window));
-        user_repo::drop_access_factors_since(&mut tx, record.user_id, since).await?
+        // An account holding administration keeps one second factor: the
+        // mailbox alone must not undo what the administration requires.
+        user_repo::lock_row(&mut *tx, record.user_id).await?;
+        let administrator =
+            crate::repositories::role::holds_administration(&mut *tx, record.user_id).await?;
+        user_repo::drop_access_factors_since(&mut tx, record.user_id, since, administrator).await?
     } else {
         Vec::new()
     };

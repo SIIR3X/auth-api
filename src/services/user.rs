@@ -223,6 +223,9 @@ pub async fn change_password(
     let mut tx = state.db.begin().await?;
 
     user_repo::update_password_hash(&mut *tx, user_id, &new_hash).await?;
+    // Like a reset: the new password is not locked by the guesses that locked
+    // the old one, or the owner could not sign in again after changing it.
+    user_repo::clear_lockout(&mut *tx, user_id).await?;
     // A reset or sign-in link requested before the change would bypass it.
     crate::repositories::token::revoke_mailbox_links(&mut tx, user_id).await?;
 
@@ -264,6 +267,7 @@ pub async fn change_password(
     events::wake();
 
     auth_svc::invalidate_session_caches(state, &revoked_session_ids).await;
+    redis_counter::reset(&state.redis, &[&format!("login_try:{user_id}")]).await;
     // A second-factor challenge opened with the old password dies with it, as
     // after a reset: it would otherwise still open a session.
     auth_svc::purge_user_pre_auth_and_email_change(state, user.id).await;

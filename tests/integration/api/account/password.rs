@@ -225,3 +225,35 @@ async fn a_password_change_can_keep_the_current_session() {
         "every other session is revoked"
     );
 }
+
+/// Changing the password ends a lockout, like a reset: the owner who changes
+/// it after someone locked the account can sign in with the new one (SEC-82).
+#[tokio::test]
+async fn changing_the_password_ends_a_lockout() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 2).await;
+    sqlx::query("UPDATE users SET locked_until = NOW() + INTERVAL '30 minutes' WHERE id = $1")
+        .bind(user.id)
+        .execute(&app.db)
+        .await
+        .unwrap();
+
+    let res = app
+        .patch_auth(
+            "/users/me/password",
+            &user.access_token,
+            &serde_json::json!({
+                "current_password": user.password,
+                "new_password": "NewSecurePass2!",
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+    let res = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": "NewSecurePass2!" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+}

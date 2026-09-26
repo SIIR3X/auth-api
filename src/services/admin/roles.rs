@@ -99,6 +99,34 @@ pub async fn set_permissions(
         .cloned()
         .collect();
     ensure_actor_holds(&mut tx, actor, &changed).await?;
+    let added: Vec<String> = permissions
+        .iter()
+        .filter(|p| !current.contains(p))
+        .cloned()
+        .collect();
+    let removed: Vec<String> = current
+        .iter()
+        .filter(|p| !permissions.contains(p))
+        .cloned()
+        .collect();
+    let holders = role_repo::holders(&mut *tx, role.id).await?;
+    // A role gaining administration makes administrators of its holders: each
+    // must meet what granting such a role asks (an active account with a
+    // second factor), read under their locks.
+    let grants_administration = added.iter().any(|p| role_domain::is_admin_permission(p));
+    if grants_administration {
+        for holder in &holders {
+            user_repo::lock_row(&mut *tx, *holder).await?;
+            let user = user_repo::find_by_id(&mut *tx, *holder)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            if user.status != crate::domain::user::UserStatus::Active
+                || !user_repo::has_second_factor(&mut *tx, user.id).await?
+            {
+                return Err(AppError::Conflict("holders_without_second_factor"));
+            }
+        }
+    }
     role_repo::set_permissions(&mut tx, role.id, &permissions).await?;
     keep_an_administrator(&mut tx).await?;
     audit::append(
@@ -110,7 +138,33 @@ pub async fn set_permissions(
         ),
     )
     .await?;
+    // Each holder's history records what their role now grants: changing a
+    // role someone holds is granting or withdrawing it to them.
+    if !added.is_empty() || !removed.is_empty() {
+        for holder in &holders {
+            audit::append(
+                &mut *tx,
+                &NewAuditEntry {
+                    user_id: Some(*holder),
+                    request_id: actor.request_id,
+                    action: AuditAction::RolePermissionsChanged,
+                    ip_address: actor.ip,
+                    metadata: actor.metadata(json!({
+                        "role": role.name,
+                        "added": added,
+                        "removed": removed,
+                    })),
+                },
+            )
+            .await?;
+        }
+    }
     tx.commit().await?;
+    if grants_administration {
+        for holder in holders {
+            super::notify_owner(state, holder, "role_extended", Some(&role.name)).await;
+        }
+    }
     Ok((role, permissions))
 }
 

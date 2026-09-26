@@ -126,6 +126,7 @@ pub async fn delete(state: &AppState, actor: &Actor, client_id: &str) -> Result<
     )
     .await?;
     let mut tx = state.db.begin().await?;
+    refuse_primary(&mut tx, client_id).await?;
     let revoked = session_repo::revoke_by_client(&mut *tx, client_id).await?;
     if !client_repo::delete(&mut *tx, client_id).await? {
         return Err(AppError::NotFound);
@@ -156,10 +157,21 @@ pub async fn rotate_secret(
     actor: &Actor,
     client_id: &str,
 ) -> Result<String, AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        actor.user_id,
+        actor.session_id,
+        None,
+        actor.ip,
+        actor.request_id,
+        "admin_client_secret",
+    )
+    .await?;
     let secret =
         crate::domain::oauth::format_client_secret(&crate::utils::crypto::generate_token());
     let digest = crate::utils::crypto::sha256(secret.as_bytes());
     let mut tx = state.db.begin().await?;
+    refuse_primary(&mut tx, client_id).await?;
     if !client_repo::set_secret_hash(&mut *tx, client_id, Some(&digest)).await? {
         return Err(AppError::NotFound);
     }
@@ -195,6 +207,7 @@ pub async fn remove_secret(
     )
     .await?;
     let mut tx = state.db.begin().await?;
+    refuse_primary(&mut tx, client_id).await?;
     if !client_repo::set_secret_hash(&mut *tx, client_id, None).await? {
         return Err(AppError::NotFound);
     }
@@ -219,4 +232,18 @@ fn entry(actor: &Actor, action: AuditAction, extra: serde_json::Value) -> NewAud
         ip_address: actor.ip,
         metadata: actor.metadata(extra),
     }
+}
+
+/// The primary client's sessions are first-party: removing it, or changing how
+/// it authenticates, is the command line's, like every change to it. Locks
+/// the client's row; a missing client passes, for the caller's 404.
+async fn refuse_primary(tx: &mut sqlx::PgConnection, client_id: &str) -> Result<(), AppError> {
+    client_repo::lock_existing(&mut *tx, client_id).await?;
+    if client_repo::find_by_id(&mut *tx, client_id)
+        .await?
+        .is_some_and(|client| client.is_primary)
+    {
+        return Err(AppError::Conflict("primary_client_managed_by_command_line"));
+    }
+    Ok(())
 }

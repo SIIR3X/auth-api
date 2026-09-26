@@ -607,8 +607,8 @@ pub async fn send_account_locked(
 }
 
 /// `change` is one of `suspended`, `reactivated`, `role_granted`,
-/// `role_revoked` or `sessions_revoked`; `role` names the role for the two
-/// role changes.
+/// `role_revoked`, `role_extended`, `unlocked`, `access_removed` or
+/// `sessions_revoked`; `role` names the role for the three role changes.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_changed_by_administrator(
     mailer: &Mailer,

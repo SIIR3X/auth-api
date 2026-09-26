@@ -237,26 +237,66 @@ pub async fn drop_access_factors<'e>(
 /// `passkey` with its name, `identity` with its provider. The remaining
 /// verified method becomes primary if the primary went, and recovery codes go
 /// when no verified method remains.
+///
+/// With `keep_a_second_factor`, an account left with no second factor older
+/// than `since` keeps the oldest of its recent ones (a verified method or a
+/// passkey): an administrator promoted in the window does not lose, to
+/// whoever reads their mailbox, the factor the administration requires.
 pub async fn drop_access_factors_since(
     tx: &mut sqlx::PgConnection,
     id: Uuid,
     since: OffsetDateTime,
+    keep_a_second_factor: bool,
 ) -> Result<Vec<(String, String)>, sqlx::Error> {
+    let kept: Option<(String, Uuid)> = if keep_a_second_factor {
+        sqlx::query_as(
+            "SELECT kind, factor_id FROM (
+                 SELECT 'method' AS kind, id AS factor_id, created_at FROM two_factor_methods
+                 WHERE user_id = $1 AND is_verified AND created_at > $2
+                 UNION ALL
+                 SELECT 'passkey', id, created_at FROM passkeys
+                 WHERE user_id = $1 AND created_at > $2
+             ) recent
+             WHERE NOT EXISTS (SELECT 1 FROM two_factor_methods
+                               WHERE user_id = $1 AND is_verified AND created_at <= $2)
+               AND NOT EXISTS (SELECT 1 FROM passkeys WHERE user_id = $1 AND created_at <= $2)
+             ORDER BY created_at
+             LIMIT 1",
+        )
+        .bind(id)
+        .bind(since)
+        .fetch_optional(&mut *tx)
+        .await?
+    } else {
+        None
+    };
+    let kept_method = kept
+        .as_ref()
+        .filter(|(k, _)| k == "method")
+        .map(|(_, f)| *f);
+    let kept_passkey = kept
+        .as_ref()
+        .filter(|(k, _)| k == "passkey")
+        .map(|(_, f)| *f);
     let mut removed: Vec<(String, String)> = sqlx::query_as(
-        "DELETE FROM two_factor_methods WHERE user_id = $1 AND created_at > $2
+        "DELETE FROM two_factor_methods
+         WHERE user_id = $1 AND created_at > $2 AND id IS DISTINCT FROM $3
          RETURNING method_type::text, ''",
     )
     .bind(id)
     .bind(since)
+    .bind(kept_method)
     .fetch_all(&mut *tx)
     .await?;
     removed.extend(
         sqlx::query_as::<_, (String, String)>(
-            "DELETE FROM passkeys WHERE user_id = $1 AND created_at > $2
+            "DELETE FROM passkeys
+             WHERE user_id = $1 AND created_at > $2 AND id IS DISTINCT FROM $3
              RETURNING 'passkey', name::text",
         )
         .bind(id)
         .bind(since)
+        .bind(kept_passkey)
         .fetch_all(&mut *tx)
         .await?,
     );

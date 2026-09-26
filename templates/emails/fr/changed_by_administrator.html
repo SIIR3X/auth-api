@@ -5,6 +5,7 @@
 {% if change == "suspended" %}<p>Un administrateur a suspendu votre compte {{ app_name }} et l'a déconnecté partout.</p>
 {% elif change == "reactivated" %}<p>Un administrateur a réactivé votre compte {{ app_name }} : vous pouvez de nouveau vous connecter.</p>
 {% elif change == "role_granted" %}<p>Un administrateur a attribué le rôle <strong>{{ role }}</strong> à votre compte {{ app_name }}.</p>
+{% elif change == "role_extended" %}<p>Le rôle <strong>{{ role }}</strong> que détient votre compte {{ app_name }} donne désormais des permissions d'administration.</p>
 {% elif change == "role_revoked" %}<p>Votre compte {{ app_name }} ne détient plus le rôle <strong>{{ role }}</strong>.</p>
 {% elif change == "unlocked" %}<p>Un administrateur a débloqué la connexion par mot de passe à votre compte {{ app_name }}.</p>
 {% elif change == "access_removed" %}<p>Un administrateur a retiré les seconds facteurs, passkeys, comptes liés et jetons personnels de votre compte {{ app_name }} : ajoutez de nouveau ceux qui étaient les vôtres.</p>

@@ -246,6 +246,7 @@ pub async fn rotate_secret(
         (status = 200, description = "The latest 100 deliveries, newest first", body = [WebhookDeliveryResponse]),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Missing `webhooks:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
+        (status = 404, description = "No such webhook", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -255,6 +256,10 @@ pub async fn deliveries(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<WebhookDeliveryResponse>>, AppError> {
     admin.require(&state, "webhooks:manage").await?;
+    // Like the routes beside it: an unknown endpoint is not found.
+    webhook_repo::find_endpoint(&state.db_read, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let deliveries = webhook_repo::find_recent_deliveries(&state.db_read, id, 100).await?;
     Ok(Json(
         deliveries.into_iter().map(delivery_response).collect(),

@@ -13,7 +13,7 @@ use crate::{
 async fn register(app: &TestApp) {
     sqlx::query(
         "INSERT INTO registered_clients (client_id, display_name, is_primary)
-         VALUES ('backend', 'Backend', TRUE)",
+         VALUES ('backend', 'Backend', FALSE)",
     )
     .execute(&app.db)
     .await

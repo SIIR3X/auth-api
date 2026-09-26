@@ -870,3 +870,34 @@ async fn tokens_say_when_and_who() {
     .unwrap();
     assert_eq!(actions, ["client_authorized", "login"]);
 }
+
+/// The instance's own application is approved from a session that proved a
+/// second factor when the account has one, in the code flow as in the device
+/// flow (SEC-82).
+#[tokio::test]
+async fn the_primary_client_needs_a_second_factor_session_in_the_code_flow() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PRIMARY, true, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 724).await;
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified)
+         VALUES ($1, 'email', TRUE, TRUE)",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let p = pkce();
+    let request_id = request(&app, PRIMARY, CALLBACK, &p, &[]).await;
+    let (status, body) = approve_raw(
+        &app,
+        &user,
+        &request_id,
+        json!({ "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (403, Some("second_factor_session_required"))
+    );
+}

@@ -463,3 +463,99 @@ async fn a_refused_forced_reset_revokes_nothing() {
         .unwrap();
     assert_eq!(me.status(), 200, "the sessions stay");
 }
+
+/// A role gaining administration makes administrators of its holders: each
+/// must have a second factor, is audited and told (SEC-82).
+#[tokio::test]
+async fn a_role_grants_administration_only_to_holders_with_a_second_factor() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        "/admin/roles",
+        &admin.token,
+        json!({ "name": "helpers", "permissions": [] }),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let holder = fixtures::authenticated_user(&app, 32).await;
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        &format!("/admin/users/{}/roles", holder.id),
+        &admin.token,
+        json!({ "role": "helpers" }),
+    )
+    .await;
+    assert_eq!(status, 204);
+
+    let extend = json!({ "permissions": ["users:read"] });
+    let (status, response) = send(
+        &app,
+        Method::PUT,
+        "/admin/roles/helpers/permissions",
+        &admin.token,
+        extend.clone(),
+    )
+    .await;
+    assert_eq!(
+        (status, response["code"].as_str()),
+        (409, Some("holders_without_second_factor"))
+    );
+
+    enroll_second_factor(&app, holder.id).await;
+    let (status, response) = send(
+        &app,
+        Method::PUT,
+        "/admin/roles/helpers/permissions",
+        &admin.token,
+        extend,
+    )
+    .await;
+    assert_eq!(status, 200, "{response}");
+    let added: Value = sqlx::query_scalar(
+        "SELECT metadata->'added' FROM audit_log
+         WHERE user_id = $1 AND action = 'role_permissions_changed'",
+    )
+    .bind(holder.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(added, json!(["users:read"]));
+}
+
+/// The primary client is the command line's on every route: removing it or
+/// changing how it authenticates is refused too (SEC-82).
+#[tokio::test]
+async fn the_primary_client_is_neither_removed_nor_rekeyed_over_http() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    sqlx::query(
+        "INSERT INTO registered_clients (client_id, display_name, is_primary) VALUES ('own', 'Own', TRUE)",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
+    for (method, path) in [
+        (Method::DELETE, "/admin/clients/own"),
+        (Method::POST, "/admin/clients/own/secret"),
+        (Method::DELETE, "/admin/clients/own/secret"),
+    ] {
+        let (status, response) = send(&app, method.clone(), path, &admin.token, json!({})).await;
+        assert_eq!(
+            (status, response["code"].as_str()),
+            (409, Some("primary_client_managed_by_command_line")),
+            "{method} {path}"
+        );
+    }
+    let (status, _) = send(
+        &app,
+        Method::GET,
+        &format!("/admin/webhooks/{}/deliveries", Uuid::new_v4()),
+        &admin.token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 404, "an unknown webhook has no deliveries to list");
+}

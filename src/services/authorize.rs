@@ -129,6 +129,7 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
     .await?;
 
     ensure_account_usable(state, approval.user_id).await?;
+    ensure_second_factor_for_primary(state, approval.user_id, approval.session_id, client).await?;
 
     // Scopes are frozen at consent: a later widening of the client's
     // registration must not widen what this approval grants.
@@ -341,6 +342,34 @@ async fn revoke_on_replay(state: &AppState, code_hash: &[u8], presented_by: &str
         && let Err(e) = auth_svc::revoke_family(state, session_id).await
     {
         tracing::error!(error = %e, "could not revoke the session of a replayed code");
+    }
+}
+
+/// The instance's own application receives first-party sessions: the most
+/// rewarding approval to phish or to take over a session with. For an account
+/// with a second factor, it is approved only from a session that proved one,
+/// whatever the flow (authorization code or device).
+pub(crate) async fn ensure_second_factor_for_primary(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
+    client: &RegisteredClient,
+) -> Result<(), AppError> {
+    if !client.is_primary
+        || !user_repo::has_second_factor(&state.db, user_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+    {
+        return Ok(());
+    }
+    let proven = session_repo::find_by_id(&state.db, session_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .is_some_and(|session| session.mfa);
+    if proven {
+        Ok(())
+    } else {
+        Err(AppError::SecondFactorSessionRequired)
     }
 }
 
