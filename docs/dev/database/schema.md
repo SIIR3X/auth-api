@@ -76,6 +76,14 @@ verification links, each carrying the `password_hash`, `username` and
 until one of them verifies the account. `magic_link_tokens` hold sign-in links
 (15 minutes).
 
+### username_reservations
+
+A username asked for by a registration on an address that already has an
+account (`username`, unique whatever its case; `expires_at`, when that
+registration's link would have expired). Registrations and renames treat it as
+taken, so a taken username never tells whether an address is registered.
+Expired rows go with `cleanup_expired_email_verification_tokens`.
+
 ### webhook_endpoints, webhook_deliveries
 
 `webhook_endpoints`: `url`, `description`, `events` (names or `*`), `secret`
@@ -159,8 +167,9 @@ Per-user override of a client's session limit: `user_id`, `client_id`,
 
 ### used_totp_codes
 
-Replay guard: `(user_id, code_hash)` primary key, `used_at`. A TOTP code is
-accepted once within its validity window.
+Replay guard: `(user_id, code_hash)` primary key, `used_at` written from the
+application's clock. A consumed code stays refused 120 seconds: every step it
+can be accepted in (skew 1) and a step of margin.
 
 ### email_2fa_codes
 
@@ -200,7 +209,7 @@ a client address.
 | `created_at` | TIMESTAMPTZ | No | Partition key |
 | `user_id` | UUID | Yes | FK -> users |
 | `request_id` | UUID | Yes | `x-request-id` of the request |
-| `action` | audit_action | No | `login`, `password_changed`, `session_replay_detected`, `encryption_key_rotated`, ... |
+| `action` | audit_action | No | `login`, `password_changed`, `session_replay_detected`, `client_authorized`, `device_approved`, `encryption_key_rotated`, ... |
 | `ip_address` | INET | Yes | Only the network (/24, /48) after `AUDIT_IP_RETENTION_DAYS`; removed when the account is deleted |
 | `metadata` | JSONB | No | Action details, without personal data such as addresses |
 

@@ -356,6 +356,14 @@ are regenerated.
 Every `/admin` route needs a first-party session that proved a second factor
 at sign-in (`403 two_factor_required` otherwise).
 
+Granting, withdrawing, emptying or deleting a role needs every permission it
+grants (`403` otherwise). `PUT /admin/clients/{client_id}` refuses a client
+without scopes unless the body sets `"unrestricted": true`, redirect URIs that
+are not `https`, loopback `http` or a private-use `reverse.domain:` scheme, and
+any change to the primary client or `"is_primary": true`
+(`409 primary_client_managed_by_command_line`): the primary client is managed
+with `auth-api --register-client`.
+
 `GET /admin/users` takes `query` (start of the address or username), `status`,
 `limit` and `cursor`, and pages newest first. Administrators cannot suspend,
 sign out, unlock, reset or delete their own account here; they use

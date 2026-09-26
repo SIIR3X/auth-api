@@ -138,11 +138,19 @@ at least once a year.
 - A username is an identifier others can learn exists: choosing one that is
   taken answers `username_taken`, whatever the case. Email addresses, the
   identifier that reaches a person, are never confirmed this way (kept after
-  the third audit: usernames are public in this product). Budgets on
+  the third audit: usernames are public in this product), and a registration
+  on a taken address reserves the username it asked for, so the answer never
+  tells whether that address is registered. Budgets on
   registration (`REGISTRATIONS_PER_IP_PER_HOUR`) bound how fast usernames can
   be tried or squatted, and a pending account frees its username after
   `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` (2 by default); a deployment that treats
   usernames as secret should let users sign in by email only.
+
+- Whoever holds the password can spend an account's second-factor budget for
+  an hour; the owner is warned by e-mail and a passkey still signs in (kept:
+  refusing the attempts is what keeps the code space from being searched).
+- A second factor by e-mail code falls with the mailbox: whoever controls it
+  can reset the password and receive the code. TOTP and passkeys do not.
 
 ## 6. Verification
 

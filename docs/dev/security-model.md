@@ -99,6 +99,18 @@ the database together, is out of scope.
   Budgets are consumed atomically in Redis before the guarded check runs, so
   parallel requests cannot all pass; they fail closed when Redis is down.
 
+- **Usernames reveal no address:** a registration on an address that already
+  has an account reserves its username (`username_reservations`) until the
+  link it would have sent expires, so asking for that username again, or
+  renaming to it, is refused exactly as if a new account held it.
+- **Budgets are not turned against the owner:** a session that exhausted its
+  re-authentication budget stops counting against the account's; an
+  administrator's unlock, a password reset or a sign-in forgives earlier
+  failures of the identifier; the budgets of mailed links last as long as the
+  links, so the owner keeps a valid link from the requests that spent them.
+  The budgets guarding a link, a device code or an e-mail change target fail
+  closed when Redis cannot count them.
+
 ## Sessions and tokens
 
 - **New devices** are announced: a sign-in from a browser and operating system
@@ -258,6 +270,21 @@ the database together, is out of scope.
   and a public client's request budget is split by address. A client revokes its
   own tokens only; any other token gets the same answer and is left alone.
 
+- **Safe by default:** a third-party client never carries the account's roles,
+  and one without scopes exists only with `unrestricted: true`. Redirect URIs
+  are `https`, loopback `http` or a private-use scheme in reverse domain form.
+  Wrong secrets are budgeted per address and claimed client id, so one
+  address guessing one client does not shut the endpoints for its neighbours.
+  A code replayed under a public client's id revokes its session only with
+  the verifier. Refusals say `invalid_grant` alike whatever the account's
+  state. The instance's own application is counted in the device flow and,
+  for an account with a second factor, approved only from a session that
+  proved one.
+- **Delegation is visible:** every consent and device approval is audited with
+  its client, scopes and the requesting device's address, and handing the
+  session over counts as a sign-in: in the owner's history, with the
+  new-device alert.
+
 ## Administration
 
 - `/admin` routes require a first-party token carrying an administrative
@@ -298,6 +325,14 @@ the database together, is out of scope.
   `roles:manage`: not a change of roles, not suspending or deleting that
   account, by an administrator or by its owner. These checks take a shared
   lock, so two concurrent withdrawals cannot both pass.
+
+- Granting, withdrawing, emptying or deleting a role needs every permission it
+  grants, read under the role's lock: nobody delegates or strips what they do
+  not hold. The primary client, whose sessions are first-party, is designated
+  and changed from the command line only; command-line changes record the
+  operator and host.
+- Removing an account's access factors revokes every session in the same
+  transaction; a forced reset asking for it is one change, refused whole.
 
 ## Webhooks
 
@@ -401,6 +436,20 @@ out of the process environment.
 - A refresh does not check the account lockout. A lockout can be triggered by
   anyone who knows the identifier; cutting the owner's live sessions would
   turn it into a way to sign them out. Suspending the account does end them.
+
+- Someone holding the password can spend the account's second-factor budget
+  for an hour, from a few addresses: the owner cannot finish a TOTP or e-mail
+  code sign-in meanwhile, and is warned by e-mail. A passkey still signs in.
+- A second factor by e-mail code is only as strong as the mailbox: whoever
+  controls it can reset the password and receive the code. A reset tells the
+  owner what still opens the account; TOTP or a passkey do not share this
+  limit.
+- PostgreSQL and Redis speak without TLS: WireGuard encrypts and authenticates
+  their traffic, and both listen on the VPN address only (checked by
+  `scripts/infra-check.sh` and the database guide).
+- nginx groups IPv6 clients by /64 for the address forms most clients use;
+  rare forms keep a key per address. The application's own limits group every
+  form.
 
 ## Control catalog
 

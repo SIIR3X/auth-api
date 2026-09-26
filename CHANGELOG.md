@@ -8,7 +8,7 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 ## [2.1.0] - 2026-09-26
 
 Security release: fixes every finding of the security audit of 2026-09-26
-and of the two independent re-audits that followed it.
+and of the three independent re-audits that followed it.
 Some fixes refuse what was unsafe to accept, as the versioning policy allows
 for security fixes: each such change is listed under **Security**. No
 deployment exists yet, so the migrations were consolidated: each table is
@@ -267,6 +267,54 @@ from scratch (read **Upgrading**).
   value (a Docker, Kubernetes or systemd secret), which keeps it out of
   `docker inspect` and the process environment.
 
+- Granting, withdrawing, emptying or deleting a role needs every permission
+  it grants (`403`), checked under the role's lock: `roles:manage` alone can
+  no longer hand `admin` to an account it controls, nor strip it from a
+  greater administrator.
+- Removing an account's access factors revokes every session, browser and
+  device ones included; a forced reset with `revoke_access_factors` is one
+  transaction (a refusal revokes nothing). The primary client is designated
+  and changed from the command line only
+  (`409 primary_client_managed_by_command_line`). Command-line changes record
+  the operator and host in the audit log.
+- A session that exhausted its re-authentication budget stops filling the
+  account's: a stolen session can no longer lock its owner out of revoking it.
+  An administrator's unlock and a password reset forgive earlier sign-in
+  failures. E-mail change codes are budgeted per account across flows, and a
+  flow starts at most once a minute. The budgets guarding a link, a device
+  code or an e-mail change target now fail closed (`503`) when Redis cannot
+  count them; the mailbox budgets last as long as the links they bound.
+- A registration on an address that already has an account reserves its
+  username until the link would expire: whether a username is taken no longer
+  tells whether an address is registered. Renames honour reservations.
+- Every consent and device approval is audited (`client_authorized`,
+  `device_approved`, with the client, scopes and the requesting device), and
+  handing a session to a client is recorded as a sign-in, with the new-device
+  alert; a device session's `auth_time` is when the password was proven.
+- Third-party clients never carry the account's roles; a client without
+  scopes needs `"unrestricted": true` (`422` otherwise). Redirect URIs must be
+  `https`, loopback `http` or a private-use scheme with a dot. Wrong client
+  secrets are budgeted per address and client id; a code replayed under a
+  public client's id without its verifier revokes nothing;
+  `error_description` no longer tells an account's state; an identity
+  provider's discovery document must name its configured issuer; OpenID
+  Connect scopes are refused with `client_credentials`; the primary client's
+  device flow is counted against its default quota and, for an account with a
+  second factor, approved only from a session that proved one
+  (`403 second_factor_session_required`).
+- A consumed TOTP code stays refused 120 seconds, judged on the application's
+  clock. `POST /users/me/two-factor/recovery-codes/use` is removed: it granted
+  nothing and let a stolen session burn recovery codes.
+- Production refuses an `ENCRYPTION_KEY` that is printable text, and every
+  configuration refuses a CORS entry that is not an origin and two JWT keys
+  sharing a key id (now 16 hex digits). A stored password hash may cost at most
+  twice the configured Argon2 parameters; profiles M, L and XL get 640, 768
+  and 768 MiB so that worst case fits.
+- The nftables rule also closes the compose bridge (`172.30.0.0/24`); nginx
+  limits count an IPv6 client's /64; `deploy/api/logrotate-auth-api` keeps the
+  access log 14 days; the infrastructure check verifies that PostgreSQL and
+  Redis listen on the VPN address only.
+
 ### Upgrading
 
 - Administrators signed in before the upgrade sign in again with their second
@@ -292,6 +340,18 @@ from scratch (read **Upgrading**).
   before `./rolling-update.sh` (update guide, section 4).
 - Copy the new `log_parameter_max_length` lines of
   `deploy/db/postgresql.auth-api.conf` and reload PostgreSQL.
+- Reinstall `deploy/api/nftables-auth-api.conf` (new bridge rule) and install
+  `deploy/api/logrotate-auth-api` (nginx guide, Logs). Check that Redis is 7
+  or later.
+- Scripts saving clients without scopes through `PUT /admin/clients/{id}` add
+  `"unrestricted": true`; the primary client is changed with
+  `auth-api --register-client ... --primary`. Clients registered with other
+  redirect schemes than `https`, loopback `http` or `reverse.domain:` are
+  refused at their next save.
+- Callers of `POST /users/me/two-factor/recovery-codes/use` stop calling it:
+  recovery codes are used at sign-in (`/auth/two-factor/recovery`).
+- Resource servers that authorized third-party tokens by role authorize them
+  by permission: those tokens no longer carry roles.
 
 ## [2.0.1] - 2026-09-18
 

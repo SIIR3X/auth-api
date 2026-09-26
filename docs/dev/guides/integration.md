@@ -142,7 +142,8 @@ Every resource server:
    `nbf` with a small leeway.
 4. Authorizes on `permissions` (`resource:action` names). `roles` are absent
    from tokens restricted to scopes (a client registered with scopes, or a
-   request naming them): authorize on permissions.
+   request naming them) and from every token of a third-party client:
+   authorize on permissions.
 
 Ready-made: the Rust crate [`crates/verifier`](../../../crates/verifier/README.md)
 (with an axum extractor) and the npm package
@@ -163,7 +164,7 @@ A token's claims:
 | `sid` | Session id; nil for client credentials |
 | `jti` | Token id, for revocation and introspection caches |
 | `iss`, `aud`, `iat`, `nbf`, `exp` | Standard |
-| `roles` | Role names; absent from scoped and client credentials tokens |
+| `roles` | Role names; only in tokens of the account itself or of the instance's own (primary) application, never in those of a third-party client, scoped or not |
 | `permissions` | Permission names, intersected with the consented scopes |
 | `client_id` | The client the token was issued to: client credentials, and sessions of client applications |
 | `sub_type` | `user`, or `client` for client credentials: check it before authorizing on `sub` |
