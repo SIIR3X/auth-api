@@ -93,9 +93,14 @@ pub async fn complete_two_factor_login(
         };
 
         let consumed = !cached_replay
-            && tf_repo::try_consume_totp_code(&state.db, user_id, &crypto::sha256(code.as_bytes()))
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
+            && tf_repo::try_consume_totp_code(
+                &state.db,
+                user_id,
+                &crypto::sha256(code.as_bytes()),
+                state.clock.now(),
+            )
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
 
         if consumed && let Ok(mut c) = state.redis.get().await {
             let _: Result<(), _> = c.set_ex(&used_key, 1u8, 60u64).await;

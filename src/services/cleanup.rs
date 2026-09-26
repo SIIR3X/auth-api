@@ -120,12 +120,13 @@ async fn run_all(conn: &mut PgConnection, config: &Config) {
             "SELECT cleanup_published_events($1::interval, $2)",
             "7 days".to_owned(),
         ),
-        // TOTP replay-guard rows live ~90 s (one step of skew on each side);
-        // the repository already self-cleans per user, this sweeps leftovers.
+        // TOTP replay-guard rows are needed for TOTP_REPLAY_WINDOW_SECS; the
+        // repository already self-cleans per user, this sweeps leftovers with
+        // a wide margin for clocks that disagree.
         (
             "cleanup_used_totp_codes",
             "SELECT cleanup_used_totp_codes($1::interval, $2)",
-            "90 seconds".to_owned(),
+            "10 minutes".to_owned(),
         ),
     ];
 

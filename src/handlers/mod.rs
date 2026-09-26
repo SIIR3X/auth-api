@@ -694,10 +694,6 @@ fn me_router() -> Router<AppState> {
             "/two-factor/totp/{id}/verify",
             post(two_factor::verify_totp_setup),
         )
-        .route(
-            "/two-factor/recovery-codes/use",
-            post(two_factor::use_recovery_code),
-        )
         // Two-factor: Email OTP
         .route(
             "/two-factor/email/send",

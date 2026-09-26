@@ -42,11 +42,6 @@ pub struct RegenerateRecoveryCodesRequest {
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
-pub struct UseRecoveryCodeRequest {
-    pub code: String,
-}
-
-#[derive(Deserialize, utoipa::ToSchema)]
 pub struct VerifyEmailOtpSetupRequest {
     pub code: String,
 }
@@ -209,33 +204,6 @@ pub async fn regenerate_recovery_codes(
     Ok(Json(RecoveryCodesResponse {
         recovery_codes: codes,
     }))
-}
-
-#[utoipa::path(
-    post,
-    path = "/users/me/two-factor/recovery-codes/use",
-    tag = "two-factor",
-    request_body = UseRecoveryCodeRequest,
-    responses(
-        (status = 204, description = "Code consumed"),
-        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-    ),
-    security(("bearer" = [])),
-)]
-pub async fn use_recovery_code(
-    State(state): State<AppState>,
-    auth: FirstPartyUser,
-    Json(body): Json<UseRecoveryCodeRequest>,
-) -> Result<StatusCode, AppError> {
-    tf_svc::use_recovery_code(
-        &state,
-        auth.user_id,
-        auth.session_id,
-        &body.code,
-        auth.request_id,
-    )
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 // Email OTP 2FA

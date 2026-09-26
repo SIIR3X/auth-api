@@ -320,7 +320,6 @@ second factor `/admin` requires.
 | POST | `/users/me/two-factor/email/{id}/verify` | JWT | General |
 | DELETE | `/users/me/two-factor/email/{id}` | JWT + reauth | Strict |
 | POST | `/users/me/two-factor/recovery-codes` | JWT + reauth | Strict |
-| POST | `/users/me/two-factor/recovery-codes/use` | JWT | General |
 
 `GET /users/me/two-factor` lists the configured methods (with the ids the other
 routes need) and `recovery_codes_remaining`, the unused and unexpired codes.

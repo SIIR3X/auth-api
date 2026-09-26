@@ -5835,70 +5835,6 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
       security:
       - bearer: []
-  /users/me/two-factor/recovery-codes/use:
-    post:
-      tags:
-      - two-factor
-      operationId: use_recovery_code
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UseRecoveryCodeRequest'
-        required: true
-      responses:
-        '204':
-          description: Code consumed
-        '400':
-          description: Malformed request
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '401':
-          description: Missing, invalid or revoked access token
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '403':
-          description: '`first_party_session_required`: a token delegated to a client or issued for a personal access token'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '413':
-          description: Body larger than 64 KB
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '415':
-          description: Body is not JSON
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '422':
-          description: Invalid input
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '429':
-          description: Rate limited; see Retry-After
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '503':
-          description: A dependency is unavailable or the request timed out
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-      security:
-      - bearer: []
   /users/me/two-factor/totp/setup:
     post:
       tags:
@@ -7667,13 +7603,6 @@ components:
           description: |-
             Unused and unexpired. Zero next to a verified method is worth showing:
             losing the device would then lock the account.
-    UseRecoveryCodeRequest:
-      type: object
-      required:
-      - code
-      properties:
-        code:
-          type: string
     UserResponse:
       type: object
       required:

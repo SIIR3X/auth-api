@@ -121,3 +121,27 @@ async fn find_all_by_type_returns_empty_when_no_match() {
         "must return empty when user has no Totp methods"
     );
 }
+
+/// A consumed TOTP code stays refused for every step it could be accepted in,
+/// judged on the application's clock, not the database's (SEC-80).
+#[tokio::test]
+async fn a_consumed_totp_code_stays_refused_for_its_whole_window() {
+    use auth_api::repositories::two_factor::TOTP_REPLAY_WINDOW_SECS;
+
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 81).await;
+    let now = time::OffsetDateTime::now_utc();
+    let hash = [7u8; 32];
+    assert!(
+        tf_repo::try_consume_totp_code(&app.db, user.id, &hash, now)
+            .await
+            .unwrap()
+    );
+    let later = now + time::Duration::seconds(TOTP_REPLAY_WINDOW_SECS - 1);
+    assert!(
+        !tf_repo::try_consume_totp_code(&app.db, user.id, &hash, later)
+            .await
+            .unwrap(),
+        "still a replay a second before the window ends"
+    );
+}

@@ -90,7 +90,6 @@ use utoipa::{
         crate::handlers::two_factor::verify_totp_setup,
         crate::handlers::two_factor::disable_totp,
         crate::handlers::two_factor::regenerate_recovery_codes,
-        crate::handlers::two_factor::use_recovery_code,
         crate::handlers::two_factor::setup_email_otp,
         crate::handlers::two_factor::send_email_otp_code,
         crate::handlers::two_factor::verify_email_otp_setup,

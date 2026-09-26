@@ -293,38 +293,6 @@ async fn a_stolen_session_guessing_the_password_does_not_lock_the_owner_out() {
     assert_eq!(app.get_auth("/users/me", stolen_token).await.status(), 401);
 }
 
-/// Wrong recovery codes sent through the authenticated route spend a budget of
-/// their own: a stolen token cannot exhaust the sign-in budget of the owner.
-#[tokio::test]
-async fn the_authenticated_recovery_route_spends_its_own_budget() {
-    use deadpool_redis::redis::AsyncCommands;
-
-    let app = TestApp::spawn().await;
-    let user = fixtures::authenticated_user(&app, 701).await;
-    for _ in 0..5 {
-        let res = app
-            .post_auth(
-                "/users/me/two-factor/recovery-codes/use",
-                &user.access_token,
-                &json!({ "code": "AAAA-BBBB-CCCC-DDDD-EEEE" }),
-            )
-            .await;
-        assert_eq!(res.status().as_u16(), 401);
-    }
-    let res = app
-        .post_auth(
-            "/users/me/two-factor/recovery-codes/use",
-            &user.access_token,
-            &json!({ "code": "AAAA-BBBB-CCCC-DDDD-EEEE" }),
-        )
-        .await;
-    assert_eq!(res.status().as_u16(), 429);
-
-    let mut conn = app.redis.get().await.unwrap();
-    let sign_in_budget: Option<i64> = conn.get(format!("rc_user_fail:{}", user.id)).await.unwrap();
-    assert_eq!(sign_in_budget, None, "the sign-in budget is untouched");
-}
-
 /// A replayed refresh token revokes its family, and the access tokens of that
 /// family stop working at once, not when the validity cache expires.
 #[tokio::test]
@@ -426,4 +394,25 @@ async fn registrations_from_one_address_are_budgeted() {
         statuses.push(res.status().as_u16());
     }
     assert_eq!(statuses, [202, 202, 429]);
+}
+
+/// Recovery codes are spent signing in only: no account route burns them, so
+/// a stolen session cannot use up the codes its owner keeps for a lost second
+/// factor (SEC-51).
+#[tokio::test]
+async fn recovery_codes_are_only_spent_signing_in() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 701).await;
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/recovery-codes/use",
+            &user.access_token,
+            &json!({ "code": "XXXX-XXXX-XXXX-XXXX" }),
+        )
+        .await;
+    assert!(
+        [404, 405].contains(&res.status().as_u16()),
+        "{}",
+        res.status()
+    );
 }

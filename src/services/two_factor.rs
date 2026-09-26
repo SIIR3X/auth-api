@@ -37,9 +37,6 @@ const MAX_TOTP_SETUP_FAILURES: i64 = 5;
 const TOTP_SETUP_FAILURE_WINDOW_SECS: u64 = 900;
 /// Redis key prefix for the TOTP setup failure budget.
 const TOTP_SETUP_FAIL_PREFIX: &str = "totp_setup_fail:";
-/// Wrong recovery codes one session may submit to the authenticated route per
-/// day.
-const MAX_AUTHENTICATED_RECOVERY_FAILURES: i64 = 5;
 /// Minimum delay between two recovery code regenerations (24 hours).
 const RC_REGEN_COOLDOWN_SECS: u64 = 86_400;
 
@@ -225,9 +222,14 @@ pub async fn verify_setup(
     // Consumed in the durable replay table shared with sign-in: a code seen
     // while confirming the method cannot complete a sign-in as well.
     let consumed = valid
-        && tf_repo::try_consume_totp_code(&state.db, user_id, &crypto::sha256(code.as_bytes()))
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        && tf_repo::try_consume_totp_code(
+            &state.db,
+            user_id,
+            &crypto::sha256(code.as_bytes()),
+            state.clock.now(),
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
     if !consumed {
         return Err(AppError::TwoFactorFailed);
     }
@@ -347,70 +349,6 @@ async fn create_recovery_codes(state: &AppState, user_id: Uuid) -> Result<Vec<St
         .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(plaintext)
-}
-
-/// Validates and consumes a recovery code submitted by an already-authenticated user.
-/// Records the event in the audit log; returns an error if the code is invalid, already
-/// used, expired, or if the failure budget has been exhausted.
-pub async fn use_recovery_code(
-    state: &AppState,
-    user_id: Uuid,
-    session_id: Uuid,
-    code: &str,
-    request_id: Option<Uuid>,
-) -> Result<(), AppError> {
-    // A budget of its own, per session: sharing the sign-in challenge's would
-    // let a stolen access token exhaust it and keep the owner from signing in
-    // with a recovery code for a day. Recovery codes carry 80 bits: the budget
-    // bounds volume.
-    let fail_key = format!("rc_route_fail:{user_id}:{session_id}");
-
-    let attempt = redis_counter::consume(
-        &state.redis,
-        &[Budget {
-            key: &fail_key,
-            limit: MAX_AUTHENTICATED_RECOVERY_FAILURES,
-            window_secs: super::auth::RECOVERY_FAILURE_USER_WINDOW_SECS,
-        }],
-    )
-    .await?;
-    if attempt.exceeded {
-        return Err(AppError::RateLimitExceeded);
-    }
-
-    // `find_by_hash` refuses used and expired codes; `consume` re-checks both.
-    let hash = crypto::sha256(code.as_bytes());
-    let record = recovery_code::find_by_hash(&state.db, &hash)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .filter(|r| r.user_id == user_id);
-
-    let consumed = match record {
-        Some(record) => recovery_code::consume(&state.db, record.id)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?,
-        None => false,
-    };
-    if !consumed {
-        return Err(AppError::TwoFactorFailed);
-    }
-
-    redis_counter::reset(&state.redis, &[&fail_key]).await;
-
-    audit::append(
-        &state.db,
-        &NewAuditEntry {
-            user_id: Some(user_id),
-            request_id,
-            action: AuditAction::RecoveryCodeUsed,
-            ip_address: None,
-            metadata: json!({}),
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    Ok(())
 }
 
 /// Disables the TOTP method. Requires a recent re-authentication or the current

@@ -193,7 +193,7 @@ pub async fn authenticate_client(
                 let _ = crate::utils::redis_counter::consume(
                     &state.redis,
                     &[crate::utils::redis_counter::Budget {
-                        key: &key,
+                        key,
                         limit: MAX_CLIENT_AUTH_FAILURES_BY_IP,
                         window_secs: CLIENT_AUTH_FAILURE_WINDOW_SECS,
                     }],

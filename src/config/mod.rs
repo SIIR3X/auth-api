@@ -13,6 +13,7 @@ mod env_vars;
 #[cfg(test)]
 mod tests;
 mod validate;
+pub use validate::MAX_TOTP_SKEW;
 
 use env_vars::*;
 

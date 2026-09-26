@@ -462,40 +462,6 @@ async fn confirming_a_new_method_has_an_attempt_budget() {
     );
 }
 
-/// Guesses through the authenticated route spend a budget of their own: a
-/// stolen access token cannot keep the owner from signing in with a recovery
-/// code (each code carries 80 bits; the budgets bound volume).
-#[tokio::test]
-async fn recovery_code_guesses_through_the_account_leave_the_sign_in_budget() {
-    let app = TestApp::spawn().await;
-    let user = fixtures::authenticated_user(&app, 612).await;
-    let (_, recovery_codes) = enable_totp(&app, &user).await;
-
-    for attempt in 1..=6 {
-        let res = app
-            .post_auth(
-                "/users/me/two-factor/recovery-codes/use",
-                &user.access_token,
-                &json!({ "code": "XXXX-XXXX-XXXX-XXXX" }),
-            )
-            .await;
-        let expected = if attempt <= 5 { 401 } else { 429 };
-        assert_eq!(res.status().as_u16(), expected, "attempt {attempt}");
-    }
-
-    let challenge = login_challenge(&app, &user).await;
-    let res = app
-        .post(
-            "/auth/two-factor/recovery",
-            &json!({
-                "pre_auth_token": challenge["pre_auth_token"],
-                "recovery_code": recovery_codes[0],
-            }),
-        )
-        .await;
-    assert_eq!(res.status().as_u16(), 200);
-}
-
 #[tokio::test]
 async fn a_second_factor_answers_an_inactive_account_like_the_password_sign_in() {
     let app = TestApp::spawn().await;
