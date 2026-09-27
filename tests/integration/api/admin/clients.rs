@@ -146,6 +146,15 @@ async fn invalid_client_settings_are_refused() {
             "/admin/clients/app",
             json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["http://app.example.com/cb"] }),
         ),
+        // No fragment, no credentials (SEC-86).
+        (
+            "/admin/clients/app",
+            json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["https://app.example.com/cb#frag"] }),
+        ),
+        (
+            "/admin/clients/app",
+            json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["https://user:pw@app.example.com/cb"] }),
+        ),
     ] {
         let (status, response) =
             send(&app, Method::PUT, path, &admin.token, settings.clone()).await;

@@ -441,6 +441,23 @@ async fn fetch_json(
     {
         return Err("metadata of another issuer");
     }
+    // The endpoints receive the client secret, the codes and verifiers: never
+    // over a weaker transport than the issuer's own (https in production,
+    // where the issuer must be https).
+    if let Some(expected) = expected_issuer {
+        let scheme = reqwest::Url::parse(expected)
+            .map(|url| url.scheme().to_owned())
+            .map_err(|_| "unreadable issuer")?;
+        for field in ["authorization_endpoint", "token_endpoint", "jwks_uri"] {
+            if let Some(endpoint) = value[field].as_str()
+                && reqwest::Url::parse(endpoint)
+                    .map(|url| url.scheme() != scheme)
+                    .unwrap_or(true)
+            {
+                return Err("metadata endpoint over another transport");
+            }
+        }
+    }
     DISCOVERED.write().await.insert(
         cache_key.to_owned(),
         (std::time::Instant::now(), value.clone()),

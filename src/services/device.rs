@@ -603,7 +603,7 @@ pub async fn deny(
     user_code: &str,
     ip: Option<IpNetwork>,
 ) -> Result<(), AppError> {
-    update_status(
+    let entry = update_status(
         state,
         user_code,
         DeviceAuthStatus::Denied,
@@ -611,8 +611,25 @@ pub async fn deny(
         ip,
         None,
     )
+    .await?;
+    // Anyone who finds a code can refuse it: the refusal is traced in the
+    // refuser's history, with the client and the device that asked.
+    audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(user_id),
+            request_id: None,
+            action: AuditAction::DeviceDenied,
+            ip_address: ip,
+            metadata: serde_json::json!({
+                "client_id": entry.client_id,
+                "device_address": entry.client_ip,
+            }),
+        },
+    )
     .await
-    .map(|_| ())
+    .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(())
 }
 
 /// Decide the request as `user_id`; an approval records who approved it.

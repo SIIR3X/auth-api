@@ -801,18 +801,60 @@ pub async fn token(
             )
             .await?
         }
-        oauth::GRANT_REFRESH_TOKEN => (
-            auth_svc::refresh_token(
+        oauth::GRANT_REFRESH_TOKEN => {
+            let refresh = required("refresh_token")?;
+            // RFC 6749 section 6: the client may ask for less than it was
+            // granted, for this access token; never for more. Checked before
+            // the rotation, so a refused request keeps its refresh token.
+            let narrowed = match param("scope") {
+                None => None,
+                Some(scope) => {
+                    let requested: Vec<String> =
+                        scope.split_ascii_whitespace().map(str::to_owned).collect();
+                    let session = crate::repositories::session::find_by_token_hash(
+                        &state.db,
+                        &crypto::sha256(refresh.as_bytes()),
+                    )
+                    .await?;
+                    let within = session
+                        .as_ref()
+                        .and_then(|s| s.scopes.as_ref())
+                        .is_none_or(|granted| requested.iter().all(|r| granted.contains(r)));
+                    if !within {
+                        return Err(OAuthError::new(
+                            ErrorCode::InvalidScope,
+                            "a refresh asks for at most what was granted",
+                        )
+                        .into());
+                    }
+                    Some(requested)
+                }
+            };
+            let mut tokens = auth_svc::refresh_token(
                 state,
-                required("refresh_token")?,
+                refresh,
                 Some(&client.client_id),
                 ip,
                 user_agent,
                 None,
             )
-            .await?,
-            None,
-        ),
+            .await?;
+            if let Some(narrowed) = narrowed {
+                tokens.access_token = auth_svc::build_access_token(
+                    tokens.session.user_id,
+                    tokens.session.id,
+                    Some(&narrowed),
+                    tokens.session.client_id.as_deref(),
+                    &tokens.session.session_type,
+                    state,
+                )
+                .await?;
+                tokens.session.scopes = Some(narrowed);
+            }
+            // No nonce in a refreshed ID token: OpenID Connect ties the nonce
+            // to the authentication request, which a refresh is not.
+            (tokens, None)
+        }
         _ => (
             device_svc::poll(
                 state,
@@ -1059,14 +1101,20 @@ pub async fn introspect(
             {
                 return Ok(Introspection::default());
             }
+            // A client credentials token carries no session to narrow it: its
+            // permissions are read against the client's scopes of today, so a
+            // scope taken back from the client is gone from its tokens at once.
+            let mut current_scopes: Option<Vec<String>> = None;
             let active = match claims.client_id.as_deref() {
                 // A client credentials token: active while not revoked and the
                 // client may still use the grant.
                 Some(client_id) if claims.sid.is_nil() => {
-                    !auth_svc::is_jti_blocked(state, claims.jti).await?
-                        && crate::repositories::registered_client::find_by_id(&state.db, client_id)
+                    let issuer =
+                        crate::repositories::registered_client::find_by_id(&state.db, client_id)
                             .await?
-                            .is_some_and(|c| c.allows_client_credentials)
+                            .filter(|c| c.allows_client_credentials);
+                    current_scopes = issuer.as_ref().map(|c| c.scopes.clone());
+                    !auth_svc::is_jti_blocked(state, claims.jti).await? && issuer.is_some()
                 }
                 _ => auth_svc::verify_token_state(state, claims.jti, claims.sid)
                     .await
@@ -1089,6 +1137,11 @@ pub async fn introspect(
                 .permissions
                 .iter()
                 .filter(|p| client.scopes.is_empty() || client.scopes.contains(p))
+                .filter(|p| {
+                    current_scopes
+                        .as_ref()
+                        .is_none_or(|scopes| scopes.contains(p))
+                })
                 .map(String::as_str)
                 .collect();
             Introspection {

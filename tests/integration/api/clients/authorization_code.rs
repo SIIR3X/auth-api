@@ -901,3 +901,62 @@ async fn the_primary_client_needs_a_second_factor_session_in_the_code_flow() {
         (403, Some("second_factor_session_required"))
     );
 }
+
+/// A refresh may ask for less than was granted, for its access token, and
+/// never for more; a refused refresh keeps its token (SEC-86).
+#[tokio::test]
+async fn a_refresh_narrows_its_scope_but_never_widens_it() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &["users:read", "audit:read"], 5).await;
+    let user = fixtures::authenticated_user(&app, 725).await;
+    sqlx::query(
+        "INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE name = 'admin'",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let p = pkce();
+    let code = code_for(&app, &user, PARTNER, CALLBACK, &p).await;
+    let (status, tokens) = redeem(&app, &code, &p.verifier, PARTNER, CALLBACK).await;
+    assert_eq!(status, 200, "{tokens}");
+    let refresh_token = tokens["refresh_token"].as_str().unwrap().to_owned();
+
+    let (status, refused) = form(
+        &app,
+        "/oauth/token",
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh_token),
+            ("client_id", PARTNER),
+            ("scope", "users:manage"),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, refused["error"].as_str()),
+        (400, Some("invalid_scope"))
+    );
+
+    let (status, narrowed) = form(
+        &app,
+        "/oauth/token",
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh_token),
+            ("client_id", PARTNER),
+            ("scope", "users:read"),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "the refused refresh kept its token: {narrowed}"
+    );
+    assert_eq!(
+        claims(narrowed["access_token"].as_str().unwrap())["permissions"],
+        json!(["users:read"])
+    );
+}

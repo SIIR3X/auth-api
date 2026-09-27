@@ -143,6 +143,24 @@ async fn a_client_token_is_introspected_and_revoked() {
     assert_eq!(active["client_id"], "backend");
     assert_eq!(active["scope"], "users:read");
 
+    // A scope taken back from the client is gone from its tokens at once
+    // (SEC-86).
+    sqlx::query(
+        "UPDATE registered_clients SET scopes = ARRAY['audit:read'] WHERE client_id = 'backend'",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let narrowed = introspect(access.to_owned()).await;
+    assert_eq!(narrowed["active"], true);
+    assert!(narrowed.get("scope").is_none(), "{narrowed}");
+    sqlx::query(
+        "UPDATE registered_clients SET scopes = ARRAY['users:read'] WHERE client_id = 'backend'",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
+
     let (status, _) = form(
         &app,
         "/oauth/revoke",

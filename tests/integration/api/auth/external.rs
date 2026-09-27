@@ -40,6 +40,8 @@ struct Provider {
     forge: Arc<Mutex<bool>>,
     /// Names another issuer in its discovery document when set.
     foreign_issuer: Arc<Mutex<bool>>,
+    /// Publishes its token endpoint over another transport when set.
+    foreign_transport: Arc<Mutex<bool>>,
 }
 
 impl Provider {
@@ -51,6 +53,7 @@ impl Provider {
             grants: Arc::default(),
             forge: Arc::default(),
             foreign_issuer: Arc::default(),
+            foreign_transport: Arc::default(),
         };
         let app = Router::new()
             .route("/.well-known/openid-configuration", get(discovery))
@@ -102,7 +105,11 @@ async fn discovery(State(provider): State<Provider>) -> Json<Value> {
     Json(json!({
         "issuer": issuer,
         "authorization_endpoint": format!("{}/authorize", provider.base),
-        "token_endpoint": format!("{}/token", provider.base),
+        "token_endpoint": if *provider.foreign_transport.lock().unwrap() {
+            format!("{}/token", provider.base.replacen("http://", "https://", 1))
+        } else {
+            format!("{}/token", provider.base)
+        },
         "jwks_uri": format!("{}/jwks", provider.base),
     }))
 }
@@ -531,6 +538,18 @@ async fn a_callback_alone_links_nothing() {
 async fn metadata_of_another_issuer_is_not_followed() {
     let mock = Provider::start().await;
     *mock.foreign_issuer.lock().unwrap() = true;
+    let app = app_with(&mock, IdentityProviderKind::Oidc).await;
+    let (status, _) = post(&app, "/auth/external/corp/start", None, json!({})).await;
+    assert_eq!(status, 503);
+}
+
+/// Its endpoints receive the client secret and the codes: a discovery document
+/// publishing them over another transport than the issuer's is refused
+/// (SEC-86).
+#[tokio::test]
+async fn endpoints_over_another_transport_are_not_followed() {
+    let mock = Provider::start().await;
+    *mock.foreign_transport.lock().unwrap() = true;
     let app = app_with(&mock, IdentityProviderKind::Oidc).await;
     let (status, _) = post(&app, "/auth/external/corp/start", None, json!({})).await;
     assert_eq!(status, 503);

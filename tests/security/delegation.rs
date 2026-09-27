@@ -472,3 +472,29 @@ async fn third_parties_carry_no_roles_and_the_primary_device_flow_needs_a_second
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+/// Refusing a device flow is traced in the refuser's history, with the
+/// client and the device that asked (SEC-86).
+#[tokio::test]
+async fn a_device_refusal_is_traced() {
+    let app = TestApp::spawn().await;
+    register_client(&app, "tv-deny", false).await;
+    let user = fixtures::authenticated_user(&app, 9).await;
+    let (_, user_code) = start_device_flow(&app, "tv-deny").await;
+    let response = app
+        .post_auth(
+            "/oauth/device/verify",
+            &user.access_token,
+            &json!({ "user_code": user_code, "approve": false }),
+        )
+        .await;
+    assert!(response.status().is_success(), "{}", response.status());
+    let denied: Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE user_id = $1 AND action = 'device_denied'",
+    )
+    .bind(user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(denied["client_id"], "tv-deny");
+}

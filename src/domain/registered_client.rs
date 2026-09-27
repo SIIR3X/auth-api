@@ -137,6 +137,16 @@ pub fn check_settings(
     for uri in redirect_uris {
         let parsed =
             reqwest::Url::parse(uri).map_err(|e| format!("invalid redirect uri {uri}: {e}"))?;
+        // RFC 6749 section 3.1.2: no fragment; and no credentials, which
+        // would travel in every redirect.
+        if parsed.fragment().is_some()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return Err(format!(
+                "redirect uri {uri}: no fragment and no user or password"
+            ));
+        }
         if !is_allowed_redirect_scheme(&parsed) {
             return Err(format!(
                 "redirect uri {uri}: use https, http on 127.0.0.1 or [::1], or a private-use \
