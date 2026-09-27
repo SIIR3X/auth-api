@@ -238,7 +238,7 @@ pub async fn setup_email_otp(
     )
     .await?;
     // Send the first code immediately so the user can verify right away.
-    email_2fa_svc::send_code(&state, auth.user_id).await?;
+    email_2fa_svc::send_code(&state, auth.user_id, None).await?;
     Ok(Json(EmailOtpSetupResponse { method_id }))
 }
 
@@ -249,6 +249,7 @@ pub async fn setup_email_otp(
     responses(
         (status = 204, description = "Code sent"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 404, description = "No e-mail method waiting for confirmation", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
     security(("bearer" = [])),
@@ -257,7 +258,20 @@ pub async fn send_email_otp_code(
     State(state): State<AppState>,
     auth: FirstPartyUser,
 ) -> Result<StatusCode, AppError> {
-    email_2fa_svc::send_code(&state, auth.user_id).await?;
+    // Only while a method is being set up: otherwise a stolen session could
+    // fill the owner's mailbox with codes nobody asked for.
+    let pending = crate::repositories::two_factor::find_all_by_type(
+        &state.db,
+        auth.user_id,
+        crate::domain::two_factor::TwoFactorType::Email,
+    )
+    .await?
+    .into_iter()
+    .any(|method| !method.is_verified);
+    if !pending {
+        return Err(AppError::NotFound);
+    }
+    email_2fa_svc::send_code(&state, auth.user_id, None).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -374,7 +374,18 @@ impl TestApp {
     /// Delete the anti-spam cooldown of email 2FA, so the next login can send
     /// a code right away.
     pub async fn clear_email_2fa_cooldown(&self, user_id: uuid::Uuid) {
-        self.delete_redis_key(&format!("email2fa_cd:{user_id}"))
+        // The setup cooldown, each challenge's, and the account's hourly
+        // budget of sign-in codes.
+        if let Ok(mut conn) = self.redis.get().await {
+            let keys: Vec<String> = conn
+                .keys(format!("email2fa_cd:{user_id}*"))
+                .await
+                .unwrap_or_default();
+            if !keys.is_empty() {
+                let _: Result<(), _> = conn.del(keys).await;
+            }
+        }
+        self.delete_redis_key(&format!("email2fa_send_user:{user_id}"))
             .await;
     }
 
@@ -384,7 +395,10 @@ impl TestApp {
 
         let mut conn = self.redis.get().await.expect("redis connection failed");
         let raw: String = conn
-            .get(format!("email_change_flow:{flow_token}"))
+            .get(format!(
+                "email_change_flow:{}",
+                auth_api::utils::crypto::token_id(flow_token)
+            ))
             .await
             .expect("email_change flow state not found in Redis");
 

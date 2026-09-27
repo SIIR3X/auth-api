@@ -12,18 +12,23 @@ pub async fn resolve_pre_auth(
     load_pre_auth_state_from_redis(&mut conn, &redis_key).await
 }
 
-pub(super) fn pre_auth_key(pre_auth_token: &str) -> String {
-    format!("{}{}", PRE_AUTH_PREFIX, pre_auth_token)
+/// The id of a challenge in Redis: the token's digest, never the token.
+pub(crate) fn challenge_id(pre_auth_token: &str) -> String {
+    crypto::token_id(pre_auth_token)
 }
 
-/// Every Redis key a pre-auth token owns: its state and its per-challenge
-/// failure budgets. Purging a challenge deletes them all.
-pub(super) fn challenge_keys(pre_auth_token: &str) -> [String; 4] {
+pub(super) fn pre_auth_key(pre_auth_token: &str) -> String {
+    format!("{}{}", PRE_AUTH_PREFIX, challenge_id(pre_auth_token))
+}
+
+/// Every Redis key a challenge owns, by its id: its state and its
+/// per-challenge failure budgets. Purging a challenge deletes them all.
+pub(super) fn challenge_keys_by_id(id: &str) -> [String; 4] {
     [
-        pre_auth_key(pre_auth_token),
-        format!("{TOTP_FAIL_PREFIX}{pre_auth_token}"),
-        format!("{RC_FAIL_PREFIX}{pre_auth_token}"),
-        format!("{EMAIL_2FA_FAIL_PREFIX}{pre_auth_token}"),
+        format!("{PRE_AUTH_PREFIX}{id}"),
+        format!("{TOTP_FAIL_PREFIX}{id}"),
+        format!("{RC_FAIL_PREFIX}{id}"),
+        format!("{EMAIL_2FA_FAIL_PREFIX}{id}"),
     ]
 }
 
@@ -49,22 +54,22 @@ pub async fn purge_user_pre_auth_and_email_change(state: &AppState, user_id: Uui
 
     // 1. Purge pre-auth (2FA challenge) tokens via the per-user index.
     let index_key = user_pre_auth_index_key(user_id);
-    let tokens: Vec<String> = conn.smembers(&index_key).await.unwrap_or_default();
-    for token in &tokens {
-        let _: Result<(), _> = conn.del(challenge_keys(token).to_vec()).await;
+    let ids: Vec<String> = conn.smembers(&index_key).await.unwrap_or_default();
+    for id in &ids {
+        let _: Result<(), _> = conn.del(challenge_keys_by_id(id).to_vec()).await;
     }
     let _: Result<(), _> = conn.del(&index_key).await;
 
     // 2. Purge any in-progress email-change flow for this user. The flow keeps
-    // its current flow_token in `email_change_active:{user_id}`, so we don't
+    // its current flow id in `email_change_active:{user_id}`, so we don't
     // need to scan.
     let active_key = format!("email_change_active:{}", user_id);
-    let active_token: Option<String> = conn.get(&active_key).await.unwrap_or(None);
-    if let Some(flow_token) = active_token {
+    let active_id: Option<String> = conn.get(&active_key).await.unwrap_or(None);
+    if let Some(flow_id) = active_id {
         let _: Result<(), _> = conn
             .del(vec![
-                format!("email_change_flow:{}", flow_token),
-                format!("email_change_fail:{}", flow_token),
+                format!("email_change_flow:{flow_id}"),
+                format!("email_change_fail:{flow_id}"),
                 active_key,
             ])
             .await;
@@ -100,7 +105,7 @@ mod tests {
     #[test]
     fn a_challenge_owns_its_state_and_every_failure_budget() {
         assert_eq!(
-            challenge_keys("t"),
+            challenge_keys_by_id("t"),
             ["pre_auth:t", "totp_fail:t", "rc_fail:t", "email2fa_fail:t"]
         );
     }

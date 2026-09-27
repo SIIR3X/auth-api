@@ -594,7 +594,7 @@ pub async fn resend_email_two_factor(
     auth_svc::budget_email_resend(&state, &body.pre_auth_token, user_id).await?;
 
     // Fire-and-forget: errors are non-fatal to avoid enumeration via timing.
-    let _ = email_2fa_svc::send_code(&state, user_id).await;
+    let _ = email_2fa_svc::send_code(&state, user_id, Some(&body.pre_auth_token)).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -604,7 +604,7 @@ pub async fn resend_email_two_factor(
 const MAX_IDENTIFIER_LEN: usize = 254;
 /// Longest password accepted at login. Above the registration limit (128) so
 /// no existing account is refused, but bounded before Argon2 runs.
-const MAX_LOGIN_PASSWORD_LEN: usize = 256;
+const MAX_LOGIN_PASSWORD_LEN: usize = crate::utils::password::MAX_VERIFIED_PASSWORD_BYTES;
 
 /// Emails accepted for storage: syntactically valid and in the shape the
 /// `users_email_format` constraint accepts, so a bad address is a 422 rather

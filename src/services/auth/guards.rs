@@ -20,7 +20,7 @@ pub(crate) async fn budget_email_resend(
     pre_auth_token: &str,
     user_id: Uuid,
 ) -> Result<(), AppError> {
-    let challenge_key = format!("email2fa_resend:{pre_auth_token}");
+    let challenge_key = format!("email2fa_resend:{}", challenge_id(pre_auth_token));
     let account_key = format!("email2fa_resend_user:{user_id}");
     let attempt = redis_counter::consume(
         &state.redis,

@@ -229,11 +229,17 @@ pub async fn login(
                 state.config.security.lockout_duration_secs,
                 state.clock.now(),
             ) {
-                metrics::counter!("auth_lockouts_total").increment(1);
-                if let Err(e) = user_repo::set_locked_until(&state.db, u.id, locked_until).await {
-                    lockout_failed("lock", &e);
-                }
-                if let Err(e) = audit::append(
+                let locked = match user_repo::set_locked_until(&state.db, u.id, locked_until).await
+                {
+                    Ok(locked) => locked,
+                    Err(e) => {
+                        lockout_failed("lock", &e);
+                        false
+                    }
+                };
+                if locked {
+                    metrics::counter!("auth_lockouts_total").increment(1);
+                    if let Err(e) = audit::append(
                     &state.db,
                     &NewAuditEntry {
                         user_id: Some(u.id),
@@ -247,7 +253,8 @@ pub async fn login(
                 {
                     lockout_failed("audit", &e);
                 }
-                notify_locked(state, &u, locked_until);
+                    notify_locked(state, &u, locked_until);
+                }
             }
 
             metrics::counter!("auth_logins_total", "outcome" => "invalid_credentials").increment(1);
@@ -379,10 +386,10 @@ pub(crate) async fn first_factor_proven(
         for _ in MAX_OPEN_CHALLENGES - 1..open {
             let dropped: Option<String> = conn.spop(&user_index_key).await.unwrap_or(None);
             let Some(dropped) = dropped else { break };
-            let _: Result<(), _> = conn.del(&challenge_keys(&dropped)[..]).await;
+            let _: Result<(), _> = conn.del(&challenge_keys_by_id(&dropped)[..]).await;
         }
         let _: Result<(), _> = conn
-            .sadd::<_, _, ()>(&user_index_key, &pre_auth_token)
+            .sadd::<_, _, ()>(&user_index_key, challenge_id(&pre_auth_token))
             .await;
         let _: Result<(), _> = conn
             .expire::<_, ()>(&user_index_key, PRE_AUTH_TTL_SECS as i64)
@@ -392,7 +399,7 @@ pub(crate) async fn first_factor_proven(
         // A code sent less than a minute ago is still valid: the challenge
         // goes on without a new one rather than failing after it was stored.
         if method == ChallengeMethod::Email {
-            match email_2fa::send_code(state, user.id).await {
+            match email_2fa::send_code(state, user.id, Some(&pre_auth_token)).await {
                 Ok(()) => {}
                 Err(AppError::RateLimitExceeded) => {
                     tracing::info!(user_id = %user.id, "email code not resent within its cooldown");

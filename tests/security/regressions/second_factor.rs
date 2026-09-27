@@ -284,7 +284,18 @@ async fn email_code_lookup_is_scoped_to_the_challenged_user() {
     app.clear_email_2fa_cooldown(alice.id).await;
 
     let challenge = login_challenge(&app, &alice).await;
-    set_active_email_code(&app, alice.id, &known_hash).await;
+    // A sign-in code is bound to its challenge.
+    let challenge_token = challenge["pre_auth_token"].as_str().unwrap();
+    let sign_in_hash = app
+        .state
+        .keyring
+        .otp_digest(
+            "email_2fa",
+            &auth_api::services::email_2fa::code_subject(alice.id, Some(challenge_token)),
+            "123456",
+        )
+        .to_vec();
+    set_active_email_code(&app, alice.id, &sign_in_hash).await;
 
     // Bob holds a live code with the same digits, issued earlier.
     sqlx::query(
@@ -380,7 +391,11 @@ async fn a_pre_auth_state_without_a_method_cannot_complete_with_a_recovery_code(
     let token = "legacy-pre-auth-token";
     let mut conn = app.redis.get().await.unwrap();
     let _: () = conn
-        .set_ex(format!("pre_auth:{token}"), user.id.to_string(), 300)
+        .set_ex(
+            format!("pre_auth:{}", auth_api::utils::crypto::token_id(token)),
+            user.id.to_string(),
+            300,
+        )
         .await
         .unwrap();
 
@@ -647,4 +662,83 @@ async fn a_password_change_ends_open_challenges() {
         )
         .await;
     assert_eq!(res.status().as_u16(), 401);
+}
+
+/// A sign-in code completes the challenge it was sent for only; challenges
+/// are kept in Redis under their digest, never the token; and codes are
+/// mailed outside a sign-in only while a method is being set up (SEC-84).
+#[tokio::test]
+async fn a_sign_in_code_belongs_to_its_challenge() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 608).await;
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified)
+         VALUES ($1, 'email', TRUE, TRUE)",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/email/send",
+            &user.access_token,
+            &json!({}),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 404, "nothing is being set up");
+
+    let first = login_challenge(&app, &user).await;
+    let first_token = first["pre_auth_token"].as_str().unwrap().to_owned();
+    app.clear_email_2fa_cooldown(user.id).await;
+    let second = login_challenge(&app, &user).await;
+    let second_token = second["pre_auth_token"].as_str().unwrap().to_owned();
+
+    let mut conn = app.redis.get().await.unwrap();
+    let raw: bool = conn
+        .exists(format!("pre_auth:{first_token}"))
+        .await
+        .unwrap();
+    assert!(!raw, "the challenge token itself is no Redis key");
+
+    // The first challenge's code, planted with digits we know.
+    let first_hash = app
+        .state
+        .keyring
+        .otp_digest(
+            "email_2fa",
+            &auth_api::services::email_2fa::code_subject(user.id, Some(&first_token)),
+            "654321",
+        )
+        .to_vec();
+    sqlx::query("DELETE FROM email_2fa_codes WHERE user_id = $1")
+        .bind(user.id)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO email_2fa_codes (user_id, code_hash, expires_at)
+         VALUES ($1, $2, NOW() + INTERVAL '5 minutes')",
+    )
+    .bind(user.id)
+    .bind(&first_hash)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let res = app
+        .post(
+            "/auth/two-factor/email/complete",
+            &json!({ "pre_auth_token": second_token, "code": "654321" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 401, "another challenge's code");
+    let res = app
+        .post(
+            "/auth/two-factor/email/complete",
+            &json!({ "pre_auth_token": first_token, "code": "654321" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
 }

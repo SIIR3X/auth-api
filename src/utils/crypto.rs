@@ -34,6 +34,15 @@ pub enum CryptoError {
 // Hashing
 
 /// Returns the SHA-256 digest of the input. Used to hash tokens before DB storage.
+/// The id under which a bearer token's state is kept in Redis: the hex SHA-256
+/// of the token. A read of Redis (a dump, a replica) yields no usable token.
+pub fn token_id(token: &str) -> String {
+    sha256(token.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);

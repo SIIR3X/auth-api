@@ -91,17 +91,23 @@ pub async fn update_locale(pool: &PgPool, id: Uuid, locale: &str) -> Result<(), 
     Ok(())
 }
 
+/// Lock the account's password until `locked_until`, unless a lock already
+/// holds. Returns whether this call locked it: of concurrent failures reaching
+/// the threshold, one locks, audits and tells the owner.
 pub async fn set_locked_until(
     pool: &PgPool,
     id: Uuid,
     locked_until: OffsetDateTime,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE users SET locked_until = $2 WHERE id = $1")
-        .bind(id)
-        .bind(locked_until)
-        .execute(pool)
-        .await?;
-    Ok(())
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE users SET locked_until = $2
+         WHERE id = $1 AND (locked_until IS NULL OR locked_until <= NOW())",
+    )
+    .bind(id)
+    .bind(locked_until)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 /// Stamp a completed sign-in, by any method: last login time, the end of any

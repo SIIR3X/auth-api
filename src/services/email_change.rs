@@ -116,9 +116,9 @@ pub async fn start(
     let active_key = format!("email_change_active:{}", user_id);
     if let Ok(mut conn) = state.redis.get().await {
         let old: Option<String> = conn.get(&active_key).await.unwrap_or(None);
-        if let Some(old_token) = old {
-            let _: Result<(), _> = conn.del(format!("email_change_flow:{}", old_token)).await;
-            let _: Result<(), _> = conn.del(format!("email_change_fail:{}", old_token)).await;
+        if let Some(old_id) = old {
+            let _: Result<(), _> = conn.del(format!("email_change_flow:{old_id}")).await;
+            let _: Result<(), _> = conn.del(format!("email_change_fail:{old_id}")).await;
         }
     }
 
@@ -145,7 +145,9 @@ pub async fn start(
 
     // Record the active flow token so a second call can cancel the first.
     if let Ok(mut conn) = state.redis.get().await {
-        let _: Result<(), _> = conn.set_ex(&active_key, &flow_token, FLOW_TTL_SECS).await;
+        let _: Result<(), _> = conn
+            .set_ex(&active_key, crypto::token_id(&flow_token), FLOW_TTL_SECS)
+            .await;
     }
 
     audit::append(
@@ -197,7 +199,7 @@ pub async fn verify_current(
         return Err(AppError::Unauthorized);
     };
 
-    let fail_key = format!("email_change_fail:{}", flow_token);
+    let fail_key = format!("email_change_fail:{}", crypto::token_id(flow_token));
     verify_otp(
         state,
         user_id,
@@ -347,7 +349,7 @@ pub async fn confirm_new(
 
     let new_email = flow.new_email.as_deref().ok_or(AppError::Unauthorized)?;
 
-    let fail_key = format!("email_change_fail:{}", flow_token);
+    let fail_key = format!("email_change_fail:{}", crypto::token_id(flow_token));
     verify_otp(
         state,
         user_id,
@@ -437,8 +439,8 @@ pub async fn confirm_new(
     if let Ok(mut conn) = state.redis.get().await {
         let _: Result<(), _> = conn
             .del(vec![
-                format!("email_change_flow:{flow_token}"),
-                format!("email_change_fail:{flow_token}"),
+                format!("email_change_flow:{}", crypto::token_id(flow_token)),
+                format!("email_change_fail:{}", crypto::token_id(flow_token)),
                 format!("email_change_active:{user_id}"),
             ])
             .await;
@@ -485,7 +487,8 @@ fn notify_previous_address(
 }
 
 async fn save_flow(state: &AppState, flow_token: &str, flow: &FlowState) -> Result<(), AppError> {
-    let key = format!("email_change_flow:{}", flow_token);
+    // Kept under the token's digest: a read of Redis yields no usable flow.
+    let key = format!("email_change_flow:{}", crypto::token_id(flow_token));
     let val = serde_json::to_string(flow).map_err(|e| AppError::Internal(e.into()))?;
 
     let mut conn = state
@@ -506,7 +509,8 @@ async fn load_flow(
     flow_token: &str,
     user_id: Uuid,
 ) -> Result<FlowState, AppError> {
-    let key = format!("email_change_flow:{}", flow_token);
+    // Kept under the token's digest: a read of Redis yields no usable flow.
+    let key = format!("email_change_flow:{}", crypto::token_id(flow_token));
 
     let mut conn = state
         .redis

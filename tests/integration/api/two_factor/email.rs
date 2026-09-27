@@ -21,7 +21,7 @@ async fn setup_email_2fa(app: &TestApp, token: &str, user_id: uuid::Uuid) -> uui
     let method_id = uuid::Uuid::parse_str(body["method_id"].as_str().unwrap()).unwrap();
 
     // 2. read the OTP from the DB and verify setup
-    let otp = read_otp_from_db(app, user_id).await;
+    let otp = read_otp_from_db(app, user_id, None).await;
 
     let res = app
         .post_auth(
@@ -39,7 +39,9 @@ async fn setup_email_2fa(app: &TestApp, token: &str, user_id: uuid::Uuid) -> uui
 }
 
 /// Read the latest active OTP hash from the DB and brute-force the plaintext.
-async fn read_otp_from_db(app: &TestApp, user_id: uuid::Uuid) -> String {
+/// `challenge` is the sign-in challenge the code was sent for, if any: a
+/// sign-in code is bound to it.
+async fn read_otp_from_db(app: &TestApp, user_id: uuid::Uuid, challenge: Option<&str>) -> String {
     let row: (Vec<u8>,) = sqlx::query_as(
         "SELECT code_hash FROM email_2fa_codes
          WHERE user_id = $1 AND used_at IS NULL
@@ -51,9 +53,11 @@ async fn read_otp_from_db(app: &TestApp, user_id: uuid::Uuid) -> String {
     .expect("no active email_2fa_code found");
 
     testkit::app::brute_force_otp(&row.0, |code| {
-        app.state
-            .keyring
-            .otp_digest("email_2fa", user_id.as_bytes(), code)
+        app.state.keyring.otp_digest(
+            "email_2fa",
+            &auth_api::services::email_2fa::code_subject(user_id, challenge),
+            code,
+        )
     })
 }
 
@@ -111,7 +115,7 @@ async fn email_2fa_setup_and_login() {
     let pre_auth_token = body["pre_auth_token"].as_str().unwrap().to_owned();
 
     // Read OTP that was auto-sent on login challenge.
-    let otp = read_otp_from_db(&app, user.id).await;
+    let otp = read_otp_from_db(&app, user.id, Some(&pre_auth_token)).await;
 
     // Complete the 2FA challenge.
     let res = app
@@ -271,7 +275,7 @@ async fn email_2fa_lockout_after_max_failures() {
     }
 
     // 6th attempt (correct OTP) must be rejected - token is burned.
-    let otp = read_otp_from_db(&app, user.id).await;
+    let otp = read_otp_from_db(&app, user.id, Some(&pre_auth_token)).await;
     let res = app
         .post(
             "/auth/two-factor/email/complete",
@@ -594,7 +598,7 @@ async fn email_2fa_setup_verify_expired_code_rejected() {
     .expect("failed to expire 2fa codes");
 
     // Read the (now expired) code and try to verify - must return 401.
-    let expired_otp = read_otp_from_db(&app, user.id).await;
+    let expired_otp = read_otp_from_db(&app, user.id, None).await;
     let res = app
         .post_auth(
             &format!("/users/me/two-factor/email/{}/verify", method_id),
@@ -644,7 +648,7 @@ async fn a_resend_keeps_the_previous_code_and_is_budgeted() {
     // A new challenge: its code, then a resend, and the first code still works.
     app.clear_email_2fa_cooldown(user.id).await;
     let pre_auth = email_challenge(&app, &user).await;
-    let first = read_otp_from_db(&app, user.id).await;
+    let first = read_otp_from_db(&app, user.id, Some(&pre_auth)).await;
     app.clear_email_2fa_cooldown(user.id).await;
     let res = app
         .post(

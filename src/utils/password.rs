@@ -148,11 +148,19 @@ pub async fn hash_async(password: &str, cfg: &CryptoConfig) -> Result<String, Pa
 
 /// Runs Argon2id verification on the blocking threadpool. Concurrency is
 /// bounded by the global Argon2 semaphore (see `argon2_semaphore`).
+/// Longest password any route verifies, in bytes: no password the policy
+/// accepts is longer, so a longer one is simply wrong, answered without
+/// hashing a 64 KiB body.
+pub const MAX_VERIFIED_PASSWORD_BYTES: usize = 256;
+
 pub async fn verify_async(
     password: &str,
     hash_value: &str,
     cfg: &CryptoConfig,
 ) -> Result<bool, PasswordError> {
+    if password.len() > MAX_VERIFIED_PASSWORD_BYTES {
+        return Ok(false);
+    }
     if exceeds_configured_cost(hash_value, cfg) {
         tracing::error!("stored password hash asks for far more than the configured cost: refused");
         return Ok(false);
@@ -278,6 +286,15 @@ mod rehash_tests {
             "stronger than asked"
         );
         assert!(!needs_rehash("not a phc string", &config(8, 1, 1)));
+    }
+
+    /// A password longer than any the policy accepts is wrong, without work.
+    #[tokio::test]
+    async fn a_password_longer_than_any_accepted_is_wrong() {
+        let cfg = config(1024, 1, 1);
+        let long = "x".repeat(MAX_VERIFIED_PASSWORD_BYTES + 1);
+        let stored = hash(&long, &cfg).unwrap();
+        assert!(!verify_async(&long, &stored, &cfg).await.unwrap());
     }
 
     /// A hash asking for far more than the configured cost is refused before

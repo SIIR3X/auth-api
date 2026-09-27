@@ -100,6 +100,7 @@ pub async fn verify_setup(
     verify_otp(
         state,
         user_id,
+        None,
         submitted_code,
         &format!("email2fa_setup_fail:{}", method_id),
         None,
@@ -169,14 +170,40 @@ pub async fn disable(
 
 // Code dispatch (used both during setup and during login challenge)
 
-/// Generates and sends a 6-digit OTP to the user's email.
-/// Enforces a 60-second cooldown between sends.
-pub async fn send_code(state: &AppState, user_id: Uuid) -> Result<(), AppError> {
+/// Generates and sends a 6-digit OTP to the user's email, for a sign-in
+/// `challenge` (its pre-auth token) or, without one, for confirming the
+/// method. A challenge's code completes that challenge only: another one,
+/// opened by whoever else holds the password, cannot use it.
+/// Enforces a 60-second cooldown between sends (per challenge at sign-in, where
+/// the account also has an hourly budget of codes).
+pub async fn send_code(
+    state: &AppState,
+    user_id: Uuid,
+    challenge: Option<&str>,
+) -> Result<(), AppError> {
     // Anti-spam cooldown, claimed before the send: concurrent requests cannot
     // all find it free and all send.
-    let cooldown_key = format!("email2fa_cd:{}", user_id);
+    let cooldown_key = match challenge {
+        Some(token) => format!("email2fa_cd:{user_id}:{}", super::auth::challenge_id(token)),
+        None => format!("email2fa_cd:{user_id}"),
+    };
     if !redis_counter::claim_cooldown(&state.redis, &cooldown_key, SEND_COOLDOWN_SECS).await {
         return Err(AppError::RateLimitExceeded);
+    }
+    if challenge.is_some() {
+        let account_key = format!("email2fa_send_user:{user_id}");
+        let attempt = redis_counter::consume(
+            &state.redis,
+            &[Budget {
+                key: &account_key,
+                limit: MAX_SIGN_IN_CODES_PER_HOUR,
+                window_secs: USER_FAILURE_WINDOW_SECS,
+            }],
+        )
+        .await?;
+        if attempt.exceeded {
+            return Err(AppError::RateLimitExceeded);
+        }
     }
 
     let user = user_repo::find_by_id(&state.db, user_id)
@@ -188,7 +215,7 @@ pub async fn send_code(state: &AppState, user_id: Uuid) -> Result<(), AppError> 
     // A keyed digest: a copy of the table does not give live codes away.
     let hash = state
         .keyring
-        .otp_digest(OTP_PURPOSE, user_id.as_bytes(), &code);
+        .otp_digest(OTP_PURPOSE, &code_subject(user_id, challenge), &code);
 
     email_2fa::create(
         &state.db,
@@ -234,18 +261,44 @@ pub async fn verify_login_code(
     submitted_code: &str,
     ip: Option<IpNetwork>,
 ) -> Result<(), AppError> {
-    let fail_key = format!("{}{pre_auth_token}", super::auth::EMAIL_2FA_FAIL_PREFIX);
-    verify_otp(state, user_id, submitted_code, &fail_key, ip).await
+    let fail_key = format!(
+        "{}{}",
+        super::auth::EMAIL_2FA_FAIL_PREFIX,
+        super::auth::challenge_id(pre_auth_token)
+    );
+    verify_otp(
+        state,
+        user_id,
+        Some(pre_auth_token),
+        submitted_code,
+        &fail_key,
+        ip,
+    )
+    .await
 }
 
 /// Separates the digests of these codes from any other flow's.
 const OTP_PURPOSE: &str = "email_2fa";
+
+/// Codes a sign-in may have mailed per account and hour, across challenges.
+const MAX_SIGN_IN_CODES_PER_HOUR: i64 = 10;
+
+/// What a code's digest is bound to: the account, and the sign-in challenge
+/// that asked for it (by its id, never the token).
+pub fn code_subject(user_id: Uuid, challenge: Option<&str>) -> Vec<u8> {
+    let mut subject = user_id.as_bytes().to_vec();
+    if let Some(token) = challenge {
+        subject.extend_from_slice(super::auth::challenge_id(token).as_bytes());
+    }
+    subject
+}
 
 // Shared OTP verification logic
 
 async fn verify_otp(
     state: &AppState,
     user_id: Uuid,
+    challenge: Option<&str>,
     submitted_code: &str,
     fail_key: &str,
     ip: Option<IpNetwork>,
@@ -278,7 +331,11 @@ async fn verify_otp(
 
     let digests: Vec<Vec<u8>> = state
         .keyring
-        .otp_digests(OTP_PURPOSE, user_id.as_bytes(), submitted_code)
+        .otp_digests(
+            OTP_PURPOSE,
+            &code_subject(user_id, challenge),
+            submitted_code,
+        )
         .iter()
         .map(|digest| digest.to_vec())
         .collect();

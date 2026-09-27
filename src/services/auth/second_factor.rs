@@ -12,7 +12,7 @@ pub async fn complete_two_factor_login(
     request_id: Option<Uuid>,
 ) -> Result<AuthTokens, AppError> {
     let redis_key = pre_auth_key(pre_auth_token);
-    let fail_key = format!("{TOTP_FAIL_PREFIX}{pre_auth_token}");
+    let fail_key = format!("{TOTP_FAIL_PREFIX}{}", challenge_id(pre_auth_token));
 
     let mut conn = state.redis.get().await.map_err(redis_unavailable)?;
     let pre_auth_state = load_pre_auth_state_from_redis(&mut conn, &redis_key).await?;
@@ -217,7 +217,7 @@ pub async fn complete_login_with_recovery(
     request_id: Option<Uuid>,
 ) -> Result<AuthTokens, AppError> {
     let redis_key = pre_auth_key(pre_auth_token);
-    let fail_key = format!("{RC_FAIL_PREFIX}{pre_auth_token}");
+    let fail_key = format!("{RC_FAIL_PREFIX}{}", challenge_id(pre_auth_token));
 
     let mut conn = state.redis.get().await.map_err(redis_unavailable)?;
     let pre_auth_state = load_pre_auth_state_from_redis(&mut conn, &redis_key).await?;
@@ -352,7 +352,10 @@ async fn take_pre_auth(
         let _: Result<(), _> = conn.del(*key).await;
     }
     let _: Result<(), _> = conn
-        .srem::<_, _, ()>(user_pre_auth_index_key(user_id), pre_auth_token)
+        .srem::<_, _, ()>(
+            user_pre_auth_index_key(user_id),
+            challenge_id(pre_auth_token),
+        )
         .await;
     Ok(())
 }
