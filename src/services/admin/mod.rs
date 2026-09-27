@@ -35,6 +35,29 @@ impl Actor {
     }
 }
 
+/// Record, in the administrator's own history, that they read accounts or the
+/// audit log: personal data read with a stolen administrator token leaves a
+/// trace, like the owner's own export does. The read fails if it cannot be
+/// recorded.
+pub(crate) async fn record_read(
+    state: &AppState,
+    actor: &Actor,
+    extra: Value,
+) -> Result<(), crate::error::AppError> {
+    crate::repositories::audit::append(
+        &state.db,
+        &crate::repositories::audit::NewAuditEntry {
+            user_id: Some(actor.user_id),
+            request_id: actor.request_id,
+            action: crate::domain::audit::AuditAction::AdminDataRead,
+            ip_address: actor.ip,
+            metadata: actor.metadata(extra),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 /// Tell the owner an administrator changed their account: a compromised
 /// administrator acting on it must not go unnoticed by the person it affects.
 /// Best effort, after the change committed.

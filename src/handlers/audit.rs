@@ -185,6 +185,8 @@ pub(crate) fn action_name(action: &AuditAction) -> &'static str {
         A::AccessFactorsRemoved => "access_factors_removed",
         A::ClientAuthorized => "client_authorized",
         A::DeviceApproved => "device_approved",
+        A::DeviceDenied => "device_denied",
+        A::AdminDataRead => "admin_data_read",
         A::RoleCreated => "role_created",
         A::RoleDeleted => "role_deleted",
         A::RolePermissionsChanged => "role_permissions_changed",

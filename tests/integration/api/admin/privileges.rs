@@ -559,3 +559,34 @@ async fn the_primary_client_is_neither_removed_nor_rekeyed_over_http() {
     .await;
     assert_eq!(status, 404, "an unknown webhook has no deliveries to list");
 }
+
+/// Reading accounts or the audit log leaves a trace in the administrator's own
+/// history, without what was searched (SEC-85).
+#[tokio::test]
+async fn administrative_reads_leave_a_trace() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let target = fixtures::authenticated_user(&app, 33).await;
+    for path in [
+        "/admin/users?query=someone".to_owned(),
+        format!("/admin/users/{}", target.id),
+        "/admin/audit".to_owned(),
+    ] {
+        let (status, body) = send(&app, Method::GET, &path, &admin.token, json!({})).await;
+        assert_eq!(status, 200, "{path}: {body}");
+    }
+    let reads: Vec<Value> = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE user_id = $1 AND action = 'admin_data_read'
+         ORDER BY created_at",
+    )
+    .bind(admin.user.id)
+    .fetch_all(&app.db)
+    .await
+    .unwrap();
+    let kinds: Vec<&str> = reads.iter().map(|r| r["read"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["accounts", "account", "audit"]);
+    assert!(
+        !reads[0].to_string().contains("someone"),
+        "the search is not kept"
+    );
+}

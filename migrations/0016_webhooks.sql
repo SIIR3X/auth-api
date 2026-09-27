@@ -49,7 +49,10 @@ CREATE INDEX idx_webhook_deliveries_endpoint ON webhook_deliveries (endpoint_id,
 CREATE INDEX idx_webhook_deliveries_finished ON webhook_deliveries (created_at)
     WHERE delivered_at IS NOT NULL OR failed_at IS NOT NULL;
 
--- Finished deliveries are kept a while for inspection, then deleted.
+-- Finished deliveries are kept a while for inspection, then deleted. The
+-- runtime role cannot delete deliveries itself: a pending one is never
+-- dropped, and a finished one only after the floor, by this function running
+-- as the owner.
 CREATE OR REPLACE FUNCTION cleanup_finished_webhook_deliveries(
     retention INTERVAL,
     batch_size INTEGER DEFAULT NULL
@@ -61,10 +64,13 @@ BEGIN
     DELETE FROM webhook_deliveries WHERE ctid = ANY (ARRAY(
         SELECT ctid FROM webhook_deliveries
         WHERE (delivered_at IS NOT NULL OR failed_at IS NOT NULL)
-          AND created_at < NOW() - retention
+          AND created_at < NOW() - GREATEST(retention,
+              (SELECT finished_delivery_min_age FROM maintenance_floors))
         LIMIT batch_size
     ));
     GET DIAGNOSTICS deleted = ROW_COUNT;
     RETURN deleted;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION cleanup_finished_webhook_deliveries(INTERVAL, INTEGER) FROM PUBLIC;

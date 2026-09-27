@@ -122,6 +122,7 @@ fn parse_status(status: &str) -> Result<UserStatus, AppError> {
 pub async fn search(
     admin: AdminUser,
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<AdminUserPage>, AppError> {
     admin.require(&state, "users:read").await?;
@@ -138,6 +139,18 @@ pub async fn search(
     )
     .await?;
     let (rows, more) = split_page(rows, limit);
+    // What was searched is not kept (a prefix of someone's address), only
+    // that a search ran and how much it returned.
+    crate::services::admin::record_read(
+        &state,
+        &actor(&admin, ip),
+        serde_json::json!({
+            "read": "accounts",
+            "filtered": params.query.as_deref().is_some_and(|q| !q.trim().is_empty()),
+            "rows": rows.len(),
+        }),
+    )
+    .await?;
     let next_cursor = more
         .then(|| {
             rows.last()
@@ -167,10 +180,17 @@ pub async fn search(
 pub async fn detail(
     admin: AdminUser,
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<AdminUserDetail>, AppError> {
     admin.require(&state, "users:read").await?;
     let detail = admin_users::detail(&state, user_id).await?;
+    crate::services::admin::record_read(
+        &state,
+        &actor(&admin, ip),
+        serde_json::json!({ "read": "account", "user_id": user_id }),
+    )
+    .await?;
     Ok(Json(AdminUserDetail {
         account: summary(&state, detail.user),
         roles: detail.roles,

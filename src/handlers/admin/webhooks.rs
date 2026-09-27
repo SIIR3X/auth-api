@@ -50,6 +50,17 @@ pub struct CreatedWebhookResponse {
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
+pub struct UpdatedWebhookResponse {
+    #[serde(flatten)]
+    pub webhook: WebhookResponse,
+    /// A new signing secret (`whsec_...`), shown once: present when the
+    /// endpoint now points at another host, whose previous secret stopped
+    /// signing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct WebhookSecretResponse {
     /// The new signing secret, shown once; the previous one stops signing now.
     pub secret: String,
@@ -169,7 +180,7 @@ pub async fn create(
     params(("id" = Uuid, Path, description = "Webhook id")),
     request_body = WebhookRequest,
     responses(
-        (status = 200, description = "Endpoint updated; the secret is unchanged", body = WebhookResponse),
+        (status = 200, description = "Endpoint updated; a new secret is returned when it points at another host, otherwise the secret is unchanged", body = UpdatedWebhookResponse),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Missing `webhooks:manage`, or no second factor proven by the session, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such webhook", body = crate::error::ErrorBody),
@@ -183,10 +194,13 @@ pub async fn update(
     ClientIp(ip): ClientIp,
     Path(id): Path<Uuid>,
     Json(body): Json<WebhookRequest>,
-) -> Result<Json<WebhookResponse>, AppError> {
+) -> Result<Json<UpdatedWebhookResponse>, AppError> {
     admin.require(&state, "webhooks:manage").await?;
-    let endpoint = webhook_svc::update(&state, &actor(&admin, ip), id, &input(&body)).await?;
-    Ok(Json(webhook_response(endpoint)))
+    let saved = webhook_svc::update(&state, &actor(&admin, ip), id, &input(&body)).await?;
+    Ok(Json(UpdatedWebhookResponse {
+        webhook: webhook_response(saved.endpoint),
+        secret: saved.secret,
+    }))
 }
 
 #[utoipa::path(

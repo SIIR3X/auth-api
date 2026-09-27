@@ -337,12 +337,15 @@ pub async fn create(
     })
 }
 
+/// Change an endpoint. Pointing it at another host gives it a new signing
+/// secret, returned once: the former host would otherwise keep a secret still
+/// valid for the endpoint, and could sign deliveries to the new one.
 pub async fn update(
     state: &AppState,
     actor: &Actor,
     id: Uuid,
     input: &EndpointInput<'_>,
-) -> Result<WebhookEndpoint, AppError> {
+) -> Result<SavedEndpoint, AppError> {
     let (events, description) = checked(state, input)?;
     require_reauth(state, actor, "admin_update_webhook").await?;
     let previous = webhook_repo::find_endpoint(&state.db, id)
@@ -361,6 +364,14 @@ pub async fn update(
     )
     .await?
     .ok_or(AppError::NotFound)?;
+    let moved = url_host(&previous.url) != url_host(input.url);
+    let secret = if moved {
+        let (secret, encrypted) = new_secret(state, id)?;
+        webhook_repo::replace_secret(&mut *tx, id, &encrypted).await?;
+        Some(secret)
+    } else {
+        None
+    };
     audit_change(
         &mut tx,
         actor,
@@ -369,11 +380,12 @@ pub async fn update(
         json!({
             "previous_host": url_host(&previous.url),
             "host": url_host(input.url),
+            "secret_rotated": moved,
         }),
     )
     .await?;
     tx.commit().await?;
-    Ok(endpoint)
+    Ok(SavedEndpoint { endpoint, secret })
 }
 
 pub async fn rotate_secret(state: &AppState, actor: &Actor, id: Uuid) -> Result<String, AppError> {

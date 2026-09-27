@@ -41,6 +41,11 @@ BEGIN
 END
 $$;
 
+-- Outgoing events and webhook deliveries leave only through the owner's
+-- retention functions: the runtime role marks them sent or failed, never
+-- deletes them, so an unpublished `user.deleted` cannot be made to vanish.
+REVOKE DELETE ON event_outbox, webhook_deliveries FROM auth_api;
+
 -- The permission catalog and the migration history change with migrations only.
 REVOKE INSERT, UPDATE, DELETE ON permissions FROM auth_api;
 REVOKE INSERT, UPDATE, DELETE ON _sqlx_migrations FROM auth_api;

@@ -69,6 +69,10 @@ async fn the_runtime_role_cannot_erase_the_audit_trail_or_alter_the_schema() {
         "UPDATE permissions SET description = 'planted'",
         "DELETE FROM _sqlx_migrations",
         "UPDATE maintenance_floors SET audit_retention_months = 1",
+        // An unpublished event or a pending delivery cannot be made to vanish
+        // (SEC-85).
+        "DELETE FROM event_outbox",
+        "DELETE FROM webhook_deliveries",
         "CREATE TABLE planted (id INT)",
         "ALTER TABLE users ADD COLUMN planted TEXT",
     ] {
@@ -108,6 +112,8 @@ async fn the_runtime_role_does_everything_the_service_needs() {
         "SELECT rotate_audit_log_partitions(12, 2)",
         "SELECT coarsen_audit_addresses('0 seconds'::interval, 100)",
         "SELECT purge_unverified_accounts('3650 days'::interval, 100)",
+        "SELECT cleanup_published_events('0 seconds'::interval, 100)",
+        "SELECT cleanup_finished_webhook_deliveries('0 seconds'::interval, 100)",
     ] {
         sqlx::raw_sql(statement)
             .execute(&mut runtime)

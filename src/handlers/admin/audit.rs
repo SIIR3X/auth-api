@@ -14,7 +14,7 @@ use crate::{
             AuditEntryResponse, action_name, decode_cursor, encode_cursor, page_limit,
             rows_to_fetch, split_page,
         },
-        extractors::AdminUser,
+        extractors::{AdminUser, ClientIp},
     },
     repositories::audit as audit_repo,
     state::AppState,
@@ -69,6 +69,7 @@ pub struct AdminAuditPage {
 pub async fn list(
     admin: AdminUser,
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Query(params): Query<AdminAuditParams>,
 ) -> Result<Json<AdminAuditPage>, AppError> {
     admin.require(&state, "audit:read").await?;
@@ -84,6 +85,17 @@ pub async fn list(
     )
     .await?;
     let (rows, more) = split_page(rows, limit);
+    crate::services::admin::record_read(
+        &state,
+        &super::actor(&admin, ip),
+        serde_json::json!({
+            "read": "audit",
+            "user_id": params.user_id,
+            "action": params.action,
+            "rows": rows.len(),
+        }),
+    )
+    .await?;
     let next_cursor = more
         .then(|| {
             rows.last()

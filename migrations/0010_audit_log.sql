@@ -49,10 +49,12 @@ CREATE TYPE audit_action AS ENUM (
     'external_identity_unlinked',
     'client_authorized',
     'device_approved',
+    'device_denied',
     -- Administrative changes.
     'account_unlocked',
     'password_reset_forced',
     'access_factors_removed',
+    'admin_data_read',
     'role_created',
     'role_deleted',
     'role_permissions_changed',
@@ -100,6 +102,10 @@ CREATE TABLE maintenance_floors (
     audit_address_min_age INTERVAL NOT NULL DEFAULT '30 days',
     -- Accounts pending verification for less than this are never purged.
     unverified_account_min_age INTERVAL NOT NULL DEFAULT '1 day',
+    -- Published events and finished webhook deliveries younger than this are
+    -- never swept.
+    published_event_min_age INTERVAL NOT NULL DEFAULT '1 day',
+    finished_delivery_min_age INTERVAL NOT NULL DEFAULT '1 day',
 
     CONSTRAINT maintenance_floors_single_row CHECK (id),
     CONSTRAINT maintenance_floors_audit_retention_positive CHECK (audit_retention_months >= 1)

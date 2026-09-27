@@ -157,10 +157,12 @@ SELECT jsonb_build_object(
             'action', l.action,
             -- An administrator's change names neither the administrator nor
             -- the address they acted from: those are theirs, not the owner's.
-            'ip_address', CASE WHEN l.metadata->>'by' = 'administrator'
+            'ip_address', CASE WHEN l.metadata->>'by' IN ('administrator', 'command_line')
                 THEN NULL ELSE host(l.ip_address) END,
             'request_id', l.request_id,
-            'metadata', l.metadata - 'administrator_id'
+            -- Nor the operator account and host of a command-line change
+            -- (domain::audit::OPERATOR_FIELDS).
+            'metadata', l.metadata - 'administrator_id' - 'operator' - 'host'
         ) ORDER BY l.created_at, l.id)
         FROM audit_log l WHERE l.user_id = $1 AND l.created_at <= NOW()
     ), '[]'::jsonb)
@@ -172,8 +174,34 @@ pub async fn account_document(
     pool: &PgPool,
     user_id: Uuid,
 ) -> Result<Option<serde_json::Value>, sqlx::Error> {
-    sqlx::query_scalar(EXPORT_SQL)
+    let document: Option<serde_json::Value> = sqlx::query_scalar(EXPORT_SQL)
         .bind(user_id)
         .fetch_optional(pool)
-        .await
+        .await?;
+    Ok(document.map(coarsen_strangers_user_agents))
+}
+
+/// Link requests and failed sign-ins may be anyone's: like their address,
+/// reduced to its network, their user agent is reduced to its family ("Firefox
+/// on Linux"), which with the network no longer singles a stranger out.
+fn coarsen_strangers_user_agents(mut document: serde_json::Value) -> serde_json::Value {
+    let coarsen = |entry: &mut serde_json::Value| {
+        let family = crate::domain::known_device::device_family(
+            entry.get("user_agent").and_then(|ua| ua.as_str()),
+        )
+        .describe();
+        if entry.get("user_agent").is_some_and(|ua| !ua.is_null()) {
+            entry["user_agent"] = serde_json::Value::String(family);
+        }
+    };
+    if let Some(requests) = document["mailed_link_requests"].as_array_mut() {
+        requests.iter_mut().for_each(coarsen);
+    }
+    if let Some(attempts) = document["sign_in_attempts"].as_array_mut() {
+        attempts
+            .iter_mut()
+            .filter(|attempt| attempt["successful"] != serde_json::Value::Bool(true))
+            .for_each(coarsen);
+    }
+    document
 }

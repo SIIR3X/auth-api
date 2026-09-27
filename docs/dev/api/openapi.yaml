@@ -1677,11 +1677,11 @@ paths:
         required: true
       responses:
         '200':
-          description: Endpoint updated; the secret is unchanged
+          description: Endpoint updated; a new secret is returned when it points at another host, otherwise the secret is unchanged
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WebhookResponse'
+                $ref: '#/components/schemas/UpdatedWebhookResponse'
         '400':
           description: Malformed request
           content:
@@ -7633,6 +7633,19 @@ components:
           description: |-
             Unused and unexpired. Zero next to a verified method is worth showing:
             losing the device would then lock the account.
+    UpdatedWebhookResponse:
+      allOf:
+      - $ref: '#/components/schemas/WebhookResponse'
+      - type: object
+        properties:
+          secret:
+            type:
+            - string
+            - 'null'
+            description: |-
+              A new signing secret (`whsec_...`), shown once: present when the
+              endpoint now points at another host, whose previous secret stopped
+              signing.
     UserResponse:
       type: object
       required:

@@ -312,6 +312,28 @@ async fn endpoints_are_checked_updated_rotated_and_removed() {
     assert_eq!(status, 200, "{updated}");
     assert_eq!(updated["enabled"], true);
     assert_eq!(updated["events"], json!(["user.created", "user.deleted"]));
+    assert!(
+        updated.get("secret").is_none(),
+        "same host: the secret stays"
+    );
+
+    // Another host: a new secret, so the former host cannot sign for it
+    // (SEC-85).
+    let (status, moved) = send(
+        &app,
+        Method::PUT,
+        &format!("/admin/webhooks/{id}"),
+        &admin.token,
+        json!({ "url": "https://elsewhere.example.com/hook", "events": ["user.created", "user.deleted"] }),
+    )
+    .await;
+    assert_eq!(status, 200, "{moved}");
+    assert!(
+        moved["secret"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("whsec_"))
+    );
+    assert_ne!(moved["secret"], created["secret"]);
 
     let (status, rotated) = send(
         &app,
@@ -366,6 +388,7 @@ async fn endpoints_are_checked_updated_rotated_and_removed() {
         actions,
         [
             "webhook_created",
+            "webhook_updated",
             "webhook_updated",
             "webhook_secret_rotated",
             "webhook_deleted"
