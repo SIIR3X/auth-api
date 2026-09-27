@@ -199,7 +199,7 @@ pub async fn register(
     responses(
         (status = 200, description = "Tokens, or a two-factor challenge", body = LoginResponse),
         (status = 401, description = "Invalid credentials", body = crate::error::ErrorBody),
-        (status = 403, description = "Account suspended, inactive or not verified; a locked password answers 401 like a wrong one", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive; a locked password and an account whose address is not verified answer 401 like a wrong password", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),

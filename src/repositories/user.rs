@@ -410,20 +410,49 @@ pub async fn username_unavailable(pool: &PgPool, username: &str) -> Result<bool,
     .await
 }
 
-/// Reserve the username until `expires_at`, extending an earlier reservation.
-pub async fn reserve_username<'e>(
-    executor: impl PgExecutor<'e>,
+/// Reserve the username for a registration on `account`'s address until
+/// `expires_at`, replacing the account's previous reservation.
+pub async fn reserve_username(
+    pool: &PgPool,
     username: &str,
+    account: Uuid,
     expires_at: time::OffsetDateTime,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM username_reservations WHERE reserved_for = $1")
+        .bind(account)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
-        "INSERT INTO username_reservations (username, expires_at) VALUES ($1, $2)
-         ON CONFLICT (lower(username))
-         DO UPDATE SET expires_at = GREATEST(username_reservations.expires_at, EXCLUDED.expires_at)",
+        "INSERT INTO username_reservations (username, expires_at, reserved_for) VALUES ($1, $2, $3)
+         ON CONFLICT (lower(username)) DO NOTHING",
     )
     .bind(username)
     .bind(expires_at)
-    .execute(executor)
+    .bind(account)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
+}
+
+/// When a reset activates a pending account, the username and locale of the
+/// latest registration that sent the account a link, if its username is free.
+pub async fn adopt_latest_registration_identity(
+    tx: &mut sqlx::PgConnection,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE users u
+         SET username = latest.username, preferred_locale = latest.preferred_locale
+         FROM (SELECT username, preferred_locale FROM email_verification_tokens
+               WHERE user_id = $1 AND username IS NOT NULL AND used_at IS NULL
+               ORDER BY created_at DESC LIMIT 1) latest
+         WHERE u.id = $1 AND u.status = 'pending_verification'
+           AND NOT EXISTS (SELECT 1 FROM users o
+                           WHERE lower(o.username) = lower(latest.username) AND o.id <> $1)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
     .await?;
     Ok(())
 }

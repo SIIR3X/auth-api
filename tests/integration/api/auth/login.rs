@@ -270,6 +270,9 @@ async fn login_unknown_user() {
 }
 
 #[tokio::test]
+/// An account whose address is not verified answers like a wrong password,
+/// even to the right one, and its owner gets a new link: a distinct answer
+/// would tell who registered an address whether it had an account (SEC-83).
 async fn login_unverified_email() {
     let app = TestApp::spawn().await;
 
@@ -286,7 +289,16 @@ async fn login_unverified_email() {
         )
         .await;
 
-    assert_eq!(res.status().as_u16(), 403);
+    assert_eq!(res.status().as_u16(), 401);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["code"], "invalid_credentials");
+    let links: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM email_verification_tokens WHERE user_id = $1")
+            .bind(user.id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert!(links >= 2, "a new verification link went out");
 }
 
 #[tokio::test]

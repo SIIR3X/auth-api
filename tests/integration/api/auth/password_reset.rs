@@ -266,7 +266,7 @@ async fn verify_email_activates_unverified_account() {
             }),
         )
         .await;
-    assert_eq!(before.status().as_u16(), 403);
+    assert_eq!(before.status().as_u16(), 401);
 
     let token = fixtures::create_email_verification_token(&app.db, user.id, &user.email).await;
 

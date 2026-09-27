@@ -85,6 +85,7 @@ async fn register_account(
         user_repo::reserve_username(
             &state.db,
             username,
+            existing.id,
             state.clock.in_secs(EMAIL_TOKEN_EXPIRY_SECS),
         )
         .await?;
@@ -271,7 +272,7 @@ pub async fn resend_verification(
 /// created with and never repeats another registration's. Earlier links stay
 /// valid until one of them verifies the account: a later registration or
 /// resend must not revoke the link its owner is about to click.
-async fn issue_verification(
+pub(super) async fn issue_verification(
     state: &AppState,
     user: &User,
     credentials: Option<crate::domain::token::PendingCredentials>,
@@ -279,11 +280,28 @@ async fn issue_verification(
     user_agent: Option<&str>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
+    // Budgeted per client address first, then for the account as a whole with
+    // more room: registrations by someone else on a pending address spend
+    // their own share, not the owner's. Links live a day, far longer than the
+    // window, so the owner always holds a valid one.
+    if let Some(ip) = ip {
+        let key = format!("vr_account:{}:{}", user.id, ip_bucket(ip.ip()));
+        if budget_exhausted(
+            state,
+            &key,
+            MAX_VERIFICATION_RESENDS_BY_ACCOUNT,
+            VERIFICATION_RESEND_ACCOUNT_WINDOW_SECS,
+        )
+        .await
+        {
+            return Ok(());
+        }
+    }
     let account_key = format!("vr_account:{}", user.id);
     if budget_exhausted(
         state,
         &account_key,
-        MAX_VERIFICATION_RESENDS_BY_ACCOUNT,
+        MAX_VERIFICATION_RESENDS_BY_ACCOUNT * 3,
         VERIFICATION_RESEND_ACCOUNT_WINDOW_SECS,
     )
     .await

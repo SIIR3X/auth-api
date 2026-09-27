@@ -194,6 +194,9 @@ pub async fn reset_password(
     // The reset link went to the account's address: whoever used it owns the
     // address. A pending account is verified with the password its owner just
     // chose, which also takes back an address someone else registered.
+    // The account then carries the username the owner last asked for, not
+    // the one chosen by whoever registered the address first.
+    user_repo::adopt_latest_registration_identity(&mut tx, record.user_id).await?;
     if user_repo::verify_if_pending(&mut *tx, record.user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?

@@ -500,3 +500,38 @@ async fn a_username_answers_the_same_whether_its_address_was_registered() {
         "a reserved name is taken for a rename too"
     );
 }
+
+/// A registered address holds one username reservation at a time: registering
+/// it again replaces the previous one, so nobody squats usernames in bulk
+/// through an address they own (SEC-83).
+#[tokio::test]
+async fn an_address_holds_one_username_reservation_at_a_time() {
+    let app = TestApp::spawn().await;
+    let owner = fixtures::register_user(&app, 673).await;
+    fixtures::activate_user(&app.db, owner.id).await;
+    let (first, second) = (fixtures::unique("squat_a_"), fixtures::unique("squat_b_"));
+    for name in [&first, &second] {
+        let res = app
+            .post(
+                "/auth/register",
+                &json!({ "username": name, "email": owner.email, "password": "Password673!ok" }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 202);
+    }
+    let res = app
+        .post(
+            "/auth/register",
+            &json!({
+                "username": first,
+                "email": fixtures::unique("fresh") + "@example.com",
+                "password": "Password673!ok",
+            }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        202,
+        "the first reservation was replaced"
+    );
+}

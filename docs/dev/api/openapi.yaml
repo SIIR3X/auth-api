@@ -2267,7 +2267,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
-          description: Account suspended, inactive or not verified; a locked password answers 401 like a wrong one
+          description: Account suspended or inactive; a locked password and an account whose address is not verified answer 401 like a wrong password
           content:
             application/json:
               schema:

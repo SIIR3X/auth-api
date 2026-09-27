@@ -262,6 +262,31 @@ pub async fn login(
         }
     };
 
+    // A pending account answers like a wrong password, even to the right one.
+    // Registering an address creates such an account only when the address
+    // was free: a distinct answer here would tell anyone who registered it
+    // and then signed in with their own password whether it had an account.
+    // Its owner gets a new verification link instead, within its budget.
+    if user.status == UserStatus::PendingVerification {
+        record_failure(
+            &state.db,
+            Some(user.id),
+            identifier,
+            LoginFailureReason::EmailNotVerified,
+            ip,
+            user_agent,
+        )
+        .await;
+        if let Err(error) =
+            super::register::issue_verification(state, &user, None, ip, user_agent, request_id)
+                .await
+        {
+            tracing::warn!(%error, "verification link for a pending sign-in not sent");
+        }
+        metrics::counter!("auth_logins_total", "outcome" => "invalid_credentials").increment(1);
+        return Err(AppError::InvalidCredentials);
+    }
+
     // Account status checks
     ensure_status_allows_sign_in(&user)?;
 

@@ -57,9 +57,13 @@ CREATE INDEX idx_email_verification_tokens_expires_at ON email_verification_toke
 -- account stays reserved as long as the registration's link would live: the
 -- next registration asking for it is refused as if an account held it, so
 -- whether a username is taken never tells whether an address is registered.
+-- One reservation per registered address at a time: each registration on it
+-- replaces the previous one, so nobody squats usernames in bulk through an
+-- address they own.
 CREATE TABLE username_reservations (
     username VARCHAR(50) NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
+    reserved_for UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
 
     CONSTRAINT username_reservations_username_format CHECK (
         username ~ '^[a-zA-Z0-9_]{3,50}$'
@@ -68,6 +72,7 @@ CREATE TABLE username_reservations (
 
 CREATE UNIQUE INDEX username_reservations_username_lower_key
     ON username_reservations (lower(username));
+CREATE UNIQUE INDEX username_reservations_reserved_for_key ON username_reservations (reserved_for);
 CREATE INDEX idx_username_reservations_expires_at ON username_reservations (expires_at);
 
 -- Expired reservations go with the expired links they shadowed.

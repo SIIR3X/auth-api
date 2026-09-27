@@ -145,7 +145,9 @@ pub async fn refresh_token(
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
 
-            return Err(AppError::Unauthorized);
+            // Answered like any refused token: a distinct answer would tell
+            // whoever stole it that it is still alive elsewhere.
+            return Err(AppError::TokenInvalid);
         }
     }
 
