@@ -72,10 +72,10 @@ fi
 # --- static -----------------------------------------------------------------
 
 if selected static; then
-  # Placeholders for the variables the compose files require.
+  # Placeholders for the variables the compose files require; the secrets are
+  # files (scripts/write-secrets.sh), not variables.
   compose_env() {
-    env AUTH_API_VERSION=check DATABASE_URL=x REDIS_URL=x JWT_PRIVATE_KEY=x JWT_PUBLIC_KEY=x \
-      ENCRYPTION_KEY=x SMTP_USERNAME=x SMTP_PASSWORD=x CAPTCHA_SECRET=x NATS_URL=x "$@"
+    env AUTH_API_VERSION=check "$@"
   }
 
   for profile in s m l xl; do
@@ -110,6 +110,15 @@ if selected static; then
   run "promtool: rule tests" promtool deploy/monitoring/rules test rules infrastructure.test.yml
   run "amtool: alertmanager.yml" docker run --rm --entrypoint amtool -v "$ROOT/deploy/monitoring:/m:ro" \
     "$ALERTMANAGER_IMAGE" check-config /m/alertmanager.yml
+
+  # PostgreSQL and Redis speak without TLS: WireGuard is their boundary, so
+  # the shipped settings must bind them to the VPN address only.
+  vpn_only() {
+    grep -Eq "^listen_addresses = '10\.0\.0\.[0-9]+'$" deploy/db/postgresql.auth-api.conf &&
+      grep -Eq '^bind 10\.0\.0\.[0-9]+$' deploy/db/redis.auth-api.conf &&
+      ! grep -Eq '^bind .*(0\.0\.0\.0|\*)' deploy/db/redis.auth-api.conf
+  }
+  run "database listeners: VPN address only" vpn_only
 
   mapfile -t scripts < <(find scripts perf deploy -name '*.sh' -type f | sort)
   run "shellcheck: ${#scripts[@]} scripts" \

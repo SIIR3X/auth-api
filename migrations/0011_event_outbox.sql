@@ -30,6 +30,9 @@ CREATE INDEX idx_event_outbox_published_at
 
 -- Published events are kept a while for investigation, then swept by the
 -- application's cleanup task, in batches like the other retention functions.
+-- The runtime role cannot delete from the outbox (deploy/db/auth-api-grants.sql):
+-- an unpublished event, a `user.deleted` above all, cannot be made to vanish.
+-- This function runs as the owner, never earlier than the floor.
 CREATE OR REPLACE FUNCTION cleanup_published_events(
     retention INTERVAL DEFAULT '7 days',
     batch_size INTEGER DEFAULT NULL
@@ -40,10 +43,14 @@ DECLARE
 BEGIN
     DELETE FROM event_outbox WHERE ctid = ANY (ARRAY(
         SELECT ctid FROM event_outbox
-        WHERE published_at < NOW() - retention
+        WHERE published_at IS NOT NULL
+          AND published_at < NOW() - GREATEST(retention,
+              (SELECT published_event_min_age FROM maintenance_floors))
         LIMIT batch_size
     ));
     GET DIAGNOSTICS deleted = ROW_COUNT;
     RETURN deleted;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION cleanup_published_events(INTERVAL, INTEGER) FROM PUBLIC;

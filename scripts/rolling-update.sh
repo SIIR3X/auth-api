@@ -7,8 +7,10 @@
 # and ready; if the new version does not come up, the script stops there with
 # the other instance still serving the previous one.
 #
-# Usage, secrets exported as in docs/deploy/guides/update.md:
-#   AUTH_API_VERSION=X.Y.Z scripts/rolling-update.sh
+# Usage, secrets written as in docs/deploy/guides/update.md, as root for the
+# readiness checks (deploy/api/nftables-auth-api.conf lets only nginx and root
+# reach the instances):
+#   AUTH_API_VERSION=X.Y.Z sudo -E scripts/rolling-update.sh
 set -euo pipefail
 
 COMPOSE_DIR=${COMPOSE_DIR:-/srv/auth-api}

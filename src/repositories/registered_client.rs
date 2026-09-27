@@ -16,13 +16,13 @@ pub struct NewRegisteredClient<'a> {
 }
 
 /// Find a registered client by its client_id.
-pub async fn find_by_id(
-    pool: &PgPool,
+pub async fn find_by_id<'e>(
+    executor: impl PgExecutor<'e>,
     client_id: &str,
 ) -> Result<Option<RegisteredClient>, sqlx::Error> {
     sqlx::query_as::<_, RegisteredClient>("SELECT * FROM registered_clients WHERE client_id = $1")
         .bind(client_id)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await
 }
 
@@ -99,8 +99,8 @@ pub async fn lock_existing<'e>(
 
 /// Set the digest of the client's secret, or clear it to make the client
 /// public. Returns whether the client exists.
-pub async fn set_secret_hash(
-    pool: &PgPool,
+pub async fn set_secret_hash<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     client_id: &str,
     secret_hash: Option<&[u8]>,
 ) -> Result<bool, sqlx::Error> {
@@ -113,8 +113,23 @@ pub async fn set_secret_hash(
     )
     .bind(client_id)
     .bind(secret_hash)
-    .execute(pool)
+    .execute(executor)
     .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Make the client a resource server, or not. Returns whether it exists.
+pub async fn set_introspection<'e>(
+    executor: impl PgExecutor<'e>,
+    client_id: &str,
+    allowed: bool,
+) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("UPDATE registered_clients SET allows_introspection = $2 WHERE client_id = $1")
+            .bind(client_id)
+            .bind(allowed)
+            .execute(executor)
+            .await?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -133,4 +148,14 @@ pub async fn set_client_credentials<'e>(
     .execute(executor)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// The scopes some registered client may ask for: what the metadata offers.
+/// Permissions no client can request stay unlisted.
+pub async fn assignable_scopes(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT scope FROM registered_clients, unnest(scopes) AS scope ORDER BY scope",
+    )
+    .fetch_all(pool)
+    .await
 }

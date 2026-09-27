@@ -69,6 +69,10 @@ pub enum AppError {
     TwoFactorRequired,
     #[error("recent re-authentication required")]
     ReauthenticationRequired,
+    #[error("a session of the account itself is required")]
+    FirstPartySessionRequired,
+    #[error("a session that proved a second factor is required")]
+    SecondFactorSessionRequired,
 
     // 404
     #[error("resource not found")]
@@ -221,6 +225,20 @@ impl IntoResponse for AppError {
                     "Recent re-authentication is required for this action.",
                 ),
             ),
+            Self::SecondFactorSessionRequired => (
+                StatusCode::FORBIDDEN,
+                ErrorBody::new(
+                    "second_factor_session_required",
+                    "Sign in with your second factor to approve this.",
+                ),
+            ),
+            Self::FirstPartySessionRequired => (
+                StatusCode::FORBIDDEN,
+                ErrorBody::new(
+                    "first_party_session_required",
+                    "This token was delegated to an application or issued for a personal access token; sign in to the account itself.",
+                ),
+            ),
 
             // 404
             Self::NotFound => (
@@ -238,12 +256,21 @@ impl IntoResponse for AppError {
                         "At least one account must keep the permission to manage roles."
                     }
                     "default_role" => "The role given to every new account cannot be deleted.",
+                    "administrator_without_second_factor" => {
+                        "An administrative role goes only to an active account with a second factor or a passkey."
+                    }
                     "too_many_tokens" => "Revoke a personal access token before creating another.",
                     "external_identity_not_linked" => {
                         "No account is linked to this identity: sign in, then link it from the account settings."
                     }
                     "external_identity_already_linked" => {
                         "This identity is already linked to an account."
+                    }
+                    "holders_without_second_factor" => {
+                        "Every holder of this role must be an active account with a second factor before it grants administration."
+                    }
+                    "primary_client_managed_by_command_line" => {
+                        "The primary client is designated and changed from the command line only."
                     }
                     _ => "A resource with this value already exists.",
                 };
@@ -541,6 +568,8 @@ mod tests {
     #[test]
     fn reauthentication_required_is_403() {
         assert_eq!(status(AppError::ReauthenticationRequired), 403);
+        assert_eq!(status(AppError::FirstPartySessionRequired), 403);
+        assert_eq!(status(AppError::SecondFactorSessionRequired), 403);
     }
 
     // 404

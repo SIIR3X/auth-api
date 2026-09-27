@@ -208,27 +208,56 @@ async fn security_headers_enable_hsts_for_https_production() {
         config.jwt.strict_session_binding = true;
         config.webhooks.allow_http = false;
         config.device_auth.consent_uri = "https://app.example.com/authorize".into();
+        config.device_auth.verification_uri = "https://app.example.com/device".into();
         config.webauthn.rp_id = "app.example.com".into();
         config.external_login_uri = "https://app.example.com/external-login".into();
         config.webauthn.origins = vec!["https://app.example.com".into()];
         config.webhooks.allow_private_networks = false;
+        config.crypto.argon2_memory_kib = 19_456;
+        config.crypto.argon2_iterations = 2;
+        config.pwned_passwords.enabled = true;
         // The committed development AES key is refused in production.
         config.crypto.encryption_key = "6M+xtK7VzYMoz/3mc3vJf2e6h9b9yLyx3Eabo/236YE=".into();
+        // Production requires a password in REDIS_URL; the test Redis has
+        // none, so this app only answers what needs no Redis (the probes).
+        let mut redis = reqwest::Url::parse(&config.redis.url).unwrap();
+        redis.set_password(Some("unused")).unwrap();
+        config.redis.url = redis.to_string();
     })
     .await;
 
     let res = app
         .client
-        .get(format!("{}/users/me", app.base_url))
+        .get(format!("{}/live", app.base_url))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(res.status().as_u16(), 401);
+    assert_eq!(res.status().as_u16(), 200);
     assert_eq!(
         res.headers()
             .get("strict-transport-security")
             .and_then(|value| value.to_str().ok()),
         Some("max-age=63072000; includeSubDomains")
     );
+}
+
+/// RFC 6749 section 5.1: token responses carry `Cache-Control: no-store` and
+/// `Pragma: no-cache`; cacheable public documents carry neither.
+#[tokio::test]
+async fn token_responses_forbid_every_cache() {
+    let app = TestApp::spawn().await;
+    let user = crate::common::fixtures::register_user(&app, 1).await;
+    crate::common::fixtures::activate_user(&app.db, user.id).await;
+    let response = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await;
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(response.headers()["pragma"], "no-cache");
+
+    let jwks = app.get("/.well-known/jwks.json").await;
+    assert!(jwks.headers().get("pragma").is_none());
 }

@@ -66,9 +66,15 @@ struct Outcome {
     provider: String,
     intent: Intent,
     binding_hash: String,
-    /// The account signing in, or the account the identity was linked to.
+    /// The account signing in, or the account starting the link.
     user_id: Option<Uuid>,
+    /// The identity signing in, or already linked to the account starting the
+    /// link.
     identity_id: Option<Uuid>,
+    /// The provider's subject of a link still to make: the link is made only
+    /// by `complete_link`, once the binding proves the browser that started it.
+    #[serde(default)]
+    subject: Option<String>,
     /// Stable error code when the flow failed.
     error: Option<String>,
 }
@@ -209,13 +215,17 @@ pub async fn callback(
         binding_hash: pending.binding_hash.clone(),
         user_id: None,
         identity_id: None,
+        subject: None,
         error: None,
     };
     match result {
         Ok(subject) => match settle(state, provider, &pending, &subject).await? {
             Ok((user_id, identity_id)) => {
                 outcome.user_id = Some(user_id);
-                outcome.identity_id = Some(identity_id);
+                outcome.identity_id = identity_id;
+                if identity_id.is_none() {
+                    outcome.subject = Some(subject);
+                }
             }
             Err(code) => outcome.error = Some(code.into()),
         },
@@ -335,16 +345,24 @@ async fn verify_id_token(
         return Err("unsupported id token algorithm");
     }
     let jwks_uri = metadata["jwks_uri"].as_str().ok_or("no jwks uri")?;
-    let jwks = fetch_json(state, &format!("jwks:{}", provider.name), jwks_uri, false).await?;
-    let set: jsonwebtoken::jwk::JwkSet =
-        serde_json::from_value(jwks).map_err(|_| "malformed jwks")?;
-    let jwk = match header.kid.as_deref() {
-        Some(kid) => set.find(kid),
-        None if set.keys.len() == 1 => set.keys.first(),
-        None => None,
+    let cache_key = format!("jwks:{}", provider.name);
+    let find = |jwks: Value| -> Result<Option<jsonwebtoken::jwk::Jwk>, &'static str> {
+        let set: jsonwebtoken::jwk::JwkSet =
+            serde_json::from_value(jwks).map_err(|_| "malformed jwks")?;
+        Ok(match header.kid.as_deref() {
+            Some(kid) => set.find(kid).cloned(),
+            None if set.keys.len() == 1 => set.keys.first().cloned(),
+            None => None,
+        })
+    };
+    let mut jwk = find(fetch_json(state, &cache_key, jwks_uri, None).await?)?;
+    // A key the cached set does not hold may be a rotation at the provider:
+    // fetch the set again, at most once per JWKS_REFRESH_MIN_AGE.
+    if jwk.is_none() && forget_if_older(&cache_key, JWKS_REFRESH_MIN_AGE).await {
+        jwk = find(fetch_json(state, &cache_key, jwks_uri, None).await?)?;
     }
-    .ok_or("unknown signing key")?;
-    let key = jsonwebtoken::DecodingKey::from_jwk(jwk).map_err(|_| "unusable signing key")?;
+    let jwk = jwk.ok_or("unknown signing key")?;
+    let key = jsonwebtoken::DecodingKey::from_jwk(&jwk).map_err(|_| "unusable signing key")?;
     let mut validation = jsonwebtoken::Validation::new(header.alg);
     // Claims are checked against the application clock in the domain.
     validation.validate_exp = false;
@@ -358,12 +376,29 @@ async fn verify_id_token(
 static DISCOVERED: LazyLock<RwLock<HashMap<String, (std::time::Instant, Value)>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// How old a cached key set must be before an unknown key triggers a refetch:
+/// a stream of tokens with made-up key ids cannot hammer the provider.
+const JWKS_REFRESH_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Drop the cached value at `cache_key` if it was fetched at least `min_age`
+/// ago. Returns whether it was dropped.
+async fn forget_if_older(cache_key: &str, min_age: std::time::Duration) -> bool {
+    let mut cache = DISCOVERED.write().await;
+    match cache.get(cache_key) {
+        Some((fetched, _)) if fetched.elapsed() >= min_age => {
+            cache.remove(cache_key);
+            true
+        }
+        _ => false,
+    }
+}
+
 async fn discovery(state: &AppState, provider: &IdentityProviderConfig) -> Result<Value, AppError> {
     fetch_json(
         state,
         &format!("discovery:{}", provider.issuer),
         &format!("{}/.well-known/openid-configuration", provider.issuer),
-        true,
+        Some(&provider.issuer),
     )
     .await
     .map_err(|reason| {
@@ -380,7 +415,7 @@ async fn fetch_json(
     state: &AppState,
     cache_key: &str,
     url: &str,
-    check_issuer: bool,
+    expected_issuer: Option<&str>,
 ) -> Result<Value, &'static str> {
     if let Some((fetched, value)) = DISCOVERED.read().await.get(cache_key)
         && fetched.elapsed() < DISCOVERY_TTL
@@ -398,8 +433,30 @@ async fn fetch_json(
         .json()
         .await
         .map_err(|_| "malformed metadata")?;
-    if check_issuer && value["issuer"].as_str().is_none() {
-        return Err("metadata without issuer");
+    // OpenID Connect Discovery section 4.3: the document is the issuer's only
+    // when it names that issuer exactly. Its endpoints receive the client
+    // secret and the codes: a document for another issuer is not followed.
+    if let Some(expected) = expected_issuer
+        && value["issuer"].as_str() != Some(expected)
+    {
+        return Err("metadata of another issuer");
+    }
+    // The endpoints receive the client secret, the codes and verifiers: never
+    // over a weaker transport than the issuer's own (https in production,
+    // where the issuer must be https).
+    if let Some(expected) = expected_issuer {
+        let scheme = reqwest::Url::parse(expected)
+            .map(|url| url.scheme().to_owned())
+            .map_err(|_| "unreadable issuer")?;
+        for field in ["authorization_endpoint", "token_endpoint", "jwks_uri"] {
+            if let Some(endpoint) = value[field].as_str()
+                && reqwest::Url::parse(endpoint)
+                    .map(|url| url.scheme() != scheme)
+                    .unwrap_or(true)
+            {
+                return Err("metadata endpoint over another transport");
+            }
+        }
     }
     DISCOVERED.write().await.insert(
         cache_key.to_owned(),
@@ -408,46 +465,29 @@ async fn fetch_json(
     Ok(value)
 }
 
-/// Resolve an identified person: the account signing in, or the link made.
+/// Resolve an identified person: the account signing in and its identity, or
+/// the account starting a link and the identity it already holds (`None`: the
+/// link is still to make). Nothing is written for a link here: the callback is
+/// a URL anyone can be tricked into opening, and only `complete_link`, holding
+/// the binding of the browser that started the flow, may link.
 async fn settle(
     state: &AppState,
     provider: &IdentityProviderConfig,
     pending: &Pending,
     subject: &str,
-) -> Result<Result<(Uuid, Uuid), &'static str>, AppError> {
+) -> Result<Result<(Uuid, Option<Uuid>), &'static str>, AppError> {
     let existing = identity_repo::find_by_subject(&state.db, &provider.name, subject).await?;
     match (pending.intent, existing, pending.user_id) {
         (Intent::SignIn, Some(identity), _) => {
             identity_repo::touch(&state.db, identity.id).await?;
-            Ok(Ok((identity.user_id, identity.id)))
+            Ok(Ok((identity.user_id, Some(identity.id))))
         }
         (Intent::SignIn, None, _) => Ok(Err("not_linked")),
         (Intent::Link, Some(identity), Some(user_id)) if identity.user_id == user_id => {
-            Ok(Ok((user_id, identity.id)))
+            Ok(Ok((user_id, Some(identity.id))))
         }
         (Intent::Link, Some(_), _) => Ok(Err("already_linked")),
-        (Intent::Link, None, Some(user_id)) => {
-            match identity_repo::link(&state.db, user_id, &provider.name, subject).await {
-                Ok(identity) => {
-                    audit::append(
-                        &state.db,
-                        &NewAuditEntry {
-                            user_id: Some(user_id),
-                            request_id: None,
-                            action: AuditAction::ExternalIdentityLinked,
-                            ip_address: None,
-                            metadata: json!({ "provider": provider.name }),
-                        },
-                    )
-                    .await?;
-                    Ok(Ok((user_id, identity.id)))
-                }
-                Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {
-                    Ok(Err("already_linked"))
-                }
-                Err(e) => Err(e.into()),
-            }
-        }
+        (Intent::Link, None, Some(user_id)) => Ok(Ok((user_id, None))),
         (Intent::Link, None, None) => Ok(Err("invalid_request")),
     }
 }
@@ -468,7 +508,11 @@ async fn take_outcome(
     let outcome: Outcome = stored
         .and_then(|s| serde_json::from_str(&s).ok())
         .ok_or(AppError::TokenInvalid)?;
-    if outcome.binding_hash != hex_digest(binding) || outcome.intent != intent {
+    if !crypto::constant_time_eq(
+        outcome.binding_hash.as_bytes(),
+        hex_digest(binding).as_bytes(),
+    ) || outcome.intent != intent
+    {
         return Err(AppError::TokenInvalid);
     }
     match outcome.error.as_deref() {
@@ -496,7 +540,7 @@ pub async fn complete_sign_in(
     let user = user_repo::find_by_id(&state.db, outcome.user_id.ok_or(AppError::TokenInvalid)?)
         .await?
         .ok_or(AppError::TokenInvalid)?;
-    auth_svc::ensure_account_usable(&user, state.clock.now())?;
+    auth_svc::ensure_account_usable(&user)?;
     auth_svc::first_factor_proven(
         state,
         &user,
@@ -511,7 +555,8 @@ pub async fn complete_sign_in(
     .await
 }
 
-/// Finish a link started by `user_id`.
+/// Finish a link started by `user_id`: the binding proves this is the browser
+/// that started it, and only now is the identity linked.
 pub async fn complete_link(
     state: &AppState,
     user_id: Uuid,
@@ -522,11 +567,47 @@ pub async fn complete_link(
     if outcome.user_id != Some(user_id) {
         return Err(AppError::TokenInvalid);
     }
-    identity_repo::find_by_user(&state.db, user_id)
-        .await?
-        .into_iter()
-        .find(|identity| Some(identity.id) == outcome.identity_id)
-        .ok_or(AppError::NotFound)
+    if let Some(identity_id) = outcome.identity_id {
+        return identity_repo::find_by_user(&state.db, user_id)
+            .await?
+            .into_iter()
+            .find(|identity| identity.id == identity_id)
+            .ok_or(AppError::NotFound);
+    }
+    let subject = outcome.subject.ok_or(AppError::TokenInvalid)?;
+    let provider = provider(state, &outcome.provider)?;
+
+    let mut tx = state.db.begin().await?;
+    let identity = match identity_repo::link(&mut *tx, user_id, &provider.name, &subject).await {
+        Ok(identity) => identity,
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505") => {
+            return Err(AppError::Conflict("external_identity_already_linked"));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    audit::append(
+        &mut *tx,
+        &NewAuditEntry {
+            user_id: Some(user_id),
+            request_id: None,
+            action: AuditAction::ExternalIdentityLinked,
+            ip_address: None,
+            metadata: json!({ "provider": provider.name }),
+        },
+    )
+    .await?;
+    tx.commit().await?;
+
+    crate::services::user::notify_access_added(
+        state,
+        user_id,
+        crate::services::email::AccessItem {
+            kind: "external_identity",
+            name: provider.display_name.clone(),
+        },
+    )
+    .await;
+    Ok(identity)
 }
 
 /// Start linking a provider to a signed-in, re-authenticated account.

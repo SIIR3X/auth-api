@@ -42,8 +42,11 @@ secret once.
    ```
 
    auth-api's frontend signs the user in if needed, shows the consent screen,
-   and the browser comes back to the redirect URI with `code` and `state`, or
-   with `error`. Check that `state` is the one you sent.
+   and the browser comes back to the redirect URI with `code`, `state` and
+   `iss`, or with `error`. Check that `state` is the one you sent and that
+   `iss` is auth-api's issuer (RFC 9207): a client registered with several
+   servers then cannot be fed another server's code. Keep the code out of logs
+   and Referer headers: a code presented twice ends the session it produced.
 3. Exchange the code, from your server for a confidential client:
 
    ```bash
@@ -64,7 +67,9 @@ secret once.
 
    Each refresh returns a new refresh token; keep only the latest. Presenting a
    replaced one revokes the whole session (two requests within two seconds are
-   treated as the same client retrying).
+   treated as the same client retrying). A `scope` parameter asks for fewer
+   permissions in that access token (never more: `invalid_scope`); a
+   refreshed ID token carries no `nonce`.
 
 Native applications register a loopback redirect such as
 `http://127.0.0.1/callback` and listen on any free port: the redirect
@@ -110,6 +115,12 @@ curl https://auth.example.com/auth/personal-access-tokens/exchange \
   -H 'content-type: application/json' -d "{\"token\": \"$AAPAT\"}"
 ```
 
+The access token is delegated, like the tokens of a client application other
+than the instance's own: it works on your resource servers and on
+`/oauth/userinfo`, but the auth-api account routes (`/users/me/*`), the
+approval routes and `/admin/*` answer `403 first_party_session_required`.
+Managing the account stays with the user, signed in.
+
 ### OpenID Connect
 
 Add `openid` (and `profile`, `email` for the matching claims) to the code flow
@@ -123,7 +134,8 @@ claims. Libraries configure themselves from
 
 Every resource server:
 
-1. Reads `Authorization: Bearer <token>`.
+1. Reads `Authorization: Bearer <token>`. Access tokens carry the JOSE header
+   `typ: at+jwt` (RFC 9068); an ID token (`typ: JWT`) is not an access token.
 2. Verifies the ES256 signature with the key of the token's `kid` from
    `https://auth.example.com/.well-known/jwks.json`. Cache the key set; fetch it
    again when a `kid` is unknown, at most once a minute. Accept `ES256` only.
@@ -132,7 +144,8 @@ Every resource server:
    `nbf` with a small leeway.
 4. Authorizes on `permissions` (`resource:action` names). `roles` are absent
    from tokens restricted to scopes (a client registered with scopes, or a
-   request naming them): authorize on permissions.
+   request naming them) and from every token of a third-party client:
+   authorize on permissions.
 
 Ready-made: the Rust crate [`crates/verifier`](../../../crates/verifier/README.md)
 (with an axum extractor) and the npm package
@@ -153,9 +166,11 @@ A token's claims:
 | `sid` | Session id; nil for client credentials |
 | `jti` | Token id, for revocation and introspection caches |
 | `iss`, `aud`, `iat`, `nbf`, `exp` | Standard |
-| `roles` | Role names; absent from scoped and client credentials tokens |
+| `roles` | Role names; only in tokens of the account itself or of the instance's own (primary) application, never in those of a third-party client, scoped or not |
 | `permissions` | Permission names, intersected with the consented scopes |
-| `client_id` | For client credentials tokens |
+| `client_id` | The client the token was issued to: client credentials, and sessions of client applications |
+| `sub_type` | `user`, or `client` for client credentials: check it before authorizing on `sub` |
+| `session_type` | `web`, `device`, or `personal_access_token` for a script |
 
 ## 4. Following account changes
 

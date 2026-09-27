@@ -28,12 +28,26 @@ const TNAME_PASSWORD_RESET: &str = "password_reset";
 const TNAME_EMAIL_OTP: &str = "email_otp";
 const TNAME_PASSWORD_CHANGED: &str = "password_changed";
 const TNAME_TWO_FACTOR_DISABLED: &str = "two_factor_disabled";
+const TNAME_ACCOUNT_LOCKED: &str = "account_locked";
+const TNAME_CHANGED_BY_ADMINISTRATOR: &str = "changed_by_administrator";
+const TNAME_SECOND_FACTOR_ATTEMPTS: &str = "second_factor_attempts";
 const TNAME_TWO_FACTOR_ENABLED: &str = "two_factor_enabled";
 const TNAME_ACCOUNT_EXISTS: &str = "account_exists";
 const TNAME_EMAIL_CHANGED: &str = "email_changed";
 const TNAME_RECOVERY_CODE_USED: &str = "recovery_code_used";
 const TNAME_NEW_DEVICE_LOGIN: &str = "new_device_login";
 const TNAME_MAGIC_LINK: &str = "magic_link";
+const TNAME_ACCESS_ADDED: &str = "access_added";
+const TNAME_EMAIL_CHANGE_NEW_OTP: &str = "email_change_new_otp";
+
+/// A way into an account other than its password, as the notifications list
+/// it: `kind` is `passkey`, `totp`, `email`, `personal_access_token` or
+/// `external_identity`; `name` is its label (passkey or token name, provider).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccessItem {
+    pub kind: &'static str,
+    pub name: String,
+}
 
 /// Notifications waiting or being sent, past which new ones are dropped: a slow
 /// or unreachable relay must not pile up tasks in step with traffic.
@@ -156,6 +170,38 @@ pub async fn send_password_reset_email(
     send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
+/// The code confirming a new address, sent to that address: its holder may
+/// have no account and did not ask, so the message says so and names no one.
+pub async fn send_email_change_new_otp(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    locale: &str,
+    code: &str,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("code", code);
+    ctx.insert("expires_in_minutes", &15i32);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_EMAIL_CHANGE_NEW_OTP,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_EMAIL_CHANGE_NEW_OTP,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, "", &subject, body).await
+}
+
 pub async fn send_email_change_otp(
     mailer: &Mailer,
     templates: &Tera,
@@ -220,6 +266,9 @@ pub async fn send_email_otp(
     send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
+/// The password changed or was reset. `access` lists what still opens the
+/// account without it, so an owner taking the account back sees what someone
+/// else may have added while holding the password.
 pub async fn send_password_changed(
     mailer: &Mailer,
     templates: &Tera,
@@ -227,10 +276,14 @@ pub async fn send_password_changed(
     to_email: &str,
     username: &str,
     locale: &str,
+    access: &[AccessItem],
+    removed: &[AccessItem],
 ) -> Result<(), AppError> {
     let mut ctx = Context::new();
     ctx.insert("username", username);
     ctx.insert("app_name", &mail_cfg.smtp.from_name);
+    ctx.insert("access", access);
+    ctx.insert("removed", removed);
 
     let body = render_with_fallback(
         templates,
@@ -242,6 +295,41 @@ pub async fn send_password_changed(
     let subject = render_subject(
         templates,
         TNAME_PASSWORD_CHANGED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
+/// A way into the account was added: a passkey, a personal access token or an
+/// external identity. Whoever holds the password can add one, and it outlives a
+/// password reset: the owner must hear of it.
+pub async fn send_access_added(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    access: &AccessItem,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+    ctx.insert("kind", access.kind);
+    ctx.insert("name", &access.name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_ACCESS_ADDED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_ACCESS_ADDED,
         locale,
         &mail_cfg.default_locale,
         &ctx,
@@ -487,6 +575,103 @@ pub async fn send_recovery_code_used(
     send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
 }
 
+pub async fn send_account_locked(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    minutes: i64,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("minutes", &minutes);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_ACCOUNT_LOCKED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_ACCOUNT_LOCKED,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
+/// `change` is one of `suspended`, `reactivated`, `role_granted`,
+/// `role_revoked`, `role_extended`, `unlocked`, `access_removed` or
+/// `sessions_revoked`; `role` names the role for the three role changes.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_changed_by_administrator(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+    change: &str,
+    role: Option<&str>,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("change", change);
+    ctx.insert("role", &role.unwrap_or_default());
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_CHANGED_BY_ADMINISTRATOR,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_CHANGED_BY_ADMINISTRATOR,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
+pub async fn send_second_factor_attempts(
+    mailer: &Mailer,
+    templates: &Tera,
+    mail_cfg: &MailConfig,
+    to_email: &str,
+    username: &str,
+    locale: &str,
+) -> Result<(), AppError> {
+    let mut ctx = Context::new();
+    ctx.insert("username", username);
+    ctx.insert("app_name", &mail_cfg.smtp.from_name);
+
+    let body = render_with_fallback(
+        templates,
+        TNAME_SECOND_FACTOR_ATTEMPTS,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    let subject = render_subject(
+        templates,
+        TNAME_SECOND_FACTOR_ATTEMPTS,
+        locale,
+        &mail_cfg.default_locale,
+        &ctx,
+    )?;
+    send(mailer, &mail_cfg.smtp, to_email, username, &subject, body).await
+}
+
 // Tries locale template first, falls back to default_locale.
 fn render_with_fallback(
     templates: &Tera,
@@ -559,7 +744,7 @@ async fn send(
 mod tests {
     use super::*;
 
-    const ALL_TEMPLATES: [&str; 10] = [
+    const ALL_TEMPLATES: [&str; 14] = [
         TNAME_VERIFICATION,
         TNAME_EMAIL_CHANGE_OTP,
         TNAME_PASSWORD_RESET,
@@ -570,6 +755,10 @@ mod tests {
         TNAME_ACCOUNT_EXISTS,
         TNAME_EMAIL_CHANGED,
         TNAME_RECOVERY_CODE_USED,
+        TNAME_NEW_DEVICE_LOGIN,
+        TNAME_MAGIC_LINK,
+        TNAME_ACCESS_ADDED,
+        TNAME_EMAIL_CHANGE_NEW_OTP,
     ];
 
     #[test]

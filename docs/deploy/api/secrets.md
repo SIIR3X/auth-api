@@ -2,7 +2,17 @@
 
 [Index](../README.md) | Next: [Database Deployment](../database/deployment.md)
 
-All secrets are stored in `pass` on the API VPS and exported as environment variables before deployment.
+All secrets are stored in `pass` on the API VPS. Before a deployment
+`scripts/write-secrets.sh` reads each of them from pass, never through an
+exported variable, and writes it to
+`/etc/auth-api/secrets`: a directory only root enters, one file per secret
+readable only by the image's user (UID 65532). `docker-compose.api.yml` mounts
+them as compose secrets and passes each variable `X` as `X_FILE`, so the values
+appear neither in `docker inspect` nor in the environment of the process. The
+files stay across reboots, so Docker can restart the instances on its own.
+
+Any other orchestrator that mounts secrets as files (Docker Swarm, Kubernetes,
+systemd credentials) can pass them as `X_FILE` the same way.
 
 ## Setup
 
@@ -148,3 +158,15 @@ List all inserted secrets:
 pass prod/auth-api
 ```
 
+---
+
+### Metrics Token
+
+Bearer token of the internal listener (`/metrics` and the detailed `/ready`),
+shared with Prometheus (`/etc/prometheus/secrets/auth-api-metrics-token` on
+the monitoring host, see the [monitoring guide](../guides/monitoring.md)).
+
+```bash
+pass insert prod/auth-api/metrics-token
+# Generate with: openssl rand -hex 32
+```

@@ -2,8 +2,56 @@
 
 use super::*;
 
+/// Register an account. Every answer takes at least
+/// `FORGOT_PASSWORD_MIN_DURATION`: a taken address, a pending one and a new one
+/// do different work, and the difference must not show in the response time.
 #[allow(clippy::too_many_arguments)]
 pub async fn register(
+    state: &AppState,
+    username: &str,
+    email: &str,
+    password_plaintext: &str,
+    locale: &str,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+    request_id: Option<Uuid>,
+) -> Result<Option<User>, AppError> {
+    // Before any work, and the same whatever the address: usernames are
+    // reserved from registration, so their pace from one address is bounded.
+    let per_hour = i64::from(state.config.security.registrations_per_ip_per_hour);
+    if let Some(ip_val) = ip
+        && per_hour > 0
+        && budget_exhausted(
+            state,
+            &format!("rg_req:{}", ip_bucket(ip_val.ip())),
+            per_hour,
+            3600,
+        )
+        .await
+    {
+        return Err(AppError::RateLimitExceeded);
+    }
+
+    let started = std::time::Instant::now();
+    let result = register_account(
+        state,
+        username,
+        email,
+        password_plaintext,
+        locale,
+        ip,
+        user_agent,
+        request_id,
+    )
+    .await;
+    if let Some(rest) = FORGOT_PASSWORD_MIN_DURATION.checked_sub(started.elapsed()) {
+        tokio::time::sleep(rest).await;
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn register_account(
     state: &AppState,
     username: &str,
     email: &str,
@@ -17,10 +65,10 @@ pub async fn register(
     // and must know to change. A taken email is not: answering differently
     // would let anyone test which addresses have an account. Its owner is told
     // by email instead, and the caller gets the same response as a new signup.
-    if user_repo::find_by_username(&state.db, username)
-        .await?
-        .is_some()
-    {
+    // A registration on a taken address reserves its username like a new
+    // account would, so asking for the same username again answers the same
+    // either way.
+    if user_repo::username_unavailable(&state.db, username).await? {
         return Err(AppError::Conflict("username_taken"));
     }
 
@@ -34,11 +82,43 @@ pub async fn register(
         .map_err(|e| AppError::Internal(e.into()))?;
 
     if let Some(existing) = user_repo::find_by_email(&state.db, email).await? {
-        // A pending account gets its verification again, so an owner who lost
-        // the first e-mail can finish; an active one is told of the attempt.
+        user_repo::reserve_username(
+            &state.db,
+            username,
+            existing.id,
+            state.clock.in_secs(EMAIL_TOKEN_EXPIRY_SECS),
+        )
+        .await?;
+        // A pending account belongs to nobody yet: this registration gets its
+        // own link, carrying the credentials it chose. The link activates the
+        // account only with the password of that registration, so neither
+        // registration can activate it with the other's password, whichever
+        // came first. An active account is told of the attempt.
         if existing.status == UserStatus::PendingVerification {
-            issue_verification(state, &existing, ip, user_agent, request_id).await?;
-        } else {
+            let credentials = crate::domain::token::PendingCredentials {
+                password_hash: hash,
+                username: username.to_owned(),
+                preferred_locale: locale.to_owned(),
+            };
+            issue_verification(
+                state,
+                &existing,
+                Some(credentials),
+                ip,
+                user_agent,
+                request_id,
+            )
+            .await?;
+        } else if !budget_exhausted(
+            state,
+            &format!("ae_account:{}", existing.id),
+            MAX_ACCOUNT_EXISTS_NOTICES,
+            ACCOUNT_EXISTS_NOTICE_WINDOW_SECS,
+        )
+        .await
+        {
+            // At most a few notices an hour: registering the address again
+            // and again must not flood its owner.
             notify_existing_account(state, &existing);
         }
         return Ok(None);
@@ -73,7 +153,7 @@ pub async fn register(
                 e,
                 &[
                     ("users_email_key", "email_taken"),
-                    ("users_username_key", "username_taken"),
+                    ("users_username_lower_key", "username_taken"),
                 ],
             ) {
                 AppError::Conflict("email_taken") => Ok(None),
@@ -95,6 +175,7 @@ pub async fn register(
             request_ip: ip,
             request_user_agent: user_agent,
             target_email: email,
+            credentials: None,
         },
     )
     .await
@@ -174,7 +255,7 @@ pub async fn resend_verification(
     let started = std::time::Instant::now();
     let result = match user_repo::find_by_email(&state.db, email).await? {
         Some(user) if user.status == UserStatus::PendingVerification => {
-            issue_verification(state, &user, ip, user_agent, request_id).await
+            issue_verification(state, &user, None, ip, user_agent, request_id).await
         }
         _ => Ok(()),
     };
@@ -185,20 +266,42 @@ pub async fn resend_verification(
     result
 }
 
-/// Replace the pending verification link of `user` and e-mail it, within the
-/// per-account budget.
-async fn issue_verification(
+/// E-mail `user`, a pending account, a new verification link within the
+/// per-account budget. The link carries `credentials` when a registration sent
+/// it; a resend carries none, so it asks for the password the account was
+/// created with and never repeats another registration's. Earlier links stay
+/// valid until one of them verifies the account: a later registration or
+/// resend must not revoke the link its owner is about to click.
+pub(super) async fn issue_verification(
     state: &AppState,
     user: &User,
+    credentials: Option<crate::domain::token::PendingCredentials>,
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
+    // Budgeted per client address first, then for the account as a whole with
+    // more room: registrations by someone else on a pending address spend
+    // their own share, not the owner's. Links live a day, far longer than the
+    // window, so the owner always holds a valid one.
+    if let Some(ip) = ip {
+        let key = format!("vr_account:{}:{}", user.id, ip_bucket(ip.ip()));
+        if budget_exhausted(
+            state,
+            &key,
+            MAX_VERIFICATION_RESENDS_BY_ACCOUNT,
+            VERIFICATION_RESEND_ACCOUNT_WINDOW_SECS,
+        )
+        .await
+        {
+            return Ok(());
+        }
+    }
     let account_key = format!("vr_account:{}", user.id);
     if budget_exhausted(
         state,
         &account_key,
-        MAX_VERIFICATION_RESENDS_BY_ACCOUNT,
+        MAX_VERIFICATION_RESENDS_BY_ACCOUNT * 3,
         VERIFICATION_RESEND_ACCOUNT_WINDOW_SECS,
     )
     .await
@@ -209,9 +312,7 @@ async fn issue_verification(
     let raw_token = crypto::generate_token();
     let hash_bytes = crypto::sha256(raw_token.as_bytes());
 
-    // The previous link stops working when the new one is issued.
     let mut tx = state.db.begin().await?;
-    token::revoke_active_verification_by_user(&mut *tx, user.id).await?;
     token::create_verification(
         &mut *tx,
         &NewEmailVerificationToken {
@@ -221,6 +322,7 @@ async fn issue_verification(
             request_ip: ip,
             request_user_agent: user_agent,
             target_email: &user.email,
+            credentials: credentials.as_ref(),
         },
     )
     .await
@@ -239,12 +341,18 @@ async fn issue_verification(
     .map_err(|e| AppError::Internal(e.into()))?;
     tx.commit().await?;
 
+    // The e-mail names the account the link activates.
+    let (username, locale) = match &credentials {
+        Some(credentials) => (
+            credentials.username.clone(),
+            credentials.preferred_locale.clone(),
+        ),
+        None => (user.username.clone(), user.preferred_locale.clone()),
+    };
     let mailer = state.mailer.clone();
     let templates = state.templates.clone();
     let mail_cfg = state.config.mail.clone();
     let email_to = user.email.clone();
-    let username = user.username.clone();
-    let locale = user.preferred_locale.clone();
     let frontend_url = state.config.server.frontend_url.clone();
     email::dispatch_best_effort("verification_email", async move {
         email::send_verification_email(
@@ -262,9 +370,14 @@ async fn issue_verification(
     Ok(())
 }
 
+/// Verify an address with a link and the password of the registration that
+/// sent it (the account's own password for a link without credentials). A
+/// wrong password leaves the link unused: it may be another registration's
+/// link, and its owner can still use it.
 pub async fn verify_email(
     state: &AppState,
     raw_token: &str,
+    password_plaintext: &str,
     ip: Option<IpNetwork>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
@@ -274,6 +387,23 @@ pub async fn verify_email(
     let record =
         check_one_time_token(state, token::find_verification_by_hash(&state.db, &hash)).await?;
 
+    let expected_hash = match &record.password_hash {
+        Some(carried) => carried.clone(),
+        None => {
+            user_repo::find_by_id(&state.db, record.user_id)
+                .await?
+                .ok_or(AppError::TokenInvalid)?
+                .password_hash
+        }
+    };
+    let matches = password::verify_async(password_plaintext, &expected_hash, &state.config.crypto)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    if !matches {
+        tracing::info!("verification link used with another registration's password");
+        return Err(AppError::InvalidCredentials);
+    }
+
     // Consuming the token, verifying the address and announcing it commit together.
     let mut tx = state.db.begin().await?;
 
@@ -281,6 +411,26 @@ pub async fn verify_email(
     if !consumed {
         return Err(AppError::TokenInvalid);
     }
+
+    // A link sent by a registration on a pending account activates it with
+    // that registration's credentials; the other links of the account die.
+    if let (Some(password_hash), Some(username), Some(preferred_locale)) = (
+        record.password_hash.clone(),
+        record.username.clone(),
+        record.preferred_locale.clone(),
+    ) {
+        user_repo::adopt_pending_credentials(
+            &mut *tx,
+            record.user_id,
+            &crate::domain::token::PendingCredentials {
+                password_hash,
+                username,
+                preferred_locale,
+            },
+        )
+        .await?;
+    }
+    token::revoke_active_verification_by_user(&mut *tx, record.user_id).await?;
 
     user_repo::mark_email_verified(&mut *tx, record.user_id).await?;
 

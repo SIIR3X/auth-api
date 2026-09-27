@@ -41,6 +41,7 @@ pub fn qr_uri(base32_secret: &str, email: &str, issuer: &str) -> String {
 /// `now` (Unix timestamp, from the application clock) are accepted.
 pub fn verify_code(
     encrypted_secret: &str,
+    owner: uuid::Uuid,
     code: &str,
     keyring: &Keyring,
     skew: u8,
@@ -55,7 +56,7 @@ pub fn verify_code(
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Ok(false);
     }
-    let plaintext = keyring.decrypt(encrypted_secret)?;
+    let plaintext = keyring.decrypt(encrypted_secret, owner.as_bytes())?;
 
     Ok(totp(&plaintext, skew)?.check(code, now).is_some())
 }
@@ -108,7 +109,6 @@ fn percent_encode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::crypto;
 
     fn keyring() -> Keyring {
         Keyring::new(*KEY, None)
@@ -156,7 +156,9 @@ mod tests {
     }
 
     fn encrypted_rfc_secret() -> String {
-        crypto::encrypt(RFC_SECRET, KEY).unwrap()
+        Keyring::new(*KEY, None)
+            .encrypt(RFC_SECRET, uuid::Uuid::nil().as_bytes())
+            .unwrap()
     }
 
     #[test]
@@ -170,7 +172,17 @@ mod tests {
     #[test]
     fn verify_correct_code_returns_true() {
         let code = code_at(NOW);
-        assert!(verify_code(&encrypted_rfc_secret(), &code, &keyring(), 1, NOW).unwrap());
+        assert!(
+            verify_code(
+                &encrypted_rfc_secret(),
+                uuid::Uuid::nil(),
+                &code,
+                &keyring(),
+                1,
+                NOW
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -180,16 +192,27 @@ mod tests {
         assert_ne!(previous, code_at(NOW));
         assert_ne!(two_back, previous);
 
-        assert!(verify_code(&encrypted, &previous, &keyring(), 1, NOW).unwrap());
-        assert!(verify_code(&encrypted, &next, &keyring(), 1, NOW).unwrap());
-        assert!(!verify_code(&encrypted, &previous, &keyring(), 0, NOW).unwrap());
-        assert!(!verify_code(&encrypted, &two_back, &keyring(), 1, NOW).unwrap());
+        assert!(verify_code(&encrypted, uuid::Uuid::nil(), &previous, &keyring(), 1, NOW).unwrap());
+        assert!(verify_code(&encrypted, uuid::Uuid::nil(), &next, &keyring(), 1, NOW).unwrap());
+        assert!(
+            !verify_code(&encrypted, uuid::Uuid::nil(), &previous, &keyring(), 0, NOW).unwrap()
+        );
+        assert!(
+            !verify_code(&encrypted, uuid::Uuid::nil(), &two_back, &keyring(), 1, NOW).unwrap()
+        );
     }
 
     #[test]
     fn a_time_before_the_epoch_is_an_error() {
         assert!(matches!(
-            verify_code(&encrypted_rfc_secret(), "123456", &keyring(), 1, -1),
+            verify_code(
+                &encrypted_rfc_secret(),
+                uuid::Uuid::nil(),
+                "123456",
+                &keyring(),
+                1,
+                -1
+            ),
             Err(TotpError::TimeError)
         ));
     }
@@ -202,24 +225,51 @@ mod tests {
         } else {
             "000000"
         };
-        assert!(!verify_code(&encrypted, wrong, &keyring(), 0, NOW).unwrap());
+        assert!(!verify_code(&encrypted, uuid::Uuid::nil(), wrong, &keyring(), 0, NOW).unwrap());
     }
 
     #[test]
     fn verify_with_wrong_key_fails() {
         let wrong_key = Keyring::new([99u8; 32], None);
-        assert!(verify_code(&encrypted_rfc_secret(), &code_at(NOW), &wrong_key, 1, NOW).is_err());
+        assert!(
+            verify_code(
+                &encrypted_rfc_secret(),
+                uuid::Uuid::nil(),
+                &code_at(NOW),
+                &wrong_key,
+                1,
+                NOW
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn times_within_the_skew_of_the_epoch_are_refused_without_panicking() {
         for now in [0, 29, 59] {
             assert!(matches!(
-                verify_code(&encrypted_rfc_secret(), "287082", &keyring(), 2, now),
+                verify_code(
+                    &encrypted_rfc_secret(),
+                    uuid::Uuid::nil(),
+                    "287082",
+                    &keyring(),
+                    2,
+                    now
+                ),
                 Err(TotpError::TimeError)
             ));
         }
-        assert!(verify_code(&encrypted_rfc_secret(), &code_at(60), &keyring(), 2, 60).unwrap());
+        assert!(
+            verify_code(
+                &encrypted_rfc_secret(),
+                uuid::Uuid::nil(),
+                &code_at(60),
+                &keyring(),
+                2,
+                60
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -235,7 +285,17 @@ mod tests {
             code[..5].to_owned(),
             fullwidth,
         ] {
-            assert!(!verify_code(&encrypted_rfc_secret(), &candidate, &keyring(), 1, NOW).unwrap());
+            assert!(
+                !verify_code(
+                    &encrypted_rfc_secret(),
+                    uuid::Uuid::nil(),
+                    &candidate,
+                    &keyring(),
+                    1,
+                    NOW
+                )
+                .unwrap()
+            );
         }
     }
 
@@ -247,12 +307,29 @@ mod tests {
         for code in ["12345", "abcdef", "1234567", ""] {
             assert!(
                 matches!(
-                    verify_code(&encrypted_rfc_secret(), code, &wrong_key, 1, NOW),
+                    verify_code(
+                        &encrypted_rfc_secret(),
+                        uuid::Uuid::nil(),
+                        code,
+                        &wrong_key,
+                        1,
+                        NOW
+                    ),
                     Ok(false)
                 ),
                 "{code:?}"
             );
         }
-        assert!(verify_code(&encrypted_rfc_secret(), "123456", &wrong_key, 1, NOW).is_err());
+        assert!(
+            verify_code(
+                &encrypted_rfc_secret(),
+                uuid::Uuid::nil(),
+                "123456",
+                &wrong_key,
+                1,
+                NOW
+            )
+            .is_err()
+        );
     }
 }

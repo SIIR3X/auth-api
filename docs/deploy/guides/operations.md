@@ -31,7 +31,6 @@ openssl ec -in jwt-private-new.pem -pubout -out jwt-public-new.pem
    ```bash
    pass insert -m prod/auth-api/jwt-next-private-key < jwt-private-new.pem
    pass insert -m prod/auth-api/jwt-next-public-key  < jwt-public-new.pem
-   export JWT_NEXT_PUBLIC_KEY=$(pass show prod/auth-api/jwt-next-public-key)
    ```
 
    Redeploy ([Deploying a New Release](update.md#4-start-the-new-version)).
@@ -45,7 +44,6 @@ openssl ec -in jwt-private-new.pem -pubout -out jwt-public-new.pem
    pass show prod/auth-api/jwt-next-private-key | pass insert -m -f prod/auth-api/jwt-private-key
    pass show prod/auth-api/jwt-next-public-key  | pass insert -m -f prod/auth-api/jwt-public-key
    pass rm prod/auth-api/jwt-next-private-key prod/auth-api/jwt-next-public-key
-   unset JWT_NEXT_PUBLIC_KEY
    ```
 
    Redeploy. New tokens carry the new `kid`; tokens signed with the old key
@@ -63,9 +61,10 @@ Refresh tokens are opaque (not JWT) and are unaffected by this rotation.
 
 ## 2. TOTP Encryption Key Rotation (AES-256-GCM)
 
-TOTP secrets are encrypted at rest. Each ciphertext names its key
-(`v1:{key id}:...`) and the service reads with `ENCRYPTION_KEY` and, when set,
-`PREVIOUS_ENCRYPTION_KEY`. A rotation needs no downtime and can be interrupted
+TOTP secrets and webhook signing secrets are encrypted at rest. Each
+ciphertext names its key and is bound to its row (`v2:{key id}:...`); the
+service reads with `ENCRYPTION_KEY` and, when set, `PREVIOUS_ENCRYPTION_KEY`,
+and refuses to start while a secret is under neither. A rotation needs no downtime and can be interrupted
 and resumed.
 
 **On the API VPS:**
@@ -97,7 +96,9 @@ and resumed.
    `pass rm prod/auth-api/previous-encryption-key`, then the update guide's
    exports again (the previous key is now unset).
 
-Keep the old key in `pass` history until the run reported no failures.
+Keep the old key in `pass` history until the run reported no failures. An
+instance refuses to start while a secret names a key it does not hold: if the
+previous key was removed too early, put it back and finish step 3.
 
 ## 3. Backup and Restore
 
@@ -114,9 +115,8 @@ on the DB VPS die with it - configure this for production.
 **Restore** (DB VPS, or any machine with `psql` access):
 
 ```bash
-scripts/restore-db.sh -i /path/to/backup.key \
-  -f auth_api_YYYYMMDD_HHMMSS.sql.gz.age \
-  -d postgres://auth_api:...@10.0.0.2:5432/auth_api
+RESTORE_DATABASE_URL="$(pass prod/auth-api/database-owner-url)" \
+  scripts/restore-db.sh -i /path/to/backup.key -f auth_api_YYYYMMDD_HHMMSS.sql.gz.age
 ```
 
 The script refuses to restore into a non-empty database unless `--force` is
@@ -151,8 +151,9 @@ deliberate.
 | Pre-auth (2FA challenge) tokens | Stored in Redis: in-flight 2FA logins fail; users retry after recovery |
 | CAPTCHA / lockout counters | Various counters degrade fail-open; account lockout (DB-based) still works |
 
-**Response:** restart/restore Redis, then verify `curl -f 127.0.0.1:3001/ready`
-and `curl -f 127.0.0.1:3002/ready` on the API VPS and watch `auth_logins_total` on the metrics endpoint resume. No application
+**Response:** restart/restore Redis, then verify
+`curl -f -H "Authorization: Bearer $(pass prod/auth-api/metrics-token)" 10.0.0.1:9465/ready`
+(and `9466`) on the API VPS (each dependency listed) and watch `auth_logins_total` on the metrics endpoint resume. No application
 restart is needed - pools reconnect automatically.
 
 **Redis full.** Redis runs with `maxmemory-policy noeviction`: evicting a
@@ -203,12 +204,13 @@ UPDATE users SET status = 'suspended' WHERE email = 'user@example.com';
 
 Prometheus metrics are exposed on an internal listener
 (`10.0.0.1:9465/metrics` and `10.0.0.1:9466/metrics` on the API VPS - WireGuard
-only, never behind nginx). Key series:
+only, never behind nginx), with `Authorization: Bearer <METRICS_TOKEN>`. Key series:
 
 - `auth_logins_total{outcome=...}` - success / invalid_credentials / locked / two_factor_required
 - `auth_lockouts_total`, `auth_session_replays_total`, `auth_2fa_failures_total{method=...}`
+- `auth_lockout_failures_total{step=count|lock|audit}` - a lockout that could not be applied, logged as `lockout could not be applied` (`AuthApiLockoutFailing`)
 - `argon2_queue_available_permits` - **0 while login latency climbs = login storm**; capacity is `ARGON2_MAX_CONCURRENCY` (defaults to CPU cores)
-- `axum_http_requests_duration_seconds` - per-route latency histograms
+- `axum_http_requests_duration_seconds` - per-route latency histograms; requests no route matched share the endpoint `<unmatched>`
 - `auth_db_pool_connections{state=max|open|idle|in_use}`, `auth_redis_pool_connections{state=max|open|available}`, `auth_redis_pool_waiting` - pool saturation, refreshed every 10 s; `in_use` at `max` with requests timing out = pool too small or a slow query
 - `auth_redis_errors_total{operation=budget|rate_limit|token_state}` - Redis failures, each refused with a 503 (fail closed)
 - `auth_outbox_pending`, `auth_outbox_oldest_pending_age_seconds` - domain events recorded but not yet stored by JetStream; `auth_events_published_total`, `auth_events_publish_failures_total{reason=error|timeout|stream}` - relay publications and failed attempts (each retried)
@@ -336,7 +338,10 @@ accounts.
 | Per CPU | 13.7 | 12.5 | 12.0 | 11.2 |
 | Peak memory with 64 sign-ins at once | 78 / 384 MiB | 141 / 512 MiB | 209 / 512 MiB | 274 / 512 MiB |
 
-No error and no out-of-memory kill, including with 64 sign-ins at once. With the
+No error and no out-of-memory kill, including with 64 sign-ins at once. The
+limits have since been raised (M: 640 MiB, L and XL: 768 MiB) so that every
+concurrent hash can check a stored hash at twice the configured cost, the
+highest the service accepts, beside 256 MiB for the rest of the process. With the
 mixed traffic of profile M at 1 million accounts (291 requests per second):
 
 - **Redis** used 9 MiB for 50 000 keys, almost all of them rate-limit buckets,
@@ -430,7 +435,7 @@ them, so it never restarts the instances because of them.
 | Path | Without NATS |
 |------|--------------|
 | Every event, `user.deleted` included | Recorded with its change in `event_outbox`; the relay publishes it once the broker is back, in order. The request succeeds; the backlog shows in `auth_outbox_pending` (`AuthApiEventsStalled` past 5 minutes) |
-| `/ready` | 503 with `"nats": "down"` (`NatsDown` alerts) |
+| `/ready` | 503; the internal listener's `/ready` (`10.0.0.1:9465/ready`) shows `"nats": "down"` (`NatsDown` alerts) |
 | Instance start | Starts and connects in the background; only a wrong token stops the start |
 
 **Response:** restart the broker (`docker compose -f docker-compose.api.yml

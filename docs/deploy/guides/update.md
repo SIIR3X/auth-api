@@ -40,7 +40,7 @@ R=releases/auth-api-X.Y.Z
 diff config.prod.env $R/config.prod.env
 diff profile.env $R/deploy/profiles/m.env           # the profile this server uses
 for f in docker-compose.api.yml nats.conf; do diff "$f" "$R/$f"; done
-cp $R/docker-compose.api.yml $R/nats.conf $R/scripts/rolling-update.sh .
+cp $R/docker-compose.api.yml $R/nats.conf $R/scripts/rolling-update.sh $R/scripts/write-secrets.sh .
 # Profile L only:
 cp $R/docker-compose.api.l.yml .
 ```
@@ -52,7 +52,7 @@ the update; the instances reconnect, and events published meanwhile are dropped
 ## 3. Run the migrations
 
 ```bash
-DATABASE_URL=$(pass prod/auth-api/database-url) \
+DATABASE_URL=$(pass prod/auth-api/database-owner-url) \
   sqlx migrate run --source /srv/auth-api/releases/auth-api-X.Y.Z/migrations
 ```
 
@@ -61,23 +61,20 @@ DATABASE_URL=$(pass prod/auth-api/database-url) \
 ```bash
 cd /srv/auth-api
 export AUTH_API_VERSION=X.Y.Z
-export DATABASE_URL=$(pass prod/auth-api/database-url)
-export REDIS_URL=$(pass prod/auth-api/redis-url)
-export JWT_PRIVATE_KEY=$(pass prod/auth-api/jwt-private-key)
-export JWT_PUBLIC_KEY=$(pass prod/auth-api/jwt-public-key)
-export ENCRYPTION_KEY=$(pass prod/auth-api/encryption-key)
-# Only while a key rotation is in progress (see the operations runbook); unset
-# otherwise. An empty value is treated as unset.
-export JWT_PREVIOUS_PUBLIC_KEY=$(pass prod/auth-api/jwt-previous-public-key 2>/dev/null)
-export JWT_NEXT_PUBLIC_KEY=$(pass prod/auth-api/jwt-next-public-key 2>/dev/null)
-export PREVIOUS_ENCRYPTION_KEY=$(pass prod/auth-api/previous-encryption-key 2>/dev/null)
-export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
-export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
-export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
-export NATS_URL=$(pass prod/auth-api/nats-url)
-
-./rolling-update.sh
+./write-secrets.sh
+sudo -E ./rolling-update.sh
 ```
+
+`write-secrets.sh` reads each secret from pass (`prod/auth-api/<name>`,
+`PASS_PREFIX` to change it) straight into its file, never through an exported
+variable; the rotation secrets (`jwt-previous-public-key`,
+`jwt-next-public-key`, `previous-encryption-key`) are written empty when pass
+holds none. It writes the values to `/etc/auth-api/secrets` (a directory
+only root enters, files only the container's user reads), which compose mounts
+as secrets: the instances read each variable `X` from the file named by
+`X_FILE`, so the values appear neither in `docker inspect` nor in the process
+environment. The files survive a reboot, so Docker restarts the instances; run
+the script again whenever a secret changes.
 
 `rolling-update.sh` recreates the instances one at a time and moves on only
 once the new one is healthy and answers `/ready`. The instance being replaced

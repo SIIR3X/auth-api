@@ -173,6 +173,8 @@ tests:
         values: "0 1 1"
       - series: 'auth_webhook_deliveries_total{instance="10.0.0.1:9465",outcome="failed"}'
         values: "0 0 1 1"
+      - series: 'auth_lockout_failures_total{job="auth-api",instance="10.0.0.1:9466",step="lock"}'
+        values: "0 1 1"
     alert_rule_test:
       - eval_time: 15m
         alertname: AuthApiNotificationsFailing
@@ -191,6 +193,13 @@ tests:
         exp_alerts:
           - exp_labels: { severity: warning, job: auth-api, instance: "10.0.0.1:9465" }
             exp_annotations: { summary: "a retention job failed on 10.0.0.1:9465" }
+      - eval_time: 2m
+        alertname: AuthApiLockoutFailing
+        exp_alerts:
+          - exp_labels: { severity: critical, job: auth-api, instance: "10.0.0.1:9466" }
+            exp_annotations:
+              summary: "10.0.0.1:9466 could not lock an account under password guessing"
+              description: "Brute force is then held by the rate limits only: check the database, then the error logs (\"lockout could not be applied\")."
       - eval_time: 3m
         alertname: AuthApiWebhooksFailing
         exp_alerts:

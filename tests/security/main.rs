@@ -9,6 +9,7 @@ mod common {
 mod authentication;
 mod authorization;
 mod catalog;
+mod delegation;
 mod edge;
 mod headers;
 mod jwt_rotation;

@@ -80,6 +80,12 @@ pub async fn create(
     let expires_at = state.clock.now() + Duration::days(lifetime_days);
 
     let mut tx = state.db.begin().await?;
+    // Serialized per account: concurrent creations cannot all count the same
+    // tokens and pass the limit together.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("personal_access_tokens:{user_id}"))
+        .execute(&mut *tx)
+        .await?;
     if pat_repo::count_active_by_user(&mut *tx, user_id).await? >= pat::MAX_ACTIVE_PER_ACCOUNT {
         return Err(AppError::Conflict("too_many_tokens"));
     }
@@ -100,6 +106,7 @@ pub async fn create(
             client_id: None,
             family_created_at: None,
             scopes: Some(&scopes),
+            mfa: false,
         },
     )
     .await?;
@@ -127,6 +134,16 @@ pub async fn create(
     )
     .await?;
     tx.commit().await?;
+
+    crate::services::user::notify_access_added(
+        state,
+        user_id,
+        crate::services::email::AccessItem {
+            kind: "personal_access_token",
+            name: token.name.clone(),
+        },
+    )
+    .await;
 
     Ok(CreatedToken { token, secret })
 }
@@ -179,13 +196,15 @@ pub async fn exchange(state: &AppState, presented: &str) -> Result<ExchangedToke
     let user = user_repo::find_by_id(&state.db, found.token.user_id)
         .await?
         .ok_or(AppError::TokenInvalid)?;
-    auth_svc::ensure_account_usable(&user, state.clock.now())?;
+    auth_svc::ensure_account_usable(&user)?;
 
     pat_repo::touch(&state.db, &found.token).await?;
     let access_token = auth_svc::build_access_token(
         user.id,
         found.token.session_id,
         Some(&found.token.scopes),
+        None,
+        &crate::domain::session::SessionType::PersonalAccessToken,
         state,
     )
     .await?;

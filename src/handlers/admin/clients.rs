@@ -32,6 +32,8 @@ pub struct ClientResponse {
     pub confidential: bool,
     /// May obtain tokens for itself with the client credentials grant.
     pub allows_client_credentials: bool,
+    /// A resource server: may introspect the access tokens of others.
+    pub allows_introspection: bool,
     pub created_at: i64,
 }
 
@@ -44,10 +46,17 @@ pub struct ClientSecretResponse {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct SaveClientRequest {
     pub display_name: String,
+    /// Refused when true: the primary client is designated from the command
+    /// line only (`auth-api --register-client --primary`).
     #[serde(default)]
     pub is_primary: bool,
+    /// Permissions its tokens may carry. Empty needs `unrestricted`.
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// Required to register or keep a client without scopes: its tokens then
+    /// carry every permission of the user who approves it (never the roles).
+    #[serde(default)]
+    pub unrestricted: bool,
     #[serde(default)]
     pub redirect_uris: Vec<String>,
     #[serde(default)]
@@ -57,12 +66,16 @@ pub struct SaveClientRequest {
     /// Allow the client credentials grant; needs a secret and scopes. Omitted:
     /// unchanged (false for a new client).
     pub allows_client_credentials: Option<bool>,
+    /// Make the client a resource server, allowed to introspect the access
+    /// tokens of others. Omitted: unchanged (false for a new client).
+    pub allows_introspection: Option<bool>,
 }
 
 fn client_response(client: RegisteredClient) -> ClientResponse {
     ClientResponse {
         confidential: client.is_confidential(),
         allows_client_credentials: client.allows_client_credentials,
+        allows_introspection: client.allows_introspection,
         created_at: client.created_at.unix_timestamp(),
         client_id: client.client_id,
         display_name: client.display_name,
@@ -81,7 +94,7 @@ fn client_response(client: RegisteredClient) -> ClientResponse {
     responses(
         (status = 200, description = "Every registered client", body = [ClientResponse]),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `clients:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `clients:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -105,7 +118,7 @@ pub async fn list(
         (status = 201, description = "Client registered", body = ClientResponse),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Missing `clients:manage`, no second factor, or re-authentication required", body = crate::error::ErrorBody),
-        (status = 409, description = "`primary_client_exists`", body = crate::error::ErrorBody),
+        (status = 409, description = "`primary_client_managed_by_command_line`: the primary client changes only through `auth-api --register-client`", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid settings or unknown scope", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -118,6 +131,15 @@ pub async fn save(
     Json(body): Json<SaveClientRequest>,
 ) -> Result<(StatusCode, Json<ClientResponse>), AppError> {
     admin.require(&state, "clients:manage").await?;
+    // A client without scopes acts with every permission of its users: never
+    // by omission.
+    if body.scopes.is_empty() && !body.unrestricted {
+        return Err(AppError::Validation(
+            "a client without scopes acts with every permission of its users: list its scopes, \
+             or set unrestricted to true"
+                .into(),
+        ));
+    }
     let (client, created) = admin_clients::save(
         &state,
         &actor(&admin, ip),
@@ -131,6 +153,7 @@ pub async fn save(
             default_max_sessions: body.default_max_sessions.unwrap_or(5),
         },
         body.allows_client_credentials,
+        body.allows_introspection,
     )
     .await?;
     let status = if created {
@@ -148,8 +171,9 @@ pub async fn save(
     params(("client_id" = String, Path, description = "Client id")),
     responses(
         (status = 204, description = "Client removed and its sessions revoked"),
+        (status = 409, description = "`primary_client_managed_by_command_line`", body = crate::error::ErrorBody),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `clients:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `clients:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such client", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -172,6 +196,7 @@ pub async fn delete(
     params(("client_id" = String, Path, description = "Client id")),
     responses(
         (status = 200, description = "A new secret; the client is confidential from now on", body = ClientSecretResponse),
+        (status = 409, description = "`primary_client_managed_by_command_line`", body = crate::error::ErrorBody),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Missing `clients:manage`, no second factor, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such client", body = crate::error::ErrorBody),
@@ -185,16 +210,6 @@ pub async fn rotate_secret(
     Path(client_id): Path<String>,
 ) -> Result<Json<ClientSecretResponse>, AppError> {
     admin.require(&state, "clients:manage").await?;
-    crate::services::reauth::require_recent_reauth_or_password(
-        &state,
-        admin.auth.user_id,
-        admin.auth.session_id,
-        None,
-        ip,
-        admin.auth.request_id,
-        "admin_client_secret",
-    )
-    .await?;
     let client_secret =
         admin_clients::rotate_secret(&state, &actor(&admin, ip), &client_id).await?;
     Ok(Json(ClientSecretResponse { client_secret }))
@@ -207,8 +222,9 @@ pub async fn rotate_secret(
     params(("client_id" = String, Path, description = "Client id")),
     responses(
         (status = 204, description = "Secret removed; the client is public"),
+        (status = 409, description = "`primary_client_managed_by_command_line`", body = crate::error::ErrorBody),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `clients:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `clients:manage`, or no second factor proven by the session, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such client", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),

@@ -15,7 +15,7 @@ use crate::{
     state::AppState,
 };
 
-use super::extractors::{AuthUser, ClientIp};
+use super::extractors::{ClientIp, FirstPartyUser};
 
 // Request types
 
@@ -39,11 +39,6 @@ pub struct DisableTotpRequest {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct RegenerateRecoveryCodesRequest {
     pub current_password: Option<String>,
-}
-
-#[derive(Deserialize, utoipa::ToSchema)]
-pub struct UseRecoveryCodeRequest {
-    pub code: String,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -95,7 +90,7 @@ pub struct EmailOtpSetupResponse {
 pub async fn setup_totp(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     body: Option<Json<SetupTwoFactorRequest>>,
 ) -> Result<Json<TotpSetupResponse>, AppError> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
@@ -132,7 +127,7 @@ pub async fn setup_totp(
 )]
 pub async fn verify_totp_setup(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(method_id): Path<Uuid>,
     Json(body): Json<VerifyTotpSetupRequest>,
 ) -> Result<Json<RecoveryCodesResponse>, AppError> {
@@ -154,13 +149,14 @@ pub async fn verify_totp_setup(
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such method", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_needs_second_factor`: the account holds administrative permissions and this is its last second factor", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
 pub async fn disable_totp(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(method_id): Path<Uuid>,
     body: Option<Json<DisableTotpRequest>>,
 ) -> Result<StatusCode, AppError> {
@@ -193,7 +189,7 @@ pub async fn disable_totp(
 pub async fn regenerate_recovery_codes(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<RegenerateRecoveryCodesRequest>,
 ) -> Result<Json<RecoveryCodesResponse>, AppError> {
     let codes = tf_svc::generate_recovery_codes(
@@ -208,26 +204,6 @@ pub async fn regenerate_recovery_codes(
     Ok(Json(RecoveryCodesResponse {
         recovery_codes: codes,
     }))
-}
-
-#[utoipa::path(
-    post,
-    path = "/users/me/two-factor/recovery-codes/use",
-    tag = "two-factor",
-    request_body = UseRecoveryCodeRequest,
-    responses(
-        (status = 204, description = "Code consumed"),
-        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-    ),
-    security(("bearer" = [])),
-)]
-pub async fn use_recovery_code(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Json(body): Json<UseRecoveryCodeRequest>,
-) -> Result<StatusCode, AppError> {
-    tf_svc::use_recovery_code(&state, auth.user_id, &body.code, auth.request_id).await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 // Email OTP 2FA
@@ -248,7 +224,7 @@ pub async fn use_recovery_code(
 pub async fn setup_email_otp(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     body: Option<Json<SetupTwoFactorRequest>>,
 ) -> Result<Json<EmailOtpSetupResponse>, AppError> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
@@ -262,7 +238,7 @@ pub async fn setup_email_otp(
     )
     .await?;
     // Send the first code immediately so the user can verify right away.
-    email_2fa_svc::send_code(&state, auth.user_id).await?;
+    email_2fa_svc::send_code(&state, auth.user_id, None).await?;
     Ok(Json(EmailOtpSetupResponse { method_id }))
 }
 
@@ -273,15 +249,29 @@ pub async fn setup_email_otp(
     responses(
         (status = 204, description = "Code sent"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 404, description = "No e-mail method waiting for confirmation", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
     security(("bearer" = [])),
 )]
 pub async fn send_email_otp_code(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<StatusCode, AppError> {
-    email_2fa_svc::send_code(&state, auth.user_id).await?;
+    // Only while a method is being set up: otherwise a stolen session could
+    // fill the owner's mailbox with codes nobody asked for.
+    let pending = crate::repositories::two_factor::find_all_by_type(
+        &state.db,
+        auth.user_id,
+        crate::domain::two_factor::TwoFactorType::Email,
+    )
+    .await?
+    .into_iter()
+    .any(|method| !method.is_verified);
+    if !pending {
+        return Err(AppError::NotFound);
+    }
+    email_2fa_svc::send_code(&state, auth.user_id, None).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -300,7 +290,7 @@ pub async fn send_email_otp_code(
 )]
 pub async fn verify_email_otp_setup(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(method_id): Path<Uuid>,
     Json(body): Json<VerifyEmailOtpSetupRequest>,
 ) -> Result<Json<RecoveryCodesResponse>, AppError> {
@@ -323,13 +313,14 @@ pub async fn verify_email_otp_setup(
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such method", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_needs_second_factor`: the account holds administrative permissions and this is its last second factor", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
 pub async fn disable_email_otp(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(method_id): Path<Uuid>,
     body: Option<Json<DisableEmailOtpRequest>>,
 ) -> Result<StatusCode, AppError> {
@@ -386,7 +377,7 @@ pub struct TwoFactorOverviewResponse {
 )]
 pub async fn list(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<Json<TwoFactorOverviewResponse>, AppError> {
     let (methods, recovery_codes_remaining) = tf_svc::list_methods(&state, auth.user_id).await?;
 

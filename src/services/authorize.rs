@@ -14,9 +14,10 @@ use ipnetwork::IpNetwork;
 use uuid::Uuid;
 
 use crate::{
-    domain::{registered_client::RegisteredClient, session::SessionType},
+    domain::{audit::AuditAction, registered_client::RegisteredClient, session::SessionType},
     error::AppError,
     repositories::{
+        audit::{self, NewAuditEntry},
         authorization_code::{self as code_repo, NewAuthorizationCode},
         client_quota as quota_repo, registered_client as client_repo, role as role_repo,
         session as session_repo, user as user_repo,
@@ -56,6 +57,8 @@ pub struct Approval<'a> {
     pub requested: Option<&'a [String]>,
     /// OpenID Connect nonce, echoed in the ID token.
     pub nonce: Option<&'a str>,
+    /// When the approving user last proved their password.
+    pub auth_time: ::time::OffsetDateTime,
     pub current_password: Option<&'a str>,
     pub ip: Option<IpNetwork>,
     pub request_id: Option<Uuid>,
@@ -102,12 +105,8 @@ pub async fn describe(
 }
 
 /// Whether approving for `client` needs a recent re-authentication first.
-pub async fn requires_reauthentication(
-    state: &AppState,
-    session_id: Uuid,
-    client: &RegisteredClient,
-) -> bool {
-    !client.is_primary && !reauth_svc::has_recent_reauth(state, session_id).await
+pub async fn requires_reauthentication(state: &AppState, session_id: Uuid) -> bool {
+    !reauth_svc::has_recent_reauth(state, session_id).await
 }
 
 /// Mint a single-use code for an approval the user has just given. Returns the
@@ -115,23 +114,22 @@ pub async fn requires_reauthentication(
 pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String, AppError> {
     let client = approval.client;
 
-    // A third-party client obtains a long-lived session on the user's behalf:
-    // consenting to one requires a fresh proof of the password, exactly like
-    // other sensitive actions. The primary client is the instance's own app.
-    if !client.is_primary {
-        reauth_svc::require_recent_reauth_or_password(
-            state,
-            approval.user_id,
-            approval.session_id,
-            approval.current_password,
-            approval.ip,
-            approval.request_id,
-            "authorize_client",
-        )
-        .await?;
-    }
+    // Every client obtains a long-lived session on the user's behalf: consenting
+    // requires a fresh proof of the password, the instance's own application
+    // included, exactly like other sensitive actions.
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        approval.user_id,
+        approval.session_id,
+        approval.current_password,
+        approval.ip,
+        approval.request_id,
+        "authorize_client",
+    )
+    .await?;
 
     ensure_account_usable(state, approval.user_id).await?;
+    ensure_second_factor_for_primary(state, approval.user_id, approval.session_id, client).await?;
 
     // Scopes are frozen at consent: a later widening of the client's
     // registration must not widen what this approval grants.
@@ -141,8 +139,15 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
     );
 
     let code = crypto::generate_token();
+    // The code and the trace of the consent commit together: the owner's
+    // history names every client given access, and with which scopes.
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
     code_repo::create(
-        &state.db,
+        &mut *tx,
         &NewAuthorizationCode {
             code_hash: &crypto::sha256(code.as_bytes()),
             user_id: approval.user_id,
@@ -151,11 +156,30 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
             code_challenge: approval.code_challenge,
             scopes: scopes.as_deref(),
             nonce: approval.nonce,
+            auth_time: approval.auth_time,
             expires_at: state.clock.in_secs(CODE_TTL_SECS),
         },
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+    audit::append(
+        &mut *tx,
+        &NewAuditEntry {
+            user_id: Some(approval.user_id),
+            request_id: approval.request_id,
+            action: AuditAction::ClientAuthorized,
+            ip_address: approval.ip,
+            metadata: serde_json::json!({
+                "client_id": client.client_id,
+                "scopes": scopes,
+            }),
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(code)
 }
@@ -163,7 +187,7 @@ pub async fn approve(state: &AppState, approval: &Approval<'_>) -> Result<String
 /// What an approval grants: the requested scopes the user holds, and the
 /// OpenID Connect scopes; or `None` (unrestricted) when the request named none
 /// and the client has none.
-fn consent(requested: Option<&[String]>, held: &[String]) -> Option<Vec<String>> {
+pub(crate) fn consent(requested: Option<&[String]>, held: &[String]) -> Option<Vec<String>> {
     requested.map(|requested| {
         requested
             .iter()
@@ -178,6 +202,11 @@ fn consent(requested: Option<&[String]>, held: &[String]) -> Option<Vec<String>>
 /// The code is consumed before anything else is checked, so a failed attempt
 /// (wrong verifier, wrong redirect) ends the code instead of leaving it open to
 /// further guesses. Every refusal answers identically.
+///
+/// Consumption, the session limit and the link from the code to its session
+/// share one transaction, which holds the code's row until the session is
+/// linked: a replay of the code waits for it, then finds the session to
+/// revoke instead of a code with none yet.
 /// Returns the tokens and the OpenID Connect nonce of the request, if any.
 pub async fn redeem(
     state: &AppState,
@@ -185,11 +214,17 @@ pub async fn redeem(
 ) -> Result<(auth_svc::AuthTokens, Option<String>), AppError> {
     let hash = crypto::sha256(request.code.as_bytes());
 
-    let Some(entry) = code_repo::consume(&state.db, &hash)
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let Some(entry) = code_repo::consume(&mut *tx, &hash)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
     else {
-        revoke_on_replay(state, &hash).await;
+        drop(tx);
+        revoke_on_replay(state, &hash, request.client_id, request.verifier).await;
         return Err(AppError::InvalidAuthorizationCode);
     };
 
@@ -197,17 +232,33 @@ pub async fn redeem(
         || entry.redirect_uri != request.redirect_uri
         || !verifier_matches(&entry.code_challenge, request.verifier)
     {
+        // The failed attempt still burns the code.
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
         return Err(AppError::InvalidAuthorizationCode);
     }
 
-    let client = load_client(state, &entry.client_id).await?;
-    ensure_account_usable(state, entry.user_id).await?;
-
-    let lock = lock_client_sessions(state, entry.user_id, &entry.client_id).await?;
-
-    let (used, allowed) = session_allowance(state, entry.user_id, &client).await?;
-    if allowed.is_some_and(|allowed| used >= allowed) {
-        return Err(AppError::DeviceSessionLimitReached);
+    let checks = async {
+        let client = load_client(state, &entry.client_id).await?;
+        // A redirect URI removed from the client since the approval no longer
+        // redeems its code.
+        validate_redirect(&client, &entry.redirect_uri)
+            .map_err(|_| AppError::InvalidAuthorizationCode)?;
+        ensure_account_usable(state, entry.user_id).await?;
+        lock_client_sessions_in(&mut tx, entry.user_id, &entry.client_id).await?;
+        let (used, allowed) = session_allowance(state, entry.user_id, &client).await?;
+        if allowed.is_some_and(|allowed| used >= allowed) {
+            return Err(AppError::DeviceSessionLimitReached);
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = checks {
+        tx.commit()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+        return Err(error);
     }
 
     let tokens = auth_svc::issue_tokens(
@@ -220,35 +271,105 @@ pub async fn redeem(
         SessionType::Device,
         Some(&entry.client_id),
         entry.scopes.as_deref(),
-        None,
+        // Handing a session to a client is a sign-in on the user's behalf:
+        // recorded, and announced like one from a new device.
+        Some(auth_svc::SignIn {
+            identifier: None,
+            request_id: None,
+            audit_metadata: serde_json::json!({
+                "method": "authorization_code",
+                "client_id": entry.client_id,
+            }),
+            second_factor: false,
+        }),
     )
     .await?;
 
-    lock.commit()
+    code_repo::attach_session(&mut *tx, entry.id, tokens.session.id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-
-    if let Err(e) = code_repo::attach_session(&state.db, entry.id, tokens.session.id).await {
-        tracing::warn!(error = %e, "could not link the authorization code to its session");
-    }
+    session_repo::set_auth_time(&mut *tx, tokens.session.id, entry.auth_time)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut tokens = tokens;
+    tokens.session.auth_time = Some(entry.auth_time);
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok((tokens, entry.nonce))
 }
 
 /// RFC 6749 section 4.1.2: a code presented again after redemption means it
 /// leaked; the tokens issued from it are revoked.
-async fn revoke_on_replay(state: &AppState, code_hash: &[u8]) {
+///
+/// Only when the code's own client presents it: a code seen in a Referer or a
+/// history, replayed under another public client's id, must not end the
+/// session of the client that redeemed it. Such a replay is logged.
+async fn revoke_on_replay(state: &AppState, code_hash: &[u8], presented_by: &str, verifier: &str) {
     let Ok(Some(seen)) = code_repo::find(&state.db, code_hash).await else {
         return;
     };
     if seen.consumed_at.is_none() {
         return;
     }
+    if seen.client_id != presented_by {
+        tracing::warn!(
+            client_id = %seen.client_id,
+            presented_by,
+            "authorization code replayed by another client; session left alone"
+        );
+        return;
+    }
+    // A public client's id is anyone's to claim: a code leaked after its
+    // redemption (a Referer, a history) must not let a stranger sign its owner
+    // out. From a public client, only a replay proving the verifier - the
+    // client's own secret for this code - revokes.
+    let authenticated = client_repo::find_by_id(&state.db, presented_by)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|client| client.is_confidential());
+    if !authenticated && !verifier_matches(&seen.code_challenge, verifier) {
+        tracing::warn!(
+            client_id = %seen.client_id,
+            "authorization code replayed without its verifier; session left alone"
+        );
+        return;
+    }
     tracing::warn!(client_id = %seen.client_id, "authorization code replayed after redemption");
     if let Some(session_id) = seen.session_id
-        && let Err(e) = session_repo::revoke_family(&state.db, session_id).await
+        && let Err(e) = auth_svc::revoke_family(state, session_id).await
     {
         tracing::error!(error = %e, "could not revoke the session of a replayed code");
+    }
+}
+
+/// The instance's own application receives first-party sessions: the most
+/// rewarding approval to phish or to take over a session with. For an account
+/// with a second factor, it is approved only from a session that proved one,
+/// whatever the flow (authorization code or device).
+pub(crate) async fn ensure_second_factor_for_primary(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
+    client: &RegisteredClient,
+) -> Result<(), AppError> {
+    if !client.is_primary
+        || !user_repo::has_second_factor(&state.db, user_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+    {
+        return Ok(());
+    }
+    let proven = session_repo::find_by_id(&state.db, session_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+        .is_some_and(|session| session.mfa);
+    if proven {
+        Ok(())
+    } else {
+        Err(AppError::SecondFactorSessionRequired)
     }
 }
 
@@ -257,7 +378,7 @@ async fn ensure_account_usable(state: &AppState, user_id: Uuid) -> Result<(), Ap
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::Unauthorized)?;
-    auth_svc::ensure_account_usable(&user, state.clock.now())
+    auth_svc::ensure_account_usable(&user)
 }
 
 /// RFC 7636 section 4.2: S256 only, a 43-character base64url SHA-256 digest.
@@ -295,7 +416,7 @@ pub(crate) fn verifier_matches(challenge: &str, verifier: &str) -> bool {
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    crypto::constant_time_eq(a, b)
 }
 
 /// Accept a redirect URI registered for the client, exactly; or, for a client
@@ -361,12 +482,22 @@ pub(crate) async fn lock_client_sessions(
         .begin()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+    lock_client_sessions_in(&mut lock, user_id, client_id).await?;
+    Ok(lock)
+}
+
+/// [`lock_client_sessions`] inside a transaction the caller already holds.
+async fn lock_client_sessions_in(
+    tx: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    client_id: &str,
+) -> Result<(), AppError> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(format!("client_sessions:{user_id}:{client_id}"))
-        .execute(&mut *lock)
+        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(lock)
+    Ok(())
 }
 
 /// Sessions the user holds for the client, and how many the client allows.
@@ -394,7 +525,10 @@ pub(crate) async fn load_client(
         .ok_or(AppError::DeviceClientUnknown)
 }
 
-async fn permission_names(state: &AppState, user_id: Uuid) -> Result<Vec<String>, AppError> {
+pub(crate) async fn permission_names(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<Vec<String>, AppError> {
     Ok(role_repo::find_permissions_by_user(&state.db, user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
@@ -419,6 +553,7 @@ mod tests {
             default_max_sessions: 5,
             client_secret_hash: None,
             allows_client_credentials: false,
+            allows_introspection: false,
         }
     }
 

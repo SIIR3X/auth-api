@@ -23,14 +23,13 @@ async fn rotation_state(app: &TestApp, active: &str, previous: &str) -> AppState
 
 // Error paths
 
+/// Without a previous key, a run upgrades older ciphertexts in place and
+/// leaves `v2` ones alone.
 #[tokio::test]
-async fn rotate_fails_when_no_previous_key_configured() {
+async fn without_a_previous_key_a_run_only_upgrades_older_formats() {
     let app = TestApp::spawn().await;
-    let result = rotate_totp_encryption_key(&app.state).await;
-    assert!(
-        result.is_err(),
-        "must fail when previous_encryption_key is absent"
-    );
+    let result = rotate_totp_encryption_key(&app.state).await.unwrap();
+    assert_eq!((result.rotated, result.failed), (0, 0));
 }
 
 #[tokio::test]
@@ -101,7 +100,7 @@ async fn rotate_re_encrypts_totp_secret_with_new_key() {
 
     // Confirm it decrypts under KEY_A.
     let plaintext = crypto::Keyring::new(key_a, None)
-        .decrypt(&before)
+        .decrypt(&before, user.id.as_bytes())
         .expect("must decrypt under KEY_A");
 
     // Rotate KEY_A --> KEY_B on the same isolated DB via a shared-pool state.
@@ -126,11 +125,13 @@ async fn rotate_re_encrypts_totp_secret_with_new_key() {
     assert_ne!(before, after, "secret must change after rotation");
 
     let rotated_plaintext = crypto::Keyring::new(key_b, None)
-        .decrypt(&after)
+        .decrypt(&after, user.id.as_bytes())
         .expect("must decrypt under KEY_B");
     assert_eq!(plaintext, rotated_plaintext, "plaintext must be preserved");
     assert!(
-        crypto::Keyring::new(key_a, None).decrypt(&after).is_err(),
+        crypto::Keyring::new(key_a, None)
+            .decrypt(&after, user.id.as_bytes())
+            .is_err(),
         "re-encrypted secret must not be readable with old key"
     );
 }
@@ -197,13 +198,14 @@ async fn rotate_is_idempotent_when_run_twice() {
     );
 }
 
+/// A secret in a format without its row bound in (unversioned or `v1`) is
+/// never read: it could be moved to another account's row. It is found before
+/// the service starts serving, like a secret under a removed key (SEC-63).
 #[tokio::test]
-async fn rotate_upgrades_secrets_written_before_ciphertexts_were_versioned() {
+async fn secrets_in_an_unbound_format_stop_the_start() {
     use auth_api::utils::crypto;
 
     let key_a = crypto::decode_encryption_key(KEY_A).unwrap();
-    let key_b = crypto::decode_encryption_key(KEY_B).unwrap();
-
     let app = TestApp::spawn_with_config(|c| {
         c.crypto.encryption_key = KEY_A.into();
     })
@@ -218,45 +220,57 @@ async fn rotate_upgrades_secrets_written_before_ciphertexts_were_versioned() {
         .await;
     assert_eq!(setup_res.status().as_u16(), 200);
 
-    // Put the secret back in the pre-versioning format: bare base64, no key id.
-    let stored: String = sqlx::query_scalar(
-        "SELECT totp_secret FROM two_factor_methods WHERE user_id = $1 AND method_type = 'totp'",
-    )
-    .bind(user.id)
-    .fetch_one(&app.db)
-    .await
-    .unwrap();
-    let plaintext = crypto::Keyring::new(key_a, None).decrypt(&stored).unwrap();
-    let legacy = crypto::encrypt(&plaintext, &key_a).unwrap();
+    let legacy =
+        crypto::legacy_unbound_ciphertext("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", &key_a).unwrap();
     sqlx::query("UPDATE two_factor_methods SET totp_secret = $1 WHERE user_id = $2")
         .bind(&legacy)
         .bind(user.id)
         .execute(&app.db)
         .await
         .unwrap();
-
-    let rot_state = rotation_state(&app, KEY_B, KEY_A).await;
-    let result = rotate_totp_encryption_key(&rot_state).await.unwrap();
-    assert_eq!((result.rotated, result.failed), (1, 0));
-
-    let after: String = sqlx::query_scalar(
-        "SELECT totp_secret FROM two_factor_methods WHERE user_id = $1 AND method_type = 'totp'",
-    )
-    .bind(user.id)
-    .fetch_one(&app.db)
-    .await
-    .unwrap();
-    assert!(after.starts_with("v1:"), "rotated secrets are versioned");
     assert_eq!(
-        crypto::Keyring::new(key_b, None).decrypt(&after).unwrap(),
-        plaintext
+        auth_api::services::key_rotation::secrets_under_unknown_keys(&app.state)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+/// A secret written under a key the configuration no longer holds is found
+/// before the service starts serving (the service then refuses to start).
+#[tokio::test]
+async fn secrets_under_a_removed_key_are_detected() {
+    let app = TestApp::builder()
+        .config(|c| c.crypto.encryption_key = KEY_A.into())
+        .spawn()
+        .await;
+    let user = fixtures::authenticated_user(&app, 900).await;
+    let setup = app
+        .post_auth(
+            "/users/me/two-factor/totp/setup",
+            &user.access_token,
+            &serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(setup.status().as_u16(), 200);
+    assert_eq!(
+        auth_api::services::key_rotation::secrets_under_unknown_keys(&app.state)
+            .await
+            .unwrap(),
+        0
     );
 
-    let audited: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_log WHERE action = 'encryption_key_rotated'",
-    )
-    .fetch_one(&app.db)
-    .await
-    .unwrap();
-    assert_eq!(audited, 1, "a rotation is audited under its own action");
+    // The key changes and the previous one is dropped too early.
+    let mut config = (*app.state.config).clone();
+    config.crypto.encryption_key = KEY_B.into();
+    config.crypto.previous_encryption_key = None;
+    let state = AppState::from_config_with_pool(config, app.db.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        auth_api::services::key_rotation::secrets_under_unknown_keys(&state)
+            .await
+            .unwrap(),
+        1
+    );
 }

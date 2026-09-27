@@ -14,6 +14,3 @@ CREATE TABLE external_identities (
     CONSTRAINT external_identities_one_per_provider UNIQUE (user_id, provider),
     CONSTRAINT external_identities_subject_length CHECK (char_length(subject) BETWEEN 1 AND 255)
 );
-
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'external_identity_linked';
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'external_identity_unlinked';

@@ -75,6 +75,50 @@ pub fn verify(password: &str, hash: &str) -> Result<bool, PasswordError> {
     }
 }
 
+/// Whether `hash` was computed with weaker parameters than `cfg` asks for, or
+/// another algorithm: the password is then hashed again once proven, so raising
+/// `ARGON2_*` protects existing accounts as they sign in, not only new ones.
+/// A hash that does not parse is left alone (verification refuses it anyway).
+pub fn needs_rehash(hash: &str, cfg: &CryptoConfig) -> bool {
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        return false;
+    };
+    if parsed.algorithm.as_str() != "argon2id" {
+        return true;
+    }
+    match Params::try_from(&parsed) {
+        Ok(params) => {
+            params.m_cost() < cfg.argon2_memory_kib
+                || params.t_cost() < cfg.argon2_iterations
+                || params.p_cost() < cfg.argon2_parallelism
+        }
+        Err(_) => false,
+    }
+}
+
+/// How many times the configured cost a stored hash may take: room for a
+/// configuration halved since the hash was written (it is rehashed at the
+/// next sign-in), not for a hash planted to exhaust memory.
+pub const STORED_COST_FACTOR: u32 = 2;
+
+/// Whether the parameters written in `hash` would cost far more than the
+/// configured ones: a hash planted in the database with, say, 256 MiB of
+/// memory would take an instance down at each sign-in attempt, since every
+/// concurrent hash could cost that much. Bounded by `STORED_COST_FACTOR` times
+/// the configuration (at least 4 iterations and 4 lanes), so the memory the
+/// container needs is known: see `log_capacity`.
+pub fn exceeds_configured_cost(hash: &str, cfg: &CryptoConfig) -> bool {
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        return false;
+    };
+    let Ok(params) = Params::try_from(&parsed) else {
+        return false;
+    };
+    params.m_cost() > cfg.argon2_memory_kib.saturating_mul(STORED_COST_FACTOR)
+        || params.t_cost() > (cfg.argon2_iterations.saturating_mul(STORED_COST_FACTOR)).max(4)
+        || params.p_cost() > (cfg.argon2_parallelism.saturating_mul(STORED_COST_FACTOR)).max(4)
+}
+
 /// Runs Argon2id hashing on the blocking threadpool so authentication work
 /// does not stall the async runtime under load. Concurrency is bounded by
 /// the global Argon2 semaphore (see `argon2_semaphore`).
@@ -104,11 +148,23 @@ pub async fn hash_async(password: &str, cfg: &CryptoConfig) -> Result<String, Pa
 
 /// Runs Argon2id verification on the blocking threadpool. Concurrency is
 /// bounded by the global Argon2 semaphore (see `argon2_semaphore`).
+/// Longest password any route verifies, in bytes: no password the policy
+/// accepts is longer, so a longer one is simply wrong, answered without
+/// hashing a 64 KiB body.
+pub const MAX_VERIFIED_PASSWORD_BYTES: usize = 256;
+
 pub async fn verify_async(
     password: &str,
     hash_value: &str,
     cfg: &CryptoConfig,
 ) -> Result<bool, PasswordError> {
+    if password.len() > MAX_VERIFIED_PASSWORD_BYTES {
+        return Ok(false);
+    }
+    if exceeds_configured_cost(hash_value, cfg) {
+        tracing::error!("stored password hash asks for far more than the configured cost: refused");
+        return Ok(false);
+    }
     let semaphore = argon2_semaphore(cfg);
     let permit = semaphore
         .acquire()
@@ -165,11 +221,17 @@ pub fn log_capacity(cfg: &CryptoConfig) {
     }
 }
 
-/// Concurrent hashes, memory per hash and their total, in MiB.
+/// Concurrent hashes, memory per hash and their total, in MiB. The total is
+/// the worst case: every concurrent hash checking a stored hash at the highest
+/// cost `exceeds_configured_cost` accepts.
 fn argon2_budget(cfg: &CryptoConfig) -> (u64, u64, u64) {
     let concurrency = u64::from(cfg.argon2_max_concurrency.max(1));
     let per_hash_mib = u64::from(cfg.argon2_memory_kib) / 1024;
-    (concurrency, per_hash_mib, concurrency * per_hash_mib)
+    (
+        concurrency,
+        per_hash_mib,
+        concurrency * per_hash_mib * u64::from(STORED_COST_FACTOR),
+    )
 }
 
 /// Whether a memory limit leaves less than [`BASELINE_MIB`] beside the budget.
@@ -192,6 +254,68 @@ fn parse_memory_max(contents: &str) -> Option<u64> {
         .parse::<u64>()
         .ok()
         .map(|bytes| bytes / 1024 / 1024)
+}
+
+#[cfg(test)]
+mod rehash_tests {
+    use super::*;
+
+    fn config(memory: u32, iterations: u32, parallelism: u32) -> CryptoConfig {
+        CryptoConfig {
+            argon2_memory_kib: memory,
+            argon2_iterations: iterations,
+            argon2_parallelism: parallelism,
+            argon2_max_concurrency: 1,
+            totp_issuer: String::new(),
+            encryption_key: String::new(),
+            previous_encryption_key: None,
+            totp_skew: 1,
+            recovery_code_expiry_days: 0,
+        }
+    }
+
+    #[test]
+    fn a_hash_weaker_than_the_configuration_is_rehashed() {
+        let weak = hash("Password-1!", &config(8, 1, 1)).unwrap();
+        assert!(needs_rehash(&weak, &config(16, 1, 1)), "memory");
+        assert!(needs_rehash(&weak, &config(8, 2, 1)), "iterations");
+        assert!(needs_rehash(&weak, &config(8, 1, 2)), "parallelism");
+        assert!(!needs_rehash(&weak, &config(8, 1, 1)), "as configured");
+        assert!(
+            !needs_rehash(&weak, &config(4, 1, 1)),
+            "stronger than asked"
+        );
+        assert!(!needs_rehash("not a phc string", &config(8, 1, 1)));
+    }
+
+    /// A password longer than any the policy accepts is wrong, without work.
+    #[tokio::test]
+    async fn a_password_longer_than_any_accepted_is_wrong() {
+        let cfg = config(1024, 1, 1);
+        let long = "x".repeat(MAX_VERIFIED_PASSWORD_BYTES + 1);
+        let stored = hash(&long, &cfg).unwrap();
+        assert!(!verify_async(&long, &stored, &cfg).await.unwrap());
+    }
+
+    /// A hash asking for far more than the configured cost is refused before
+    /// any work (SEC-71).
+    #[tokio::test]
+    async fn a_hash_costing_far_more_than_configured_is_refused() {
+        let cfg = config(19_456, 2, 1);
+        let planted = "$argon2id$v=19$m=4194304,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaA";
+        assert!(exceeds_configured_cost(planted, &cfg));
+        assert!(!verify_async("Password-1!", planted, &cfg).await.unwrap());
+
+        let lowered = hash("Password-1!", &config(38_912, 3, 2)).unwrap();
+        assert!(
+            !exceeds_configured_cost(&lowered, &cfg),
+            "a cost halved since stays readable"
+        );
+        // 256 MiB per hash: three concurrent sign-ins would exhaust a 512 MiB
+        // container (C-04).
+        let heavy = "$argon2id$v=19$m=262144,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaA";
+        assert!(exceeds_configured_cost(heavy, &cfg));
+    }
 }
 
 #[cfg(test)]
@@ -273,13 +397,13 @@ mod tests {
     }
 
     #[test]
-    fn the_argon2_budget_is_concurrency_times_memory() {
+    fn the_argon2_budget_is_concurrency_times_the_highest_accepted_cost() {
         let mut cfg = test_config();
         cfg.argon2_memory_kib = 65_536;
         cfg.argon2_max_concurrency = 4;
-        assert_eq!(argon2_budget(&cfg), (4, 64, 256));
+        assert_eq!(argon2_budget(&cfg), (4, 64, 512));
         cfg.argon2_max_concurrency = 0;
-        assert_eq!(argon2_budget(&cfg), (1, 64, 64));
+        assert_eq!(argon2_budget(&cfg), (1, 64, 128));
     }
 
     #[test]

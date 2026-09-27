@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
+    domain::audit::AuditAction,
     domain::{
         device::{PollOutcome, poll_outcome},
         registered_client::RegisteredClient,
@@ -27,7 +28,10 @@ use crate::{
     },
     error::AppError,
     middleware::rate_limit::ip_bucket,
-    repositories::{registered_client as client_repo, user as user_repo},
+    repositories::{
+        audit::{self, NewAuditEntry},
+        registered_client as client_repo, user as user_repo,
+    },
     services::{auth as auth_svc, authorize as authorize_svc},
     state::AppState,
     utils::{
@@ -81,6 +85,10 @@ struct DeviceAuthState {
     /// Scopes the client asked for (`None`: unrestricted).
     #[serde(default)]
     scopes: Option<Vec<String>>,
+    /// When the approving session proved the password (unix seconds): the
+    /// `auth_time` of the session the device receives.
+    #[serde(default)]
+    auth_time: Option<i64>,
 }
 
 /// RFC 8628 section 3.2.
@@ -106,6 +114,30 @@ pub struct DevicePreview {
     pub requested_from_ip: Option<String>,
     pub user_agent: Option<String>,
     pub created_at: i64,
+    /// Approving needs `current_password` (or a recent `POST /users/me/reauth`).
+    /// Every device approval does: typing a code someone handed over is how a
+    /// device flow is phished.
+    pub reauthentication_required: bool,
+    /// Permissions the approval would grant: the scopes asked for, intersected
+    /// with the user's. Empty with `unrestricted` when none were asked of a
+    /// client without scopes, in which case the device acts as the account.
+    pub scopes: Vec<String>,
+    pub unrestricted: bool,
+    /// Scopes asked for that this user does not hold.
+    pub unavailable_scopes: Vec<String>,
+    pub sessions_used: i64,
+    /// `None`: no session limit applies to this user and client.
+    pub sessions_allowed: Option<i64>,
+}
+
+/// A signed-in user approving a device code.
+pub struct Approval<'a> {
+    pub user_id: Uuid,
+    pub session_id: Uuid,
+    pub user_code: &'a str,
+    pub current_password: Option<&'a str>,
+    pub ip: Option<IpNetwork>,
+    pub request_id: Option<Uuid>,
 }
 
 fn device_hash_encoded(device_code: &str) -> String {
@@ -124,18 +156,13 @@ fn uc_key(user_code: &str) -> String {
 /// Generate a short, human-readable user code in the format "XXXX-XXXX".
 /// Uses uppercase letters (excluding ambiguous O, I, L) and digits (excluding 0, 1).
 fn generate_user_code() -> String {
-    use rand::RngExt;
-
     const LETTERS: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ";
     const DIGITS: &[u8] = b"23456789";
 
-    let mut rng = rand::rng();
-    let part1: String = (0..4)
-        .map(|_| LETTERS[rng.random_range(0..LETTERS.len())] as char)
-        .collect();
-    let part2: String = (0..4)
-        .map(|_| DIGITS[rng.random_range(0..DIGITS.len())] as char)
-        .collect();
+    let pick =
+        |alphabet: &[u8]| alphabet[crypto::random_below(alphabet.len() as u32) as usize] as char;
+    let part1: String = (0..4).map(|_| pick(LETTERS)).collect();
+    let part2: String = (0..4).map(|_| pick(DIGITS)).collect();
 
     format!("{part1}-{part2}")
 }
@@ -209,6 +236,7 @@ pub async fn initiate(
         user_agent: user_agent.map(str::to_owned),
         created_at: state.clock.now().unix_timestamp(),
         scopes,
+        auth_time: None,
     };
     let entry_json = serde_json::to_string(&entry).map_err(|e| AppError::Internal(e.into()))?;
 
@@ -300,12 +328,15 @@ pub async fn poll(
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?
                 .ok_or(AppError::DeviceAccessDenied)?;
-            auth_svc::ensure_account_usable(&user, state.clock.now())?;
+            auth_svc::ensure_account_usable(&user)?;
 
             // Held until the session exists: concurrent approvals for this user
             // and client count their sessions one at a time.
-            let lock = authorize_svc::lock_client_sessions(state, user_id, client_id).await?;
+            let mut lock = authorize_svc::lock_client_sessions(state, user_id, client_id).await?;
             let (used, allowed) = authorize_svc::session_allowance(state, user_id, &client).await?;
+            // Devices of the instance's own application are counted too: its
+            // default quota applies unless the user has one of their own.
+            let allowed = allowed.or(Some(i64::from(client.default_max_sessions)));
             if allowed.is_some_and(|allowed| used >= allowed) {
                 return Err(AppError::DeviceSessionLimitReached);
             }
@@ -333,9 +364,28 @@ pub async fn poll(
                 SessionType::Device,
                 Some(client_id),
                 scopes,
-                None,
+                // Recorded and announced like a sign-in from a new device.
+                Some(auth_svc::SignIn {
+                    identifier: None,
+                    request_id: None,
+                    audit_metadata: serde_json::json!({
+                        "method": "device_authorization",
+                        "client_id": client_id,
+                    }),
+                    second_factor: false,
+                }),
             )
             .await?;
+            let mut tokens = tokens;
+            if let Some(proven) = entry
+                .auth_time
+                .and_then(|t| time::OffsetDateTime::from_unix_timestamp(t).ok())
+            {
+                crate::repositories::session::set_auth_time(&mut *lock, tokens.session.id, proven)
+                    .await
+                    .map_err(|e| AppError::Internal(e.into()))?;
+                tokens.session.auth_time = Some(proven);
+            }
             lock.commit()
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?;
@@ -346,28 +396,49 @@ pub async fn poll(
 }
 
 /// Refuse an address that has been asking after codes that do not exist.
-async fn guard_code_scan(state: &AppState, ip: Option<IpNetwork>) -> Result<(), AppError> {
-    let Some(ip) = ip else { return Ok(()) };
-    let key = format!("{DEVICE_SCAN_PREFIX}{}", ip_bucket(ip.ip()));
-    if redis_counter::peek(&state.redis, &key).await? >= MAX_UNKNOWN_CODES_BY_IP {
-        return Err(AppError::RateLimitExceeded);
+async fn guard_code_scan(
+    state: &AppState,
+    ip: Option<IpNetwork>,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    for key in scan_keys(ip, user_id) {
+        if redis_counter::peek(&state.redis, &key).await? >= MAX_UNKNOWN_CODES_BY_IP {
+            return Err(AppError::RateLimitExceeded);
+        }
     }
     Ok(())
 }
 
+/// Misses are counted per client address and per signed-in user: an address
+/// alone would not bound a user behind a proxy that forwards none.
+fn scan_keys(ip: Option<IpNetwork>, user_id: Uuid) -> Vec<String> {
+    let mut keys = vec![format!("{DEVICE_SCAN_PREFIX}user:{user_id}")];
+    if let Some(ip) = ip {
+        keys.push(format!("{DEVICE_SCAN_PREFIX}{}", ip_bucket(ip.ip())));
+    }
+    keys
+}
+
 /// Count a lookup of a code that is not live. Only misses are counted: a
 /// legitimate approval resolves on the first try.
-async fn note_unknown_code(state: &AppState, ip: Option<IpNetwork>) {
-    let Some(ip) = ip else { return };
-    let key = format!("{DEVICE_SCAN_PREFIX}{}", ip_bucket(ip.ip()));
-    let budget = Budget {
-        key: &key,
-        limit: MAX_UNKNOWN_CODES_BY_IP,
-        window_secs: SCAN_WINDOW_SECS,
-    };
-    if let Err(e) = redis_counter::consume(&state.redis, &[budget]).await {
-        tracing::warn!(error = %e, "could not record an unknown device code lookup");
-    }
+async fn note_unknown_code(
+    state: &AppState,
+    ip: Option<IpNetwork>,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    let keys = scan_keys(ip, user_id);
+    let budgets: Vec<Budget> = keys
+        .iter()
+        .map(|key| Budget {
+            key,
+            limit: MAX_UNKNOWN_CODES_BY_IP,
+            window_secs: SCAN_WINDOW_SECS,
+        })
+        .collect();
+    // A miss that cannot be counted is refused: the budget is what keeps the
+    // code space from being searched.
+    redis_counter::consume(&state.redis, &budgets).await?;
+    Ok(())
 }
 
 /// Load the live entry a user code points at: `(device key, raw json, entry)`.
@@ -396,55 +467,130 @@ async fn load_entry(
     Ok(Some((dk, raw, entry)))
 }
 
-/// Describe a pending device authorization to the user about to decide on it.
+/// Describe a pending device authorization to the user about to decide on it:
+/// who asks, from where, and how much of the account the device would get.
 pub async fn describe(
     state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
     user_code: &str,
     ip: Option<IpNetwork>,
 ) -> Result<DevicePreview, AppError> {
-    guard_code_scan(state, ip).await?;
+    guard_code_scan(state, ip, user_id).await?;
 
     let Some((_, _, entry)) = load_entry(state, user_code).await? else {
-        note_unknown_code(state, ip).await;
+        note_unknown_code(state, ip, user_id).await?;
         return Err(AppError::NotFound);
     };
     if !entry.status.is_undecided() {
         return Err(AppError::Conflict("device_request_already_decided"));
     }
 
-    let client_name = match entry.client_id.as_deref() {
+    let client = match entry.client_id.as_deref() {
         Some(cid) => client_repo::find_by_id(&state.db, cid)
             .await
-            .map_err(|e| AppError::Internal(e.into()))?
-            .map(|client| client.display_name),
+            .map_err(|e| AppError::Internal(e.into()))?,
+        None => None,
+    };
+    let reauthentication_required =
+        !crate::services::reauth::has_recent_reauth(state, session_id).await;
+    let consent = match &client {
+        Some(client) => {
+            Some(authorize_svc::describe(state, user_id, client, entry.scopes.as_deref()).await?)
+        }
         None => None,
     };
 
     Ok(DevicePreview {
         user_code: entry.user_code,
         client_id: entry.client_id,
-        client_name,
+        client_name: client.map(|client| client.display_name),
         requested_from_ip: entry.client_ip,
         user_agent: entry.user_agent,
         created_at: entry.created_at,
+        reauthentication_required,
+        scopes: consent
+            .as_ref()
+            .map(|c| c.scopes.clone())
+            .unwrap_or_default(),
+        unrestricted: consent.as_ref().is_some_and(|c| c.unrestricted),
+        unavailable_scopes: consent
+            .as_ref()
+            .map(|c| c.unavailable_scopes.clone())
+            .unwrap_or_default(),
+        sessions_used: consent.as_ref().map_or(0, |c| c.sessions_used),
+        sessions_allowed: consent.and_then(|c| c.sessions_allowed),
     })
 }
 
-/// Approve a device authorization request. Called by an authenticated user.
-pub async fn verify(
-    state: &AppState,
-    user_id: Uuid,
-    user_code: &str,
-    ip: Option<IpNetwork>,
-) -> Result<(), AppError> {
-    update_status(
+/// Approve a device authorization request. Called by a signed-in user.
+///
+/// The approval mints a long-lived session for the client, possibly acting as
+/// the account: it always needs a fresh proof of the password, the instance's
+/// own application included. A code handed over by someone else is how a
+/// device flow is phished, and the password is where the user notices.
+pub async fn verify(state: &AppState, approval: &Approval<'_>) -> Result<(), AppError> {
+    guard_code_scan(state, approval.ip, approval.user_id).await?;
+    let Some((_, _, pending)) = load_entry(state, approval.user_code).await? else {
+        note_unknown_code(state, approval.ip, approval.user_id).await?;
+        return Err(AppError::NotFound);
+    };
+    // The instance's own application receives a first-party session: the most
+    // rewarding code to phish. An account with a second factor approves it
+    // only from a session that proved one.
+    if let Some(client_id) = pending.client_id.as_deref()
+        && let Some(client) = client_repo::find_by_id(&state.db, client_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?
+    {
+        authorize_svc::ensure_second_factor_for_primary(
+            state,
+            approval.user_id,
+            approval.session_id,
+            &client,
+        )
+        .await?;
+    }
+    crate::services::reauth::require_recent_reauth_or_password(
         state,
-        user_code,
+        approval.user_id,
+        approval.session_id,
+        approval.current_password,
+        approval.ip,
+        approval.request_id,
+        "approve_device",
+    )
+    .await?;
+    let auth_time = crate::services::reauth::reauth_proven_at(state, approval.session_id).await;
+    let entry = update_status(
+        state,
+        approval.user_code,
         DeviceAuthStatus::Authorized,
-        Some(user_id),
-        ip,
+        approval.user_id,
+        approval.ip,
+        auth_time,
+    )
+    .await?;
+    // The owner's history names the client and the device it was approved
+    // for: a phished code shows there, with the address that asked for it.
+    audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(approval.user_id),
+            request_id: approval.request_id,
+            action: AuditAction::DeviceApproved,
+            ip_address: approval.ip,
+            metadata: serde_json::json!({
+                "client_id": entry.client_id,
+                "scopes": entry.scopes,
+                "device_address": entry.client_ip,
+                "device_user_agent": entry.user_agent,
+            }),
+        },
     )
     .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(())
 }
 
 /// Deny a device authorization request. Called by an authenticated user.
@@ -453,31 +599,67 @@ pub async fn verify(
 /// other people's flows is that they cannot find the codes (`guard_code_scan`).
 pub async fn deny(
     state: &AppState,
+    user_id: Uuid,
     user_code: &str,
     ip: Option<IpNetwork>,
 ) -> Result<(), AppError> {
-    update_status(state, user_code, DeviceAuthStatus::Denied, None, ip).await
+    let entry = update_status(
+        state,
+        user_code,
+        DeviceAuthStatus::Denied,
+        user_id,
+        ip,
+        None,
+    )
+    .await?;
+    // Anyone who finds a code can refuse it: the refusal is traced in the
+    // refuser's history, with the client and the device that asked.
+    audit::append(
+        &state.db,
+        &NewAuditEntry {
+            user_id: Some(user_id),
+            request_id: None,
+            action: AuditAction::DeviceDenied,
+            ip_address: ip,
+            metadata: serde_json::json!({
+                "client_id": entry.client_id,
+                "device_address": entry.client_ip,
+            }),
+        },
+    )
+    .await
+    .map_err(|e| AppError::Internal(e.into()))?;
+    Ok(())
 }
 
+/// Decide the request as `user_id`; an approval records who approved it.
 async fn update_status(
     state: &AppState,
     user_code: &str,
     new_status: DeviceAuthStatus,
-    user_id: Option<Uuid>,
+    user_id: Uuid,
     ip: Option<IpNetwork>,
-) -> Result<(), AppError> {
-    guard_code_scan(state, ip).await?;
+    auth_time: Option<i64>,
+) -> Result<DeviceAuthState, AppError> {
+    guard_code_scan(state, ip, user_id).await?;
 
     let Some((dk, raw, mut entry)) = load_entry(state, user_code).await? else {
-        note_unknown_code(state, ip).await;
+        note_unknown_code(state, ip, user_id).await?;
         return Err(AppError::NotFound);
     };
     if !entry.status.is_undecided() {
         return Err(AppError::Conflict("device_request_already_decided"));
     }
 
+    entry.user_id = (new_status == DeviceAuthStatus::Authorized).then_some(user_id);
+    // The consent is what the user held when approving, as in the code flow:
+    // a permission obtained later does not reach the device without a new one.
+    if new_status == DeviceAuthStatus::Authorized && entry.scopes.is_some() {
+        let held = authorize_svc::permission_names(state, user_id).await?;
+        entry.scopes = authorize_svc::consent(entry.scopes.as_deref(), &held);
+    }
     entry.status = new_status;
-    entry.user_id = user_id;
+    entry.auth_time = auth_time;
     let updated = serde_json::to_string(&entry).map_err(|e| AppError::Internal(e.into()))?;
 
     let mut conn = state
@@ -496,7 +678,7 @@ async fn update_status(
     if swapped != 1 {
         return Err(AppError::Conflict("device_request_already_decided"));
     }
-    Ok(())
+    Ok(entry)
 }
 
 #[cfg(test)]
@@ -541,6 +723,7 @@ mod tests {
             user_agent: Some("MyApp/1.0".into()),
             created_at: 1700000000,
             scopes: None,
+            auth_time: None,
         };
 
         let json = serde_json::to_string(&state).unwrap();

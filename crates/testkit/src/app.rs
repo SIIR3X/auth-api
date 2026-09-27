@@ -374,7 +374,18 @@ impl TestApp {
     /// Delete the anti-spam cooldown of email 2FA, so the next login can send
     /// a code right away.
     pub async fn clear_email_2fa_cooldown(&self, user_id: uuid::Uuid) {
-        self.delete_redis_key(&format!("email2fa_cd:{user_id}"))
+        // The setup cooldown, each challenge's, and the account's hourly
+        // budget of sign-in codes.
+        if let Ok(mut conn) = self.redis.get().await {
+            let keys: Vec<String> = conn
+                .keys(format!("email2fa_cd:{user_id}*"))
+                .await
+                .unwrap_or_default();
+            if !keys.is_empty() {
+                let _: Result<(), _> = conn.del(keys).await;
+            }
+        }
+        self.delete_redis_key(&format!("email2fa_send_user:{user_id}"))
             .await;
     }
 
@@ -384,11 +395,15 @@ impl TestApp {
 
         let mut conn = self.redis.get().await.expect("redis connection failed");
         let raw: String = conn
-            .get(format!("email_change_flow:{flow_token}"))
+            .get(format!(
+                "email_change_flow:{}",
+                auth_api::utils::crypto::token_id(flow_token)
+            ))
             .await
             .expect("email_change flow state not found in Redis");
 
         let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let user_id: uuid::Uuid = state["user_id"].as_str().unwrap().parse().unwrap();
         let hash_b64 = state["otp_hash"]
             .as_str()
             .expect("otp_hash missing from flow state");
@@ -396,12 +411,23 @@ impl TestApp {
             .decode(hash_b64)
             .unwrap();
 
-        brute_force_otp(&hash_bytes)
+        brute_force_otp(&hash_bytes, |code| {
+            self.state
+                .keyring
+                .otp_digest("email_change", user_id.as_bytes(), code)
+        })
     }
 
     /// Clear the per-user email-change cooldown so a second flow can start.
     pub async fn clear_email_change_cooldown(&self, user_id: uuid::Uuid) {
         self.delete_redis_key(&format!("email_change_cd:{user_id}"))
+            .await;
+        self.clear_email_change_start_cooldown(user_id).await;
+    }
+
+    /// Lift the minute between two starts of an e-mail change.
+    pub async fn clear_email_change_start_cooldown(&self, user_id: uuid::Uuid) {
+        self.delete_redis_key(&format!("email_change_start_cd:{user_id}"))
             .await;
     }
 
@@ -520,12 +546,16 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
             sensitive_action_reauth_secs: 600,
             new_device_alerts: true,
             magic_links: true,
+            registrations_per_ip_per_hour: 10_000,
+            reset_revokes_factors_added_hours: 72,
         },
         captcha: CaptchaConfig {
             secret: None,
             verify_url: "https://hcaptcha.com/siteverify".into(),
             request_timeout_secs: 1,
             fail_open_on_error: false,
+            site_key: None,
+            expected_hostnames: Vec::new(),
         },
         cors: CorsConfig {
             allowed_origins: vec!["*".into()],
@@ -594,17 +624,21 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
         },
         metrics: MetricsConfig {
             enabled: false,
+            host: "127.0.0.1".into(),
             port: 9464,
+            token: None,
         },
     }
 }
 
 /// Recover a 6-digit OTP from its SHA-256 digest.
-pub fn brute_force_otp(expected_hash: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
+/// The six-digit code whose digest, by `digest`, is `expected_hash`: tests
+/// hold the application keyring, an attacker holding only the stored digest
+/// does not.
+pub fn brute_force_otp(expected_hash: &[u8], digest: impl Fn(&str) -> [u8; 32]) -> String {
     (0u32..1_000_000)
         .map(|n| format!("{n:06}"))
-        .find(|candidate| Sha256::digest(candidate.as_bytes()).as_slice() == expected_hash)
+        .find(|candidate| digest(candidate).as_slice() == expected_hash)
         .expect("OTP not found in the 6-digit space")
 }
 
@@ -659,6 +693,7 @@ mod tests {
     #[test]
     fn otp_is_recovered_from_its_digest() {
         use sha2::{Digest, Sha256};
-        assert_eq!(brute_force_otp(&Sha256::digest(b"004217")), "004217");
+        let digest = |code: &str| -> [u8; 32] { Sha256::digest(code.as_bytes()).into() };
+        assert_eq!(brute_force_otp(&digest("004217"), digest), "004217");
     }
 }

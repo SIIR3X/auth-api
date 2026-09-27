@@ -13,8 +13,14 @@ use uuid::Uuid;
 use crate::domain::session::{Session, SessionType};
 
 pub const FIND_BY_TOKEN_HASH_SQL: &str = "SELECT * FROM sessions WHERE token_hash = $1";
-pub const FIND_VALIDATION_BY_ID_SQL: &str =
-    "SELECT expires_at, revoked_at FROM sessions WHERE id = $1";
+/// What the per-request token check needs: whether the session still runs,
+/// and whether it acts for the account itself (see [`SessionValidation::first_party`]).
+pub const FIND_VALIDATION_BY_ID_SQL: &str = "SELECT s.expires_at, s.revoked_at, s.session_type,
+            s.scopes IS NOT NULL AS scoped, s.client_id IS NOT NULL AS for_client,
+            COALESCE(c.is_primary, FALSE) AS primary_client
+         FROM sessions s
+         LEFT JOIN registered_clients c ON c.client_id = s.client_id
+         WHERE s.id = $1";
 pub const FIND_ACTIVE_BY_USER_SQL: &str = "SELECT * FROM sessions
          WHERE user_id = $1 AND revoked_at IS NULL
          ORDER BY last_used_at DESC";
@@ -42,12 +48,22 @@ pub struct NewSession<'a> {
     pub family_created_at: Option<OffsetDateTime>,
     /// Consented client scopes; `None` for an unrestricted session.
     pub scopes: Option<&'a [String]>,
+    /// The sign-in proved a second factor. A rotation inherits it whatever
+    /// this says.
+    pub mfa: bool,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SessionValidation {
     pub expires_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
+    pub session_type: SessionType,
+    /// The session carries consented scopes.
+    pub scoped: bool,
+    /// The session was issued to a client application.
+    pub for_client: bool,
+    /// That client is the instance's own application.
+    pub primary_client: bool,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -67,6 +83,17 @@ impl SessionValidation {
     pub fn is_active(&self, now: OffsetDateTime) -> bool {
         self.revoked_at.is_none() && self.expires_at > now
     }
+
+    /// Whether the session acts for the account itself rather than for a
+    /// client it delegated to: see [`crate::domain::session::is_first_party`].
+    pub fn first_party(&self) -> bool {
+        crate::domain::session::is_first_party(
+            self.session_type,
+            self.scoped,
+            self.for_client,
+            self.primary_client,
+        )
+    }
 }
 
 // Writes
@@ -77,8 +104,8 @@ pub async fn create<'e>(
 ) -> Result<Session, sqlx::Error> {
     sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()), $12)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes, mfa)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()), $12, $13)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -93,6 +120,7 @@ pub async fn create<'e>(
     .bind(input.client_id)
     .bind(input.family_created_at)
     .bind(input.scopes)
+    .bind(input.mfa)
     .fetch_one(executor)
     .await
 }
@@ -119,8 +147,8 @@ pub async fn rotate(
 
     let new_session = sqlx::query_as::<_, Session>(
         "INSERT INTO sessions
-             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             (user_id, session_family_id, expires_at, ip_address, device_name, remember_me, token_hash, user_agent, session_type, client_id, family_created_at, scopes, mfa, auth_time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING *",
     )
     .bind(input.user_id)
@@ -135,6 +163,8 @@ pub async fn rotate(
     .bind(input.client_id)
     .bind(input.family_created_at.unwrap_or(old_session.family_created_at))
     .bind(input.scopes.map(<[String]>::to_vec).or(old_session.scopes))
+    .bind(old_session.mfa)
+    .bind(old_session.auth_time)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -154,10 +184,10 @@ pub async fn rotate(
     Ok(new_session)
 }
 
-pub async fn revoke(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn revoke<'e>(executor: impl PgExecutor<'e>, id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE sessions SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL")
         .bind(id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }
@@ -173,6 +203,37 @@ pub async fn revoke_all_by_user<'e>(
     .execute(executor)
     .await?;
     Ok(result.rows_affected())
+}
+
+/// Revoke the sessions of a user's personal access tokens and return them.
+pub async fn revoke_personal_access_sessions<'e>(
+    executor: impl PgExecutor<'e>,
+    user_id: Uuid,
+) -> Result<Vec<Session>, sqlx::Error> {
+    sqlx::query_as::<_, Session>(
+        "UPDATE sessions SET revoked_at = NOW()
+         WHERE user_id = $1 AND session_type = 'personal_access_token' AND revoked_at IS NULL
+         RETURNING *",
+    )
+    .bind(user_id)
+    .fetch_all(executor)
+    .await
+}
+
+/// Revoke every active session of a user and return them: the sessions to
+/// forget in caches are exactly those this statement revoked.
+pub async fn revoke_all_by_user_returning<'e>(
+    executor: impl PgExecutor<'e>,
+    user_id: Uuid,
+) -> Result<Vec<Session>, sqlx::Error> {
+    sqlx::query_as::<_, Session>(
+        "UPDATE sessions SET revoked_at = NOW()
+         WHERE user_id = $1 AND revoked_at IS NULL
+         RETURNING *",
+    )
+    .bind(user_id)
+    .fetch_all(executor)
+    .await
 }
 
 /// Revoke every active session of a user except `keep` (the one making the request).
@@ -204,6 +265,17 @@ pub async fn revoke_family(pool: &PgPool, session_id: Uuid) -> Result<u64, sqlx:
 
 // Reads
 
+/// Every session of the family of `session_id`.
+pub async fn family_session_ids(pool: &PgPool, session_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT id FROM sessions
+         WHERE session_family_id = (SELECT session_family_id FROM sessions WHERE id = $1)",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn find_by_token_hash(
     pool: &PgPool,
     token_hash: &[u8],
@@ -212,6 +284,18 @@ pub async fn find_by_token_hash(
         .bind(token_hash)
         .fetch_optional(pool)
         .await
+}
+
+/// Whether the sign-in of the session proved a second factor; `false` for an
+/// unknown session.
+pub async fn proved_second_factor(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query_scalar::<_, bool>("SELECT mfa FROM sessions WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(false),
+    )
 }
 
 pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Session>, sqlx::Error> {
@@ -232,13 +316,13 @@ pub async fn find_validation_by_id(
 }
 
 /// Returns non-revoked sessions ordered by most recently used.
-pub async fn find_active_by_user(
-    pool: &PgPool,
+pub async fn find_active_by_user<'e>(
+    executor: impl PgExecutor<'e>,
     user_id: Uuid,
 ) -> Result<Vec<Session>, sqlx::Error> {
     sqlx::query_as::<_, Session>(FIND_ACTIVE_BY_USER_SQL)
         .bind(user_id)
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
 }
 
@@ -298,4 +382,18 @@ pub async fn revoke_by_client<'e>(
     .bind(client_id)
     .fetch_all(executor)
     .await
+}
+
+/// Record when the password was proved for the consent a session came from.
+pub async fn set_auth_time<'e>(
+    executor: impl PgExecutor<'e>,
+    id: Uuid,
+    auth_time: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE sessions SET auth_time = $2 WHERE id = $1")
+        .bind(id)
+        .bind(auth_time)
+        .execute(executor)
+        .await?;
+    Ok(())
 }

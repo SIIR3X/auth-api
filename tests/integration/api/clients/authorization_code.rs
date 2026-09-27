@@ -170,6 +170,7 @@ async fn a_primary_client_signs_in_end_to_end() {
     let user = fixtures::authenticated_user(&app, 720).await;
     let p = pkce();
     let request_id = request(&app, PRIMARY, CALLBACK, &p, &[]).await;
+    app.clear_recent_reauth(&user.access_token).await;
 
     let described: Value = app
         .get_auth(
@@ -183,12 +184,24 @@ async fn a_primary_client_signs_in_end_to_end() {
     assert_eq!(described["client_name"], PRIMARY);
     assert_eq!(described["redirect_uri"], CALLBACK);
     assert_eq!(described["unrestricted"], true);
-    assert_eq!(described["reauthentication_required"], false);
+    assert_eq!(described["reauthentication_required"], true);
     assert!(described.get("sessions_allowed").is_none());
 
-    // The primary client needs no fresh re-authentication.
-    app.clear_recent_reauth(&user.access_token).await;
+    // The primary client too needs a fresh re-authentication: an access token
+    // alone must not mint a new, long-lived session (SEC-66). A refusal leaves
+    // the request to approve.
     let (status, body) = approve_raw(&app, &user, &request_id, json!({})).await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (403, Some("reauthentication_required"))
+    );
+    let (status, body) = approve_raw(
+        &app,
+        &user,
+        &request_id,
+        json!({ "current_password": user.password }),
+    )
+    .await;
     assert_eq!(status, 200, "{body}");
     let code = query_param(body["redirect_to"].as_str().unwrap(), "code").unwrap();
 
@@ -272,6 +285,48 @@ async fn a_replayed_code_is_refused_and_revokes_its_session() {
 
     let (status, _) = refresh(&app, tokens["refresh_token"].as_str().unwrap(), PRIMARY).await;
     assert_eq!(status, 400, "the replayed code's session must be revoked");
+}
+
+/// A public client's id is anyone's: a leaked code replayed without its
+/// verifier signs nobody out (SEC-79).
+#[tokio::test]
+async fn a_leaked_code_replayed_without_its_verifier_revokes_nothing() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PRIMARY, true, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 723).await;
+    let p = pkce();
+    let code = code_for(&app, &user, PRIMARY, CALLBACK, &p).await;
+    let (_, tokens) = redeem(&app, &code, &p.verifier, PRIMARY, CALLBACK).await;
+
+    let stranger = pkce();
+    let (status, _) = redeem(&app, &code, &stranger.verifier, PRIMARY, CALLBACK).await;
+    assert_eq!(status, 400);
+    let (status, body) = refresh(&app, tokens["refresh_token"].as_str().unwrap(), PRIMARY).await;
+    assert_eq!(status, 200, "{body}");
+}
+
+/// A code replayed while its first redemption is still issuing the session
+/// waits for it, then revokes that session: the replay can never slip in before
+/// the code is linked to what it produced.
+#[tokio::test]
+async fn a_code_redeemed_twice_at_once_leaves_no_session_alive() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PRIMARY, true, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 722).await;
+    let p = pkce();
+    let code = code_for(&app, &user, PRIMARY, CALLBACK, &p).await;
+
+    let (first, second) = tokio::join!(
+        redeem(&app, &code, &p.verifier, PRIMARY, CALLBACK),
+        redeem(&app, &code, &p.verifier, PRIMARY, CALLBACK),
+    );
+    let mut statuses = [first.0, second.0];
+    statuses.sort();
+    assert_eq!(statuses, [200, 400], "exactly one redemption succeeds");
+
+    let tokens = if first.0 == 200 { first.1 } else { second.1 };
+    let (status, _) = refresh(&app, tokens["refresh_token"].as_str().unwrap(), PRIMARY).await;
+    assert_eq!(status, 400, "the replay revoked the session it raced");
 }
 
 #[tokio::test]
@@ -620,6 +675,288 @@ async fn a_registered_redirect_keeps_its_query() {
     let (_, body) = approve_raw(&app, &user, &request_id, json!({})).await;
     let url = reqwest::Url::parse(body["redirect_to"].as_str().unwrap()).unwrap();
     let names: Vec<String> = url.query_pairs().map(|(k, _)| k.into_owned()).collect();
-    assert_eq!(names, ["tenant", "code", "state"]);
+    assert_eq!(names, ["tenant", "code", "state", "iss"]);
     assert_eq!(query_param(url.as_str(), "tenant").as_deref(), Some("acme"));
+    // RFC 9207: the client can check which server answered.
+    assert_eq!(
+        query_param(url.as_str(), "iss").as_deref(),
+        Some(app.state.config.server.public_url.trim_end_matches('/'))
+    );
+}
+
+/// A redirect URI removed from the client since the request was made receives
+/// no code, and a code already issued for it no longer redeems (SEC-62).
+#[tokio::test]
+async fn a_redirect_removed_from_the_client_receives_nothing() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 60).await;
+    let pkce = super::pkce();
+
+    let issued = code_for(&app, &user, PARTNER, CALLBACK, &pkce).await;
+    let request_id = request(&app, PARTNER, CALLBACK, &pkce, &[]).await;
+    sqlx::query("UPDATE registered_clients SET redirect_uris = ARRAY[$2] WHERE client_id = $1")
+        .bind(PARTNER)
+        .bind(LOOPBACK)
+        .execute(&app.db)
+        .await
+        .unwrap();
+
+    let (status, body) = approve_raw(
+        &app,
+        &user,
+        &request_id,
+        json!({ "current_password": user.password }),
+    )
+    .await;
+    assert_ne!(status, 200, "{body}");
+    let (status, body) = redeem(&app, &issued, &pkce.verifier, PARTNER, CALLBACK).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (400, Some("invalid_grant")),
+        "{body}"
+    );
+}
+
+/// Access tokens are typed `at+jwt` and name their client (RFC 9068).
+#[tokio::test]
+async fn a_client_access_token_is_typed_and_names_its_client() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 61).await;
+    let pkce = super::pkce();
+    let code = code_for(&app, &user, PARTNER, CALLBACK, &pkce).await;
+    let (status, tokens) = redeem(&app, &code, &pkce.verifier, PARTNER, CALLBACK).await;
+    assert_eq!(status, 200, "{tokens}");
+
+    let access = tokens["access_token"].as_str().unwrap();
+    let header = jsonwebtoken::decode_header(access).unwrap();
+    assert_eq!(header.typ.as_deref(), Some("at+jwt"));
+    assert_eq!(
+        app.decode_access_token(access).client_id.as_deref(),
+        Some(PARTNER)
+    );
+}
+
+/// OpenID Connect parameters this server does not honour are refused, not
+/// ignored, and `max_age` / `prompt=login` ask for the password again at the
+/// approval (SEC-72).
+#[tokio::test]
+async fn unsupported_oidc_parameters_are_refused_and_max_age_is_honoured() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 62).await;
+    let p = pkce();
+
+    for (extra, error) in [
+        (("prompt", "none"), "interaction_required"),
+        (("request", "eyJ..."), "request_not_supported"),
+        (
+            ("request_uri", "https://x/req"),
+            "request_uri_not_supported",
+        ),
+        (("response_mode", "fragment"), "invalid_request"),
+    ] {
+        let (status, location, _) =
+            authorize(&app, &parameters(PARTNER, CALLBACK, &p.challenge, &[extra])).await;
+        assert_eq!(status, 303, "{extra:?}");
+        assert_eq!(
+            query_param(&location, "error").as_deref(),
+            Some(error),
+            "{extra:?}"
+        );
+    }
+
+    // The fixture's session proved its password moments ago, yet not within
+    // max_age=0: the approval asks for it again.
+    let request_id = request(&app, PARTNER, CALLBACK, &p, &[("max_age", "0")]).await;
+    let (status, body) = approve_raw(&app, &user, &request_id, json!({})).await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (403, Some("reauthentication_required"))
+    );
+    let (status, body) = approve_raw(
+        &app,
+        &user,
+        &request_id,
+        json!({ "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+}
+
+/// A request belongs to the first signed-in user who looks at it, and a code
+/// replayed by another client leaves the session of its own client alone
+/// (SEC-72).
+#[tokio::test]
+async fn a_request_is_decided_by_its_viewer_and_a_foreign_replay_revokes_nothing() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &[], 5).await;
+    register_client(&app, PRIMARY, true, &[], 5).await;
+    let owner = fixtures::authenticated_user(&app, 63).await;
+    let stranger = fixtures::authenticated_user(&app, 64).await;
+    let p = pkce();
+
+    let request_id = request(&app, PARTNER, CALLBACK, &p, &[]).await;
+    let seen = app
+        .get_auth(
+            &format!("/oauth/authorization-requests/{request_id}"),
+            &owner.access_token,
+        )
+        .await;
+    assert_eq!(seen.status().as_u16(), 200);
+    let (status, _) = approve_raw(
+        &app,
+        &stranger,
+        &request_id,
+        json!({ "current_password": stranger.password }),
+    )
+    .await;
+    assert_eq!(status, 404, "another user cannot decide it");
+
+    let code = code_for(&app, &owner, PARTNER, CALLBACK, &p).await;
+    let (status, tokens) = redeem(&app, &code, &p.verifier, PARTNER, CALLBACK).await;
+    assert_eq!(status, 200, "{tokens}");
+    let (status, _) = redeem(&app, &code, &p.verifier, PRIMARY, CALLBACK).await;
+    assert_eq!(status, 400);
+    let (status, _) = refresh(&app, tokens["refresh_token"].as_str().unwrap(), PARTNER).await;
+    assert_eq!(
+        status, 200,
+        "a replay under another client's id revoked nothing"
+    );
+}
+
+/// The ID token says when the password was proved for the consent, and an
+/// access token says what its subject is (SEC-72).
+#[tokio::test]
+async fn tokens_say_when_and_who() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &["openid"], 5).await;
+    let user = fixtures::authenticated_user(&app, 65).await;
+    let p = pkce();
+    let before = time::OffsetDateTime::now_utc().unix_timestamp() - 5;
+    let request_id = request(&app, PARTNER, CALLBACK, &p, &[("scope", "openid")]).await;
+    let (status, body) = approve_raw(
+        &app,
+        &user,
+        &request_id,
+        json!({ "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let code = query_param(body["redirect_to"].as_str().unwrap(), "code").unwrap();
+    let (status, tokens) = redeem(&app, &code, &p.verifier, PARTNER, CALLBACK).await;
+    assert_eq!(status, 200, "{tokens}");
+
+    let id_token = claims(tokens["id_token"].as_str().unwrap());
+    assert!(
+        id_token["auth_time"].as_i64().unwrap() >= before,
+        "{id_token}"
+    );
+    assert_eq!(
+        claims(tokens["access_token"].as_str().unwrap())["sub_type"],
+        "user"
+    );
+    // The consent and the session it handed over are in the owner's history
+    // (SEC-78).
+    let actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action::text FROM audit_log WHERE user_id = $1
+         AND (action = 'client_authorized' OR metadata->>'method' = 'authorization_code')
+         ORDER BY created_at",
+    )
+    .bind(user.id)
+    .fetch_all(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(actions, ["client_authorized", "login"]);
+}
+
+/// The instance's own application is approved from a session that proved a
+/// second factor when the account has one, in the code flow as in the device
+/// flow (SEC-82).
+#[tokio::test]
+async fn the_primary_client_needs_a_second_factor_session_in_the_code_flow() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PRIMARY, true, &[], 5).await;
+    let user = fixtures::authenticated_user(&app, 724).await;
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified)
+         VALUES ($1, 'email', TRUE, TRUE)",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let p = pkce();
+    let request_id = request(&app, PRIMARY, CALLBACK, &p, &[]).await;
+    let (status, body) = approve_raw(
+        &app,
+        &user,
+        &request_id,
+        json!({ "current_password": user.password }),
+    )
+    .await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (403, Some("second_factor_session_required"))
+    );
+}
+
+/// A refresh may ask for less than was granted, for its access token, and
+/// never for more; a refused refresh keeps its token (SEC-86).
+#[tokio::test]
+async fn a_refresh_narrows_its_scope_but_never_widens_it() {
+    let app = TestApp::spawn().await;
+    register_client(&app, PARTNER, false, &["users:read", "audit:read"], 5).await;
+    let user = fixtures::authenticated_user(&app, 725).await;
+    sqlx::query(
+        "INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE name = 'admin'",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let p = pkce();
+    let code = code_for(&app, &user, PARTNER, CALLBACK, &p).await;
+    let (status, tokens) = redeem(&app, &code, &p.verifier, PARTNER, CALLBACK).await;
+    assert_eq!(status, 200, "{tokens}");
+    let refresh_token = tokens["refresh_token"].as_str().unwrap().to_owned();
+
+    let (status, refused) = form(
+        &app,
+        "/oauth/token",
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh_token),
+            ("client_id", PARTNER),
+            ("scope", "users:manage"),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, refused["error"].as_str()),
+        (400, Some("invalid_scope"))
+    );
+
+    let (status, narrowed) = form(
+        &app,
+        "/oauth/token",
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh_token),
+            ("client_id", PARTNER),
+            ("scope", "users:read"),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "the refused refresh kept its token: {narrowed}"
+    );
+    assert_eq!(
+        claims(narrowed["access_token"].as_str().unwrap())["permissions"],
+        json!(["users:read"])
+    );
 }

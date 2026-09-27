@@ -6,6 +6,136 @@ use crate::domain::token::{OneTimeToken, TokenVerdict};
 /// Every one-time token submission takes at least this long, found or not.
 const ONE_TIME_TOKEN_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Redis holds the challenge between a password and its second factor: when
+/// it cannot be reached, the sign-in is unavailable, not broken.
+pub(super) fn redis_unavailable(error: impl std::fmt::Display) -> AppError {
+    tracing::warn!(error = %error, "sign-in challenge store unavailable");
+    AppError::ServiceUnavailable("redis_unavailable")
+}
+
+/// Resends of an e-mail code: twice per challenge, ten times an hour per
+/// account. Refused past either, fail closed like the code budgets.
+pub(crate) async fn budget_email_resend(
+    state: &AppState,
+    pre_auth_token: &str,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    let challenge_key = format!("email2fa_resend:{}", challenge_id(pre_auth_token));
+    let account_key = format!("email2fa_resend_user:{user_id}");
+    let attempt = redis_counter::consume(
+        &state.redis,
+        &[
+            Budget {
+                key: &challenge_key,
+                limit: MAX_EMAIL_RESENDS_PER_CHALLENGE,
+                window_secs: PRE_AUTH_TTL_SECS,
+            },
+            Budget {
+                key: &account_key,
+                limit: MAX_EMAIL_RESENDS_PER_ACCOUNT,
+                window_secs: SECOND_FACTOR_USER_WINDOW_SECS,
+            },
+        ],
+    )
+    .await?;
+    if attempt.exceeded {
+        return Err(AppError::RateLimitExceeded);
+    }
+    let user = user_repo::find_by_id(&state.db, user_id)
+        .await?
+        .ok_or(AppError::TokenInvalid)?;
+    ensure_account_usable(&user)
+}
+
+/// Mail the owner that their second factor is being guessed, once an hour at
+/// most: an account budget exhausted means someone holds the password.
+pub(crate) async fn notify_second_factor_pressure(state: &AppState, user_id: Uuid) {
+    let key = format!("2fa_pressure_notice:{user_id}");
+    if !redis_counter::claim_cooldown(&state.redis, &key, SECOND_FACTOR_USER_WINDOW_SECS).await {
+        return;
+    }
+    let Ok(Some(user)) = user_repo::find_by_id(&state.db, user_id).await else {
+        return;
+    };
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    email::dispatch_best_effort("second_factor_attempts_email", async move {
+        email::send_second_factor_attempts(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &user.email,
+            &user.username,
+            &user.preferred_locale,
+        )
+        .await
+    });
+}
+
+/// The failure budgets of a second factor at sign-in, beside the budget of
+/// the challenge itself: `limit` failures per window from one client address,
+/// and `SECOND_FACTOR_ACCOUNT_FACTOR` times as many for the account from every
+/// address (30 an hour for TOTP codes: a search of the code space stays
+/// hopeless, and the owner is mailed when it is spent). Someone holding the password and guessing from their own address
+/// exhausts only their share, not the owner's.
+pub(crate) fn second_factor_budget_keys(
+    prefix: &str,
+    user_id: Uuid,
+    ip: Option<IpNetwork>,
+    limit: i64,
+) -> Vec<(String, i64)> {
+    let mut keys = vec![(
+        format!("{prefix}{user_id}"),
+        limit * SECOND_FACTOR_ACCOUNT_FACTOR,
+    )];
+    if let Some(ip) = ip {
+        keys.push((format!("{prefix}{user_id}:{}", ip_bucket(ip.ip())), limit));
+    }
+    keys
+}
+
+/// Whether the account's budget (the first of `second_factor_budget_keys`,
+/// behind the challenge's) is the one exceeded.
+pub(crate) fn account_budget_exceeded(counts: &[i64], account_limit: i64) -> bool {
+    counts.get(1).is_some_and(|count| *count > account_limit)
+}
+
+/// The budget of links mailed to `user_id` (`prefix` names the kind): per
+/// client address, then for the account as a whole.
+///
+/// The window is the lifetime of the links: once someone else has spent the
+/// budget, the links their requests mailed to the owner stay valid until it
+/// opens again, so the owner is never left without one.
+pub(super) async fn mailbox_budget_exhausted(
+    state: &AppState,
+    prefix: &str,
+    user_id: Uuid,
+    ip: Option<IpNetwork>,
+    window_secs: u64,
+) -> bool {
+    if let Some(ip) = ip {
+        let key = format!("{prefix}:{user_id}:{}", ip_bucket(ip.ip()));
+        if budget_exhausted(
+            state,
+            &key,
+            MAX_MAILBOX_LINKS_BY_ACCOUNT_AND_IP,
+            window_secs,
+        )
+        .await
+        {
+            return true;
+        }
+    }
+    budget_exhausted(
+        state,
+        &format!("{prefix}:{user_id}"),
+        MAX_MAILBOX_LINKS_BY_ACCOUNT,
+        window_secs,
+    )
+    .await
+}
+
 /// Consume one attempt of an abuse-control budget.
 ///
 /// Fails open: these budgets bound volume (mail floods, token scanning) rather
@@ -36,8 +166,9 @@ pub(super) async fn budget_exhausted(
 }
 
 /// Throttle submissions of one-time tokens (email verification, password
-/// reset): per IP, and per token hash across every IP. Tokens carry 256 bits,
-/// so this is volume control, not the security boundary; it fails open.
+/// reset, magic link): per IP, and per token hash across every IP. Fails
+/// closed: the budget per token hash is what the guarantee on guessing a
+/// token rests on while Redis is under pressure.
 pub(super) async fn guard_token_submission(
     state: &AppState,
     kind: &str,
@@ -61,14 +192,11 @@ pub(super) async fn guard_token_submission(
         });
     }
 
-    match redis_counter::consume(&state.redis, &budgets).await {
-        Ok(attempt) if attempt.exceeded => Err(AppError::RateLimitExceeded),
-        Ok(_) => Ok(()),
-        Err(error) => {
-            tracing::warn!(error = %error, "token submission budget unavailable, failing open");
-            Ok(())
-        }
+    let attempt = redis_counter::consume(&state.redis, &budgets).await?;
+    if attempt.exceeded {
+        return Err(AppError::RateLimitExceeded);
     }
+    Ok(())
 }
 
 /// Add the attempted identifier to the per-IP HyperLogLog for credential-stuffing detection.
@@ -85,8 +213,15 @@ pub(super) async fn track_credential_stuffing(
     match state.redis.get().await {
         Ok(mut conn) => {
             let key = format!("{}{}", CS_HLL_PREFIX, ip_bucket(ip_val.ip()));
-            let _: Result<(), _> = conn.pfadd(&key, identifier).await;
-            let _: Result<(), _> = conn.expire(&key, CS_WINDOW_SECS as i64).await;
+            // One atomic pipeline: the key never lives without its expiry.
+            let _: Result<(), _> = deadpool_redis::redis::pipe()
+                .atomic()
+                .pfadd(&key, identifier)
+                .ignore()
+                .expire(&key, CS_WINDOW_SECS as i64)
+                .ignore()
+                .query_async(&mut *conn)
+                .await;
         }
         Err(e) => {
             tracing::warn!(ip = %ip_val.ip(), error = %e, "credential-stuffing tracking skipped: Redis unavailable");
@@ -106,7 +241,7 @@ pub(super) async fn record_failure(
         db,
         &NewLoginAttempt {
             user_id,
-            attempted_identifier: identifier,
+            attempted_identifier: crate::domain::login_attempt::storable_identifier(identifier),
             was_successful: false,
             failure_reason: Some(reason),
             request_ip: ip,
@@ -168,17 +303,13 @@ pub(crate) fn ensure_status_allows_sign_in(user: &User) -> Result<(), AppError> 
     }
 }
 
-/// [`ensure_status_allows_sign_in`], then the lockout: for flows completing
-/// after the password was proven (second factors, client flows).
-pub(crate) fn ensure_account_usable(
-    user: &User,
-    now: ::time::OffsetDateTime,
-) -> Result<(), AppError> {
-    ensure_status_allows_sign_in(user)?;
-    if user.is_locked(now) {
-        return Err(AppError::AccountLocked);
-    }
-    Ok(())
+/// [`ensure_status_allows_sign_in`], for flows that do not use the password
+/// (second factors after it, passkeys, links, identities, client flows). The
+/// lockout guards the password alone: none of these can be guessed, and
+/// letting it block them would let anyone who knows the identifier shut the
+/// owner out.
+pub(crate) fn ensure_account_usable(user: &User) -> Result<(), AppError> {
+    ensure_status_allows_sign_in(user)
 }
 
 /// Look a one-time token up (email verification, password reset) and judge it.
@@ -249,17 +380,12 @@ mod tests {
     }
 
     #[test]
-    fn a_usable_account_is_allowed_and_unlocked() {
+    fn a_locked_password_does_not_block_the_other_ways_in() {
         let now = ::time::OffsetDateTime::UNIX_EPOCH + ::time::Duration::days(1);
-        let later = now + ::time::Duration::seconds(1);
-        assert!(ensure_account_usable(&user(UserStatus::Active, None), now).is_ok());
-        assert!(ensure_account_usable(&user(UserStatus::Active, Some(now)), now).is_ok());
+        let later = now + ::time::Duration::seconds(60);
+        assert!(ensure_account_usable(&user(UserStatus::Active, Some(later))).is_ok());
         assert!(matches!(
-            ensure_account_usable(&user(UserStatus::Active, Some(later)), now),
-            Err(AppError::AccountLocked)
-        ));
-        assert!(matches!(
-            ensure_account_usable(&user(UserStatus::Inactive, Some(later)), now),
+            ensure_account_usable(&user(UserStatus::Inactive, Some(later))),
             Err(AppError::AccountInactive)
         ));
     }

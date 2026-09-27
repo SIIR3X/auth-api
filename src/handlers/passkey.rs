@@ -19,7 +19,7 @@ use crate::{
 };
 
 use super::{
-    extractors::{AuthUser, ClientIp, UserAgent},
+    extractors::{ClientIp, FirstPartyUser, UserAgent},
     user::CurrentPasswordRequest,
 };
 
@@ -91,7 +91,7 @@ fn passkey_response(passkey: Passkey) -> PasskeyResponse {
 )]
 pub async fn list(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<Json<Vec<PasskeyResponse>>, AppError> {
     let passkeys = passkey_svc::list(&state, auth.user_id).await?;
     Ok(Json(passkeys.into_iter().map(passkey_response).collect()))
@@ -112,7 +112,7 @@ pub async fn list(
 pub async fn registration_options(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
 ) -> Result<Json<Value>, AppError> {
     Ok(Json(
         passkey_svc::registration_options(
@@ -142,7 +142,7 @@ pub async fn registration_options(
 pub async fn register(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<RegisterPasskeyRequest>,
 ) -> Result<(StatusCode, Json<RegisteredPasskeyResponse>), AppError> {
     let registered = passkey_svc::register(
@@ -175,13 +175,14 @@ pub async fn register(
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Recent re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such passkey on this account", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_needs_second_factor`: the account holds administrative permissions and this is its last second factor", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
 pub async fn remove(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(id): Path<Uuid>,
     body: Option<Json<CurrentPasswordRequest>>,
 ) -> Result<StatusCode, AppError> {

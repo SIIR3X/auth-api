@@ -46,6 +46,9 @@ pub struct RefreshRequest {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct VerifyEmailRequest {
     pub token: String,
+    /// The password chosen at the registration that sent the link: the link
+    /// proves the mailbox, the password proves which registration it activates.
+    pub password: String,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -165,7 +168,7 @@ pub async fn register(
 
     // Verify CAPTCHA if a secret is configured; skip silently otherwise.
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
-    captcha_svc::verify(&state, captcha_token).await?;
+    captcha_svc::verify(&state, captcha_token, ip).await?;
 
     auth_svc::register(
         &state,
@@ -196,7 +199,7 @@ pub async fn register(
     responses(
         (status = 200, description = "Tokens, or a two-factor challenge", body = LoginResponse),
         (status = 401, description = "Invalid credentials", body = crate::error::ErrorBody),
-        (status = 403, description = "Account locked, suspended or not verified", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive; a locked password and an account whose address is not verified answer 401 like a wrong password", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid input", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
@@ -219,7 +222,7 @@ pub async fn login(
     }
 
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
-    captcha_svc::verify(&state, captcha_token).await?;
+    captcha_svc::verify(&state, captcha_token, ip).await?;
 
     let result = auth_svc::login(
         &state,
@@ -317,7 +320,7 @@ pub async fn refresh(
     request_body = VerifyEmailRequest,
     responses(
         (status = 200, description = "Address verified"),
-        (status = 401, description = "Invalid or expired token", body = crate::error::ErrorBody),
+        (status = 401, description = "Invalid or expired token (`token_invalid`, `token_expired`), or not the password of the registration that sent this link (`invalid_credentials`)", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
@@ -327,7 +330,7 @@ pub async fn verify_email(
     RequestId(rid): RequestId,
     Json(body): Json<VerifyEmailRequest>,
 ) -> Result<StatusCode, AppError> {
-    auth_svc::verify_email(&state, &body.token, ip, rid).await?;
+    auth_svc::verify_email(&state, &body.token, &body.password, ip, rid).await?;
     Ok(StatusCode::OK)
 }
 
@@ -349,7 +352,7 @@ pub async fn resend_verification(
     Json(body): Json<ResendVerificationRequest>,
 ) -> Result<StatusCode, AppError> {
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
-    captcha_svc::verify(&state, captcha_token).await?;
+    captcha_svc::verify(&state, captcha_token, ip).await?;
 
     auth_svc::resend_verification(&state, &body.email, ip, ua.as_deref(), rid).await?;
     Ok(StatusCode::OK)
@@ -374,7 +377,7 @@ pub async fn request_magic_link(
     Json(body): Json<MagicLinkRequest>,
 ) -> Result<StatusCode, AppError> {
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
-    captcha_svc::verify(&state, captcha_token).await?;
+    captcha_svc::verify(&state, captcha_token, ip).await?;
 
     auth_svc::request_magic_link(&state, &body.email, ip, ua.as_deref(), rid).await?;
     Ok(StatusCode::OK)
@@ -388,7 +391,7 @@ pub async fn request_magic_link(
     responses(
         (status = 200, description = "Tokens, or the account's two-factor challenge", body = LoginResponse),
         (status = 401, description = "Invalid, used or expired link", body = crate::error::ErrorBody),
-        (status = 403, description = "Account locked, suspended or inactive", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive", body = crate::error::ErrorBody),
         (status = 404, description = "Sign-in links are not enabled on this deployment", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
@@ -431,7 +434,7 @@ pub async fn forgot_password(
     Json(body): Json<ForgotPasswordRequest>,
 ) -> Result<StatusCode, AppError> {
     let captcha_token = body.captcha_token.as_deref().unwrap_or("");
-    captcha_svc::verify(&state, captcha_token).await?;
+    captcha_svc::verify(&state, captcha_token, ip).await?;
 
     auth_svc::forgot_password(&state, &body.email, ip, ua.as_deref(), rid).await?;
     Ok(StatusCode::OK)
@@ -467,7 +470,7 @@ pub async fn reset_password(
     responses(
         (status = 200, description = "Tokens issued", body = TokensResponse),
         (status = 401, description = "Invalid code or pre-auth token", body = crate::error::ErrorBody),
-        (status = 403, description = "Account suspended or locked since the challenge", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive since the challenge", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
@@ -503,7 +506,7 @@ pub async fn complete_two_factor(
     responses(
         (status = 200, description = "Tokens issued", body = TokensResponse),
         (status = 401, description = "Invalid recovery code or pre-auth token", body = crate::error::ErrorBody),
-        (status = 403, description = "Account suspended or locked since the challenge", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive since the challenge", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
@@ -538,7 +541,7 @@ pub async fn recovery_login(
     responses(
         (status = 200, description = "Tokens issued", body = TokensResponse),
         (status = 401, description = "Invalid code or pre-auth token", body = crate::error::ErrorBody),
-        (status = 403, description = "Account suspended or locked since the challenge", body = crate::error::ErrorBody),
+        (status = 403, description = "Account suspended or inactive since the challenge", body = crate::error::ErrorBody),
         (status = 429, description = "Rate limited; see Retry-After"),
     ),
 )]
@@ -586,9 +589,12 @@ pub async fn resend_email_two_factor(
     // TOTP challenge would let a mailbox stand in for the authenticator app.
     pre_auth.expect_method(auth_svc::ChallengeMethod::Email)?;
     let user_id = pre_auth.user_id;
+    // A challenge resends at most twice, an account a few times an hour: a
+    // holder of the password cannot flood the owner's mailbox.
+    auth_svc::budget_email_resend(&state, &body.pre_auth_token, user_id).await?;
 
     // Fire-and-forget: errors are non-fatal to avoid enumeration via timing.
-    let _ = email_2fa_svc::send_code(&state, user_id).await;
+    let _ = email_2fa_svc::send_code(&state, user_id, Some(&body.pre_auth_token)).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -598,7 +604,7 @@ pub async fn resend_email_two_factor(
 const MAX_IDENTIFIER_LEN: usize = 254;
 /// Longest password accepted at login. Above the registration limit (128) so
 /// no existing account is refused, but bounded before Argon2 runs.
-const MAX_LOGIN_PASSWORD_LEN: usize = 256;
+const MAX_LOGIN_PASSWORD_LEN: usize = crate::utils::password::MAX_VERIFIED_PASSWORD_BYTES;
 
 /// Emails accepted for storage: syntactically valid and in the shape the
 /// `users_email_format` constraint accepts, so a bad address is a 422 rather

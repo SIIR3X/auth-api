@@ -9,7 +9,8 @@ CREATE TYPE login_failure_reason AS ENUM (
     'account_disabled',
     'two_factor_required',
     'two_factor_failed',
-    'rate_limited'
+    'rate_limited',
+    'account_locked'
 );
 
 CREATE TABLE login_attempts (

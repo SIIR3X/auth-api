@@ -382,12 +382,16 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
             sensitive_action_reauth_secs: 600,
             new_device_alerts: true,
             magic_links: false,
+            registrations_per_ip_per_hour: 10_000,
+            reset_revokes_factors_added_hours: 72,
         },
         captcha: CaptchaConfig {
             secret: None,
             verify_url: "https://hcaptcha.com/siteverify".into(),
             request_timeout_secs: 1,
             fail_open_on_error: true,
+            site_key: None,
+            expected_hostnames: Vec::new(),
         },
         cors: CorsConfig {
             allowed_origins: vec!["*".into()],
@@ -454,7 +458,9 @@ fn fallback_config(db_url: &str, redis_url: &str) -> Config {
         },
         metrics: MetricsConfig {
             enabled: false,
+            host: "127.0.0.1".into(),
             port: 9464,
+            token: None,
         },
     }
 }

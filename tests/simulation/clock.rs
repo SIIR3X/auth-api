@@ -53,11 +53,11 @@ async fn a_lockout_lifts_when_its_duration_has_passed() {
         assert_eq!(res.status().as_u16(), 401);
     }
     let locked = app.post("/auth/login", &login(&user.password)).await;
-    assert_eq!(locked.status().as_u16(), 403);
+    assert_eq!(locked.status().as_u16(), 401);
 
     app.clock.advance(Duration::minutes(29));
     let still_locked = app.post("/auth/login", &login(&user.password)).await;
-    assert_eq!(still_locked.status().as_u16(), 403);
+    assert_eq!(still_locked.status().as_u16(), 401);
 
     // Past the lockout and past the 15-minute brute-force window.
     app.clock.advance(Duration::minutes(2));

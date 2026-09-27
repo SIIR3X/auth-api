@@ -143,6 +143,7 @@ pub fn redirect_uri(data: &[u8]) {
         default_max_sessions: 1,
         client_secret_hash: None,
         allows_client_credentials: false,
+        allows_introspection: false,
     };
 
     if validate_redirect(&client, candidate).is_err() || registered.iter().any(|r| r == candidate) {
@@ -282,6 +283,9 @@ pub fn access_token(data: &[u8]) {
     }
 }
 
+/// The row the fixture ciphertext is bound to.
+const KEYRING_CONTEXT: &[u8] = b"fuzz-row";
+
 struct KeyringFixture {
     keyring: Keyring,
     plaintext: &'static str,
@@ -294,24 +298,37 @@ fn keyring_fixture() -> &'static KeyringFixture {
         let keyring = Keyring::new([7; 32], Some([9; 32]));
         let plaintext = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
         KeyringFixture {
-            ciphertext: keyring.encrypt(plaintext).expect("fixture ciphertext"),
+            ciphertext: keyring
+                .encrypt(plaintext, KEYRING_CONTEXT)
+                .expect("fixture ciphertext"),
             keyring,
             plaintext,
         }
     })
 }
 
-/// Secrets encrypted at rest: decryption never panics, and a ciphertext
-/// altered anywhere never decrypts to another plaintext.
+/// Secrets encrypted at rest: decryption never panics, a ciphertext altered
+/// anywhere never decrypts to another plaintext, and none decrypts for another
+/// row than its own.
 /// Layout: the input itself, then read as (position: u16, byte) edits.
 pub fn keyring(data: &[u8]) {
     let fixture = keyring_fixture();
 
     if let Some(input) = text(data) {
         let _ = fixture.keyring.needs_rotation(input);
-        if let Ok(plaintext) = fixture.keyring.decrypt(input) {
+        let _ = fixture.keyring.knows_key_of(input);
+        if let Ok(plaintext) = fixture.keyring.decrypt(input, KEYRING_CONTEXT) {
             assert_eq!(plaintext, fixture.plaintext, "forged ciphertext accepted");
         }
+        // Read as another row's context.
+        assert!(
+            fixture
+                .keyring
+                .decrypt(&fixture.ciphertext, input.as_bytes())
+                .is_err()
+                || input.as_bytes() == KEYRING_CONTEXT,
+            "a ciphertext decrypted for another row"
+        );
     }
 
     let mut ciphertext = fixture.ciphertext.clone().into_bytes();
@@ -320,7 +337,7 @@ pub fn keyring(data: &[u8]) {
         ciphertext[at] = *byte;
     }
     if let Ok(tampered) = String::from_utf8(ciphertext)
-        && let Ok(plaintext) = fixture.keyring.decrypt(&tampered)
+        && let Ok(plaintext) = fixture.keyring.decrypt(&tampered, KEYRING_CONTEXT)
     {
         assert_eq!(
             plaintext, fixture.plaintext,
@@ -335,10 +352,15 @@ pub fn totp_code(data: &[u8]) {
     let fixture = keyring_fixture();
     let secret = fixture
         .keyring
-        .encrypt("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+        .encrypt(
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            uuid::Uuid::nil().as_bytes(),
+        )
         .expect("secret");
     for now in [0, 59, TOKEN_ISSUED_AT] {
-        if totp::verify_code(&secret, code, &fixture.keyring, 1, now).unwrap_or(false) {
+        if totp::verify_code(&secret, uuid::Uuid::nil(), code, &fixture.keyring, 1, now)
+            .unwrap_or(false)
+        {
             assert!(
                 code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit()),
                 "{code:?} accepted as a TOTP code"

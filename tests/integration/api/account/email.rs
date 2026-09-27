@@ -6,7 +6,8 @@ use crate::common::{app::TestApp, fixtures};
 async fn email_change_full_flow_success() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 1).await;
-    let new_email = "new1@example.com";
+    // Unique per run: new addresses are budgeted globally, per target.
+    let new_email = &(fixtures::unique("new1_") + "@example.com");
 
     // Step 1: start - sends OTP to current email
     let res = app
@@ -122,7 +123,7 @@ async fn email_change_steps_cannot_be_skipped() {
         .post_auth(
             "/users/me/email/submit",
             &user.access_token,
-            &serde_json::json!({ "flow_token": flow_token, "new_email": "skip@example.com" }),
+            &serde_json::json!({ "flow_token": flow_token, "new_email": fixtures::unique("skip") + "@example.com" }),
         )
         .await;
     assert_eq!(res.status().as_u16(), 401);
@@ -176,7 +177,7 @@ async fn email_change_submit_invalid_email_format_rejected() {
 }
 
 #[tokio::test]
-async fn email_change_submit_taken_email_rejected() {
+async fn email_change_submit_taken_email_answers_like_a_free_one() {
     let app = TestApp::spawn().await;
     let user1 = fixtures::authenticated_user(&app, 5).await;
     let user2 = fixtures::authenticated_user(&app, 6).await;
@@ -202,6 +203,21 @@ async fn email_change_submit_taken_email_rejected() {
     )
     .await;
 
+    // The per-target budget is global, and this address is the same on every
+    // run: start from a clean one.
+    {
+        use deadpool_redis::redis::AsyncCommands;
+        let digest: String =
+            auth_api::utils::crypto::sha256(user1.email.to_ascii_lowercase().as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+        let mut conn = app.redis.get().await.unwrap();
+        let _: () = conn
+            .del(format!("ec_submit_target:{digest}"))
+            .await
+            .unwrap();
+    }
     let res = app
         .post_auth(
             "/users/me/email/submit",
@@ -209,7 +225,65 @@ async fn email_change_submit_taken_email_rejected() {
             &serde_json::json!({ "flow_token": flow_token, "new_email": user1.email }),
         )
         .await;
-    assert_eq!(res.status().as_u16(), 409);
+    // No oracle: the same answer as for a free address, and no code sent to
+    // the address of the other account.
+    assert_eq!(res.status().as_u16(), 204);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        app.mail
+            .messages_to(&user1.email)
+            .iter()
+            .all(|mail| mail.subject != "Confirm this address for your account"),
+        "a code went to the taken address"
+    );
+}
+
+/// Codes to new addresses are budgeted per account: the flow cannot send
+/// them to anyone in bulk.
+#[tokio::test]
+async fn email_change_submissions_are_budgeted() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 60).await;
+    let mut statuses = Vec::new();
+    for attempt in 0..4 {
+        app.clear_email_change_start_cooldown(user.id).await;
+        app.post_auth(
+            "/users/me/reauth",
+            &user.access_token,
+            &serde_json::json!({ "current_password": user.password }),
+        )
+        .await;
+        let started = app
+            .post_auth(
+                "/users/me/email/start",
+                &user.access_token,
+                &serde_json::json!({}),
+            )
+            .await;
+        let flow_token = started.json::<serde_json::Value>().await.unwrap()["flow_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let otp = app.read_email_change_otp(&flow_token).await;
+        app.post_auth(
+            "/users/me/email/verify-current",
+            &user.access_token,
+            &serde_json::json!({ "flow_token": flow_token, "code": otp }),
+        )
+        .await;
+        let res = app
+            .post_auth(
+                "/users/me/email/submit",
+                &user.access_token,
+                &serde_json::json!({
+                    "flow_token": flow_token,
+                    "new_email": fixtures::unique(&format!("target{attempt}")) + "@example.com",
+                }),
+            )
+            .await;
+        statuses.push(res.status().as_u16());
+    }
+    assert_eq!(statuses, [204, 204, 204, 429]);
 }
 
 // New-email OTP verification
@@ -218,7 +292,8 @@ async fn email_change_submit_taken_email_rejected() {
 async fn email_change_confirm_wrong_code_rejected() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 7).await;
-    let new_email = "confirm_wrong7@example.com";
+    // Unique per run: new addresses are budgeted globally, per target.
+    let new_email = &(fixtures::unique("confirm_wrong7_") + "@example.com");
 
     let flow_token = start_and_verify_current(&app, &user.access_token).await;
 
@@ -324,7 +399,8 @@ async fn email_change_requires_verified_email() {
 async fn email_change_cooldown_prevents_immediate_second_change() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 12).await;
-    let new_email = "cooldown12@example.com";
+    // Unique per run: new addresses are budgeted globally, per target.
+    let new_email = &(fixtures::unique("cooldown12_") + "@example.com");
 
     // Complete a full flow.
     run_full_flow(&app, &user, new_email).await;
@@ -344,7 +420,8 @@ async fn email_change_cooldown_prevents_immediate_second_change() {
 async fn email_change_cooldown_lifted_allows_new_flow() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 13).await;
-    let new_email = "cooldown_lifted13@example.com";
+    // Unique per run: new addresses are budgeted globally, per target.
+    let new_email = &(fixtures::unique("cooldown_lifted13_") + "@example.com");
 
     run_full_flow(&app, &user, new_email).await;
 
@@ -480,7 +557,7 @@ async fn email_change_confirm_new_lockout_after_max_failures() {
     app.post_auth(
         "/users/me/email/submit",
         &user.access_token,
-        &serde_json::json!({ "flow_token": flow_token, "new_email": "new13@example.com" }),
+        &serde_json::json!({ "flow_token": flow_token, "new_email": fixtures::unique("new13") + "@example.com" }),
     )
     .await;
 
@@ -505,4 +582,38 @@ async fn email_change_confirm_new_lockout_after_max_failures() {
         429,
         "6th wrong confirm OTP must return 429"
     );
+}
+
+/// A new flow opens no new search of the code space: wrong codes are budgeted
+/// per account across flows, and a flow starts at most once a minute (SEC-76).
+#[tokio::test]
+async fn email_change_codes_are_budgeted_across_flows() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 61).await;
+    let empty = serde_json::json!({});
+    let start = || app.post_auth("/users/me/email/start", &user.access_token, &empty);
+    assert_eq!(start().await.status().as_u16(), 200);
+    assert_eq!(start().await.status().as_u16(), 429, "one start a minute");
+
+    let mut last = 0;
+    for _ in 0..4 {
+        app.clear_email_change_start_cooldown(user.id).await;
+        let started = start().await;
+        let flow_token = started.json::<serde_json::Value>().await.unwrap()["flow_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for _ in 0..5 {
+            last = app
+                .post_auth(
+                    "/users/me/email/verify-current",
+                    &user.access_token,
+                    &serde_json::json!({ "flow_token": flow_token, "code": "000000" }),
+                )
+                .await
+                .status()
+                .as_u16();
+        }
+    }
+    assert_eq!(last, 429, "the account's budget outlives its flows");
 }

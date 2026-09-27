@@ -50,6 +50,17 @@ pub struct CreatedWebhookResponse {
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
+pub struct UpdatedWebhookResponse {
+    #[serde(flatten)]
+    pub webhook: WebhookResponse,
+    /// A new signing secret (`whsec_...`), shown once: present when the
+    /// endpoint now points at another host, whose previous secret stopped
+    /// signing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct WebhookSecretResponse {
     /// The new signing secret, shown once; the previous one stops signing now.
     pub secret: String,
@@ -119,7 +130,7 @@ fn input(body: &WebhookRequest) -> EndpointInput<'_> {
     responses(
         (status = 200, description = "Every webhook endpoint", body = [WebhookResponse]),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `webhooks:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `webhooks:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -140,7 +151,7 @@ pub async fn list(
     responses(
         (status = 201, description = "Endpoint registered; its signing secret is in this response only", body = CreatedWebhookResponse),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `webhooks:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `webhooks:manage`, or no second factor proven by the session, or re-authentication required", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid URL or unknown event", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -169,9 +180,9 @@ pub async fn create(
     params(("id" = Uuid, Path, description = "Webhook id")),
     request_body = WebhookRequest,
     responses(
-        (status = 200, description = "Endpoint updated; the secret is unchanged", body = WebhookResponse),
+        (status = 200, description = "Endpoint updated; a new secret is returned when it points at another host, otherwise the secret is unchanged", body = UpdatedWebhookResponse),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `webhooks:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `webhooks:manage`, or no second factor proven by the session, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such webhook", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid URL or unknown event", body = crate::error::ErrorBody),
     ),
@@ -183,10 +194,13 @@ pub async fn update(
     ClientIp(ip): ClientIp,
     Path(id): Path<Uuid>,
     Json(body): Json<WebhookRequest>,
-) -> Result<Json<WebhookResponse>, AppError> {
+) -> Result<Json<UpdatedWebhookResponse>, AppError> {
     admin.require(&state, "webhooks:manage").await?;
-    let endpoint = webhook_svc::update(&state, &actor(&admin, ip), id, &input(&body)).await?;
-    Ok(Json(webhook_response(endpoint)))
+    let saved = webhook_svc::update(&state, &actor(&admin, ip), id, &input(&body)).await?;
+    Ok(Json(UpdatedWebhookResponse {
+        webhook: webhook_response(saved.endpoint),
+        secret: saved.secret,
+    }))
 }
 
 #[utoipa::path(
@@ -197,7 +211,7 @@ pub async fn update(
     responses(
         (status = 204, description = "Endpoint and its pending deliveries removed"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `webhooks:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `webhooks:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such webhook", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -221,7 +235,7 @@ pub async fn delete(
     responses(
         (status = 200, description = "A new signing secret", body = WebhookSecretResponse),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `webhooks:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `webhooks:manage`, or no second factor proven by the session, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such webhook", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -245,7 +259,8 @@ pub async fn rotate_secret(
     responses(
         (status = 200, description = "The latest 100 deliveries, newest first", body = [WebhookDeliveryResponse]),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `webhooks:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `webhooks:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
+        (status = 404, description = "No such webhook", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -255,6 +270,10 @@ pub async fn deliveries(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<WebhookDeliveryResponse>>, AppError> {
     admin.require(&state, "webhooks:manage").await?;
+    // Like the routes beside it: an unknown endpoint is not found.
+    webhook_repo::find_endpoint(&state.db_read, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let deliveries = webhook_repo::find_recent_deliveries(&state.db_read, id, 100).await?;
     Ok(Json(
         deliveries.into_iter().map(delivery_response).collect(),
@@ -272,7 +291,7 @@ pub async fn deliveries(
     responses(
         (status = 204, description = "Delivery queued again with a fresh attempt budget"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `webhooks:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `webhooks:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such delivery for this webhook", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -280,9 +299,10 @@ pub async fn deliveries(
 pub async fn retry(
     admin: AdminUser,
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Path((id, delivery_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, AppError> {
     admin.require(&state, "webhooks:manage").await?;
-    webhook_svc::redeliver(&state, id, delivery_id).await?;
+    webhook_svc::redeliver(&state, &actor(&admin, ip), id, delivery_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -205,3 +205,80 @@ async fn a_refused_request_consumes_nothing() {
     assert_ne!(me().await, 429);
     assert_eq!(me().await, 429);
 }
+
+/// Every route accepting `current_password` guesses the password like
+/// `/users/me/reauth` does: it shares the strict bucket.
+#[tokio::test]
+async fn routes_taking_the_current_password_count_against_the_strict_bucket() {
+    // Registering, signing in and re-authenticating take the three first.
+    let app = TestApp::spawn_with_config(|config| {
+        config.rate_limit.auth_requests_per_minute = 3;
+    })
+    .await;
+    let user = crate::common::fixtures::authenticated_user(&app, 0).await;
+    app.clear_auth_rate_limit_key(&app.client_ip).await;
+
+    let body = serde_json::json!({
+        "current_password": "Not-The-Password-1!",
+        "new_password": "Brand-New-Pass-2!",
+    });
+    for _ in 0..3 {
+        let res = app
+            .patch_auth("/users/me/password", &user.access_token, &body)
+            .await;
+        assert_ne!(res.status().as_u16(), 429);
+    }
+    let res = app
+        .patch_auth("/users/me/password", &user.access_token, &body)
+        .await;
+    assert_eq!(res.status().as_u16(), 429);
+}
+
+/// A resource server introspecting from one address is bounded per client,
+/// not by the strict per-address bucket; wrong client secrets still are.
+#[tokio::test]
+async fn client_endpoints_are_bounded_per_client_and_per_wrong_secret() {
+    let app = TestApp::spawn_with_config(|config| {
+        config.rate_limit.auth_requests_per_minute = 1;
+    })
+    .await;
+    let secret = "aacs_resource-server-secret";
+    sqlx::query(
+        "INSERT INTO registered_clients (client_id, display_name, client_secret_hash)
+         VALUES ('resource-server', 'Resource server', $1)",
+    )
+    .bind(auth_api::utils::crypto::sha256(secret.as_bytes()).to_vec())
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let introspect = |secret: &'static str| {
+        let app = &app;
+        async move {
+            app.client
+                .post(app.url("/oauth/introspect"))
+                .basic_auth("resource-server", Some(secret))
+                .form(&[("token", "not-a-token")])
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+    for _ in 0..5 {
+        assert_eq!(
+            introspect(secret).await,
+            200,
+            "introspection is not strict-limited"
+        );
+    }
+    for _ in 0..20 {
+        assert_eq!(introspect("aacs_wrong").await, 401);
+    }
+    assert_eq!(
+        introspect("aacs_wrong").await,
+        429,
+        "wrong secrets are bounded"
+    );
+}

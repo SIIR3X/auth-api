@@ -1,7 +1,8 @@
 //! Everything stored about one account, as one JSON document: what
 //! `GET /users/me/export` returns. Built in one statement, so the parts are
 //! consistent with each other. Secrets (password hash, TOTP secret, token and
-//! code digests) are left out. Timestamps are Unix seconds, like the API.
+//! code digests, passkey keys) are left out, and so is what identifies an
+//! administrator who changed the account. Timestamps are Unix seconds, like the API.
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -79,13 +80,72 @@ SELECT jsonb_build_object(
         ) ORDER BY q.client_id)
         FROM user_client_quotas q WHERE q.user_id = $1
     ), '[]'::jsonb),
+    'passkeys', COALESCE((
+        SELECT jsonb_agg(jsonb_build_object(
+            'id', k.id,
+            'name', k.name,
+            'aaguid', k.aaguid,
+            'backed_up', k.backed_up,
+            'created_at', floor(extract(epoch FROM k.created_at))::bigint,
+            'last_used_at', floor(extract(epoch FROM k.last_used_at))::bigint
+        ) ORDER BY k.created_at)
+        FROM passkeys k WHERE k.user_id = $1
+    ), '[]'::jsonb),
+    'personal_access_tokens', COALESCE((
+        SELECT jsonb_agg(jsonb_build_object(
+            'id', t.id,
+            'name', t.name,
+            'scopes', to_jsonb(t.scopes),
+            'created_at', floor(extract(epoch FROM t.created_at))::bigint,
+            'expires_at', floor(extract(epoch FROM t.expires_at))::bigint,
+            'last_used_at', floor(extract(epoch FROM t.last_used_at))::bigint
+        ) ORDER BY t.created_at)
+        FROM personal_access_tokens t WHERE t.user_id = $1
+    ), '[]'::jsonb),
+    'external_identities', COALESCE((
+        SELECT jsonb_agg(jsonb_build_object(
+            'provider', x.provider,
+            'subject', x.subject,
+            'created_at', floor(extract(epoch FROM x.created_at))::bigint,
+            'last_used_at', floor(extract(epoch FROM x.last_used_at))::bigint
+        ) ORDER BY x.created_at)
+        FROM external_identities x WHERE x.user_id = $1
+    ), '[]'::jsonb),
+    -- Where each link mailed to the account was asked from.
+    'mailed_link_requests', COALESCE((
+        SELECT jsonb_agg(jsonb_build_object(
+            'kind', r.kind,
+            'requested_at', floor(extract(epoch FROM r.created_at))::bigint,
+            -- Anyone knowing the address can ask for a link: only the network
+            -- of the asker is shown, not a stranger's exact address.
+            'ip_address', host(network(set_masklen(r.request_ip,
+                CASE WHEN family(r.request_ip) = 4 THEN 24 ELSE 48 END))),
+            'user_agent', r.request_user_agent
+        ) ORDER BY r.created_at)
+        FROM (
+            SELECT 'verification' AS kind, created_at, request_ip, request_user_agent
+            FROM email_verification_tokens WHERE user_id = $1
+            UNION ALL
+            SELECT 'password_reset', created_at, request_ip, request_user_agent
+            FROM password_reset_tokens WHERE user_id = $1
+            UNION ALL
+            SELECT 'sign_in_link', created_at, request_ip, request_user_agent
+            FROM magic_link_tokens WHERE user_id = $1
+        ) r
+    ), '[]'::jsonb),
+    -- Failed attempts typed for the account include those of other people:
+    -- they are the account's security history and stay in its export.
     'sign_in_attempts', COALESCE((
         SELECT jsonb_agg(jsonb_build_object(
             'attempted_at', floor(extract(epoch FROM a.attempted_at))::bigint,
             'identifier', a.attempted_identifier,
             'successful', a.was_successful,
             'failure_reason', a.failure_reason,
-            'ip_address', host(a.request_ip),
+            -- A failed attempt may be anyone's: its network only. A successful
+            -- one was the owner's.
+            'ip_address', CASE WHEN a.was_successful THEN host(a.request_ip)
+                ELSE host(network(set_masklen(a.request_ip,
+                    CASE WHEN family(a.request_ip) = 4 THEN 24 ELSE 48 END))) END,
             'user_agent', a.request_user_agent
         ) ORDER BY a.attempted_at)
         FROM login_attempts a WHERE a.user_id = $1
@@ -95,9 +155,14 @@ SELECT jsonb_build_object(
             'id', l.id,
             'created_at', floor(extract(epoch FROM l.created_at))::bigint,
             'action', l.action,
-            'ip_address', host(l.ip_address),
+            -- An administrator's change names neither the administrator nor
+            -- the address they acted from: those are theirs, not the owner's.
+            'ip_address', CASE WHEN l.metadata->>'by' IN ('administrator', 'command_line')
+                THEN NULL ELSE host(l.ip_address) END,
             'request_id', l.request_id,
-            'metadata', l.metadata
+            -- Nor the operator account and host of a command-line change
+            -- (domain::audit::OPERATOR_FIELDS).
+            'metadata', l.metadata - 'administrator_id' - 'operator' - 'host'
         ) ORDER BY l.created_at, l.id)
         FROM audit_log l WHERE l.user_id = $1 AND l.created_at <= NOW()
     ), '[]'::jsonb)
@@ -109,8 +174,34 @@ pub async fn account_document(
     pool: &PgPool,
     user_id: Uuid,
 ) -> Result<Option<serde_json::Value>, sqlx::Error> {
-    sqlx::query_scalar(EXPORT_SQL)
+    let document: Option<serde_json::Value> = sqlx::query_scalar(EXPORT_SQL)
         .bind(user_id)
         .fetch_optional(pool)
-        .await
+        .await?;
+    Ok(document.map(coarsen_strangers_user_agents))
+}
+
+/// Link requests and failed sign-ins may be anyone's: like their address,
+/// reduced to its network, their user agent is reduced to its family ("Firefox
+/// on Linux"), which with the network no longer singles a stranger out.
+fn coarsen_strangers_user_agents(mut document: serde_json::Value) -> serde_json::Value {
+    let coarsen = |entry: &mut serde_json::Value| {
+        let family = crate::domain::known_device::device_family(
+            entry.get("user_agent").and_then(|ua| ua.as_str()),
+        )
+        .describe();
+        if entry.get("user_agent").is_some_and(|ua| !ua.is_null()) {
+            entry["user_agent"] = serde_json::Value::String(family);
+        }
+    };
+    if let Some(requests) = document["mailed_link_requests"].as_array_mut() {
+        requests.iter_mut().for_each(coarsen);
+    }
+    if let Some(attempts) = document["sign_in_attempts"].as_array_mut() {
+        attempts
+            .iter_mut()
+            .filter(|attempt| attempt["successful"] != serde_json::Value::Bool(true))
+            .for_each(coarsen);
+    }
+    document
 }

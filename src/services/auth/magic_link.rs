@@ -52,20 +52,12 @@ async fn send_link(
     user_agent: Option<&str>,
     request_id: Option<Uuid>,
 ) -> Result<(), AppError> {
-    let account_key = format!("ml_account:{}", user.id);
-    if budget_exhausted(
-        state,
-        &account_key,
-        MAX_MAGIC_LINKS_BY_ACCOUNT,
-        MAGIC_LINK_ACCOUNT_WINDOW_SECS,
-    )
-    .await
-    {
+    if mailbox_budget_exhausted(state, "ml_account", user.id, ip, MAGIC_LINK_EXPIRY_SECS).await {
         return Ok(());
     }
 
     let raw_token = crypto::generate_token();
-    token::replace_magic_link(
+    token::add_magic_link(
         &state.db,
         user.id,
         &crypto::sha256(raw_token.as_bytes()),
@@ -135,7 +127,7 @@ pub async fn complete_magic_link(
     let user = user_repo::find_by_id(&state.db, record.user_id)
         .await?
         .ok_or(AppError::TokenInvalid)?;
-    ensure_account_usable(&user, state.clock.now())?;
+    ensure_account_usable(&user)?;
 
     first_factor_proven(
         state,

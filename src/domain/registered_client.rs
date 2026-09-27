@@ -29,6 +29,8 @@ pub struct RegisteredClient {
     pub client_secret_hash: Option<Vec<u8>>,
     /// May obtain tokens for itself with the client credentials grant.
     pub allows_client_credentials: bool,
+    /// A resource server: may introspect the access tokens of others.
+    pub allows_introspection: bool,
 }
 
 impl RegisteredClient {
@@ -98,6 +100,27 @@ pub fn is_valid_client_id(client_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
+/// Whether a redirect URI may be registered: `https`, `http` on a loopback
+/// address, or a private-use scheme in reverse domain form (RFC 8252 section
+/// 7.1). `javascript:`, `data:`, `file:` and the like would run in, or read
+/// from, whatever the user agent follows them with.
+pub fn is_allowed_redirect_scheme(uri: &reqwest::Url) -> bool {
+    match uri.scheme() {
+        "https" => uri.host().is_some(),
+        "http" => uri
+            .host_str()
+            .map(|host| host.trim_start_matches('[').trim_end_matches(']'))
+            .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+            .is_some_and(|ip| ip.is_loopback()),
+        scheme => {
+            scheme.contains('.')
+                && !["javascript", "data", "vbscript", "file", "blob", "about"]
+                    .iter()
+                    .any(|forbidden| scheme.eq_ignore_ascii_case(forbidden))
+        }
+    }
+}
+
 /// Check client settings before they are stored, with a message for the caller.
 pub fn check_settings(
     client_id: &str,
@@ -112,7 +135,24 @@ pub fn check_settings(
         return Err("name must be 1 to 200 characters".into());
     }
     for uri in redirect_uris {
-        reqwest::Url::parse(uri).map_err(|e| format!("invalid redirect uri {uri}: {e}"))?;
+        let parsed =
+            reqwest::Url::parse(uri).map_err(|e| format!("invalid redirect uri {uri}: {e}"))?;
+        // RFC 6749 section 3.1.2: no fragment; and no credentials, which
+        // would travel in every redirect.
+        if parsed.fragment().is_some()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return Err(format!(
+                "redirect uri {uri}: no fragment and no user or password"
+            ));
+        }
+        if !is_allowed_redirect_scheme(&parsed) {
+            return Err(format!(
+                "redirect uri {uri}: use https, http on 127.0.0.1 or [::1], or a private-use \
+                 scheme containing a dot (RFC 8252)"
+            ));
+        }
     }
     if default_max_sessions <= 0 {
         return Err("max sessions must be a positive number".into());
@@ -120,9 +160,99 @@ pub fn check_settings(
     Ok(())
 }
 
+/// Audit metadata of a saved client: its id, and for each setting that
+/// changed, the value before and after. Redirect URIs are reduced to their
+/// hosts: a path or query may carry something of the client's own.
+pub fn audit_changes(
+    previous: Option<&RegisteredClient>,
+    saved: &RegisteredClient,
+) -> serde_json::Value {
+    fn hosts(uris: &[String]) -> Vec<String> {
+        let mut hosts: Vec<String> = uris
+            .iter()
+            .filter_map(|uri| reqwest::Url::parse(uri).ok())
+            .filter_map(|url| url.host_str().map(str::to_owned))
+            .collect();
+        hosts.sort();
+        hosts.dedup();
+        hosts
+    }
+    let mut changes = serde_json::Map::new();
+    let mut compare = |field: &str, before: serde_json::Value, after: serde_json::Value| {
+        if before != after {
+            changes.insert(
+                field.to_owned(),
+                serde_json::json!({ "before": before, "after": after }),
+            );
+        }
+    };
+    let null = serde_json::Value::Null;
+    compare(
+        "redirect_hosts",
+        previous.map_or(null.clone(), |p| serde_json::json!(hosts(&p.redirect_uris))),
+        serde_json::json!(hosts(&saved.redirect_uris)),
+    );
+    compare(
+        "scopes",
+        previous.map_or(null.clone(), |p| serde_json::json!(p.scopes)),
+        serde_json::json!(saved.scopes),
+    );
+    compare(
+        "is_primary",
+        previous.map_or(null.clone(), |p| serde_json::json!(p.is_primary)),
+        serde_json::json!(saved.is_primary),
+    );
+    compare(
+        "allows_client_credentials",
+        previous.map_or(null.clone(), |p| {
+            serde_json::json!(p.allows_client_credentials)
+        }),
+        serde_json::json!(saved.allows_client_credentials),
+    );
+    compare(
+        "allows_introspection",
+        previous.map_or(null.clone(), |p| serde_json::json!(p.allows_introspection)),
+        serde_json::json!(saved.allows_introspection),
+    );
+    compare(
+        "allows_loopback_redirect",
+        previous.map_or(null, |p| serde_json::json!(p.allows_loopback_redirect)),
+        serde_json::json!(saved.allows_loopback_redirect),
+    );
+    serde_json::json!({ "client_id": saved.client_id, "changes": changes })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_safe_redirect_schemes_are_registered() {
+        for allowed in [
+            "https://app.example.com/cb",
+            "http://127.0.0.1/cb",
+            "http://[::1]:8080/cb",
+            "com.example.app:/callback",
+        ] {
+            assert!(
+                is_allowed_redirect_scheme(&reqwest::Url::parse(allowed).unwrap()),
+                "{allowed}"
+            );
+        }
+        for refused in [
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "file:///etc/passwd",
+            "vbscript:msgbox",
+            "http://app.example.com/cb",
+            "myapp:/callback",
+        ] {
+            assert!(
+                !is_allowed_redirect_scheme(&reqwest::Url::parse(refused).unwrap()),
+                "{refused}"
+            );
+        }
+    }
 
     fn client(is_primary: bool, scopes: &[&str]) -> RegisteredClient {
         RegisteredClient {
@@ -136,6 +266,7 @@ mod tests {
             default_max_sessions: 2,
             client_secret_hash: None,
             allows_client_credentials: false,
+            allows_introspection: false,
         }
     }
 

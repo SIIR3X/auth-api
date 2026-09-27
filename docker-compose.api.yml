@@ -3,8 +3,8 @@
 #
 # Sizing comes from a profile passed with --env-file (deploy/profiles/s.env,
 # m.env or l.env): CPU and memory per instance, Argon2 concurrency, pool sizes,
-# broker limits. Secrets are exported from pass before running (see
-# docs/deploy/guides/update.md). scripts/rolling-update.sh replaces the
+# broker limits. Secrets are exported from pass and written to root-only files
+# by scripts/write-secrets.sh before running (see docs/deploy/guides/update.md). scripts/rolling-update.sh replaces the
 # instances one at a time, so an update never stops the service.
 
 x-api: &api
@@ -12,25 +12,44 @@ x-api: &api
   image: auth-api:${AUTH_API_VERSION:?set AUTH_API_VERSION to the release being deployed}
   env_file: config.prod.env
   environment:
-    # Secrets, exported from pass. `:?` stops compose when one is missing.
-    DATABASE_URL: ${DATABASE_URL:?export DATABASE_URL}
-    REDIS_URL: ${REDIS_URL:?export REDIS_URL}
-    JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?export JWT_PRIVATE_KEY}
-    JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?export JWT_PUBLIC_KEY}
-    # Only during a key rotation; empty means unset.
-    JWT_PREVIOUS_PUBLIC_KEY: ${JWT_PREVIOUS_PUBLIC_KEY:-}
-    JWT_NEXT_PUBLIC_KEY: ${JWT_NEXT_PUBLIC_KEY:-}
-    ENCRYPTION_KEY: ${ENCRYPTION_KEY:?export ENCRYPTION_KEY}
-    PREVIOUS_ENCRYPTION_KEY: ${PREVIOUS_ENCRYPTION_KEY:-}
-    SMTP_USERNAME: ${SMTP_USERNAME:?export SMTP_USERNAME}
-    SMTP_PASSWORD: ${SMTP_PASSWORD:?export SMTP_PASSWORD}
-    CAPTCHA_SECRET: ${CAPTCHA_SECRET:?export CAPTCHA_SECRET}
+    # Secrets are files written by scripts/write-secrets.sh and mounted below:
+    # each variable X is read from the file named by X_FILE, so the values
+    # appear neither in `docker inspect` nor in the process environment. An
+    # optional secret (a rotation's previous or next key) is an empty file
+    # outside a rotation.
+    DATABASE_URL_FILE: /run/secrets/database_url
+    REDIS_URL_FILE: /run/secrets/redis_url
+    JWT_PRIVATE_KEY_FILE: /run/secrets/jwt_private_key
+    JWT_PUBLIC_KEY_FILE: /run/secrets/jwt_public_key
+    JWT_PREVIOUS_PUBLIC_KEY_FILE: /run/secrets/jwt_previous_public_key
+    JWT_NEXT_PUBLIC_KEY_FILE: /run/secrets/jwt_next_public_key
+    ENCRYPTION_KEY_FILE: /run/secrets/encryption_key
+    PREVIOUS_ENCRYPTION_KEY_FILE: /run/secrets/previous_encryption_key
+    SMTP_USERNAME_FILE: /run/secrets/smtp_username
+    SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+    CAPTCHA_SECRET_FILE: /run/secrets/captcha_secret
     # nats://<token>@nats:4222, the token of nats-auth.conf.
-    NATS_URL: ${NATS_URL:?export NATS_URL}
+    NATS_URL_FILE: /run/secrets/nats_url
+    # Bearer token of the internal listener, given to Prometheus too.
+    METRICS_TOKEN_FILE: /run/secrets/metrics_token
     # Sizing, from the profile.
     ARGON2_MAX_CONCURRENCY: ${ARGON2_MAX_CONCURRENCY:?pass a profile with --env-file}
     DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:?pass a profile with --env-file}
     REDIS_POOL_SIZE: ${REDIS_POOL_SIZE:?pass a profile with --env-file}
+  secrets:
+    - database_url
+    - redis_url
+    - jwt_private_key
+    - jwt_public_key
+    - jwt_previous_public_key
+    - jwt_next_public_key
+    - encryption_key
+    - previous_encryption_key
+    - smtp_username
+    - smtp_password
+    - captcha_secret
+    - nats_url
+    - metrics_token
   restart: unless-stopped
   # The app writes nothing to disk (logs go to stdout, templates are read-only),
   # needs no Linux capability and must not gain privileges.
@@ -111,6 +130,13 @@ services:
     secrets:
       - source: nats_auth
         target: /etc/nats/auth.conf
+    # The exporter shares this network namespace to read the monitoring
+    # endpoint, which listens on loopback only: its port is published here.
+    ports:
+      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:7777:7777"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
     cap_drop:
       - ALL
     security_opt:
@@ -126,8 +152,9 @@ services:
         limits:
           cpus: "${NATS_CPUS:?pass a profile with --env-file}"
           memory: ${NATS_MEMORY:?pass a profile with --env-file}
+          pids: 128
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8222/healthz"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -138,9 +165,10 @@ services:
   nats-exporter:
     image: natsio/prometheus-nats-exporter:0.20.2@sha256:c623b608e148e31e1c1c878673a197f1828e58ce90de4f01d22f1baa84c8fee9
     restart: unless-stopped
-    command: ["-varz", "-jsz=all", "http://nats:8222"]
-    ports:
-      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:7777:7777"
+    command: ["-varz", "-jsz=all", "http://127.0.0.1:8222"]
+    # In the broker's network namespace: the monitoring endpoint is not on the
+    # compose network, where any container could read connections and streams.
+    network_mode: "service:nats"
     read_only: true
     cap_drop:
       - ALL
@@ -156,13 +184,39 @@ services:
         limits:
           cpus: "0.1"
           memory: 32M
+          pids: 32
     depends_on:
       nats:
         condition: service_healthy
-    networks:
-      - auth-api
 
 secrets:
+  # The application's secrets (scripts/write-secrets.sh).
+  database_url:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/database_url
+  redis_url:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/redis_url
+  jwt_private_key:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/jwt_private_key
+  jwt_public_key:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/jwt_public_key
+  jwt_previous_public_key:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/jwt_previous_public_key
+  jwt_next_public_key:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/jwt_next_public_key
+  encryption_key:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/encryption_key
+  previous_encryption_key:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/previous_encryption_key
+  smtp_username:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/smtp_username
+  smtp_password:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/smtp_password
+  captcha_secret:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/captcha_secret
+  nats_url:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/nats_url
+  metrics_token:
+    file: ${AUTH_API_SECRETS_DIR:-/etc/auth-api/secrets}/metrics_token
   nats_auth:
     # authorization { token: "..." }, written from pass, mode 0600
     # (docs/deploy/api/secrets.md).
@@ -176,8 +230,9 @@ volumes:
 # application sees the bridge gateway (172.30.0.1) as its peer - not
 # 127.0.0.1. TRUSTED_PROXY_CIDRS in config.prod.env must name that gateway,
 # or X-Forwarded-For is ignored and every client shares one rate-limit bucket.
-# Any process on the host can send a forged X-Forwarded-For through those ports:
-# keep shell access to the API VPS to the operators.
+# Any process on the host could send a forged X-Forwarded-For through those
+# ports, or straight to the instances on this subnet: the rule of
+# deploy/api/nftables-auth-api.conf lets only nginx and root through both.
 networks:
   auth-api:
     driver: bridge

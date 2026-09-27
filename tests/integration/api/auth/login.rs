@@ -270,6 +270,9 @@ async fn login_unknown_user() {
 }
 
 #[tokio::test]
+/// An account whose address is not verified answers like a wrong password,
+/// even to the right one, and its owner gets a new link: a distinct answer
+/// would tell who registered an address whether it had an account (SEC-83).
 async fn login_unverified_email() {
     let app = TestApp::spawn().await;
 
@@ -286,7 +289,16 @@ async fn login_unverified_email() {
         )
         .await;
 
-    assert_eq!(res.status().as_u16(), 403);
+    assert_eq!(res.status().as_u16(), 401);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["code"], "invalid_credentials");
+    let links: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM email_verification_tokens WHERE user_id = $1")
+            .bind(user.id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+    assert!(links >= 2, "a new verification link went out");
 }
 
 #[tokio::test]
@@ -330,4 +342,45 @@ async fn logout_invalidates_token() {
         "expected 401 or 403 after logout, got {}",
         res2.status()
     );
+}
+
+/// Raising `ARGON2_*` protects existing accounts as they sign in: a stored
+/// hash weaker than the configuration is replaced after a successful sign-in.
+#[tokio::test]
+async fn a_weaker_password_hash_is_replaced_after_sign_in() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::register_user(&app, 950).await;
+    fixtures::activate_user(&app.db, user.id).await;
+    let mut weak = app.state.config.crypto.clone();
+    weak.argon2_memory_kib = 1024;
+    let weak_hash = auth_api::utils::password::hash(&user.password, &weak).unwrap();
+    sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
+        .bind(user.id)
+        .bind(&weak_hash)
+        .execute(&app.db)
+        .await
+        .unwrap();
+
+    let response = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await;
+    assert_eq!(response.status().as_u16(), 200);
+
+    let configured = format!("m={}", app.state.config.crypto.argon2_memory_kib);
+    for _ in 0..50 {
+        let stored: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        if stored.contains(&configured) {
+            assert!(auth_api::utils::password::verify(&user.password, &stored).unwrap());
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("the weaker hash was not replaced");
 }

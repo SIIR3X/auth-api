@@ -32,28 +32,22 @@ pub struct RotationResult {
     pub failed: usize,
 }
 
-/// Rewrite every TOTP secret under the current key. Fails fast when no
-/// previous key is configured or when it equals the current one.
+/// Rewrite every TOTP and webhook secret that is not yet a `v2` ciphertext
+/// under the current key. Without `PREVIOUS_ENCRYPTION_KEY` it upgrades the
+/// older formats in place (binding each secret to its row); with it, it also
+/// moves secrets off the previous key. Fails fast when the previous key equals
+/// the current one.
 pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResult, AppError> {
-    let previous = state
-        .config
-        .crypto
-        .previous_encryption_key
-        .as_deref()
-        .ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!(
-                "PREVIOUS_ENCRYPTION_KEY must be set to run key rotation"
-            ))
-        })?;
-
-    let old_key =
-        crypto::decode_encryption_key(previous).map_err(|e| AppError::Internal(e.into()))?;
-    let new_key = crypto::decode_encryption_key(&state.config.crypto.encryption_key)
-        .map_err(|e| AppError::Internal(e.into()))?;
-    if old_key == new_key {
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "PREVIOUS_ENCRYPTION_KEY and ENCRYPTION_KEY are identical - nothing to rotate"
-        )));
+    if let Some(previous) = state.config.crypto.previous_encryption_key.as_deref() {
+        let old_key =
+            crypto::decode_encryption_key(previous).map_err(|e| AppError::Internal(e.into()))?;
+        let new_key = crypto::decode_encryption_key(&state.config.crypto.encryption_key)
+            .map_err(|e| AppError::Internal(e.into()))?;
+        if old_key == new_key {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "PREVIOUS_ENCRYPTION_KEY and ENCRYPTION_KEY are identical - nothing to rotate"
+            )));
+        }
     }
 
     let keyring = &state.keyring;
@@ -73,9 +67,10 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
             skipped += 1;
             continue;
         }
+        let context = endpoint.id.as_bytes();
         let reencrypted = match keyring
-            .decrypt(&endpoint.secret)
-            .and_then(|plaintext| keyring.encrypt(&plaintext))
+            .decrypt(&endpoint.secret, context)
+            .and_then(|plaintext| keyring.encrypt(&plaintext, context))
         {
             Ok(value) => value,
             Err(e) => {
@@ -96,15 +91,15 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
         }
     }
 
-    for (id, stored) in methods {
+    for (id, user_id, stored) in methods {
         if !keyring.needs_rotation(&stored) {
             skipped += 1;
             continue;
         }
 
         let reencrypted = match keyring
-            .decrypt(&stored)
-            .and_then(|plaintext| keyring.encrypt(&plaintext))
+            .decrypt(&stored, user_id.as_bytes())
+            .and_then(|plaintext| keyring.encrypt(&plaintext, user_id.as_bytes()))
         {
             Ok(value) => value,
             Err(e) => {
@@ -134,6 +129,7 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
             action: AuditAction::EncryptionKeyRotated,
             ip_address: None,
             metadata: json!({
+                "origin": crate::cli::command_line_origin(),
                 "scope": "totp_and_webhook_secrets",
                 "key_id": keyring.current_kid(),
                 "total": total,
@@ -151,4 +147,28 @@ pub async fn rotate_totp_encryption_key(state: &AppState) -> Result<RotationResu
         skipped,
         failed,
     })
+}
+
+/// Secrets (TOTP, webhook) that cannot be read: under a key the keyring does
+/// not hold, or in a format older than `v2`, which does not bind a secret to
+/// its row and is no longer read.
+pub async fn secrets_under_unknown_keys(state: &AppState) -> Result<usize, AppError> {
+    let kids: Vec<String> = state
+        .keyring
+        .kids()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT
+             (SELECT count(*) FROM two_factor_methods
+               WHERE totp_secret IS NOT NULL
+                 AND (totp_secret !~ '^v2:' OR split_part(totp_secret, ':', 2) <> ALL($1)))
+           + (SELECT count(*) FROM webhook_endpoints
+               WHERE secret !~ '^v2:' OR split_part(secret, ':', 2) <> ALL($1))",
+    )
+    .bind(&kids)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(usize::try_from(count).unwrap_or(0))
 }

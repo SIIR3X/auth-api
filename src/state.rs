@@ -77,6 +77,9 @@ pub struct AppState {
     /// JWKS document served at /.well-known/jwks.json, precomputed at startup
     /// (current key first, previous key appended during rotation windows).
     pub jwt_jwks: Arc<serde_json::Value>,
+    /// The last public readiness answer and when it was taken: a flood of
+    /// `GET /ready` costs one database query and one Redis ping per second.
+    pub readiness_cache: Arc<tokio::sync::Mutex<Option<(std::time::Instant, bool)>>>,
 }
 
 /// JWT key material parsed once at startup.
@@ -166,6 +169,7 @@ impl AppState {
             jwt_verifying_keys: Arc::new(jwt_keys.verifying_keys),
             jwt_kid: jwt_keys.kid,
             jwt_jwks: jwt_keys.jwks,
+            readiness_cache: Arc::default(),
             config: Arc::new(config),
         })
     }
@@ -247,6 +251,7 @@ fn parse_jwt_keys(config: &Config) -> Result<JwtKeys, AppStateError> {
     // (until the tokens it signed have expired).
     let mut jwks_keys = vec![jwt::public_key_to_jwk(&p256_key, &kid)];
     let mut verifying = vec![(kid.clone(), verifying_key.clone())];
+    let mut points = vec![(kid.clone(), p256_key.to_encoded_point(false))];
     for (variable, pem) in [
         ("JWT_NEXT_PUBLIC_KEY", config.jwt.next_public_key.as_deref()),
         (
@@ -258,9 +263,20 @@ fn parse_jwt_keys(config: &Config) -> Result<JwtKeys, AppStateError> {
         let key = jwt::parse_verifying_key(pem).map_err(|e| invalid(variable, e))?;
         let p256 = jwt::parse_p256_verifying_key(pem).map_err(|e| invalid(variable, e))?;
         let extra_kid = jwt::compute_kid(&p256);
-        if verifying.iter().any(|(held, _)| *held == extra_kid) {
-            continue;
+        let point = p256.to_encoded_point(false);
+        match points.iter().find(|(held, _)| *held == extra_kid) {
+            // The same key named twice (a rotation not started yet).
+            Some((_, held)) if *held == point => continue,
+            // Two keys under one kid: one of them would be silently ignored.
+            Some(_) => {
+                return Err(AppStateError::Config(ConfigError::Invalid {
+                    key: variable.into(),
+                    reason: "this key shares its key id with another configured key".into(),
+                }));
+            }
+            None => {}
         }
+        points.push((extra_kid.clone(), point));
         jwks_keys.push(jwt::public_key_to_jwk(&p256, &extra_kid));
         verifying.push((extra_kid, key));
     }
@@ -285,8 +301,13 @@ async fn build_pg_pool(cfg: &DatabaseConfig) -> Result<PgPool, sqlx::Error> {
         .await
 }
 
+/// The client for outgoing calls: CAPTCHA verification, the breached-password
+/// range API and external identity providers. Redirects are not followed: a
+/// token endpoint answering with one would otherwise receive the client
+/// secret, code and verifier again at whatever host it names.
 fn build_http_client(cfg: &CaptchaConfig) -> Result<Client, reqwest::Error> {
     Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(cfg.request_timeout_secs))
         .timeout(Duration::from_secs(cfg.request_timeout_secs))
         .build()

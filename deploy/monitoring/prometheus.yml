@@ -18,6 +18,11 @@ scrape_configs:
   # The API instances (metrics listener of docker-compose.api.yml). Each one
   # also publishes its container's memory, limit and CPU throttling.
   - job_name: auth-api
+    # The internal listener requires METRICS_TOKEN (pass
+    # prod/auth-api/metrics-token), written to this file on the monitoring host.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/auth-api-metrics-token
     static_configs:
       # Profile L: add 10.0.0.1:9467 and 10.0.0.1:9468.
       - targets: ["10.0.0.1:9465", "10.0.0.1:9466"]

@@ -106,36 +106,37 @@ the copy rather than `config.prod.env`.
 ### 1.5 Run the migrations
 
 ```bash
-DATABASE_URL=$(pass prod/auth-api/database-url) \
+DATABASE_URL=$(pass prod/auth-api/database-owner-url) \
   sqlx migrate run --source /srv/auth-api/releases/auth-api-X.Y.Z/migrations
 ```
 
 ---
 
-### 1.6 Export secrets and start
+### 1.6 Write the secrets and start
+
+`write-secrets.sh` reads each secret from pass into its file under
+`/etc/auth-api/secrets`, without exporting it (see [Secrets](secrets.md)).
 
 ```bash
 cd /srv/auth-api
 export AUTH_API_VERSION=X.Y.Z
-export DATABASE_URL=$(pass prod/auth-api/database-url)
-export REDIS_URL=$(pass prod/auth-api/redis-url)
-export JWT_PRIVATE_KEY=$(pass prod/auth-api/jwt-private-key)
-export JWT_PUBLIC_KEY=$(pass prod/auth-api/jwt-public-key)
-export ENCRYPTION_KEY=$(pass prod/auth-api/encryption-key)
-export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
-export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
-export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
-export NATS_URL=$(pass prod/auth-api/nats-url)
+./write-secrets.sh
 # Owned by root: the broker runs without capabilities (see Secrets)
 sudo install -m 600 -o root -g root /dev/null nats-auth.conf
 printf 'authorization { token: "%s" }\n' "$(pass prod/auth-api/nats-auth-token)" \
   | sudo tee nats-auth.conf > /dev/null
 
 docker compose --env-file profile.env -f docker-compose.api.yml up -d --wait
-curl -fsS http://127.0.0.1:3001/ready && curl -fsS http://127.0.0.1:3002/ready
+sudo curl -fsS http://127.0.0.1:3001/ready && sudo curl -fsS http://127.0.0.1:3002/ready
 ```
 
 Both instances must answer `/ready` before nginx is pointed at them.
+
+Only nginx and root may connect to the published ports: the application
+trusts `X-Forwarded-For` from them, so any other local process could forge a
+client address. Install the rule of `deploy/api/nftables-auth-api.conf` (its
+header gives the commands and the check); the rolling update runs as root
+(`sudo -E ./rolling-update.sh`) for its readiness checks.
 
 ---
 

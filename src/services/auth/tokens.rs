@@ -9,6 +9,9 @@ pub(crate) struct SignIn<'a> {
     pub identifier: Option<&'a str>,
     pub request_id: Option<Uuid>,
     pub audit_metadata: serde_json::Value,
+    /// The sign-in proved a second factor (TOTP, email code, recovery code,
+    /// passkey with user verification).
+    pub second_factor: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -36,6 +39,9 @@ pub(crate) async fn issue_tokens(
     );
 
     let device_name = device_name.and_then(crate::domain::session::device_label);
+    let mfa = sign_in
+        .as_ref()
+        .is_some_and(|sign_in| sign_in.second_factor);
 
     // The session and the sign-in records commit together: one round of
     // fsync instead of four, and no session without its audit trail.
@@ -60,6 +66,7 @@ pub(crate) async fn issue_tokens(
             client_id,
             family_created_at: None,
             scopes,
+            mfa,
         },
     )
     .await
@@ -137,7 +144,15 @@ pub(crate) async fn issue_tokens(
     // password login, an approved device, a 2FA challenge) has not re-proven
     // knowledge of the password for sensitive actions. Only an explicit
     // `POST /users/me/reauth` or a `current_password` in the request does.
-    let access_token = build_access_token(user_id, session.id, scopes, state).await?;
+    let access_token = build_access_token(
+        user_id,
+        session.id,
+        scopes,
+        session.client_id.as_deref(),
+        &session.session_type,
+        state,
+    )
+    .await?;
 
     Ok(AuthTokens {
         access_token,
@@ -190,6 +205,8 @@ pub(crate) async fn build_access_token(
     user_id: Uuid,
     session_id: uuid::Uuid,
     scopes: Option<&[String]>,
+    client_id: Option<&str>,
+    session_type: &SessionType,
     state: &AppState,
 ) -> Result<String, AppError> {
     let issued_at = state.clock.now();
@@ -207,11 +224,36 @@ pub(crate) async fn build_access_token(
     // that client, re-evaluated against the user's current permissions on every
     // issue and refresh. Roles are dropped: a resource server authorizing by
     // role would otherwise grant more than the consent covered.
-    let (role_names, permission_names) =
-        crate::domain::registered_client::restrict_to_consent(role_names, permission_names, scopes);
+    //
+    // The consent is also narrowed to what the client may ask for today: an
+    // administrator taking a scope back from a client takes it back from the
+    // sessions it already holds, at their next refresh.
+    let client = match client_id {
+        Some(client_id) => crate::repositories::registered_client::find_by_id(&state.db, client_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?,
+        None => None,
+    };
+    let current = client.as_ref().map(|client| client.scopes.clone());
+    let narrowed = crate::domain::oauth::within_client_scopes(scopes, current.as_deref());
+    let (role_names, permission_names) = crate::domain::registered_client::restrict_to_consent(
+        role_names,
+        permission_names,
+        narrowed.as_deref(),
+    );
+    // A third-party client never carries the account's roles, even
+    // unrestricted: resource servers authorizing by role would treat it as the
+    // account. Only the instance's own application (the primary client) does.
+    let role_names = if client.as_ref().is_some_and(|client| !client.is_primary) {
+        Vec::new()
+    } else {
+        role_names
+    };
 
     let mut claims = Claims::new(user_id, session_id, issued_at.unix_timestamp(), exp)
         .with_rbac(role_names, permission_names);
+    claims.client_id = client_id.map(str::to_owned);
+    claims.session_type = Some(session_type.as_str().to_owned());
     // Stamp iss/aud so downstream resource servers can pin
     // the token to this issuer and to themselves. `aud` is emitted as a JSON
     // array so a single token can be accepted by multiple downstream services.
@@ -299,7 +341,8 @@ pub async fn is_jti_blocked(state: &AppState, jti: Uuid) -> Result<bool, AppErro
 }
 
 /// Check that an access token was neither revoked nor issued for a session
-/// that has ended.
+/// that has ended, and tell whether that session is first party
+/// ([`crate::domain::session::is_first_party`]).
 ///
 /// The JTI blocklist and the session-validity cache are read in one pipeline,
 /// one round trip on every authenticated request. On a cache miss the session
@@ -315,7 +358,7 @@ pub async fn verify_token_state(
     state: &AppState,
     jti: Uuid,
     session_id: Uuid,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let blocklist_key = format!("{JTI_BLOCKLIST_PREFIX}{jti}");
     let cache_key = format!("{SESSION_CACHE_PREFIX}{session_id}");
 
@@ -335,10 +378,10 @@ pub async fn verify_token_state(
             AppError::ServiceUnavailable("redis_query_failed")
         })?;
 
-    let active = match token_state(blocked, cached) {
+    let (active, first_party) = match token_state(blocked, cached) {
         TokenState::Revoked => return Err(AppError::TokenInvalid),
-        TokenState::Active => true,
-        TokenState::Ended => false,
+        TokenState::Active { first_party } => (true, first_party),
+        TokenState::Ended => (false, false),
         TokenState::Unknown => {
             // A database failure is an outage (503), not a revoked session: a
             // 401 would sign the user out and hide the incident from the
@@ -348,31 +391,36 @@ pub async fn verify_token_state(
                 .map_err(|e| AppError::Internal(e.into()))?
                 .ok_or(AppError::Unauthorized)?;
             let active = session.is_active(state.clock.now());
-            let _: Result<(), _> = conn
-                .set_ex(&cache_key, u8::from(active), SESSION_CACHE_TTL_SECS)
+            let first_party = session.first_party();
+            // NX: a revocation that raced this read left an "ended" marker,
+            // which must not be overwritten by the stale "active" just read.
+            let _: Result<Option<String>, _> = deadpool_redis::redis::cmd("SET")
+                .arg(&cache_key)
+                .arg(crate::domain::session::cached_value(active, first_party))
+                .arg("NX")
+                .arg("EX")
+                .arg(SESSION_CACHE_TTL_SECS)
+                .query_async(&mut *conn)
                 .await;
-            active
+            (active, first_party)
         }
     };
 
     if active {
-        Ok(())
+        Ok(first_party)
     } else {
         Err(AppError::Unauthorized)
     }
 }
 
-/// Immediately invalidate the session validity cache entry.
-/// Call this on explicit logout to ensure revocation takes effect without waiting for TTL expiry.
-/// Best-effort: if Redis is unavailable, the cache expires naturally within SESSION_CACHE_TTL_SECS.
-pub fn invalidate_session_cache(state: &AppState, session_id: Uuid) {
-    let redis = state.redis.clone();
-    let key = format!("{SESSION_CACHE_PREFIX}{session_id}");
-    crate::utils::background::spawn(async move {
-        if let Ok(mut conn) = redis.get().await {
-            let _: Result<(), _> = conn.del(&key).await;
-        }
-    });
+/// Mark a revoked session as ended in the validity cache, at once. An "ended"
+/// marker rather than a deletion: a token check that read the session from the
+/// database just before the revocation writes its result only if no marker is
+/// there (`SET NX`), so it cannot put back a stale "active" for the cache TTL.
+/// Best-effort: if Redis is unavailable, the cache expires within
+/// SESSION_CACHE_TTL_SECS.
+pub async fn invalidate_session_cache(state: &AppState, session_id: Uuid) {
+    invalidate_session_caches(state, &[session_id]).await;
 }
 
 pub async fn invalidate_session_caches(state: &AppState, session_ids: &[Uuid]) {
@@ -381,10 +429,29 @@ pub async fn invalidate_session_caches(state: &AppState, session_ids: &[Uuid]) {
     }
 
     if let Ok(mut conn) = state.redis.get().await {
-        let keys: Vec<String> = session_ids
-            .iter()
-            .map(|id| format!("{SESSION_CACHE_PREFIX}{id}"))
-            .collect();
-        let _: Result<(), _> = conn.del(keys).await;
+        let mut pipe = deadpool_redis::redis::pipe();
+        for id in session_ids {
+            pipe.set_ex(
+                format!("{SESSION_CACHE_PREFIX}{id}"),
+                crate::domain::session::CACHED_ENDED,
+                SESSION_CACHE_TTL_SECS,
+            )
+            .ignore();
+        }
+        let _: Result<(), _> = pipe.query_async(&mut *conn).await;
     }
+}
+
+/// Revoke every session of the family of `session_id` (a replayed refresh
+/// token or authorization code) and mark them ended in the validity cache, so
+/// their access tokens stop working now rather than when the cache expires.
+pub async fn revoke_family(state: &AppState, session_id: Uuid) -> Result<(), AppError> {
+    session_repo::revoke_family(&state.db, session_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let family = session_repo::family_session_ids(&state.db, session_id)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    invalidate_session_caches(state, &family).await;
+    Ok(())
 }

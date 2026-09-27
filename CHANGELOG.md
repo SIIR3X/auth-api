@@ -5,6 +5,406 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-26
+
+Security release: fixes every finding of the security audit of 2026-09-26
+and of the four independent re-audits that followed it.
+Some fixes refuse what was unsafe to accept, as the versioning policy allows
+for security fixes: each such change is listed under **Security**. No
+deployment exists yet, so the migrations were consolidated: each table is
+defined whole in the migration that creates it, and a database is created
+from scratch (read **Upgrading**).
+
+### Security
+
+- Production refuses `LOCKOUT_THRESHOLD` above 50, request limits above
+  10 000 a minute, refresh or session lifetimes above a year,
+  `REGISTRATIONS_PER_IP_PER_HOUR=0`, `PWNED_PASSWORDS_ENABLED=false`, and a
+  `TRUSTED_PROXY_CIDRS` network wider than `/24` (IPv4) or `/64` (IPv6). New
+  `deploy/api/nftables-auth-api.conf` lets only nginx and root reach the
+  published ports; nginx masks the codes carried by URLs in its access log;
+  the internal listener refuses bodies and slow requests; the image is built
+  with `--locked`; the Redis ACL template allows the Lua scripts by name.
+
+- Introspection of the access tokens of others is reserved to resource servers
+  (new `allows_introspection` client setting; register yours with it), and a
+  resource server registered with scopes sees only those. Access tokens carry
+  `sub_type` and `session_type`, also reported by introspection. The ID
+  token's `auth_time` is when the password was proved for the consent.
+  `prompt=none`, `request`, `request_uri` and response modes other than
+  `query` are refused; `max_age` and `prompt=login` ask for the password
+  again. An authorization request belongs to the first user who looks at it.
+  A code replayed under another client's id revokes nothing (it is logged). A
+  device's consent is intersected with the user's permissions at the
+  approval.
+
+- Audit partitions created after `deploy/db/auth-api-grants.sql` ran lose
+  `UPDATE` and `DELETE` for the runtime role (the owner's default privileges
+  granted them), and partitions are created two years ahead at most.
+  `forget_account_traces` deletes the account with its traces, so it can no
+  longer anonymize the audit trail of an account that stays. Key identifiers
+  in ciphertexts are derived by HKDF. A stored password hash asking for far
+  more than the configured Argon2 cost is refused before any work.
+
+- Nobody grants a role a permission they do not hold (`403`), whether they
+  hold the role or not: `roles:manage` alone no longer lets two accounts give
+  each other every permission. A client's audit entry lists the settings that
+  changed. A rename, a session revoked by its owner and a re-authentication
+  are written with their audit entry. A failed webhook delivery records a fixed
+  message instead of the client error, which carried the URL. A forced reset
+  records no administrator address. Status and permissions checked before a
+  suspension, an erasure or a role grant are read under the account's lock.
+  The export shows only the network of failed sign-ins and of mailed-link
+  requests.
+
+- A password reset removes the second factors, passkeys and external
+  identities added in the 72 hours before it was asked for
+  (`RESET_REVOKES_FACTORS_ADDED_HOURS`) and lists them in its mail. New `DELETE
+  /admin/users/{id}/access-factors` (re-authentication, audited as
+  `access_factors_removed`) and `revoke_access_factors` on `POST
+  /admin/users/{id}/password-reset` remove every way in but the password; an
+  administrator's last second factor stays. The owner is mailed of an unlock.
+
+- Second factors: 10 wrong TOTP codes an hour per address and 30 per account
+  (100 before); spending the account budget mails the owner (new
+  `second_factor_attempts` template). Recovery-code budgets cover an hour
+  instead of a day. `POST /auth/two-factor/email/resend` is limited to 2 per
+  challenge and 10 an hour per account, keeps the previous code usable, and
+  checks the account status. A password change ends the open second-factor
+  challenges. Regenerating recovery codes is refused while Redis is down.
+
+- A password attempt is reserved atomically in Redis (per account and per
+  address) before the hash is computed: a burst of simultaneous guesses no
+  longer outruns the budgets, which were read before the hash and written
+  after. With a CAPTCHA required, the identifier's budget no longer answers
+  `429` (every attempt already costs a challenge); the lockout still applies.
+  An unknown identifier costs the same database work as a wrong password, and
+  at most five second-factor challenges stay open per account.
+
+- Every OAuth consent needs a recent re-authentication, the instance's own
+  application included: an access token alone could approve an authorization
+  request for it and obtain a new, long-lived session. Signing an account out
+  from the administration needs one too, and mails the owner only when
+  sessions were actually ended.
+
+- nginx: `PUT` is allowed (the administration's role, client and webhook
+  updates answered `405`), `/.well-known/` serves the OAuth and OpenID Connect
+  metadata (they answered `403`), and the strict zone follows the API's strict
+  bucket by method and path through a map that a test checks against the
+  routers (it named routes that do not exist and missed most credential
+  routes).
+- The internal listener (`/metrics`, detailed `/ready`) requires
+  `Authorization: Bearer <METRICS_TOKEN>`, required in production; Prometheus
+  reads it from a file. The public `/ready` reuses its answer for a second.
+- `docker-compose.api.yml` mounts the secrets as files written by
+  `scripts/write-secrets.sh` to `/etc/auth-api/secrets` (root-only directory,
+  files readable by the image's user only): they no longer appear in `docker
+  inspect` or the process environment.
+- `restore-db.sh` takes the database URL from `RESTORE_DATABASE_URL` or a file
+  (`-D`) instead of `-d <url>`, out of `ps` and the shell history.
+  `pgbackrest.conf` is installed mode 600 and carries a commented offsite
+  repository.
+
+- Refused at start-up: `LOCKOUT_DURATION_SECS` under 60, `DEVICE_AUTH_TTL_SECS`
+  above 1800, a blank required variable (it counted as set), and in
+  production `DEVICE_AUTH_VERIFICATION_URI` without HTTPS and a
+  `TRUSTED_PROXY_CIDRS` network wider than `/8` (IPv4) or `/32` (IPv6).
+  `PWNED_PASSWORDS_FAIL_OPEN` stays allowed in production, documented as the
+  one fail-open switch kept, with its alert.
+
+- The maintenance functions keep minimums only the schema owner can lower
+  (`maintenance_floors`: six months of audit partitions, 30 days before an
+  audit address is coarsened, a day before a pending account is purged): the
+  runtime role can no longer use them to erase the audit trail. Only `v2`
+  ciphertexts (bound to their row) are read, and a secret in another format
+  stops the start. In production `DATABASE_URL`, `DATABASE_READ_URL` and
+  `REDIS_URL` must carry a password; `deploy/db/pg_hba.auth-api.conf` and
+  `deploy/db/users.acl.template` hold the rules to install. A blank variable
+  leaves its place to `X_FILE`.
+
+- Device flow: every approval needs a recent re-authentication, the instance's
+  own application included, and `GET /oauth/device/{user_code}` adds `scopes`,
+  `unavailable_scopes`, `unrestricted` and the session allowance. Unknown user
+  codes are budgeted per signed-in user as well as per address.
+- A public client's request budget is split by client address (a confidential
+  client keeps one budget, spent once it has authenticated), and every client
+  authentication failure reads `client authentication failed`.
+- Codes and approvals follow the client as registered now: a redirect URI
+  removed since the request receives no code and its codes no longer redeem,
+  and access tokens are narrowed to the client's current scopes at every
+  refresh. Authorization responses carry `iss` (RFC 9207). Access tokens carry
+  the header `typ: at+jwt` and a `client_id` claim for client sessions.
+- Introspection describes a refresh token only to its own client and never a
+  personal access token. The metadata's `scopes_supported` lists only the
+  scopes some registered client may ask for. Outgoing calls (CAPTCHA, breached
+  passwords, identity providers) no longer follow redirects, and a provider's
+  key set is fetched again once when an ID token names an unknown key.
+
+- A rotated refresh token presented again within the 1-second grace window is
+  forgiven only from the network and user agent that rotated it; from anywhere
+  else the family is revoked as for any replay. Registrations are budgeted per
+  client address (`REGISTRATIONS_PER_IP_PER_HOUR`, 20 by default, `429` past
+  it), accounts never verified are purged after 2 days instead of 7
+  (`CLEANUP_UNVERIFIED_ACCOUNT_DAYS`), and failed sign-ins are budgeted under
+  the identifier they are recorded with.
+
+- `GET /users/me/audit` no longer shows the id and address of an administrator
+  who changed the account, as the export already did. A refresh replay records
+  `same_network` instead of the two addresses in its audit metadata, which is
+  never coarsened nor erased. The purge of accounts never verified delivers
+  `user.deleted` to webhooks too. The export adds passkeys, personal access
+  tokens, linked identities and where each mailed link was asked from. Two
+  accounts confirming the same new address at once: the second gets `409
+  email_taken` instead of `500`.
+
+- Administration: nobody adds to a role they hold a permission they lack
+  (`403`), the default role never grants an administrative permission (`409
+  default_role_administration`), and an account holding administrative
+  permissions cannot remove its last second factor (`409
+  administrator_needs_second_factor`; the grant itself is now checked under the
+  account's lock). Withdrawing or deleting a role, unlocking (never one's own
+  account), reactivating, deleting a client, deleting a webhook and retrying a
+  delivery need a recent re-authentication. `DELETE /admin/users/{id}` no longer
+  takes `current_password` in its body: re-authenticate with `POST
+  /users/me/reauth` first. The owner is mailed when an administrator suspends
+  or reactivates the account, changes its roles or signs it out (new
+  `changed_by_administrator` template); deleting a role writes `role_revoked`
+  in each holder's history. Sessions revoked by a suspension or a forced reset
+  are read in the revoking transaction. `--grant-role` and `--register-client`
+  commit with their audit entry, and `--register-client` validates like the
+  administration.
+
+- Wrong passwords lock the password for `LOCKOUT_DURATION_SECS` only: the count
+  covers a day, restarts after any completed sign-in (second factor, sign-in
+  link, passkey, external identity), an administrator's unlock, a password
+  reset or the end of a lock, and one guess per lock period no longer keeps an
+  account locked for good. Passkeys, sign-in links, external identities and
+  personal access tokens keep working during a lock. A locked password answers
+  `401 invalid_credentials` like a wrong one (it answered `403
+  account_locked`), and the owner is mailed (new `account_locked` template,
+  English and French).
+- Reset and sign-in links coexist until one is used (a new request revoked the
+  previous link), and their budget counts per client address (3 an hour) before
+  the account's (10 an hour). Second-factor failure budgets count per address,
+  with a ceiling five times higher for the account, and a password reset
+  restarts them. Signing in again within the minute an e-mail code stays fresh
+  continues the challenge instead of failing, and a second-factor sign-in
+  without Redis answers `503`.
+
+- `POST /auth/verify-email` takes the `password` of the registration that sent
+  the link, along with the `token`. A later registration on a pending address
+  could otherwise mail the owner a link carrying the attacker's password; a
+  resent link asks for the password the account was created with. A wrong
+  password answers `401 invalid_credentials` and leaves the link unused.
+
+- Tokens delegated to a client application (another client than the
+  instance's own, or any session restricted to consented scopes) and tokens
+  obtained from a personal access token no longer act as the account: the
+  account routes (`/users/me/*`), the approval routes
+  (`/oauth/authorization-requests/*`, `/oauth/device/*`) and `/admin/*` answer
+  `403 first_party_session_required`. Such a token could previously approve a
+  device flow of the instance's application and obtain an unrestricted
+  session. Logout, `/oauth/userinfo` and resource servers are unchanged.
+- Approving a device of a client other than the instance's own application
+  requires a recent re-authentication, or `current_password` in the body of
+  `POST /oauth/device/verify`; `GET /oauth/device/{user_code}` tells it in
+  `reauthentication_required`.
+- A registration on an address whose account is still pending verification
+  carries its own password, username and locale in its verification link, and
+  the link applies them. Registering someone's address first no longer lets an
+  attacker choose the password the owner activates. The links of a pending
+  account now coexist until one of them verifies it.
+- Adding a passkey, a personal access token or an external identity e-mails
+  the owner (new `access_added` template, English and French). The e-mail sent
+  after a password change now lists what still opens the account, and a reset
+  sends it too. A reset that verifies a pending account deletes its second
+  factors, recovery codes, passkeys, identities and tokens.
+- The callback of an external identity link no longer links: the link is made
+  by `POST /users/me/external-identities/complete`, once the binding proves the
+  browser that started the flow. A victim opening the provider URL of a link an
+  attacker started no longer gets their identity linked to the attacker's
+  account.
+- `/admin/*` requires a session whose sign-in proved a second factor (TOTP,
+  email code, recovery code, or a passkey), recorded on the session; an
+  enrolled factor is no longer enough. An administrator
+  who signed in with a password alone, or a sign-in link, gets
+  `403 two_factor_required`.
+- A role granting an administrative permission goes only to an active account
+  with a verified second factor or a passkey (`409
+  administrator_without_second_factor`, also refused by `--grant-role`), and
+  no administrator grants a role to their own account (`403`).
+- Creating, updating or re-keying a webhook, suspending an account, forcing a
+  password reset and removing a client secret need a recent re-authentication
+  (`403 reauthentication_required`). Webhook changes and redeliveries are
+  audited with the host of the endpoint, and client secret and unlock changes
+  commit with their audit entry.
+- The last active account able to manage roles can no longer be suspended or
+  deleted, by an administrator or by its owner (`409 last_administrator`), and
+  two concurrent role withdrawals can no longer both pass the check. Suspended
+  accounts no longer count as able to manage roles.
+- The database schema can belong to a separate owner role: the API then
+  connects with a role limited to reading and writing data
+  (`deploy/db/auth-api-grants.sql`), which cannot alter the schema, rewrite or
+  truncate the audit log, or change the permission catalog. The maintenance
+  functions that need more run with their owner's privileges.
+- `deploy/db/postgresql.auth-api.conf` logs slow statements without their bound
+  values (`log_parameter_max_length = 0`): password hashes and token digests no
+  longer reach the PostgreSQL log.
+- Requests to paths no route matches spend the general rate-limit budget, and
+  the HTTP metrics label them all `<unmatched>`: a scan no longer creates one
+  series per URL.
+- The public `GET /ready` answers only `{"status": ...}`; which dependency is
+  down is served at `/ready` on the internal metrics listener.
+- A passkey sign-in without the credential's user handle is refused
+  (`401 invalid_credentials`).
+- Webhook deliveries no longer connect to local-use NAT64 (`64:ff9b:1::/48`)
+  or the former 6to4 relay range (`192.88.99.0/24`).
+- An account's export no longer names the administrator who changed it, nor
+  the address they acted from.
+- A lockout that cannot be applied is logged as an error and counted in
+  `auth_lockout_failures_total` (alert `AuthApiLockoutFailing`).
+- Every variable can be given as `X_FILE`, the path of a file holding its
+  value (a Docker, Kubernetes or systemd secret), which keeps it out of
+  `docker inspect` and the process environment.
+
+- Granting, withdrawing, emptying or deleting a role needs every permission
+  it grants (`403`), checked under the role's lock: `roles:manage` alone can
+  no longer hand `admin` to an account it controls, nor strip it from a
+  greater administrator.
+- Removing an account's access factors revokes every session, browser and
+  device ones included; a forced reset with `revoke_access_factors` is one
+  transaction (a refusal revokes nothing). The primary client is designated
+  and changed from the command line only
+  (`409 primary_client_managed_by_command_line`). Command-line changes record
+  the operator and host in the audit log.
+- A session that exhausted its re-authentication budget stops filling the
+  account's: a stolen session can no longer lock its owner out of revoking it.
+  An administrator's unlock and a password reset forgive earlier sign-in
+  failures. E-mail change codes are budgeted per account across flows, and a
+  flow starts at most once a minute. The budgets guarding a link, a device
+  code or an e-mail change target now fail closed (`503`) when Redis cannot
+  count them; the mailbox budgets last as long as the links they bound.
+- A registration on an address that already has an account reserves its
+  username until the link would expire: whether a username is taken no longer
+  tells whether an address is registered. Renames honour reservations.
+- Every consent and device approval is audited (`client_authorized`,
+  `device_approved`, with the client, scopes and the requesting device), and
+  handing a session to a client is recorded as a sign-in, with the new-device
+  alert; a device session's `auth_time` is when the password was proven.
+- Third-party clients never carry the account's roles; a client without
+  scopes needs `"unrestricted": true` (`422` otherwise). Redirect URIs must be
+  `https`, loopback `http` or a private-use scheme with a dot. Wrong client
+  secrets are budgeted per address and client id; a code replayed under a
+  public client's id without its verifier revokes nothing;
+  `error_description` no longer tells an account's state; an identity
+  provider's discovery document must name its configured issuer; OpenID
+  Connect scopes are refused with `client_credentials`; the primary client's
+  device flow is counted against its default quota and, for an account with a
+  second factor, approved only from a session that proved one
+  (`403 second_factor_session_required`).
+- A consumed TOTP code stays refused 120 seconds, judged on the application's
+  clock. `POST /users/me/two-factor/recovery-codes/use` is removed: it granted
+  nothing and let a stolen session burn recovery codes.
+- Production refuses an `ENCRYPTION_KEY` that is printable text, and every
+  configuration refuses a CORS entry that is not an origin and two JWT keys
+  sharing a key id (now 16 hex digits). A stored password hash may cost at most
+  twice the configured Argon2 parameters; profiles M, L and XL get 640, 768
+  and 768 MiB so that worst case fits.
+- The nftables rule also closes the compose bridge (`172.30.0.0/24`); nginx
+  limits count an IPv6 client's /64; `deploy/api/logrotate-auth-api` keeps the
+  access log 14 days; the infrastructure check verifies that PostgreSQL and
+  Redis listen on the VPN address only.
+
+- Every administrative invariant holds on every route: a role gains an
+  administrative permission only when each holder is active with a second
+  factor (`409 holders_without_second_factor`), and each holder is audited and
+  told; the primary client can neither be deleted nor have its secret changed
+  over HTTP; a password reset keeps the last second factor of an account
+  holding administration; the primary client needs a second-factor session in
+  the authorization code flow too; changing the password ends a lockout.
+- An account whose address is not verified answers a password sign-in like a
+  wrong password (`401 invalid_credentials`, no longer `403
+  email_not_verified`) and gets a new verification link: registering an
+  address and signing in with one's own password no longer tells whether it
+  had an account. Verification links are budgeted per client address first; a
+  registered address holds one username reservation at a time; a reset that
+  activates a pending account adopts the username of its latest registration;
+  a refresh refused for its address answers `token_invalid`.
+- Sign-in challenges and e-mail change flows are kept in Redis under their
+  digest; a sign-in e-mail code completes its own challenge only (codes are
+  budgeted per challenge and per account); `POST /users/me/two-factor/email/send`
+  answers `404` unless a method is being set up; a lockout is applied, audited
+  and mailed once; no route hashes a password longer than 256 bytes.
+- Administrative reads (account search, account detail, `/admin/audit`) are
+  audited in the administrator's history (`admin_data_read`, without the
+  search). The owner's history and export no longer show a command-line
+  operator or host; strangers' user agents in the export are reduced to their
+  family. The runtime role cannot delete events from the outbox or webhook
+  deliveries (owner functions with floors do). Pointing a webhook at another
+  host regenerates its secret, returned once by `PUT /admin/webhooks/{id}`.
+- OAuth: an identity provider's endpoints must use its issuer's transport;
+  redirect URIs with a fragment or credentials are refused; a client
+  credentials token is introspected against the client's current scopes; a
+  refresh may narrow `scope` and is refused (`invalid_scope`) when it widens
+  it; device refusals are audited (`device_denied`).
+- Production names trusted proxies one address at a time (`/32`, `/128`) and
+  bounds `RECOVERY_CODE_EXPIRY_DAYS` to 1-730; weakened settings are logged at
+  startup. An IPv4-mapped peer is compared as IPv4. The NATS broker runs
+  read-only with a PID limit, its monitoring endpoint on loopback and the
+  exporter in its network namespace. nginx redirects to a fixed host and
+  limits connections per client network. `write-secrets.sh` reads pass
+  directly. The runtime role executes the owner-privileged functions by name.
+  New `METRICS_HOST`. Errors of the Pwned Passwords API are logged without
+  their URL.
+
+### Upgrading
+
+- Administrators signed in before the upgrade sign in again with their second
+  factor: sessions opened earlier carry no proof of it.
+- The migrations were rewritten (18 files instead of 28): a database migrated
+  by an earlier version is not upgraded but recreated. Development databases:
+  drop and recreate them (`make dev` migrates the new one).
+- Create the database with two roles (database deployment guide, section
+  2.5): `auth_api_owner` runs the migrations, the API connects as `auth_api`
+  after `deploy/db/auth-api-grants.sql`.
+- Check the settings refused at start-up (listed under Security) against your
+  environment before upgrading.
+- Monitoring that reads the dependencies from the public `/ready` must query
+  the internal listener instead (`http://10.0.0.1:9465/ready`), with the new
+  `METRICS_TOKEN` (`pass insert prod/auth-api/metrics-token`, `openssl rand -hex
+  32`); install it for Prometheus as the monitoring guide shows.
+- Install `deploy/api/nftables-auth-api.conf` on the API VPS and run the
+  rolling update with `sudo -E` (update guide); copy the new ACL template line
+  to `/etc/redis/users.acl`.
+- Resource servers that introspect access tokens need `allows_introspection`
+  (`PUT /admin/clients/{client_id}`).
+- Deployments export the secrets as before, then run `./write-secrets.sh`
+  before `./rolling-update.sh` (update guide, section 4).
+- Copy the new `log_parameter_max_length` lines of
+  `deploy/db/postgresql.auth-api.conf` and reload PostgreSQL.
+- Reinstall `deploy/api/nftables-auth-api.conf` (new bridge rule) and install
+  `deploy/api/logrotate-auth-api` (nginx guide, Logs). Check that Redis is 7
+  or later.
+- Scripts saving clients without scopes through `PUT /admin/clients/{id}` add
+  `"unrestricted": true`; the primary client is changed with
+  `auth-api --register-client ... --primary`. Clients registered with other
+  redirect schemes than `https`, loopback `http` or `reverse.domain:` are
+  refused at their next save.
+- Callers of `POST /users/me/two-factor/recovery-codes/use` stop calling it:
+  recovery codes are used at sign-in (`/auth/two-factor/recovery`).
+- Resource servers that authorized third-party tokens by role authorize them
+  by permission: those tokens no longer carry roles.
+- Front ends that told an unverified user so at sign-in: `/auth/login` now
+  answers `401 invalid_credentials` and mails a new link; point users at their
+  mailbox after a registration instead.
+- `TRUSTED_PROXY_CIDRS` lists addresses in production (`172.30.0.1/32` as
+  shipped). `write-secrets.sh` reads pass itself: stop exporting the secrets
+  before running it. Reapply `deploy/db/auth-api-grants.sql` (functions granted
+  by name, no delete on the outbox and deliveries). Update
+  `docker-compose.api.yml` and `nats.conf` together (monitoring on loopback).
+- Scripts calling `PUT /admin/webhooks/{id}` with a new host store the
+  `secret` of the response.
+
 ## [2.0.1] - 2026-09-18
 
 Dependency and image updates; no change to the API, the events or the
@@ -377,8 +777,8 @@ HTTP contract and the configuration: read **Breaking changes** and
   `noeviction`, append-only persistence, the default user disabled and an
   `auth_api` ACL user without administrative or dangerous commands
   (`REDIS_URL` becomes `redis://auth_api:<password>@10.0.0.2:6379`); kernel
-  settings (overcommit, swappiness, no transparent huge pages). Migration 0027
-  vacuums `sessions` and `login_attempts` once 2 % of their rows changed
+  settings (overcommit, swappiness, no transparent huge pages). The migrations
+  vacuum `sessions` and `login_attempts` once 2 % of their rows changed
   instead of 20 %. The API VPS no longer opens a WireGuard port it never
   listened on.
 - Backups fail loudly and restore safely. `backup-db.sh` reads

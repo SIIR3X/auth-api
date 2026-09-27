@@ -15,7 +15,7 @@ pub enum UserStatus {
     PendingVerification,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Clone, sqlx::FromRow)]
 pub struct User {
     pub id: Uuid,
     pub created_at: OffsetDateTime,
@@ -28,6 +28,21 @@ pub struct User {
     pub username: String,
     pub email: String,
     pub password_hash: String,
+}
+
+/// The password hash never reaches a log line through `{:?}`.
+impl std::fmt::Debug for User {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("User")
+            .field("id", &self.id)
+            .field("status", &self.status)
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("email_verified_at", &self.email_verified_at)
+            .field("locked_until", &self.locked_until)
+            .field("password_hash", &"<redacted>")
+            .finish_non_exhaustive()
+    }
 }
 
 impl User {
@@ -98,6 +113,15 @@ pub fn prefix_pattern(query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_output_never_shows_the_password_hash() {
+        let mut user = make_user(UserStatus::Active, None, true);
+        user.password_hash = "$argon2id$v=19$secret-material".into();
+        let printed = format!("{user:?}");
+        assert!(!printed.contains("secret-material"), "{printed}");
+        assert!(printed.contains("<redacted>"));
+    }
 
     #[test]
     fn a_search_prefix_matches_wildcards_literally() {

@@ -31,6 +31,7 @@ pub async fn save(
     actor: &Actor,
     client: &NewRegisteredClient<'_>,
     allows_client_credentials: Option<bool>,
+    allows_introspection: Option<bool>,
 ) -> Result<(RegisteredClient, bool), AppError> {
     client_domain::check_settings(
         client.client_id,
@@ -59,6 +60,14 @@ pub async fn save(
 
     let mut tx = state.db.begin().await?;
     let existed = client_repo::lock_existing(&mut *tx, client.client_id).await?;
+    let previous = client_repo::find_by_id(&mut *tx, client.client_id).await?;
+    // The primary client's sessions are first-party and skip consent: an
+    // administrator holding `clients:manage` could otherwise point it, or make
+    // their own client primary, at redirect URIs of their choosing. It is
+    // designated and changed from the command line, on the server.
+    if client.is_primary || previous.as_ref().is_some_and(|p| p.is_primary) {
+        return Err(AppError::Conflict("primary_client_managed_by_command_line"));
+    }
     let mut saved = client_repo::upsert(&mut *tx, client).await.map_err(|e| {
         let scoped = matches!(&e, sqlx::Error::Database(db)
             if db.constraint() == Some("registered_clients_client_credentials_scoped"));
@@ -81,6 +90,10 @@ pub async fn save(
         client_repo::set_client_credentials(&mut *tx, &saved.client_id, allowed).await?;
         saved.allows_client_credentials = allowed;
     }
+    if let Some(allowed) = allows_introspection {
+        client_repo::set_introspection(&mut *tx, &saved.client_id, allowed).await?;
+        saved.allows_introspection = allowed;
+    }
     audit::append(
         &mut *tx,
         &entry(
@@ -90,7 +103,7 @@ pub async fn save(
             } else {
                 AuditAction::ClientRegistered
             },
-            json!({ "client_id": saved.client_id }),
+            client_domain::audit_changes(previous.as_ref(), &saved),
         ),
     )
     .await?;
@@ -98,9 +111,22 @@ pub async fn save(
     Ok((saved, !existed))
 }
 
-/// Remove the client and end every session it holds.
+/// Remove the client and end every session it holds, after a recent
+/// re-authentication: removing the instance's own application signs every one
+/// of its users out.
 pub async fn delete(state: &AppState, actor: &Actor, client_id: &str) -> Result<(), AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        actor.user_id,
+        actor.session_id,
+        None,
+        actor.ip,
+        actor.request_id,
+        "admin_delete_client",
+    )
+    .await?;
     let mut tx = state.db.begin().await?;
+    refuse_primary(&mut tx, client_id).await?;
     let revoked = session_repo::revoke_by_client(&mut *tx, client_id).await?;
     if !client_repo::delete(&mut *tx, client_id).await? {
         return Err(AppError::NotFound);
@@ -131,14 +157,26 @@ pub async fn rotate_secret(
     actor: &Actor,
     client_id: &str,
 ) -> Result<String, AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        actor.user_id,
+        actor.session_id,
+        None,
+        actor.ip,
+        actor.request_id,
+        "admin_client_secret",
+    )
+    .await?;
     let secret =
         crate::domain::oauth::format_client_secret(&crate::utils::crypto::generate_token());
     let digest = crate::utils::crypto::sha256(secret.as_bytes());
-    if !client_repo::set_secret_hash(&state.db, client_id, Some(&digest)).await? {
+    let mut tx = state.db.begin().await?;
+    refuse_primary(&mut tx, client_id).await?;
+    if !client_repo::set_secret_hash(&mut *tx, client_id, Some(&digest)).await? {
         return Err(AppError::NotFound);
     }
     audit::append(
-        &state.db,
+        &mut *tx,
         &entry(
             actor,
             AuditAction::ClientSecretRotated,
@@ -146,20 +184,35 @@ pub async fn rotate_secret(
         ),
     )
     .await?;
+    tx.commit().await?;
     Ok(secret)
 }
 
-/// Remove the client's secret, making it a public client.
+/// Remove the client's secret, making it a public client: anyone knowing its
+/// id can then run its flows. Needs a recent re-authentication, like giving it
+/// a secret.
 pub async fn remove_secret(
     state: &AppState,
     actor: &Actor,
     client_id: &str,
 ) -> Result<(), AppError> {
-    if !client_repo::set_secret_hash(&state.db, client_id, None).await? {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        actor.user_id,
+        actor.session_id,
+        None,
+        actor.ip,
+        actor.request_id,
+        "admin_client_secret",
+    )
+    .await?;
+    let mut tx = state.db.begin().await?;
+    refuse_primary(&mut tx, client_id).await?;
+    if !client_repo::set_secret_hash(&mut *tx, client_id, None).await? {
         return Err(AppError::NotFound);
     }
     audit::append(
-        &state.db,
+        &mut *tx,
         &entry(
             actor,
             AuditAction::ClientSecretRotated,
@@ -167,6 +220,7 @@ pub async fn remove_secret(
         ),
     )
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -178,4 +232,18 @@ fn entry(actor: &Actor, action: AuditAction, extra: serde_json::Value) -> NewAud
         ip_address: actor.ip,
         metadata: actor.metadata(extra),
     }
+}
+
+/// The primary client's sessions are first-party: removing it, or changing how
+/// it authenticates, is the command line's, like every change to it. Locks
+/// the client's row; a missing client passes, for the caller's 404.
+async fn refuse_primary(tx: &mut sqlx::PgConnection, client_id: &str) -> Result<(), AppError> {
+    client_repo::lock_existing(&mut *tx, client_id).await?;
+    if client_repo::find_by_id(&mut *tx, client_id)
+        .await?
+        .is_some_and(|client| client.is_primary)
+    {
+        return Err(AppError::Conflict("primary_client_managed_by_command_line"));
+    }
+    Ok(())
 }

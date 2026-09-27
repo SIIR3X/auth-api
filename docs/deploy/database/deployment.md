@@ -129,12 +129,23 @@ sudo apt install -y postgresql postgresql-contrib
 sudo -u postgres psql
 ```
 
+Two roles: `auth_api_owner` owns the schema and runs the migrations;
+`auth_api`, the role the API connects with, reads and writes data and nothing
+else. A compromised API, or an SQL injection, can then neither alter the
+schema nor rewrite the audit log or the permission catalog.
+
 ```sql
-CREATE USER auth_api WITH PASSWORD 'your-strong-password';
-CREATE DATABASE auth_api OWNER auth_api;
-GRANT ALL PRIVILEGES ON DATABASE auth_api TO auth_api;
+CREATE ROLE auth_api_owner LOGIN PASSWORD 'owner-strong-password';
+CREATE ROLE auth_api LOGIN PASSWORD 'your-strong-password';
+CREATE DATABASE auth_api OWNER auth_api_owner;
+\c auth_api
+ALTER SCHEMA public OWNER TO auth_api_owner;
 \q
 ```
+
+Store both URLs: `prod/auth-api/database-owner-url` for migrations and restores
+(`postgres://auth_api_owner:...@10.0.0.2/auth_api`), and
+`prod/auth-api/database-url` for the API (`postgres://auth_api:...@10.0.0.2/auth_api`).
 
 ---
 
@@ -149,11 +160,24 @@ profile M; the comments give the values of the other profiles (see
 sudo cp deploy/db/postgresql.auth-api.conf /etc/postgresql/17/main/conf.d/auth-api.conf
 ```
 
-Edit `/etc/postgresql/17/main/pg_hba.conf` - allow the API VPS via its VPN IP only:
+Append `deploy/db/pg_hba.auth-api.conf` to `/etc/postgresql/17/main/pg_hba.conf`
+and check nothing above it grants more (no `trust`, no wider network): the API
+VPS via its VPN IP only, with a password.
+
+```bash
+sudo tee -a /etc/postgresql/17/main/pg_hba.conf < deploy/db/pg_hba.auth-api.conf > /dev/null
+```
 
 ```conf
-host    auth_api    auth_api    10.0.0.1/32    scram-sha-256
+host    auth_api    auth_api          10.0.0.1/32    scram-sha-256
+host    auth_api    auth_api_owner    10.0.0.1/32    scram-sha-256
 ```
+
+Traffic between the VPS crosses the WireGuard tunnel, which encrypts it; the
+API connects without TLS. Where the tunnel is not the trust boundary (another
+network in between, a managed database), turn on `ssl` in PostgreSQL, write
+`hostssl` instead of `host` above, and add `sslmode=verify-full` with the CA
+(`sslrootcert=`) to both URLs.
 
 Restart PostgreSQL, then give the role its session limits (statements and lock
 waits stop before the API's 30-second request timeout; a connection idle inside
@@ -193,12 +217,26 @@ Migrations ship in every release bundle (see [Deploying a New Release](../guides
 **On the API VPS**, with `sqlx-cli` installed (see [API Deployment](../api/deployment.md#12-install-docker-and-sqlx-cli)):
 
 ```bash
-DATABASE_URL="$(pass prod/auth-api/database-url)?options=-c%20statement_timeout%3D0" \
+DATABASE_URL="$(pass prod/auth-api/database-owner-url)" \
   sqlx migrate run --source /srv/auth-api/releases/auth-api-X.Y.Z/migrations
 ```
 
-The `options` parameter lifts the role's 25-second statement timeout for the
-migration session only: a migration on a large table may run longer.
+Migrations run as `auth_api_owner`, which carries no statement timeout: a
+migration on a large table may run longer than the API's 25 seconds.
+
+After the **first** migration run, give the API role its privileges, **on the
+DB VPS**:
+
+```bash
+sudo -u postgres psql -d auth_api -f deploy/db/auth-api-grants.sql
+```
+
+Later migrations need nothing more: the default privileges the script sets
+cover the tables they create. The API role cannot create, alter, drop or
+truncate a table, disable a trigger, update or delete audit rows, change the
+permission catalog or the migration history; the few maintenance functions that
+need more (audit partitions, address coarsening, account erasure, purge of
+unverified accounts) run with the owner's privileges.
 
 ---
 
@@ -253,7 +291,12 @@ FROM pg_stat_database WHERE datname = 'auth_api';
 ```bash
 sudo apt update
 sudo apt install -y redis-server
+redis-server --version   # 7.0 or later
 ```
+
+Redis 7 or later is required: the ACL below lets the API run Lua scripts
+(`EVAL`, for the attempt budgets), and only from Redis 7 on do the commands a
+script calls stay subject to the user's ACL. Debian 12 and later ship it.
 
 ---
 
@@ -275,7 +318,7 @@ every command but the administrative and dangerous ones (`FLUSHALL`, `CONFIG`,
 
 ```bash
 REDIS_PASSWORD_SHA=$(pass prod/auth-api/redis-password | tr -d '\n' | sha256sum | cut -d' ' -f1)
-printf 'user default off\nuser auth_api on #%s ~* &* +@all -@dangerous -@admin\n' "$REDIS_PASSWORD_SHA" \
+grep -v '^#' deploy/db/users.acl.template | sed "s/REDIS_PASSWORD_SHA256/$REDIS_PASSWORD_SHA/" \
   | sudo tee /etc/redis/users.acl > /dev/null
 sudo chown redis:redis /etc/redis/users.acl && sudo chmod 600 /etc/redis/users.acl
 sudo systemctl restart redis-server
@@ -283,6 +326,14 @@ sudo systemctl restart redis-server
 
 The API connects as that user: store `redis://auth_api:<password>@10.0.0.2:6379`
 as `prod/auth-api/redis-url`.
+
+PostgreSQL and Redis speak without TLS: WireGuard is the boundary that
+encrypts and authenticates their traffic. Check that neither listens anywhere
+else - only the VPN address may appear:
+
+```bash
+sudo ss -ltnp | grep -E ':(5432|6379)\b'   # 10.0.0.2 only, never 0.0.0.0 or a public address
+```
 
 ---
 
@@ -439,17 +490,21 @@ Backups run nightly at 2:00 AM and are retained for 7 days (`RETAIN_DAYS`).
 
 ### 4.6 Restore a backup
 
-Always through `restore-db.sh`, connected as `auth_api`, into a **fresh**
-database: a bare `| psql` does not stop at the first error. The script restores
-in a single transaction, so a failure leaves the target untouched.
+Always through `restore-db.sh`, connected as the owner role `auth_api_owner`
+(or `auth_api` in a single-role deployment), into a **fresh** database: a bare
+`| psql` does not stop at the first error. The script restores in a single
+transaction, so a failure leaves the target untouched. The dump carries the
+privileges of the API role: nothing is left to grant after a restore.
 
 ```bash
-sudo -u postgres psql -c "CREATE DATABASE auth_api_restore OWNER auth_api"
-scripts/restore-db.sh -i backup.key -f auth_api_YYYYMMDD_HHMMSS.sql.gz.age \
-  -d "postgres://auth_api:<password>@10.0.0.2/auth_api_restore"
+sudo -u postgres psql -c "CREATE DATABASE auth_api_restore OWNER auth_api_owner"
+RESTORE_DATABASE_URL="$(pass prod/auth-api/database-owner-url | sed 's|/auth_api$|/auth_api_restore|')" \
+  scripts/restore-db.sh -i backup.key -f auth_api_YYYYMMDD_HHMMSS.sql.gz.age
 ```
 
-Check the restored data, then point `DATABASE_URL` at it (or rename the
+The URL never appears on a command line (`ps`, shell history): the script
+reads it from `RESTORE_DATABASE_URL` or from a file (`-D`). Check the restored
+data, then point `DATABASE_URL` at it (or rename the
 databases while the API is stopped). `--force` restores over an existing
 database after emptying it.
 
@@ -471,7 +526,7 @@ so any moment of about the last two weeks can be restored.
 ```bash
 sudo apt install -y pgbackrest
 sudo install -d -o postgres -g postgres -m 750 /var/lib/pgbackrest /var/spool/pgbackrest /var/log/pgbackrest
-sudo install -o postgres -g postgres -m 640 deploy/db/pgbackrest.conf /etc/pgbackrest/pgbackrest.conf
+sudo install -o postgres -g postgres -m 600 deploy/db/pgbackrest.conf /etc/pgbackrest/pgbackrest.conf
 sudo sed -i "s|^repo1-cipher-pass=.*|repo1-cipher-pass=$(pass prod/auth-api/pgbackrest-cipher-pass)|" \
   /etc/pgbackrest/pgbackrest.conf
 sudo cp deploy/db/postgresql.pitr.conf /etc/postgresql/17/main/conf.d/auth-api-pitr.conf

@@ -49,21 +49,11 @@ pub(super) async fn issue_password_reset(
         return Ok(());
     };
 
-    // Cap resets per account across every IP, so nobody can flood a mailbox or
-    // keep invalidating its pending link from many addresses.
-    let account_key = format!("fp_account:{}", user.id);
-    if budget_exhausted(
-        state,
-        &account_key,
-        MAX_FORGOT_PASSWORD_BY_ACCOUNT,
-        FORGOT_PASSWORD_ACCOUNT_WINDOW_SECS,
-    )
-    .await
-    {
+    if mailbox_budget_exhausted(state, "fp_account", user.id, ip, RESET_TOKEN_EXPIRY_SECS).await {
         return Ok(());
     }
 
-    send_reset_link(state, &user, ip, user_agent).await?;
+    send_reset_link(state, &user, ip, user_agent, false).await?;
 
     audit::append(
         &state.db,
@@ -81,18 +71,22 @@ pub(super) async fn issue_password_reset(
     Ok(())
 }
 
-/// Issue a reset link for `user`, replacing any pending one, and mail it. No
-/// budget: callers apply their own.
+/// Issue a reset link for `user` and mail it. No budget: callers apply their
+/// own. A request by the owner leaves the earlier links usable (someone else
+/// asking must not revoke the link the owner is about to click; using one ends
+/// the others); an administrator forcing a reset replaces them.
 pub(crate) async fn send_reset_link(
     state: &AppState,
     user: &User,
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
+    replace_pending: bool,
 ) -> Result<(), AppError> {
-    // Revoke any previous pending reset before issuing a new one
-    token::revoke_active_password_reset_by_user(&state.db, user.id)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    if replace_pending {
+        token::revoke_active_password_reset_by_user(&state.db, user.id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+    }
 
     let raw_token = crypto::generate_token();
     let hash = crypto::sha256(raw_token.as_bytes());
@@ -172,21 +166,44 @@ pub async fn reset_password(
     }
 
     user_repo::update_password_hash(&mut *tx, record.user_id, &new_hash).await?;
+    // Whoever holds the mailbox holds the account: the new password is not
+    // locked by the guesses that locked the old one.
+    user_repo::clear_lockout(&mut *tx, record.user_id).await?;
+
+    // Ways in added shortly before the reset was asked for may have been
+    // planted by whoever held the password: they go, and the mail lists them.
+    let window = state.config.security.reset_revokes_factors_added_hours;
+    let removed = if window > 0 {
+        let since = record.created_at - ::time::Duration::hours(i64::from(window));
+        // An account holding administration keeps one second factor: the
+        // mailbox alone must not undo what the administration requires.
+        user_repo::lock_row(&mut *tx, record.user_id).await?;
+        let administrator =
+            crate::repositories::role::holds_administration(&mut *tx, record.user_id).await?;
+        user_repo::drop_access_factors_since(&mut tx, record.user_id, since, administrator).await?
+    } else {
+        Vec::new()
+    };
 
     // Invalidate all active sessions to force re-login with the new password
     session_repo::revoke_all_by_user(&mut *tx, record.user_id).await?;
 
-    // Also purge pending reset tokens
-    token::revoke_active_password_reset_by_user(&mut *tx, record.user_id).await?;
+    // Also purge pending reset and sign-in links
+    token::revoke_mailbox_links(&mut tx, record.user_id).await?;
 
     // The reset link went to the account's address: whoever used it owns the
     // address. A pending account is verified with the password its owner just
     // chose, which also takes back an address someone else registered.
+    // The account then carries the username the owner last asked for, not
+    // the one chosen by whoever registered the address first.
+    user_repo::adopt_latest_registration_identity(&mut tx, record.user_id).await?;
     if user_repo::verify_if_pending(&mut *tx, record.user_id)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
     {
         token::revoke_active_verification_by_user(&mut *tx, record.user_id).await?;
+        // Nothing enrolled before the owner proved the address is theirs.
+        user_repo::drop_access_factors(&mut *tx, record.user_id).await?;
     }
 
     audit::append(
@@ -229,6 +246,40 @@ pub async fn reset_password(
     // otherwise survive and could be used by an attacker who knew them.
     // Best-effort: Redis failures here must not fail the reset.
     purge_user_pre_auth_and_email_change(state, record.user_id).await;
+
+    // The account's second-factor budgets start afresh: someone who held the
+    // old password and spent them must not keep the owner out after the reset.
+    let user_id = record.user_id;
+    redis_counter::reset(
+        &state.redis,
+        &[
+            &format!("{TOTP_USER_FAIL_PREFIX}{user_id}"),
+            &format!("{RC_USER_FAIL_PREFIX}{user_id}"),
+            &format!("{EMAIL_2FA_USER_FAIL_PREFIX}{user_id}"),
+            // The sign-in budget too: failures typed by whoever made the
+            // owner reset do not keep them from signing in afterwards.
+            &format!("login_try:{user_id}"),
+        ],
+    )
+    .await;
+
+    // The owner learns what still opens the account: a passkey or token added
+    // by whoever held the old password survives the reset.
+    if let Ok(Some(user)) = user_repo::find_by_id(&state.db, record.user_id).await {
+        let removed = removed
+            .into_iter()
+            .map(|(kind, name)| crate::services::email::AccessItem {
+                kind: match kind.as_str() {
+                    "totp" => "totp",
+                    "email" => "email",
+                    "passkey" => "passkey",
+                    _ => "identity",
+                },
+                name,
+            })
+            .collect();
+        crate::services::user::notify_password_changed(state, &user, removed).await;
+    }
 
     Ok(())
 }

@@ -97,7 +97,16 @@ impl From<AppError> for EndpointError {
             | E::Forbidden => ErrorCode::InvalidGrant,
             _ => return Self::App(error),
         };
-        Self::OAuth(OAuthError::new(code, error.to_string()))
+        // Whoever holds a refresh token or a device code learns nothing of the
+        // account's state: suspended, locked, inactive or unverified all read
+        // the same.
+        let description = match &error {
+            E::AccountSuspended | E::AccountInactive | E::AccountLocked | E::EmailNotVerified => {
+                "the grant is not valid".to_owned()
+            }
+            _ => error.to_string(),
+        };
+        Self::OAuth(OAuthError::new(code, description))
     }
 }
 
@@ -109,10 +118,121 @@ impl From<sqlx::Error> for EndpointError {
 
 // Client authentication
 
+/// Wrong client secrets one address may present per window. Secrets carry 256
+/// bits: this bounds volume, it is not what keeps them secret.
+const MAX_CLIENT_AUTH_FAILURES_BY_IP: i64 = 20;
+const CLIENT_AUTH_FAILURE_WINDOW_SECS: u64 = 900;
+/// Requests one client may make per minute to the token, introspection and
+/// revocation endpoints. These run under the general per-address limit: a
+/// resource server introspecting from one address, or clients behind one NAT,
+/// are bounded per client instead of by the strict per-address limit.
+const CLIENT_REQUESTS_PER_MINUTE: i64 = 1_200;
+
+/// The budget of wrong secrets presented from `ip` for the client id the
+/// request claims: one address guessing one client's secret is throttled,
+/// without shutting the endpoints for the other clients and users behind the
+/// same address.
+fn client_failure_key(ip: IpNetwork, claimed_client_id: &str) -> String {
+    let claimed: String = crypto::sha256(claimed_client_id.as_bytes())[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!(
+        "oauth_client_fail:{}:{claimed}",
+        crate::middleware::rate_limit::ip_bucket(ip.ip())
+    )
+}
+
+/// The client id a request claims, and whether it presents a secret: only
+/// requests presenting one can guess one.
+fn claimed_secret_holder(
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+) -> Option<String> {
+    match authorization.filter(|h| h.to_ascii_lowercase().starts_with("basic ")) {
+        Some(header) => Some(
+            oauth::basic_credentials(header)
+                .map(|(id, _)| id)
+                .unwrap_or_default(),
+        ),
+        None => oauth::parameter(parameters, "client_secret").map(|_| {
+            oauth::parameter(parameters, "client_id")
+                .unwrap_or_default()
+                .to_owned()
+        }),
+    }
+}
+
 /// The client making a token or device authorization request: authenticated
 /// with its secret when it has one (`client_secret_basic` or
 /// `client_secret_post`), identified by `client_id` when it is public.
+///
+/// Wrong secrets count against the address, and every authenticated request
+/// against the client: both budgets bound volume and fail open.
 pub async fn authenticate_client(
+    state: &AppState,
+    authorization: Option<&str>,
+    parameters: &[(String, String)],
+    ip: Option<IpNetwork>,
+) -> Result<RegisteredClient, EndpointError> {
+    let failure_key = ip
+        .zip(claimed_secret_holder(authorization, parameters))
+        .map(|(ip, claimed)| client_failure_key(ip, &claimed));
+    if let Some(key) = &failure_key
+        && crate::utils::redis_counter::peek(&state.redis, key)
+            .await
+            .unwrap_or(0)
+            >= MAX_CLIENT_AUTH_FAILURES_BY_IP
+    {
+        return Err(AppError::RateLimitExceeded.into());
+    }
+    let client = identify_client(state, authorization, parameters).await;
+    match &client {
+        Err(EndpointError::OAuth(error)) if error.code == ErrorCode::InvalidClient => {
+            if let Some(key) = &failure_key {
+                let _ = crate::utils::redis_counter::consume(
+                    &state.redis,
+                    &[crate::utils::redis_counter::Budget {
+                        key,
+                        limit: MAX_CLIENT_AUTH_FAILURES_BY_IP,
+                        window_secs: CLIENT_AUTH_FAILURE_WINDOW_SECS,
+                    }],
+                )
+                .await;
+            }
+        }
+        Ok(client) => {
+            // A confidential client proved its secret: its budget is its own.
+            // A public client is only named, by anyone: its budget is split
+            // by address, so a flood from a few addresses cannot spend the
+            // share of every one of its users.
+            let key = match ip {
+                Some(ip) if !client.is_confidential() => format!(
+                    "oauth_client_rpm:{}:{}",
+                    client.client_id,
+                    crate::middleware::rate_limit::ip_bucket(ip.ip())
+                ),
+                _ => format!("oauth_client_rpm:{}", client.client_id),
+            };
+            let consumed = crate::utils::redis_counter::consume(
+                &state.redis,
+                &[crate::utils::redis_counter::Budget {
+                    key: &key,
+                    limit: CLIENT_REQUESTS_PER_MINUTE,
+                    window_secs: 60,
+                }],
+            )
+            .await;
+            if consumed.is_ok_and(|attempt| attempt.exceeded) {
+                return Err(AppError::RateLimitExceeded.into());
+            }
+        }
+        Err(_) => {}
+    }
+    client
+}
+
+async fn identify_client(
     state: &AppState,
     authorization: Option<&str>,
     parameters: &[(String, String)],
@@ -157,10 +277,12 @@ pub async fn authenticate_client(
         }
     };
 
+    // One description for every failure: which client ids exist, and which
+    // hold a secret, is not the caller's to learn.
     let Some(client) =
         crate::repositories::registered_client::find_by_id(&state.db, &client_id).await?
     else {
-        return Err(invalid("unknown client", basic.is_some()));
+        return Err(invalid("client authentication failed", basic.is_some()));
     };
     match (&client.client_secret_hash, secret) {
         (Some(expected), Some(secret)) => {
@@ -170,10 +292,10 @@ pub async fn authenticate_client(
             }
         }
         (Some(_), None) => {
-            return Err(invalid("this client must authenticate", basic.is_some()));
+            return Err(invalid("client authentication failed", basic.is_some()));
         }
         (None, Some(_)) => {
-            return Err(invalid("this client has no secret", basic.is_some()));
+            return Err(invalid("client authentication failed", basic.is_some()));
         }
         (None, None) => {}
     }
@@ -181,7 +303,7 @@ pub async fn authenticate_client(
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    crypto::constant_time_eq(a, b)
 }
 
 // Authorization requests
@@ -195,6 +317,13 @@ struct StoredRequest {
     state: Option<String>,
     #[serde(default)]
     nonce: Option<String>,
+    /// OpenID Connect `max_age` (`prompt=login` is 0): the password must have
+    /// been proved this many seconds ago at most when the request is approved.
+    #[serde(default)]
+    max_age: Option<i64>,
+    /// The first signed-in user who looked at the request: only they decide it.
+    #[serde(default)]
+    viewer: Option<Uuid>,
 }
 
 /// Where `GET /oauth/authorize` sends the browser.
@@ -229,11 +358,14 @@ pub async fn start_authorization(
     authorize_svc::validate_redirect(&client, &redirect_uri)?;
 
     let client_state = param("state").filter(|s| s.len() <= oauth::MAX_STATE_LEN);
+    let issuer = state.config.server.public_url.as_str();
     let refuse = |code: ErrorCode, description: &str| {
         let mut response = vec![("error", code.as_str()), ("error_description", description)];
         if let Some(client_state) = client_state {
             response.push(("state", client_state));
         }
+        // RFC 9207: the client learns which server answered (mix-up defence).
+        response.push(("iss", issuer));
         oauth::redirect_with(&redirect_uri, &response)
             .map(AuthorizeOutcome::Refused)
             .ok_or_else(|| {
@@ -256,6 +388,48 @@ pub async fn start_authorization(
             "only the code response type is supported",
         );
     }
+    // OpenID Connect parameters this server does not honour are refused rather
+    // than ignored: a client relying on them must know.
+    if param("request").is_some() {
+        return refuse(
+            ErrorCode::RequestNotSupported,
+            "request objects are not supported",
+        );
+    }
+    if param("request_uri").is_some() {
+        return refuse(
+            ErrorCode::RequestUriNotSupported,
+            "request_uri is not supported",
+        );
+    }
+    if param("response_mode").is_some_and(|mode| mode != "query") {
+        return refuse(
+            ErrorCode::InvalidRequest,
+            "only the query response mode is supported",
+        );
+    }
+    let prompt: Vec<&str> = param("prompt").unwrap_or_default().split(' ').collect();
+    if prompt.contains(&"none") {
+        return refuse(
+            ErrorCode::InteractionRequired,
+            "the consent page always asks the user",
+        );
+    }
+    let max_age = match param("max_age").map(str::parse::<i64>) {
+        None => None,
+        Some(Ok(age)) if age >= 0 => Some(age),
+        Some(_) => {
+            return refuse(
+                ErrorCode::InvalidRequest,
+                "max_age must be a number of seconds",
+            );
+        }
+    };
+    let max_age = if prompt.contains(&"login") {
+        Some(0)
+    } else {
+        max_age
+    };
     let Some(code_challenge) = param("code_challenge") else {
         return refuse(ErrorCode::InvalidRequest, "code_challenge is required");
     };
@@ -278,6 +452,8 @@ pub async fn start_authorization(
         scopes,
         state: client_state.map(str::to_owned),
         nonce: param("nonce").map(str::to_owned),
+        max_age,
+        viewer: None,
     })
     .map_err(|e| AppError::Internal(e.into()))?;
     let mut conn = state
@@ -332,10 +508,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-async fn load_request(
-    state: &AppState,
-    id: &str,
-) -> Result<(StoredRequest, RegisteredClient), AppError> {
+async fn load_request(state: &AppState, id: &str) -> Result<(Loaded, RegisteredClient), AppError> {
     let mut conn = state
         .redis
         .get()
@@ -345,13 +518,35 @@ async fn load_request(
         .get(request_key(id))
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-    let request: StoredRequest = serde_json::from_str(&raw.ok_or(AppError::NotFound)?)
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let raw = raw.ok_or(AppError::NotFound)?;
+    let request: StoredRequest =
+        serde_json::from_str(&raw).map_err(|e| AppError::Internal(e.into()))?;
     let client = authorize_svc::load_client(state, &request.client_id)
         .await
         .map_err(|_| AppError::NotFound)?;
-    Ok((request, client))
+    Ok((Loaded { request, raw }, client))
 }
+
+/// A stored request as read, with the exact value read: claiming it swaps
+/// that value only if nobody changed it meanwhile.
+struct Loaded {
+    request: StoredRequest,
+    raw: String,
+}
+
+/// Replace a value only if it is still the one read, keeping its expiry.
+static CLAIM_REQUEST: std::sync::LazyLock<deadpool_redis::redis::Script> =
+    std::sync::LazyLock::new(|| {
+        deadpool_redis::redis::Script::new(
+            r#"
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
+    return 1
+end
+return 0
+"#,
+        )
+    });
 
 /// Remove the request: of concurrent decisions, only the one that removed it
 /// goes on.
@@ -386,16 +581,66 @@ pub async fn describe_request(
     id: &str,
 ) -> Result<RequestDescription, AppError> {
     let (request, client) = load_request(state, id).await?;
+    let request = claim_request(state, id, request, user_id).await?;
     let description =
         authorize_svc::describe(state, user_id, &client, request.scopes.as_deref()).await?;
+    let reauthentication_required =
+        !password_fresh_enough(state, session_id, request.max_age).await;
     Ok(RequestDescription {
         request: description,
         redirect_uri: request.redirect_uri,
-        reauthentication_required: authorize_svc::requires_reauthentication(
-            state, session_id, &client,
-        )
-        .await,
+        reauthentication_required,
     })
+}
+
+/// Tie the request to the first signed-in user who looks at it: someone else
+/// who learnt its id cannot decide it. A request already tied to another user
+/// is not found for them.
+async fn claim_request(
+    state: &AppState,
+    id: &str,
+    loaded: Loaded,
+    user_id: Uuid,
+) -> Result<StoredRequest, AppError> {
+    let Loaded { mut request, raw } = loaded;
+    match request.viewer {
+        Some(viewer) if viewer == user_id => Ok(request),
+        Some(_) => Err(AppError::NotFound),
+        None => {
+            request.viewer = Some(user_id);
+            let stored =
+                serde_json::to_string(&request).map_err(|e| AppError::Internal(e.into()))?;
+            let mut conn = state
+                .redis
+                .get()
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
+            // Only if nobody claimed it since it was read, keeping its expiry:
+            // of two users reading it unclaimed, one gets it.
+            let claimed: i64 = CLAIM_REQUEST
+                .key(request_key(id))
+                .arg(&raw)
+                .arg(stored)
+                .invoke_async(&mut *conn)
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
+            if claimed != 1 {
+                return Err(AppError::NotFound);
+            }
+            Ok(request)
+        }
+    }
+}
+
+/// Whether the session's proof of the password is recent enough for a
+/// request's `max_age` (any standing proof when there is none).
+async fn password_fresh_enough(state: &AppState, session_id: Uuid, max_age: Option<i64>) -> bool {
+    let Some(proven_at) = crate::services::reauth::reauth_proven_at(state, session_id).await else {
+        return false;
+    };
+    let age = state.clock.now().unix_timestamp() - proven_at;
+    // `max_age=0` (and `prompt=login`) asks for the password again, always.
+    max_age.is_none_or(|max_age| max_age > 0 && age <= max_age)
 }
 
 /// Approve a request: the redirect carrying the code and state.
@@ -409,21 +654,37 @@ pub async fn approve_request(
     request_id: Option<Uuid>,
 ) -> Result<String, AppError> {
     let (request, client) = load_request(state, id).await?;
-    // The password is checked before the request is taken: a missing or wrong
-    // one leaves the request to approve once the user has confirmed it.
-    if !client.is_primary {
-        crate::services::reauth::require_recent_reauth_or_password(
-            state,
-            user_id,
-            session_id,
-            current_password,
-            ip,
-            request_id,
-            "authorize_client",
-        )
-        .await?;
+    let request = claim_request(state, id, request, user_id).await?;
+    // The client as registered now: a redirect URI removed since the request
+    // was made no longer receives a code.
+    authorize_svc::validate_redirect(&client, &request.redirect_uri)?;
+    // A request with `max_age` needs a proof of the password that recent: an
+    // older one asks for the password again.
+    if current_password.is_none()
+        && !password_fresh_enough(state, session_id, request.max_age).await
+    {
+        return Err(AppError::ReauthenticationRequired);
     }
+    // The password is checked before the request is taken: a missing or wrong
+    // one leaves the request to approve once the user has confirmed it. Every
+    // client needs it, the instance's own application included: an approval
+    // mints a new, long-lived session, and an access token alone must not be
+    // enough to obtain one.
+    crate::services::reauth::require_recent_reauth_or_password(
+        state,
+        user_id,
+        session_id,
+        current_password,
+        ip,
+        request_id,
+        "authorize_client",
+    )
+    .await?;
     take_request(state, id).await?;
+    let auth_time = crate::services::reauth::reauth_proven_at(state, session_id)
+        .await
+        .and_then(|at| ::time::OffsetDateTime::from_unix_timestamp(at).ok())
+        .unwrap_or_else(|| state.clock.now());
     let approval = authorize_svc::Approval {
         user_id,
         session_id,
@@ -432,6 +693,7 @@ pub async fn approve_request(
         code_challenge: &request.code_challenge,
         requested: request.scopes.as_deref(),
         nonce: request.nonce.as_deref(),
+        auth_time,
         // Proven above: the recent re-authentication marker now stands for it.
         current_password: None,
         ip,
@@ -443,13 +705,15 @@ pub async fn approve_request(
     if let Some(client_state) = request.state.as_deref() {
         response.push(("state", client_state));
     }
+    response.push(("iss", state.config.server.public_url.as_str()));
     oauth::redirect_with(&request.redirect_uri, &response)
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("stored redirect_uri does not parse")))
 }
 
 /// Deny a request: the redirect carrying `access_denied`.
-pub async fn deny_request(state: &AppState, id: &str) -> Result<String, AppError> {
+pub async fn deny_request(state: &AppState, user_id: Uuid, id: &str) -> Result<String, AppError> {
     let (request, _) = load_request(state, id).await?;
+    let request = claim_request(state, id, request, user_id).await?;
     take_request(state, id).await?;
     let mut response = vec![
         ("error", ErrorCode::AccessDenied.as_str()),
@@ -458,6 +722,7 @@ pub async fn deny_request(state: &AppState, id: &str) -> Result<String, AppError
     if let Some(client_state) = request.state.as_deref() {
         response.push(("state", client_state));
     }
+    response.push(("iss", state.config.server.public_url.as_str()));
     oauth::redirect_with(&request.redirect_uri, &response)
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("stored redirect_uri does not parse")))
 }
@@ -499,7 +764,7 @@ pub async fn token(
         )
         .into());
     }
-    let client = authenticate_client(state, authorization, parameters).await?;
+    let client = authenticate_client(state, authorization, parameters, ip).await?;
     let required = |name: &'static str| {
         param(name).ok_or_else(|| {
             EndpointError::OAuth(OAuthError::new(
@@ -536,18 +801,60 @@ pub async fn token(
             )
             .await?
         }
-        oauth::GRANT_REFRESH_TOKEN => (
-            auth_svc::refresh_token(
+        oauth::GRANT_REFRESH_TOKEN => {
+            let refresh = required("refresh_token")?;
+            // RFC 6749 section 6: the client may ask for less than it was
+            // granted, for this access token; never for more. Checked before
+            // the rotation, so a refused request keeps its refresh token.
+            let narrowed = match param("scope") {
+                None => None,
+                Some(scope) => {
+                    let requested: Vec<String> =
+                        scope.split_ascii_whitespace().map(str::to_owned).collect();
+                    let session = crate::repositories::session::find_by_token_hash(
+                        &state.db,
+                        &crypto::sha256(refresh.as_bytes()),
+                    )
+                    .await?;
+                    let within = session
+                        .as_ref()
+                        .and_then(|s| s.scopes.as_ref())
+                        .is_none_or(|granted| requested.iter().all(|r| granted.contains(r)));
+                    if !within {
+                        return Err(OAuthError::new(
+                            ErrorCode::InvalidScope,
+                            "a refresh asks for at most what was granted",
+                        )
+                        .into());
+                    }
+                    Some(requested)
+                }
+            };
+            let mut tokens = auth_svc::refresh_token(
                 state,
-                required("refresh_token")?,
+                refresh,
                 Some(&client.client_id),
                 ip,
                 user_agent,
                 None,
             )
-            .await?,
-            None,
-        ),
+            .await?;
+            if let Some(narrowed) = narrowed {
+                tokens.access_token = auth_svc::build_access_token(
+                    tokens.session.user_id,
+                    tokens.session.id,
+                    Some(&narrowed),
+                    tokens.session.client_id.as_deref(),
+                    &tokens.session.session_type,
+                    state,
+                )
+                .await?;
+                tokens.session.scopes = Some(narrowed);
+            }
+            // No nonce in a refreshed ID token: OpenID Connect ties the nonce
+            // to the authentication request, which a refresh is not.
+            (tokens, None)
+        }
         _ => (
             device_svc::poll(
                 state,
@@ -596,7 +903,13 @@ async fn id_token(
         exp: now
             .saturating_add(i64::try_from(state.config.jwt.access_expiry_secs).unwrap_or(i64::MAX)),
         iat: now,
-        auth_time: tokens.session.family_created_at.unix_timestamp(),
+        // When the user last proved their password for the consent, not when
+        // the session was opened.
+        auth_time: tokens
+            .session
+            .auth_time
+            .unwrap_or(tokens.session.family_created_at)
+            .unix_timestamp(),
         nonce,
         at_hash: crate::domain::oidc::at_hash(&tokens.access_token),
         profile: crate::domain::oidc::user_claims(&user, &scopes),
@@ -644,10 +957,24 @@ async fn client_credentials(
         )
         .into());
     }
-    let scopes = check_scopes(state, client, scope)
+    // No user takes part: the OpenID Connect scopes, which describe one, have
+    // no meaning here and are refused rather than issued as permissions.
+    if scope.is_some_and(|scope| {
+        scope
+            .split_ascii_whitespace()
+            .any(crate::domain::oidc::is_oidc_scope)
+    }) {
+        return Err(OAuthError::new(
+            ErrorCode::InvalidScope,
+            "OpenID Connect scopes need a user: not with the client credentials grant",
+        )
+        .into());
+    }
+    let mut scopes = check_scopes(state, client, scope)
         .await?
         .map_err(|message| OAuthError::new(ErrorCode::InvalidScope, message))?
         .unwrap_or_default();
+    scopes.retain(|scope| !crate::domain::oidc::is_oidc_scope(scope));
 
     let issuer = state.config.server.public_url.clone();
     let now = state.clock.now().unix_timestamp();
@@ -660,6 +987,7 @@ async fn client_credentials(
     )
     .with_rbac(Vec::new(), scopes.clone());
     claims.client_id = Some(client.client_id.clone());
+    claims.sub_type = Some("client".to_owned());
     claims.iss = Some(issuer);
     claims.aud = state.config.jwt.audience.clone();
     let access_token =
@@ -685,7 +1013,7 @@ pub async fn device_authorization(
     ip: Option<IpNetwork>,
     user_agent: Option<&str>,
 ) -> Result<device_svc::DeviceInitResponse, EndpointError> {
-    let client = authenticate_client(state, authorization, parameters).await?;
+    let client = authenticate_client(state, authorization, parameters, ip).await?;
     let scopes = check_scopes(state, &client, oauth::parameter(parameters, "scope"))
         .await?
         .map_err(|message| OAuthError::new(ErrorCode::InvalidScope, message))?;
@@ -698,9 +1026,13 @@ pub async fn device_authorization(
 #[derive(Debug, Default, Serialize, utoipa::ToSchema)]
 pub struct Introspection {
     pub active: bool,
-    /// `access_token`, `refresh_token` or `personal_access_token`.
+    /// `access_token` or `refresh_token`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_type: Option<&'static str>,
+    /// For a user's token, the session it comes from: `web`, `device`, or
+    /// `personal_access_token` for a script.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_type: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -722,13 +1054,13 @@ pub struct Introspection {
 /// The kind of a presented token, from its shape.
 enum Presented<'a> {
     Access(&'a str),
-    Personal(&'a str),
+    Personal,
     Refresh(&'a str),
 }
 
 fn classify(token: &str) -> Presented<'_> {
     if crate::domain::personal_access_token::random_part(token).is_some() {
-        Presented::Personal(token)
+        Presented::Personal
     } else if token.split('.').count() == 3 {
         Presented::Access(token)
     } else {
@@ -742,8 +1074,9 @@ pub async fn introspect(
     state: &AppState,
     authorization: Option<&str>,
     parameters: &[(String, String)],
+    ip: Option<IpNetwork>,
 ) -> Result<Introspection, EndpointError> {
-    let client = authenticate_client(state, authorization, parameters).await?;
+    let client = authenticate_client(state, authorization, parameters, ip).await?;
     if !client.is_confidential() {
         return Err(OAuthError::new(
             ErrorCode::UnauthorizedClient,
@@ -760,14 +1093,28 @@ pub async fn introspect(
             let Some(claims) = verified_claims(state, jwt) else {
                 return Ok(Introspection::default());
             };
+            // A resource server introspects anyone's access tokens; another
+            // confidential client only its own: it has no business learning
+            // what other tokens are worth.
+            if !client.allows_introspection
+                && claims.client_id.as_deref() != Some(client.client_id.as_str())
+            {
+                return Ok(Introspection::default());
+            }
+            // A client credentials token carries no session to narrow it: its
+            // permissions are read against the client's scopes of today, so a
+            // scope taken back from the client is gone from its tokens at once.
+            let mut current_scopes: Option<Vec<String>> = None;
             let active = match claims.client_id.as_deref() {
                 // A client credentials token: active while not revoked and the
                 // client may still use the grant.
                 Some(client_id) if claims.sid.is_nil() => {
-                    !auth_svc::is_jti_blocked(state, claims.jti).await?
-                        && crate::repositories::registered_client::find_by_id(&state.db, client_id)
+                    let issuer =
+                        crate::repositories::registered_client::find_by_id(&state.db, client_id)
                             .await?
-                            .is_some_and(|c| c.allows_client_credentials)
+                            .filter(|c| c.allows_client_credentials);
+                    current_scopes = issuer.as_ref().map(|c| c.scopes.clone());
+                    !auth_svc::is_jti_blocked(state, claims.jti).await? && issuer.is_some()
                 }
                 _ => auth_svc::verify_token_state(state, claims.jti, claims.sid)
                     .await
@@ -776,16 +1123,32 @@ pub async fn introspect(
             if !active {
                 return Ok(Introspection::default());
             }
-            let session_client = match claims.client_id.clone() {
-                Some(client_id) => Some(client_id),
-                None => crate::repositories::session::find_by_id(&state.db, claims.sid)
-                    .await?
-                    .and_then(|s| s.client_id),
+            let session = if claims.sid.is_nil() {
+                None
+            } else {
+                crate::repositories::session::find_by_id(&state.db, claims.sid).await?
             };
+            let session_client = claims
+                .client_id
+                .clone()
+                .or_else(|| session.as_ref().and_then(|s| s.client_id.clone()));
+            // A resource server registered with scopes learns only those.
+            let scope: Vec<&str> = claims
+                .permissions
+                .iter()
+                .filter(|p| client.scopes.is_empty() || client.scopes.contains(p))
+                .filter(|p| {
+                    current_scopes
+                        .as_ref()
+                        .is_none_or(|scopes| scopes.contains(p))
+                })
+                .map(String::as_str)
+                .collect();
             Introspection {
                 active: true,
                 token_type: Some("access_token"),
-                scope: Some(claims.permissions.join(" ")).filter(|s| !s.is_empty()),
+                session_type: session.map(|s| s.session_type.as_str()),
+                scope: Some(scope.join(" ")).filter(|s| !s.is_empty()),
                 client_id: session_client,
                 sub: Some(claims.sub),
                 exp: Some(claims.exp),
@@ -801,7 +1164,10 @@ pub async fn introspect(
                 &crypto::sha256(raw.as_bytes()),
             )
             .await?
-            .filter(|s| s.is_active(now) && s.rotated_at.is_none()) else {
+            .filter(|s| s.is_active(now) && s.rotated_at.is_none())
+            // A refresh token is its client's secret: only that client learns
+            // anything of it.
+            .filter(|s| s.client_id.as_deref() == Some(client.client_id.as_str())) else {
                 return Ok(Introspection::default());
             };
             Introspection {
@@ -815,27 +1181,8 @@ pub async fn introspect(
                 ..Introspection::default()
             }
         }
-        Presented::Personal(secret) => {
-            let random =
-                crate::domain::personal_access_token::random_part(secret).unwrap_or_default();
-            let Some(found) = crate::repositories::personal_access_token::find_by_hash(
-                &state.db,
-                &crypto::sha256(random.as_bytes()),
-            )
-            .await?
-            .filter(|f| f.session_revoked_at.is_none() && f.token.expires_at > now) else {
-                return Ok(Introspection::default());
-            };
-            Introspection {
-                active: true,
-                token_type: Some("personal_access_token"),
-                scope: Some(found.token.scopes.join(" ")),
-                sub: Some(found.token.user_id),
-                exp: Some(found.token.expires_at.unix_timestamp()),
-                iat: Some(found.token.created_at.unix_timestamp()),
-                ..Introspection::default()
-            }
-        }
+        // Personal access tokens belong to accounts, not to clients.
+        Presented::Personal => Introspection::default(),
     };
     Ok(introspection)
 }
@@ -862,7 +1209,7 @@ pub async fn revoke(
     parameters: &[(String, String)],
     ip: Option<IpNetwork>,
 ) -> Result<(), EndpointError> {
-    let client = authenticate_client(state, authorization, parameters).await?;
+    let client = authenticate_client(state, authorization, parameters, ip).await?;
     let token = oauth::parameter(parameters, "token")
         .ok_or_else(|| OAuthError::new(ErrorCode::InvalidRequest, "token is required"))?;
     let owned = |session: &crate::domain::session::Session| {
@@ -919,7 +1266,32 @@ pub async fn revoke(
             }
         }
         // Personal access tokens belong to accounts, not clients.
-        Presented::Personal(_) => {}
+        Presented::Personal => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_states_read_the_same_to_a_client() {
+        let descriptions: Vec<Option<String>> = [
+            AppError::AccountSuspended,
+            AppError::AccountInactive,
+            AppError::AccountLocked,
+            AppError::EmailNotVerified,
+        ]
+        .into_iter()
+        .map(|error| match EndpointError::from(error) {
+            EndpointError::OAuth(error) => {
+                assert_eq!(error.code, ErrorCode::InvalidGrant);
+                error.description
+            }
+            EndpointError::App(_) => panic!("not an OAuth error"),
+        })
+        .collect();
+        assert!(descriptions.windows(2).all(|pair| pair[0] == pair[1]));
+    }
 }

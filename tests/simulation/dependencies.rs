@@ -201,10 +201,11 @@ async fn a_refresh_goes_through_without_redis() {
     );
 }
 
+/// The public status code with the internal detail of each dependency.
 async fn ready(app: &TestApp) -> (u16, serde_json::Value) {
-    let res = app.get("/ready").await;
-    let status = res.status().as_u16();
-    (status, res.json().await.unwrap_or_default())
+    let status = app.get("/ready").await.status().as_u16();
+    let detail = auth_api::handlers::readiness(&app.state).await;
+    (status, serde_json::to_value(detail).unwrap())
 }
 
 /// Poll `/ready` until `check` holds, for up to ten seconds.
@@ -235,7 +236,9 @@ async fn readiness_follows_each_dependency() {
             _ => &dependencies(&app).nats,
         };
         proxy.set(Fault::Refuse);
-        let (status, body) = ready_until(&app, |_, body| body[name] == "down").await;
+        // The public answer is reused for a second: wait for both to agree.
+        let (status, body) =
+            ready_until(&app, |status, body| status == 503 && body[name] == "down").await;
         assert_eq!(
             (status, body[name].as_str()),
             (503, Some("down")),

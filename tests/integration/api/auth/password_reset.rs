@@ -266,14 +266,14 @@ async fn verify_email_activates_unverified_account() {
             }),
         )
         .await;
-    assert_eq!(before.status().as_u16(), 403);
+    assert_eq!(before.status().as_u16(), 401);
 
     let token = fixtures::create_email_verification_token(&app.db, user.id, &user.email).await;
 
     let res = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": token.raw }),
+            &serde_json::json!({ "token": token.raw, "password": user.password }),
         )
         .await;
     assert_eq!(res.status().as_u16(), 200);
@@ -299,7 +299,7 @@ async fn verify_email_with_invalid_token_rejected() {
     let res = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": uuid::Uuid::new_v4().to_string() }),
+            &serde_json::json!({ "token": uuid::Uuid::new_v4().to_string(), "password": "Any-Password-1!" }),
         )
         .await;
 
@@ -318,7 +318,7 @@ async fn verify_email_with_already_used_token_rejected() {
     let first = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": token.raw }),
+            &serde_json::json!({ "token": token.raw, "password": user.password }),
         )
         .await;
     assert_eq!(first.status().as_u16(), 200);
@@ -334,7 +334,7 @@ async fn verify_email_with_already_used_token_rejected() {
     let second = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": token.raw }),
+            &serde_json::json!({ "token": token.raw, "password": user.password }),
         )
         .await;
     assert_eq!(second.status().as_u16(), 401);
@@ -353,7 +353,7 @@ fn verification_mails(app: &TestApp, email: &str) -> Vec<testkit::mail::Captured
 }
 
 #[tokio::test]
-async fn a_resent_verification_link_replaces_the_previous_one() {
+async fn resent_links_coexist_until_one_verifies_the_account() {
     let app = TestApp::spawn().await;
     let user = fixtures::register_user(&app, 900).await;
     let first = app
@@ -377,22 +377,28 @@ async fn a_resent_verification_link_replaces_the_previous_one() {
         .expect("a second verification link");
     assert_ne!(first, second);
 
-    app.clear_verify_email_rate_limit(&app.client_ip).await;
-    let stale = app
-        .post("/auth/verify-email", &serde_json::json!({ "token": first }))
-        .await;
-    assert_eq!(
-        stale.status().as_u16(),
-        401,
-        "the previous link no longer works"
-    );
-    let fresh = app
+    // A resend must not revoke the link its owner is about to click: someone
+    // else can ask for one, knowing only the address.
+    let used = app
         .post(
             "/auth/verify-email",
-            &serde_json::json!({ "token": second }),
+            &serde_json::json!({ "token": first, "password": user.password }),
         )
         .await;
-    assert_eq!(fresh.status().as_u16(), 200);
+    assert_eq!(used.status().as_u16(), 200, "the first link still works");
+
+    app.clear_verify_email_rate_limit(&app.client_ip).await;
+    let other = app
+        .post(
+            "/auth/verify-email",
+            &serde_json::json!({ "token": second, "password": user.password }),
+        )
+        .await;
+    assert_eq!(
+        other.status().as_u16(),
+        401,
+        "the verification ended the other links"
+    );
 }
 
 #[tokio::test]

@@ -23,6 +23,3 @@ CREATE TABLE passkeys (
 );
 
 CREATE INDEX idx_passkeys_user ON passkeys (user_id, created_at);
-
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'passkey_registered';
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'passkey_removed';

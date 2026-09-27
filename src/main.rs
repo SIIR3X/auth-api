@@ -30,6 +30,11 @@ async fn main() -> anyhow::Result<()> {
     let tracer_provider = auth_api::telemetry::tracer_provider(&config.telemetry)?;
     init_tracing(&config.log, tracer_provider.as_ref());
     auth_api::utils::password::log_capacity(&config.crypto);
+    if config.is_production() {
+        for (key, consequence) in auth_api::config::weakened_settings(&config) {
+            tracing::warn!(key, consequence, "production runs with a weakened setting");
+        }
+    }
 
     // One-off command: re-encrypt all TOTP secrets with the new key.
     // Set PREVIOUS_ENCRYPTION_KEY=<old> ENCRYPTION_KEY=<new>, run, then remove PREVIOUS_ENCRYPTION_KEY.
@@ -76,9 +81,9 @@ async fn main() -> anyhow::Result<()> {
                 .max_connections(1)
                 .connect(&config.database.url)
                 .await?;
-            let client =
-                auth_api::repositories::registered_client::upsert(&pool, &registration.as_new())
-                    .await?;
+            let client = auth_api::cli::register_client(&pool, &registration)
+                .await
+                .map_err(|message| anyhow::anyhow!("--register-client: {message}"))?;
             tracing::info!(
                 client_id = client.client_id,
                 primary = client.is_primary,
@@ -93,6 +98,18 @@ async fn main() -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.server.host, config.server.port);
 
     let state = AppState::from_config(config).await?;
+
+    // Secrets written under a key that is no longer configured cannot be read:
+    // every TOTP sign-in and webhook delivery they belong to would fail. Refuse
+    // to serve rather than fail those requests one by one.
+    let unreadable = key_rotation::secrets_under_unknown_keys(&state).await?;
+    if unreadable > 0 {
+        anyhow::bail!(
+            "{unreadable} TOTP or webhook secrets are encrypted with a key that is neither \
+             ENCRYPTION_KEY nor PREVIOUS_ENCRYPTION_KEY: restore the previous key and finish \
+             the rotation with --rotate-totp-keys before removing it"
+        );
+    }
 
     // Rotate audit log partitions at startup: creates upcoming monthly partitions
     // and drops partitions older than retention_months.
@@ -116,7 +133,10 @@ async fn main() -> anyhow::Result<()> {
     // exposition endpoint never sits behind the public reverse proxy.
     // docker-compose publishes this port on loopback only.
     let app = if state.config.metrics.enabled {
-        let metrics_addr = format!("{}:{}", state.config.server.host, state.config.metrics.port);
+        let metrics_addr = format!(
+            "{}:{}",
+            state.config.metrics.host, state.config.metrics.port
+        );
         let (app, metrics_app) = handlers::router_with_metrics(state);
 
         let metrics_listener = tokio::net::TcpListener::bind(&metrics_addr).await?;

@@ -102,11 +102,15 @@ pub async fn record_use(
     Ok(result.rows_affected() == 1)
 }
 
-pub async fn delete_owned(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bool, sqlx::Error> {
+pub async fn delete_owned<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+    user_id: Uuid,
+) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("DELETE FROM passkeys WHERE id = $1 AND user_id = $2")
         .bind(id)
         .bind(user_id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(result.rows_affected() == 1)
 }

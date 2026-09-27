@@ -268,3 +268,35 @@ fn documented_schemas_have_unique_names() {
     assert!(seen.len() > 50, "found only {} schemas", seen.len());
     assert_eq!(duplicates, Vec::<String>::new(), "schema names used twice");
 }
+
+/// The runtime role executes the owner-privileged functions by name: each
+/// function the migrations close to PUBLIC is granted in
+/// `deploy/db/auth-api-grants.sql`, and nothing else is (SEC-87).
+#[test]
+fn owner_privileged_functions_are_granted_by_name() {
+    let root = testkit::workspace_path("");
+    let grants = std::fs::read_to_string(root.join("deploy/db/auth-api-grants.sql")).unwrap();
+    assert!(
+        !grants.contains("EXECUTE ON ALL FUNCTIONS") && !grants.contains("ON FUNCTIONS TO"),
+        "no blanket EXECUTE grant"
+    );
+    let mut closed = Vec::new();
+    for entry in std::fs::read_dir(root.join("migrations")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "sql") {
+            let sql = std::fs::read_to_string(&path).unwrap();
+            for line in sql.lines() {
+                if let Some(rest) = line.strip_prefix("REVOKE EXECUTE ON FUNCTION ") {
+                    closed.push(rest.trim_end_matches(" FROM PUBLIC;").to_owned());
+                }
+            }
+        }
+    }
+    assert!(closed.len() >= 6, "{closed:?}");
+    for function in closed {
+        assert!(
+            grants.contains(&function),
+            "{function} is not granted to the runtime role"
+        );
+    }
+}

@@ -55,6 +55,13 @@ async fn a_client_obtains_a_token_for_itself_with_its_scopes() {
         (400, Some("invalid_scope"))
     );
 
+    // No user takes part: OpenID Connect scopes are refused (SEC-79).
+    let (status, refused) = token(&app, &[("scope", "openid users:read")]).await;
+    assert_eq!(
+        (status, refused["error"].as_str()),
+        (400, Some("invalid_scope"))
+    );
+
     // Not a user: the account routes refuse it.
     assert_eq!(app.get_auth("/users/me", access).await.status(), 401);
 }
@@ -135,6 +142,24 @@ async fn a_client_token_is_introspected_and_revoked() {
     assert_eq!(active["active"], true);
     assert_eq!(active["client_id"], "backend");
     assert_eq!(active["scope"], "users:read");
+
+    // A scope taken back from the client is gone from its tokens at once
+    // (SEC-86).
+    sqlx::query(
+        "UPDATE registered_clients SET scopes = ARRAY['audit:read'] WHERE client_id = 'backend'",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let narrowed = introspect(access.to_owned()).await;
+    assert_eq!(narrowed["active"], true);
+    assert!(narrowed.get("scope").is_none(), "{narrowed}");
+    sqlx::query(
+        "UPDATE registered_clients SET scopes = ARRAY['users:read'] WHERE client_id = 'backend'",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
 
     let (status, _) = form(
         &app,

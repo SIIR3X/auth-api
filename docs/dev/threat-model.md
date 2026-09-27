@@ -50,16 +50,17 @@ at least once a year.
 | Threat | Mitigation | Residual |
 |--------|------------|----------|
 | Credential stuffing and password guessing | Per-address and per-identifier budgets, lockout, backoff, CAPTCHA, breached password refusal (SEC-03, SEC-04, SEC-23, SEC-29) | A slow, distributed attack below every budget; watch `auth_logins_total{outcome="invalid_credentials"}` |
-| Account enumeration | Identical answers and timing for unknown and known identifiers (SEC-02) | Timing measured on one machine; network jitter helps, co-located attackers are out of scope |
+| Account enumeration | Identical answers and timing for unknown and known identifiers (SEC-02) | Timing measured on one machine; network jitter helps, co-located attackers are out of scope. Usernames are public by design: registration and profile changes say when one is taken (accepted risk, section 5) |
 | Stolen access token | 15-minute lifetime, revocation checked per request, session binding option (SEC-05, SEC-08) | Resource servers verifying offline accept it until expiry unless they introspect |
-| Stolen refresh token | Rotation with replay detection revoking the family (SEC-07) | The thief wins if they refresh first and the owner never does again |
+| Stolen refresh token | Rotation with replay detection revoking the family; the grace window forgives only the client that rotated (SEC-07, SEC-61) | The thief wins if they refresh first and the owner never does again |
 | Forged tokens | ES256 only, `kid` pinned to its key, issuer and audience checked (SEC-05) | Theft of `JWT_PRIVATE_KEY`: rotate the key (runbook section 1) |
 | Second factor bypass | Pre-auth token bound to its method, single-use codes, budgets (SEC-10, SEC-11) | Email codes are as strong as the mailbox |
 | Phishing of sign-in links | Off by default, short-lived, single-use, never skip the second factor (SEC-33) | Enabled, the mailbox is a first factor |
 | Passkey cloning or forged assertions | Signature, origin, relying party, user verification, counters (SEC-40) | Attestation not verified: an authenticator's make is not trusted nor checked |
 | Login CSRF with an external identity | Browser binding secret on the outcome, `state`, `nonce` (SEC-41) | A compromised identity provider signs in whoever it vouches for, for linked accounts |
+| Account pre-hijacking (registering the victim's address first or second) | A verification link activates the account only with the password of the registration that sent it; a reset takes a pending account back without its factors (SEC-43, SEC-44) | - |
 | Account takeover through a provider's email | Identities never matched by email; linking needs the signed-in owner (SEC-41) | - |
-| Malicious OAuth client | Registered clients only, exact redirects, PKCE S256, consent re-authentication, scopes (SEC-14 to SEC-17, SEC-36) | A user consenting to a malicious registered client |
+| Malicious OAuth client | Registered clients only, exact redirects checked again at approval and redemption, PKCE S256, consent and device approval re-authentication with the scope shown, scopes following the client's registration (SEC-14 to SEC-17, SEC-36, SEC-62) | A user consenting to a malicious registered client |
 | Client impersonation at the token endpoint | Confidential client secrets, client-bound refresh and device codes (SEC-36) | Public clients rely on PKCE and redirect registration |
 
 ### Tampering
@@ -97,7 +98,7 @@ at least once a year.
 | Redis outage | Fail closed on budgets and revocation checks, `503` (SEC-04, SEC-23) | Sign-in unavailable while Redis is |
 | Broker outage | Events wait in the outbox; nothing is refused (SEC-21) | Consumers learn late |
 | Mailbox flooding | Per-account and per-address budgets on every email (SEC-02, SEC-33) | - |
-| Lockout of a victim by guessing | Lockout ends on its own; sessions are not cut; administrators unlock (SEC-03, SEC-31) | Anyone knowing the identifier can delay a password sign-in; passkeys and external identities still work |
+| Lockout of a victim by guessing | The lock covers the password only, ends on its own, is restarted by any sign-in or a reset, and is mailed to the owner; recovery links and second-factor budgets count per address (SEC-03, SEC-58) | Anyone knowing the identifier can delay a password sign-in for a lock period; passkeys, sign-in links and external identities still work |
 | Webhook endpoint slowing deliveries | Timeouts, leases, bounded attempts | A slow endpoint delays its own deliveries |
 
 ### Elevation of privilege
@@ -106,9 +107,9 @@ at least once a year.
 |--------|------------|----------|
 | Session escalation to sensitive actions | Recent re-authentication required; sign-in does not grant it (SEC-09) | - |
 | Scope widening by a client | Scopes frozen at consent, re-derived at refresh (SEC-17) | - |
-| Administrator account compromise | Second factor required, permission rechecked in the database, re-authentication for role grants, last administrator kept (SEC-31) | A compromised administrator with a second factor acts as one |
+| Administrator account compromise | Second factor required and kept, permission rechecked in the database, re-authentication for every action that grants, withdraws, reopens or destroys, no self-granted permission, owners mailed of changes, last administrator kept (SEC-31, SEC-59) | A compromised administrator who can re-authenticate acts as one |
 | Client credentials used as a user | No session: account routes refuse them (SEC-38) | - |
-| Personal access token overreach | Scopes limited to the holder's permissions, no sensitive action without the password (SEC-34, SEC-09) | Non-sensitive account routes accept its tokens |
+| Personal access token overreach | Scopes limited to the holder's permissions; account, approval and administration routes refuse delegated tokens (SEC-34, SEC-42) | - |
 
 ## 4. Supply chain and operations
 
@@ -130,6 +131,26 @@ at least once a year.
   magic links are enabled, and as its identity provider when one is linked.
 - Passkey attestation is not verified.
 - Email one-time codes have 6 digits; their budgets and lifetime make them hold.
+- Traffic to PostgreSQL and Redis is protected by the WireGuard tunnel, not by
+  TLS; `hostssl` with `sslmode=verify-full` is documented for deployments
+  where the tunnel is not the trust boundary. Monitoring ports answer the
+  monitoring host only (firewall rules of the monitoring guide).
+- A username is an identifier others can learn exists: choosing one that is
+  taken answers `username_taken`, whatever the case. Email addresses, the
+  identifier that reaches a person, are never confirmed this way (kept after
+  the third audit: usernames are public in this product), and a registration
+  on a taken address reserves the username it asked for, so the answer never
+  tells whether that address is registered. Budgets on
+  registration (`REGISTRATIONS_PER_IP_PER_HOUR`) bound how fast usernames can
+  be tried or squatted, and a pending account frees its username after
+  `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` (2 by default); a deployment that treats
+  usernames as secret should let users sign in by email only.
+
+- Whoever holds the password can spend an account's second-factor budget for
+  an hour; the owner is warned by e-mail and a passkey still signs in (kept:
+  refusing the attempts is what keeps the code space from being searched).
+- A second factor by e-mail code falls with the mailbox: whoever controls it
+  can reset the password and receive the code. TOTP and passkeys do not.
 
 ## 6. Verification
 

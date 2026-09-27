@@ -1,7 +1,9 @@
 -- Sessions: one row per refresh token. A refresh rotates the session into a new
 -- row of the same family; replaying a rotated token revokes the whole family.
 -- token_hash is the SHA-256 of the refresh token, never the token itself.
-CREATE TYPE session_type AS ENUM ('web', 'device');
+-- A personal access token owns a session of type `personal_access_token`, so
+-- every revocation path ends it the same way.
+CREATE TYPE session_type AS ENUM ('web', 'device', 'personal_access_token');
 
 CREATE TYPE session_compromise_reason AS ENUM (
     'refresh_token_reuse',
@@ -34,6 +36,14 @@ CREATE TABLE sessions (
     user_agent TEXT,
     device_name VARCHAR(100),
     remember_me BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Whether the sign-in that started the family proved a second factor (TOTP,
+    -- email code, recovery code, or a passkey with user verification). The
+    -- administration requires it of the session itself; rotations inherit it.
+    mfa BOOLEAN NOT NULL DEFAULT FALSE,
+    -- When the user last proved their password for the consent this session
+    -- came from (OpenID Connect `auth_time`); rotations inherit it. NULL for
+    -- sessions that did not come from a consent.
+    auth_time TIMESTAMPTZ,
 
     CONSTRAINT sessions_token_hash_key UNIQUE (token_hash),
     CONSTRAINT sessions_expires_after_creation CHECK (expires_at > created_at),
@@ -74,6 +84,9 @@ CREATE UNIQUE INDEX idx_sessions_replaced_by
 -- Retention deletes by expiry and by revocation, whatever the row's state.
 CREATE INDEX idx_sessions_expires_at ON sessions (expires_at);
 CREATE INDEX idx_sessions_revoked_at ON sessions (revoked_at) WHERE revoked_at IS NOT NULL;
+-- Sessions of a client application, revoked when the client is removed.
+CREATE INDEX idx_sessions_client_active ON sessions (client_id)
+    WHERE client_id IS NOT NULL AND revoked_at IS NULL;
 
 CREATE OR REPLACE FUNCTION revoke_session_family(
     p_session_id UUID,

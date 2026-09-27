@@ -17,7 +17,7 @@ Monitoring host (10.0.0.3) -- WireGuard -- API VPS (10.0.0.1): API instances, NA
 
 | Target | Address | Exporter |
 |--------|---------|----------|
-| API instances and their containers | `10.0.0.1:9465`, `10.0.0.1:9466` | the API's metrics listener, which also publishes its container's memory, memory limit, CPU throttling and start time, read from its own cgroup |
+| API instances and their containers | `10.0.0.1:9465`, `10.0.0.1:9466` | the API's internal listener (`/metrics`, and `/ready` with the state of each dependency; `Authorization: Bearer <METRICS_TOKEN>`), which also publishes its container's memory, memory limit, CPU throttling and start time, read from its own cgroup |
 | NATS | `10.0.0.1:7777` | `prometheus-nats-exporter`, in `docker-compose.api.yml` |
 | Hosts | `10.0.0.1:9100`, `10.0.0.2:9100` | node_exporter (textfile collector on the DB VPS: backup metrics) |
 | PostgreSQL | `10.0.0.2:9187` | postgres_exporter |
@@ -138,6 +138,15 @@ cp releases/auth-api-X.Y.Z/deploy/monitoring/{docker-compose.monitoring.yml,prom
 cp releases/auth-api-X.Y.Z/deploy/monitoring/rules/infrastructure.yml rules/
 cp releases/auth-api-X.Y.Z/docs/deploy/guides/prometheus-alerts.yml rules/auth-api.yml
 sed -i 's/api.example.com/your-actual-domain.com/' prometheus.yml
+```
+
+The API's internal listener requires its `METRICS_TOKEN`: write it where
+Prometheus reads it (Prometheus runs as `nobody`, UID 65534):
+
+```bash
+mkdir -p secrets
+pass prod/auth-api/metrics-token | tr -d '\n' > secrets/auth-api-metrics-token
+sudo chown 65534 secrets/auth-api-metrics-token && sudo chmod 400 secrets/auth-api-metrics-token
 ```
 
 Edit `alertmanager.yml` (SMTP relay, addresses, webhooks) and store the SMTP

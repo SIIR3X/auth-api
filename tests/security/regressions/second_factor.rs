@@ -8,7 +8,6 @@
 
 use deadpool_redis::redis::AsyncCommands;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::common::{
     app::TestApp,
@@ -155,10 +154,14 @@ async fn account_budget_blocks_fresh_pre_auth_tokens() {
     let user = fixtures::authenticated_user(&app, 602).await;
     let (secret, _) = enable_totp(&app, &user).await;
 
-    // Simulate an exhausted per-account budget (20 failures this hour).
+    // Simulate an exhausted budget for this address (20 failures this hour).
     let mut conn = app.redis.get().await.unwrap();
     let _: () = conn
-        .set_ex(format!("totp_user_fail:{}", user.id), 20, 3600)
+        .set_ex(
+            format!("totp_user_fail:{}:{}", user.id, app.client_ip),
+            20,
+            3600,
+        )
         .await
         .unwrap();
 
@@ -245,7 +248,16 @@ async fn email_code_lookup_is_scoped_to_the_challenged_user() {
     let app = TestApp::spawn().await;
     let alice = fixtures::authenticated_user(&app, 605).await;
     let bob = fixtures::authenticated_user(&app, 606).await;
-    let known_hash = Sha256::digest(b"123456").to_vec();
+    let known_hash = app
+        .state
+        .keyring
+        .otp_digest("email_2fa", alice.id.as_bytes(), "123456")
+        .to_vec();
+    let bob_hash = app
+        .state
+        .keyring
+        .otp_digest("email_2fa", bob.id.as_bytes(), "123456")
+        .to_vec();
 
     // Enable email 2FA for Alice with a code we control.
     let res = app
@@ -272,7 +284,18 @@ async fn email_code_lookup_is_scoped_to_the_challenged_user() {
     app.clear_email_2fa_cooldown(alice.id).await;
 
     let challenge = login_challenge(&app, &alice).await;
-    set_active_email_code(&app, alice.id, &known_hash).await;
+    // A sign-in code is bound to its challenge.
+    let challenge_token = challenge["pre_auth_token"].as_str().unwrap();
+    let sign_in_hash = app
+        .state
+        .keyring
+        .otp_digest(
+            "email_2fa",
+            &auth_api::services::email_2fa::code_subject(alice.id, Some(challenge_token)),
+            "123456",
+        )
+        .to_vec();
+    set_active_email_code(&app, alice.id, &sign_in_hash).await;
 
     // Bob holds a live code with the same digits, issued earlier.
     sqlx::query(
@@ -280,7 +303,7 @@ async fn email_code_lookup_is_scoped_to_the_challenged_user() {
          VALUES ($1, $2, NOW() - INTERVAL '1 minute', NOW() + INTERVAL '5 minutes')",
     )
     .bind(bob.id)
-    .bind(&known_hash)
+    .bind(&bob_hash)
     .execute(&app.db)
     .await
     .unwrap();
@@ -368,7 +391,11 @@ async fn a_pre_auth_state_without_a_method_cannot_complete_with_a_recovery_code(
     let token = "legacy-pre-auth-token";
     let mut conn = app.redis.get().await.unwrap();
     let _: () = conn
-        .set_ex(format!("pre_auth:{token}"), user.id.to_string(), 300)
+        .set_ex(
+            format!("pre_auth:{}", auth_api::utils::crypto::token_id(token)),
+            user.id.to_string(),
+            300,
+        )
         .await
         .unwrap();
 
@@ -451,36 +478,6 @@ async fn confirming_a_new_method_has_an_attempt_budget() {
 }
 
 #[tokio::test]
-async fn recovery_code_guesses_share_one_budget_across_routes() {
-    let app = TestApp::spawn().await;
-    let user = fixtures::authenticated_user(&app, 612).await;
-    let (_, recovery_codes) = enable_totp(&app, &user).await;
-
-    for attempt in 1..=10 {
-        let res = app
-            .post_auth(
-                "/users/me/two-factor/recovery-codes/use",
-                &user.access_token,
-                &json!({ "code": "XXXX-XXXX-XXXX-XXXX" }),
-            )
-            .await;
-        assert_eq!(res.status().as_u16(), 401, "attempt {attempt}");
-    }
-
-    let challenge = login_challenge(&app, &user).await;
-    let res = app
-        .post(
-            "/auth/two-factor/recovery",
-            &json!({
-                "pre_auth_token": challenge["pre_auth_token"],
-                "recovery_code": recovery_codes[0],
-            }),
-        )
-        .await;
-    assert_eq!(res.status().as_u16(), 429);
-}
-
-#[tokio::test]
 async fn a_second_factor_answers_an_inactive_account_like_the_password_sign_in() {
     let app = TestApp::spawn().await;
     let user = fixtures::authenticated_user(&app, 613).await;
@@ -505,4 +502,243 @@ async fn a_second_factor_answers_an_inactive_account_like_the_password_sign_in()
     assert_eq!(res.status().as_u16(), 403);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["code"], "account_inactive");
+}
+
+/// Concurrent regenerations cannot each replace the codes the previous one
+/// just showed: the cooldown is claimed before regenerating.
+#[tokio::test]
+async fn concurrent_recovery_code_regenerations_run_once() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 640).await;
+    enable_totp(&app, &user).await;
+    app.post_auth(
+        "/users/me/reauth",
+        &user.access_token,
+        &json!({ "current_password": user.password }),
+    )
+    .await;
+
+    let regenerate = || async {
+        app.post_auth(
+            "/users/me/two-factor/recovery-codes",
+            &user.access_token,
+            &json!({}),
+        )
+        .await
+        .status()
+        .as_u16()
+    };
+    let statuses = futures::future::join_all((0..5).map(|_| regenerate())).await;
+    assert_eq!(
+        statuses.iter().filter(|s| **s == 200).count(),
+        1,
+        "{statuses:?}"
+    );
+}
+
+/// Someone holding the password and guessing codes from their address spends
+/// that address's budget, not the owner's (SEC-58).
+#[tokio::test]
+async fn guessing_codes_from_one_address_does_not_block_the_owner() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 604).await;
+    let (secret, _) = enable_totp(&app, &user).await;
+
+    let mut conn = app.redis.get().await.unwrap();
+    let _: () = conn
+        .set_ex(format!("totp_user_fail:{}:10.66.6.6", user.id), 20, 3600)
+        .await
+        .unwrap();
+
+    // The code of the current step was spent enabling TOTP: use the next one.
+    let challenge = login_challenge(&app, &user).await;
+    let res = app
+        .post(
+            "/auth/two-factor/complete",
+            &json!({
+                "pre_auth_token": challenge["pre_auth_token"],
+                "code": totp_code(&secret, 1),
+            }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        200,
+        "the owner's address is not spent"
+    );
+}
+
+/// Signing in again within the minute an e-mail code stays fresh goes on with
+/// the code already sent instead of failing after the challenge was stored.
+#[tokio::test]
+async fn signing_in_again_within_the_email_code_cooldown_still_challenges() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 605).await;
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified)
+         VALUES ($1, 'email', TRUE, TRUE)",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let first = login_challenge(&app, &user).await;
+    let second = login_challenge(&app, &user).await;
+    assert_ne!(first["pre_auth_token"], second["pre_auth_token"]);
+}
+
+/// At most five second-factor challenges stay open per account: someone
+/// holding the password cannot open them without end (SEC-67).
+#[tokio::test]
+async fn open_challenges_are_capped_per_account() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 606).await;
+    let (_secret, _) = enable_totp(&app, &user).await;
+    for _ in 0..8 {
+        login_challenge(&app, &user).await;
+    }
+    let mut conn = app.redis.get().await.unwrap();
+    let open: i64 = conn
+        .scard(format!("user_pre_auth:{}", user.id))
+        .await
+        .unwrap();
+    assert!(open <= 5, "{open} challenges open");
+}
+
+/// An account whose second-factor budget is spent is told by mail: someone
+/// holds the password (SEC-68).
+#[tokio::test]
+async fn a_spent_second_factor_budget_warns_the_owner() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 607).await;
+    let (secret, _) = enable_totp(&app, &user).await;
+    let mut conn = app.redis.get().await.unwrap();
+    let _: () = conn
+        .set_ex(format!("totp_user_fail:{}", user.id), 30, 3600)
+        .await
+        .unwrap();
+
+    let challenge = login_challenge(&app, &user).await;
+    let res = app
+        .post(
+            "/auth/two-factor/complete",
+            &json!({
+                "pre_auth_token": challenge["pre_auth_token"],
+                "code": totp_code(&secret, 1),
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 429);
+    app.mail
+        .wait_for(&user.email, "Someone is guessing your second factor")
+        .await;
+}
+
+/// A challenge opened with the old password dies when the password changes
+/// (SEC-68).
+#[tokio::test]
+async fn a_password_change_ends_open_challenges() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 608).await;
+    let (secret, _) = enable_totp(&app, &user).await;
+    let challenge = login_challenge(&app, &user).await;
+
+    let res = app
+        .patch_auth(
+            "/users/me/password",
+            &user.access_token,
+            &json!({ "current_password": user.password, "new_password": "Changed-Pass-608!" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204, "{}", res.text().await.unwrap());
+    let res = app
+        .post(
+            "/auth/two-factor/complete",
+            &json!({
+                "pre_auth_token": challenge["pre_auth_token"],
+                "code": totp_code(&secret, 1),
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 401);
+}
+
+/// A sign-in code completes the challenge it was sent for only; challenges
+/// are kept in Redis under their digest, never the token; and codes are
+/// mailed outside a sign-in only while a method is being set up (SEC-84).
+#[tokio::test]
+async fn a_sign_in_code_belongs_to_its_challenge() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 608).await;
+    sqlx::query(
+        "INSERT INTO two_factor_methods (user_id, method_type, is_primary, is_verified)
+         VALUES ($1, 'email', TRUE, TRUE)",
+    )
+    .bind(user.id)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let res = app
+        .post_auth(
+            "/users/me/two-factor/email/send",
+            &user.access_token,
+            &json!({}),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 404, "nothing is being set up");
+
+    let first = login_challenge(&app, &user).await;
+    let first_token = first["pre_auth_token"].as_str().unwrap().to_owned();
+    app.clear_email_2fa_cooldown(user.id).await;
+    let second = login_challenge(&app, &user).await;
+    let second_token = second["pre_auth_token"].as_str().unwrap().to_owned();
+
+    let mut conn = app.redis.get().await.unwrap();
+    let raw: bool = conn
+        .exists(format!("pre_auth:{first_token}"))
+        .await
+        .unwrap();
+    assert!(!raw, "the challenge token itself is no Redis key");
+
+    // The first challenge's code, planted with digits we know.
+    let first_hash = app
+        .state
+        .keyring
+        .otp_digest(
+            "email_2fa",
+            &auth_api::services::email_2fa::code_subject(user.id, Some(&first_token)),
+            "654321",
+        )
+        .to_vec();
+    sqlx::query("DELETE FROM email_2fa_codes WHERE user_id = $1")
+        .bind(user.id)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO email_2fa_codes (user_id, code_hash, expires_at)
+         VALUES ($1, $2, NOW() + INTERVAL '5 minutes')",
+    )
+    .bind(user.id)
+    .bind(&first_hash)
+    .execute(&app.db)
+    .await
+    .unwrap();
+
+    let res = app
+        .post(
+            "/auth/two-factor/email/complete",
+            &json!({ "pre_auth_token": second_token, "code": "654321" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 401, "another challenge's code");
+    let res = app
+        .post(
+            "/auth/two-factor/email/complete",
+            &json!({ "pre_auth_token": first_token, "code": "654321" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
 }

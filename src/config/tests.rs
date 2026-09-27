@@ -17,7 +17,7 @@ fn valid_config() -> Config {
             port: 3000,
             public_url: "https://api.example.com".into(),
             frontend_url: "https://api.example.com".into(),
-            trusted_proxy_cidrs: vec!["10.0.0.0/8".parse().unwrap()],
+            trusted_proxy_cidrs: vec!["10.0.0.1/32".parse().unwrap()],
         },
         database: DatabaseConfig {
             url: "postgres://user:pass@localhost/db".into(),
@@ -27,7 +27,7 @@ fn valid_config() -> Config {
             read_url: None,
         },
         redis: RedisConfig {
-            url: "redis://127.0.0.1:6379".into(),
+            url: "redis://auth_api:redis-pass@127.0.0.1:6379".into(),
             pool_size: 5,
             wait_timeout_ms: 2000,
         },
@@ -48,8 +48,8 @@ fn valid_config() -> Config {
             audience: vec!["https://core.example.com".into()],
         },
         crypto: CryptoConfig {
-            argon2_memory_kib: 8192,
-            argon2_iterations: 1,
+            argon2_memory_kib: 19_456,
+            argon2_iterations: 2,
             argon2_parallelism: 1,
             argon2_max_concurrency: 4,
             totp_issuer: "test".into(),
@@ -70,6 +70,8 @@ fn valid_config() -> Config {
             sensitive_action_reauth_secs: 600,
             new_device_alerts: true,
             magic_links: false,
+            registrations_per_ip_per_hour: 20,
+            reset_revokes_factors_added_hours: 72,
         },
         mail: MailConfig {
             smtp: SmtpConfig {
@@ -92,6 +94,8 @@ fn valid_config() -> Config {
             verify_url: "https://hcaptcha.com/siteverify".into(),
             request_timeout_secs: 5,
             fail_open_on_error: false,
+            site_key: None,
+            expected_hostnames: Vec::new(),
         },
         pwned_passwords: PwnedPasswordsConfig {
             enabled: true,
@@ -142,7 +146,9 @@ fn valid_config() -> Config {
         },
         metrics: MetricsConfig {
             enabled: true,
+            host: "127.0.0.1".into(),
             port: 9464,
+            token: Some("metrics-token-0123456789abcdef0123456789".into()),
         },
     }
 }
@@ -1088,4 +1094,292 @@ fn validate_rejects_an_even_number_of_stream_replicas() {
         .validate()
         .expect_err("2 replicas cannot hold a quorum");
     assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "NATS_STREAM_REPLICAS"));
+}
+
+#[test]
+fn validate_bounds_the_totp_skew_to_what_the_replay_table_covers() {
+    let mut crypto = valid_config().crypto;
+    crypto.totp_skew = 2;
+    let err = validate_crypto(&crypto).expect_err("skew 2");
+    assert!(matches!(err, ConfigError::Invalid { key, .. } if key == "TOTP_SKEW"));
+    crypto.totp_skew = 1;
+    assert!(validate_crypto(&crypto).is_ok());
+}
+
+#[test]
+fn validate_refuses_weak_argon2_parameters_in_production_only() {
+    for (field, key) in [
+        ("memory", "ARGON2_MEMORY_KIB"),
+        ("iterations", "ARGON2_ITERATIONS"),
+    ] {
+        let mut config = valid_config();
+        match field {
+            "memory" => config.crypto.argon2_memory_kib = 8,
+            _ => config.crypto.argon2_iterations = 1,
+        }
+        let err = config.validate().expect_err(field);
+        assert!(
+            matches!(err, ConfigError::Invalid { key: k, .. } if k == key),
+            "{field}"
+        );
+    }
+    let mut development = valid_config();
+    development.env = Environment::Development;
+    development.crypto.argon2_memory_kib = 8;
+    development.crypto.argon2_iterations = 1;
+    assert!(validate_production_argon2(&development.crypto).is_err());
+    assert!(
+        validate_crypto(&development.crypto).is_ok(),
+        "only production refuses them"
+    );
+}
+
+#[test]
+fn validate_bounds_lifetimes_windows_and_limits() {
+    type Change = fn(&mut Config);
+    let cases: [(&str, Change); 6] = [
+        ("JWT_ACCESS_EXPIRY_SECS", |c| c.jwt.access_expiry_secs = 30),
+        ("JWT_ACCESS_EXPIRY_SECS", |c| {
+            c.jwt.access_expiry_secs = 86_400
+        }),
+        ("JWT_SHORT_SESSION_EXPIRY_SECS", |c| {
+            c.jwt.short_session_expiry_secs = 0
+        }),
+        ("JWT_REFRESH_EXPIRY_SECS", |c| {
+            c.jwt.refresh_expiry_secs = 60;
+            c.jwt.short_session_expiry_secs = 3600;
+        }),
+        ("SENSITIVE_ACTION_REAUTH_SECS", |c| {
+            c.security.sensitive_action_reauth_secs = 86_400
+        }),
+        ("RATE_LIMIT_RPM", |c| c.rate_limit.requests_per_minute = 0),
+    ];
+    for (expected, change) in cases {
+        let mut config = valid_config();
+        change(&mut config);
+        let err = config.validate().expect_err(expected);
+        assert!(
+            matches!(&err, ConfigError::Invalid { key, .. } if key == expected),
+            "{expected}: {err:?}"
+        );
+    }
+}
+
+fn file_vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect()
+}
+
+#[test]
+fn a_variable_can_come_from_a_file() {
+    let read = |path: &str| match path {
+        "/run/secrets/smtp" => Ok("s3cret\n".to_owned()),
+        "/run/secrets/key" => Ok("-----BEGIN-----\nabc\n-----END-----\r\n".to_owned()),
+        _ => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+    };
+    let values = values_from_files(
+        file_vars(&[
+            ("SMTP_PASSWORD_FILE", "/run/secrets/smtp"),
+            ("JWT_PRIVATE_KEY_FILE", "/run/secrets/key"),
+            ("SMTP_HOST", "smtp.example.com"),
+            ("UNUSED_FILE", ""),
+            ("PREVIOUS_ENCRYPTION_KEY_FILE", "/run/secrets/absent"),
+        ]),
+        read,
+    )
+    .unwrap();
+    assert_eq!(values.get("SMTP_PASSWORD").unwrap(), "s3cret");
+    assert_eq!(
+        values.get("JWT_PRIVATE_KEY").unwrap(),
+        "-----BEGIN-----\nabc\n-----END-----"
+    );
+    assert_eq!(values.len(), 2);
+}
+
+#[test]
+fn a_variable_and_its_file_together_are_refused() {
+    let read = |_: &str| Ok("from-file".to_owned());
+    let error = values_from_files(
+        file_vars(&[("ENCRYPTION_KEY", "inline"), ("ENCRYPTION_KEY_FILE", "/k")]),
+        read,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, ConfigError::Invalid { key, .. } if key == "ENCRYPTION_KEY_FILE"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_unreadable_secret_file_stops_the_start() {
+    let read = |_: &str| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    let error =
+        values_from_files(file_vars(&[("CAPTCHA_SECRET_FILE", "/nope")]), read).unwrap_err();
+    assert!(error.to_string().contains("CAPTCHA_SECRET_FILE"), "{error}");
+}
+
+#[test]
+fn a_blank_variable_defers_to_its_file() {
+    let file = "from-file".to_owned();
+    assert_eq!(
+        env_or_file(Some("  ".into()), Some(&file)),
+        Some(file.clone())
+    );
+    assert_eq!(
+        env_or_file(Some("set".into()), Some(&file)),
+        Some("set".into())
+    );
+    assert_eq!(env_or_file(None, None), None);
+}
+
+#[test]
+fn validate_rejects_production_connections_without_a_password() {
+    let mut config = valid_config();
+    config.database.url = "postgres://auth_api@10.0.0.2/auth_api".into();
+    assert!(
+        matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "DATABASE_URL")
+    );
+
+    let mut config = valid_config();
+    config.redis.url = "redis://10.0.0.2:6379".into();
+    assert!(
+        matches!(config.validate(), Err(ConfigError::Invalid { key, .. }) if key == "REDIS_URL")
+    );
+}
+
+#[test]
+fn validate_rejects_settings_that_undo_their_control() {
+    let invalid_key = |config: Config| match config.validate() {
+        Err(ConfigError::Invalid { key, .. }) => key,
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+
+    let mut config = valid_config();
+    config.security.lockout_duration_secs = 0;
+    assert_eq!(invalid_key(config), "LOCKOUT_DURATION_SECS");
+
+    let mut config = valid_config();
+    config.device_auth.ttl_secs = 86_400;
+    assert_eq!(invalid_key(config), "DEVICE_AUTH_TTL_SECS");
+
+    let mut config = valid_config();
+    config.device_auth.verification_uri = "http://auth.example.com/device".into();
+    assert_eq!(invalid_key(config), "DEVICE_AUTH_VERIFICATION_URI");
+
+    for wide in [
+        "0.0.0.0/0",
+        "::/0",
+        "10.0.0.0/8",
+        "172.30.0.0/24",
+        "fd00::/64",
+    ] {
+        let mut config = valid_config();
+        config.server.trusted_proxy_cidrs = vec![wide.parse().unwrap()];
+        assert_eq!(invalid_key(config), "TRUSTED_PROXY_CIDRS", "{wide}");
+    }
+}
+
+#[test]
+fn a_blank_required_variable_is_missing() {
+    let result = load(&[("SMTP_PASSWORD", "")], &[]);
+    assert!(
+        matches!(&result, Err(ConfigError::Missing(key)) if key == "SMTP_PASSWORD"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn validate_rejects_production_settings_past_their_ceiling() {
+    let invalid_key = |config: Config| match config.validate() {
+        Err(ConfigError::Invalid { key, .. }) => key,
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+    let mut config = valid_config();
+    config.security.lockout_threshold = 100_000;
+    assert_eq!(invalid_key(config), "LOCKOUT_THRESHOLD");
+    let mut config = valid_config();
+    config.rate_limit.auth_requests_per_minute = 200_000;
+    assert_eq!(invalid_key(config), "RATE_LIMIT_AUTH_RPM");
+    let mut config = valid_config();
+    config.jwt.refresh_expiry_secs = 3 * 365 * 86_400;
+    config.jwt.max_session_lifetime_secs = 3 * 365 * 86_400;
+    assert_eq!(invalid_key(config), "JWT_REFRESH_EXPIRY_SECS");
+    let mut config = valid_config();
+    config.security.registrations_per_ip_per_hour = 0;
+    assert_eq!(invalid_key(config), "REGISTRATIONS_PER_IP_PER_HOUR");
+    let mut config = valid_config();
+    config.pwned_passwords.enabled = false;
+    assert_eq!(invalid_key(config), "PWNED_PASSWORDS_ENABLED");
+}
+
+#[test]
+fn validate_rejects_a_production_key_that_is_text() {
+    use base64::Engine;
+    let mut config = valid_config();
+    config.crypto.encryption_key =
+        base64::engine::general_purpose::STANDARD.encode("correct horse battery staple 42!");
+
+    let err = config.validate().expect_err("a passphrase is not a key");
+    match err {
+        ConfigError::Invalid { key, reason } => {
+            assert_eq!(key, "ENCRYPTION_KEY");
+            assert!(reason.contains("printable text"), "reason: {reason}");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn validate_rejects_cors_entries_that_are_not_origins() {
+    for entry in [
+        "https://app.example.com/",
+        "https://app.example.com/login",
+        "https://app.example.com?x=1",
+    ] {
+        let mut config = valid_config();
+        config.cors.allowed_origins = vec![entry.into()];
+        let err = config.validate().expect_err(entry);
+        match err {
+            ConfigError::Invalid { key, reason } => {
+                assert_eq!(key, "CORS_ALLOWED_ORIGINS");
+                assert!(reason.contains("https://app.example.com"), "{reason}");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn production_bounds_recovery_codes_and_names_weakened_settings() {
+    let invalid_key = |config: Config| match config.validate() {
+        Err(ConfigError::Invalid { key, .. }) => key,
+        other => panic!("expected an invalid setting, got {other:?}"),
+    };
+    for days in [0, 731] {
+        let mut config = valid_config();
+        config.crypto.recovery_code_expiry_days = days;
+        assert_eq!(invalid_key(config), "RECOVERY_CODE_EXPIRY_DAYS", "{days}");
+    }
+
+    let mut config = valid_config();
+    assert!(super::weakened_settings(&config).is_empty());
+    config.security.magic_links = true;
+    config.security.reset_revokes_factors_added_hours = 0;
+    config.security.new_device_alerts = false;
+    config.audit.retention_months = 0;
+    let keys: Vec<&str> = super::weakened_settings(&config)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "MAGIC_LINK_ENABLED",
+            "RESET_REVOKES_FACTORS_ADDED_HOURS",
+            "NEW_DEVICE_ALERTS_ENABLED",
+            "AUDIT_LOG_RETENTION_MONTHS"
+        ]
+    );
 }

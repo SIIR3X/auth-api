@@ -186,7 +186,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auth-api"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -218,12 +218,14 @@ dependencies = [
  "proptest",
  "rand 0.10.2",
  "rand_core 0.6.4",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
  "sha1 0.11.0",
  "sha2 0.11.0",
  "sqlx",
+ "subtle",
  "tera",
  "testkit",
  "thiserror 2.0.20",

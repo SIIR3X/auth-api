@@ -27,7 +27,7 @@ SHELL_IMAGE=redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36
 unset COMPOSE_PROJECT_NAME
 
 mkdir -p "$D" "$KEYS/certs"
-cp "$ROOT"/docker-compose.api.yml "$ROOT"/config.prod.env "$ROOT"/nats.conf "$ROOT"/scripts/rolling-update.sh "$D"/
+cp "$ROOT"/docker-compose.api.yml "$ROOT"/config.prod.env "$ROOT"/nats.conf "$ROOT"/scripts/rolling-update.sh "$ROOT"/scripts/write-secrets.sh "$D"/
 cp "$ROOT"/deploy/profiles/m.env "$D"/profile.env
 
 # Throwaway keys: ES256 signing key, and a certificate for api.example.com.
@@ -44,7 +44,11 @@ export METRICS_BIND_ADDRESS=127.0.0.1
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
 export POSTGRES_PASSWORD
 export DATABASE_URL=postgres://auth:${POSTGRES_PASSWORD}@postgres:5432/auth
-export REDIS_URL=redis://redis:6379
+REDIS_PASSWORD=$(openssl rand -hex 16)
+export REDIS_PASSWORD
+export REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+METRICS_TOKEN=$(openssl rand -hex 32)
+export METRICS_TOKEN
 JWT_PRIVATE_KEY=$(cat "$KEYS"/jwt-private.pem)
 JWT_PUBLIC_KEY=$(cat "$KEYS"/jwt-public.pem)
 ENCRYPTION_KEY=$(openssl rand -base64 32)
@@ -58,6 +62,11 @@ install -m 600 /dev/null "$D"/nats-auth.conf
 printf 'authorization { token: "%s" }\n' "$NATS_TOKEN" > "$D"/nats-auth.conf
 # Owned by root, as on the server (the broker runs without capabilities).
 docker run --rm --entrypoint sh -v "$D:/d" "$SHELL_IMAGE" -c 'chown 0:0 /d/nats-auth.conf && chmod 600 /d/nats-auth.conf'
+# The API's secrets as files, as write-secrets.sh leaves them on the server:
+# readable by the image's user only.
+export AUTH_API_SECRETS_DIR="$D/secrets"
+SUDO="" AUTH_API_UID=$(id -u) AUTH_API_SECRETS_DIR_OWNER=$(id -u) "$D/write-secrets.sh" >/dev/null
+docker run --rm --entrypoint sh -v "$D/secrets:/s" "$SHELL_IMAGE" -c 'chown 65532:65532 /s/* && chmod 400 /s/*'
 
 cat > "$D"/override.yml <<'YML'
 # Smoke test only: in production the database and cache run on the DB VPS.
@@ -70,7 +79,9 @@ services:
     networks: [auth-api]
   redis:
     image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
-    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 2s, retries: 30 }
+    # A password, as production requires of REDIS_URL.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    healthcheck: { test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"], interval: 2s, retries: 30 }
     networks: [auth-api]
 YML
 C=(docker compose --project-directory "$D" --env-file "$D/profile.env" -f "$D/docker-compose.api.yml" -f "$D/override.yml")
@@ -103,7 +114,7 @@ for svc in api-a api-b; do
   id=$("${C[@]}" ps -q $svc)
   check "$svc healthy" healthy "$(docker inspect -f '{{.State.Health.Status}}' "$id")"
   check "$svc CPU limit (profile M)" 3000000000 "$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$id")"
-  check "$svc memory limit" 536870912 "$(docker inspect -f '{{.HostConfig.Memory}}' "$id")"
+  check "$svc memory limit" 671088640 "$(docker inspect -f '{{.HostConfig.Memory}}' "$id")"
   check "$svc memory reservation" 268435456 "$(docker inspect -f '{{.HostConfig.MemoryReservation}}' "$id")"
   check "$svc pids limit" 256 "$(docker inspect -f '{{.HostConfig.PidsLimit}}' "$id")"
   check "$svc stop grace" 40 "$(docker inspect -f '{{.Config.StopTimeout}}' "$id")"
@@ -113,14 +124,19 @@ for svc in api-a api-b; do
 done
 check "api-a ready" 200 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/ready)"
 check "api-b ready" 200 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3002/ready)"
-check "metrics api-a" 200 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9465/metrics)"
-check "metrics api-b" 200 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9466/metrics)"
-metric() { curl -s "http://127.0.0.1:$1/metrics" | awk -v m="$2" '$1==m {printf "%d", $2}'; }
-check "api-a publishes its memory limit" 536870912 "$(metric 9465 auth_container_memory_limit_bytes)"
+check "public ready names no dependency" '{"status":"ready"}' "$(curl -s http://127.0.0.1:3001/ready)"
+BEARER=(-H "Authorization: Bearer $METRICS_TOKEN")
+check "internal listener needs its token" 401 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9465/metrics)"
+check "internal ready details dependencies" up "$(curl -s "${BEARER[@]}" http://127.0.0.1:9465/ready | python3 -c 'import json,sys; print(json.load(sys.stdin)["nats"])')"
+check "metrics api-a" 200 "$(curl -s "${BEARER[@]}" -o /dev/null -w '%{http_code}' http://127.0.0.1:9465/metrics)"
+check "metrics api-b" 200 "$(curl -s "${BEARER[@]}" -o /dev/null -w '%{http_code}' http://127.0.0.1:9466/metrics)"
+check "no secret in the container environment" 0 "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$("${C[@]}" ps -q api-a)" | grep -cE '^(DATABASE_URL|REDIS_URL|JWT_PRIVATE_KEY|ENCRYPTION_KEY|SMTP_PASSWORD|CAPTCHA_SECRET|NATS_URL|METRICS_TOKEN)=')"
+metric() { curl -s "${BEARER[@]}" "http://127.0.0.1:$1/metrics" | awk -v m="$2" '$1==m {printf "%d", $2}'; }
+check "api-a publishes its memory limit" 671088640 "$(metric 9465 auth_container_memory_limit_bytes)"
 ws=$(metric 9465 auth_container_memory_working_set_bytes)
-check "api-a working set within limit" true "$([ "${ws:-0}" -gt 0 ] && [ "$ws" -lt 536870912 ] && echo true || echo false)"
-check "api-b publishes CPU periods" true "$(curl -s http://127.0.0.1:9466/metrics | grep -q '^auth_container_cpu_periods_total ' && echo true || echo false)"
-check "api-b publishes its start time" true "$(curl -s http://127.0.0.1:9466/metrics | grep -q '^auth_process_start_time_seconds ' && echo true || echo false)"
+check "api-a working set within limit" true "$([ "${ws:-0}" -gt 0 ] && [ "$ws" -lt 671088640 ] && echo true || echo false)"
+check "api-b publishes CPU periods" true "$(curl -s "${BEARER[@]}" http://127.0.0.1:9466/metrics | grep -q '^auth_container_cpu_periods_total ' && echo true || echo false)"
+check "api-b publishes its start time" true "$(curl -s "${BEARER[@]}" http://127.0.0.1:9466/metrics | grep -q '^auth_process_start_time_seconds ' && echo true || echo false)"
 nats_metrics=false
 for _ in $(seq 1 10); do
   curl -s http://127.0.0.1:7777/metrics > "$S/nats-exporter.txt" 2>&1
@@ -131,7 +147,10 @@ check "NATS exporter" true "$nats_metrics"
 nats_id=$("${C[@]}" ps -q nats)
 check "NATS token absent from broker arguments" false "$(docker inspect -f '{{json .Args}} {{json .Config.Cmd}}' "$nats_id" | grep -q "$NATS_TOKEN" && echo true || echo false)"
 check "NATS memory limit" 201326592 "$(docker inspect -f '{{.HostConfig.Memory}}' "$nats_id")"
-check "NATS JetStream file store cap" 1073741824 "$(docker run --rm --network auth-smoke_auth-api natsio/nats-box:0.14.5 wget -qO- http://nats:8222/jsz 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["config"]["max_storage"])' 2>/dev/null)"
+check "NATS JetStream file store cap" 1073741824 "$("${C[@]}" exec -T nats wget -qO- http://127.0.0.1:8222/jsz 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["config"]["max_storage"])' 2>/dev/null)"
+# The monitoring endpoint listens on the broker's loopback only.
+docker run --rm --network auth-smoke_auth-api natsio/nats-box:0.14.5 wget -qO- -T 3 http://nats:8222/varz >/dev/null 2>&1
+check "NATS monitoring closed to the compose network" 1 $?
 
 echo "== nginx.conf in front, TLS"
 docker run -d --name auth-smoke-nginx --network host \

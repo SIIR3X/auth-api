@@ -249,6 +249,16 @@ pub async fn register(
     )
     .await?;
 
+    crate::services::user::notify_access_added(
+        state,
+        user_id,
+        crate::services::email::AccessItem {
+            kind: "passkey",
+            name: passkey.name.clone(),
+        },
+    )
+    .await;
+
     let recovery_codes = if recovery_code::count_usable_by_user(&state.db, user_id).await? == 0 {
         Some(two_factor_svc::create_recovery_codes_internal(state, user_id).await?)
     } else {
@@ -283,11 +293,14 @@ pub async fn remove(
         "remove_passkey",
     )
     .await?;
-    if !passkey_repo::delete_owned(&state.db, id, user_id).await? {
+    let mut tx = state.db.begin().await?;
+    user_repo::lock_row(&mut *tx, user_id).await?;
+    if !passkey_repo::delete_owned(&mut *tx, id, user_id).await? {
         return Err(AppError::NotFound);
     }
+    crate::services::user::keep_a_second_factor_for_administrators(&mut tx, user_id).await?;
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
@@ -297,6 +310,7 @@ pub async fn remove(
         },
     )
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -350,7 +364,7 @@ pub async fn sign_in(
 
     match verify_assertion(state, credential).await {
         Ok((passkey, user)) => {
-            auth_svc::ensure_account_usable(&user, state.clock.now())?;
+            auth_svc::ensure_account_usable(&user)?;
             auth_svc::issue_tokens(
                 state,
                 user.id,
@@ -365,6 +379,8 @@ pub async fn sign_in(
                     identifier: Some(&user.username),
                     request_id,
                     audit_metadata: json!({ "method": "passkey", "passkey_id": passkey.id }),
+                    // User verification on the authenticator: two factors.
+                    second_factor: true,
                 }),
             )
             .await
@@ -418,9 +434,14 @@ async fn verify_assertion(
     let passkey = passkey_repo::find_by_credential_id(&state.db, &decode(&credential.raw_id)?)
         .await?
         .ok_or_else(|| refused("unknown credential"))?;
-    if let Some(handle) = credential.response.user_handle.as_deref()
-        && decode(handle)? != passkey.user_id.as_bytes()
-    {
+    // Sign-in offers no allowed credentials, so the authenticator must say
+    // whose credential it used.
+    let handle = credential
+        .response
+        .user_handle
+        .as_deref()
+        .ok_or_else(|| refused("missing user handle"))?;
+    if decode(handle)? != passkey.user_id.as_bytes() {
         return Err(refused("user handle mismatch"));
     }
     let auth_data = decode(&credential.response.authenticator_data)?;

@@ -20,6 +20,9 @@ pub enum LoginFailureReason {
     TwoFactorRequired,
     TwoFactorFailed,
     RateLimited,
+    /// A sign-in while the account's password is locked, recorded like a
+    /// wrong password so the budgets read the same as for any other account.
+    AccountLocked,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -99,5 +102,36 @@ mod tests {
         assert!(at_ip.reach(&CEILINGS));
         assert!(at_distinct.reach(&CEILINGS));
         assert!(at_identifier.reach(&CEILINGS));
+    }
+}
+
+/// What a failed sign-in records of the identifier typed: the identifier when
+/// it has the shape of an address or a username, a fixed marker otherwise. A
+/// password typed into the identifier field by mistake must not sit in the
+/// table for months, attached to no account and so never forgotten.
+pub fn storable_identifier(typed: &str) -> &str {
+    let username = (3..=50).contains(&typed.len()) && crate::domain::user::is_valid_username(typed);
+    if username || crate::domain::user::is_storable_email(typed) {
+        typed
+    } else {
+        UNRECOGNIZED_IDENTIFIER
+    }
+}
+
+/// Recorded in place of an identifier that is neither an address nor a
+/// username.
+pub const UNRECOGNIZED_IDENTIFIER: &str = "<unrecognized>";
+
+#[cfg(test)]
+mod storable_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn only_addresses_and_usernames_are_recorded() {
+        assert_eq!(storable_identifier("jane@example.com"), "jane@example.com");
+        assert_eq!(storable_identifier("jane_doe"), "jane_doe");
+        assert_eq!(storable_identifier("Tr0ub4dor&3"), UNRECOGNIZED_IDENTIFIER);
+        assert_eq!(storable_identifier("ab"), UNRECOGNIZED_IDENTIFIER);
+        assert_eq!(storable_identifier("pass word!"), UNRECOGNIZED_IDENTIFIER);
     }
 }

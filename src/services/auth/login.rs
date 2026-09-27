@@ -64,10 +64,12 @@ pub async fn login(
             None => Ok(0),
         }
     };
+    // Counted under the value recorded for a failure: an identifier that is
+    // neither an address nor a username shares the `<unrecognized>` budget.
     let identifier_failures_fut = async {
         login_attempt::count_recent_failures_by_identifier(
             &state.db,
-            identifier,
+            crate::domain::login_attempt::storable_identifier(identifier),
             brute_force_cutoff,
             MAX_FAILURES_BY_IDENTIFIER,
         )
@@ -83,10 +85,25 @@ pub async fn login(
         distinct_identifiers_by_ip: distinct_identifiers,
         by_identifier: failures,
     };
+    // With a CAPTCHA required, every attempt already costs a solved challenge:
+    // the budget of an identifier stops refusing, so that guessing someone's
+    // password does not also keep them from signing in. The lockout still
+    // bounds the guesses.
+    let captcha_enforced = state
+        .config
+        .captcha
+        .secret
+        .as_deref()
+        .is_some_and(|secret| !secret.is_empty());
+    let identifier_ceiling = if captcha_enforced {
+        i64::MAX
+    } else {
+        MAX_FAILURES_BY_IDENTIFIER
+    };
     let ceilings = FailureCeilings {
         by_ip: MAX_FAILURES_BY_IP,
         distinct_identifiers_by_ip: CS_MAX_DISTINCT_IDENTIFIERS,
-        by_identifier: MAX_FAILURES_BY_IDENTIFIER,
+        by_identifier: identifier_ceiling,
     };
     if recent.reach(&ceilings) {
         return Err(AppError::RateLimitExceeded);
@@ -94,6 +111,19 @@ pub async fn login(
 
     // User lookup stays index-friendly by branching on email vs username format.
     let user_opt = user_repo::find_by_identifier(&state.db, identifier).await?;
+
+    // The counts above are read before the hash and written after it: many
+    // attempts sent at once would all pass them. Reserve this attempt
+    // atomically first, against the address and the account; it is given
+    // back if the password is right. Without Redis the database counts above
+    // still apply, as they did before.
+    let reserved = reserve_attempt(
+        state,
+        user_opt.as_ref().map(|u| u.id),
+        ip,
+        identifier_ceiling,
+    )
+    .await?;
 
     // Always verify a password hash to prevent timing-based enumeration.
     let (user, password_ok) = match user_opt {
@@ -103,12 +133,25 @@ pub async fn login(
                     .await
                     .map_err(|e| AppError::Internal(e.into()))?;
 
-            // A locked account answers the same whatever the password, after the
-            // same Argon2 work. Checking the lock only after a correct password
-            // turned the lockout into an oracle confirming the guess.
+            // A locked password answers like a wrong one, whatever was typed,
+            // after the same Argon2 work, and is recorded like one: a distinct
+            // answer, or a budget that stopped counting, would tell anyone which
+            // identifiers have an account. The owner learns of the lock by email.
             if u.is_locked(state.clock.now()) {
+                tokio::join!(
+                    record_failure(
+                        &state.db,
+                        Some(u.id),
+                        identifier,
+                        LoginFailureReason::AccountLocked,
+                        ip,
+                        user_agent,
+                    ),
+                    track_credential_stuffing(state, ip, identifier),
+                );
                 metrics::counter!("auth_logins_total", "outcome" => "locked").increment(1);
-                return Err(AppError::AccountLocked);
+                apply_backoff(failures + 1).await;
+                return Err(AppError::InvalidCredentials);
             }
             (Some(u), ok)
         }
@@ -137,6 +180,14 @@ pub async fn login(
                 ),
                 track_credential_stuffing(state, ip, identifier),
             );
+            // The lockout count an existing account runs, run here too: the
+            // answer takes the same database work whether the account exists.
+            let _ = login_attempt::count_consecutive_failures_by_user(
+                &state.db,
+                Uuid::nil(),
+                i64::from(state.config.security.lockout_threshold),
+            )
+            .await;
             metrics::counter!("auth_logins_total", "outcome" => "invalid_credentials").increment(1);
             apply_backoff(failures + 1).await;
             return Err(AppError::InvalidCredentials);
@@ -156,20 +207,39 @@ pub async fn login(
 
             // After recording the failure, check if the lockout threshold is reached.
             let threshold = i64::from(state.config.security.lockout_threshold);
+            // The lockout is best effort on the sign-in path, but never silent:
+            // a failure here leaves brute force limited by the budgets alone.
+            let lockout_failed = |step: &'static str, error: &dyn std::fmt::Display| {
+                tracing::error!(user_id = %u.id, step, error = %error, "lockout could not be applied");
+                metrics::counter!("auth_lockout_failures_total", "step" => step).increment(1);
+            };
             let consecutive =
-                login_attempt::count_consecutive_failures_by_user(&state.db, u.id, threshold)
+                match login_attempt::count_consecutive_failures_by_user(&state.db, u.id, threshold)
                     .await
-                    .unwrap_or(0);
+                {
+                    Ok(consecutive) => consecutive,
+                    Err(e) => {
+                        lockout_failed("count", &e);
+                        0
+                    }
+                };
             if let Some(locked_until) = lockout_until(
                 consecutive,
                 state.config.security.lockout_threshold,
                 state.config.security.lockout_duration_secs,
                 state.clock.now(),
             ) {
-                metrics::counter!("auth_lockouts_total").increment(1);
-                // Best-effort: lockout and audit must not leak timing information on the login path.
-                let _ = user_repo::set_locked_until(&state.db, u.id, locked_until).await;
-                let _ = audit::append(
+                let locked = match user_repo::set_locked_until(&state.db, u.id, locked_until).await
+                {
+                    Ok(locked) => locked,
+                    Err(e) => {
+                        lockout_failed("lock", &e);
+                        false
+                    }
+                };
+                if locked {
+                    metrics::counter!("auth_lockouts_total").increment(1);
+                    if let Err(e) = audit::append(
                     &state.db,
                     &NewAuditEntry {
                         user_id: Some(u.id),
@@ -179,15 +249,50 @@ pub async fn login(
                         metadata: json!({"reason": "lockout", "locked_until": locked_until.unix_timestamp()}),
                     },
                 )
-                .await;
+                .await
+                {
+                    lockout_failed("audit", &e);
+                }
+                    notify_locked(state, &u, locked_until);
+                }
             }
 
             metrics::counter!("auth_logins_total", "outcome" => "invalid_credentials").increment(1);
             apply_backoff(failures + 1).await;
             return Err(AppError::InvalidCredentials);
         }
-        (Some(u), true) => u,
+        (Some(u), true) => {
+            let keys: Vec<&str> = reserved.iter().map(String::as_str).collect();
+            redis_counter::release(&state.redis, &keys).await;
+            rehash_if_weaker(state, &u, password_plaintext);
+            u
+        }
     };
+
+    // A pending account answers like a wrong password, even to the right one.
+    // Registering an address creates such an account only when the address
+    // was free: a distinct answer here would tell anyone who registered it
+    // and then signed in with their own password whether it had an account.
+    // Its owner gets a new verification link instead, within its budget.
+    if user.status == UserStatus::PendingVerification {
+        record_failure(
+            &state.db,
+            Some(user.id),
+            identifier,
+            LoginFailureReason::EmailNotVerified,
+            ip,
+            user_agent,
+        )
+        .await;
+        if let Err(error) =
+            super::register::issue_verification(state, &user, None, ip, user_agent, request_id)
+                .await
+        {
+            tracing::warn!(%error, "verification link for a pending sign-in not sent");
+        }
+        metrics::counter!("auth_logins_total", "outcome" => "invalid_credentials").increment(1);
+        return Err(AppError::InvalidCredentials);
+    }
 
     // Account status checks
     ensure_status_allows_sign_in(&user)?;
@@ -204,6 +309,29 @@ pub async fn login(
         json!({}),
     )
     .await
+}
+
+/// Hash the password again, in the background, when its stored hash is weaker
+/// than the configured parameters: raising `ARGON2_*` then protects existing
+/// accounts as they sign in. Best effort: a failure keeps the old hash.
+fn rehash_if_weaker(state: &AppState, user: &User, password_plaintext: &str) {
+    if !password::needs_rehash(&user.password_hash, &state.config.crypto) {
+        return;
+    }
+    let db = state.db.clone();
+    let cfg = state.config.crypto.clone();
+    let (id, current) = (user.id, user.password_hash.clone());
+    let plaintext = password_plaintext.to_owned();
+    crate::utils::background::spawn(async move {
+        let Ok(replacement) = password::hash_async(&plaintext, &cfg).await else {
+            return;
+        };
+        match user_repo::replace_password_hash(&db, id, &current, &replacement).await {
+            Ok(true) => metrics::counter!("auth_password_rehashes_total").increment(1),
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%error, "could not store a rehashed password"),
+        }
+    });
 }
 
 /// The account proved its first factor (password, sign-in link): pause for the
@@ -241,30 +369,43 @@ pub(crate) async fn first_factor_proven(
         let serialized =
             serde_json::to_string(&pre_auth_state).map_err(|e| AppError::Internal(e.into()))?;
 
-        let mut conn = state
-            .redis
-            .get()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let mut conn = state.redis.get().await.map_err(redis_unavailable)?;
         conn.set_ex::<_, _, ()>(&redis_key, serialized, PRE_AUTH_TTL_SECS)
             .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+            .map_err(redis_unavailable)?;
 
         // Maintain a per-user index so reset_password (and other revocation
         // hooks) can purge active pre-auth tokens without SCAN. Best-effort:
         // a stale entry is harmless because the token itself expires after
-        // PRE_AUTH_TTL_SECS, and DEL on a missing key is a no-op.
+        // PRE_AUTH_TTL_SECS, and DEL on a missing key is a no-op. At most
+        // MAX_OPEN_CHALLENGES stay open per account: someone holding the
+        // password cannot open challenges without end to feed guesses or fill
+        // Redis; one of the open ones goes to make room.
         let user_index_key = user_pre_auth_index_key(user.id);
+        let open: i64 = conn.scard(&user_index_key).await.unwrap_or(0);
+        for _ in MAX_OPEN_CHALLENGES - 1..open {
+            let dropped: Option<String> = conn.spop(&user_index_key).await.unwrap_or(None);
+            let Some(dropped) = dropped else { break };
+            let _: Result<(), _> = conn.del(&challenge_keys_by_id(&dropped)[..]).await;
+        }
         let _: Result<(), _> = conn
-            .sadd::<_, _, ()>(&user_index_key, &pre_auth_token)
+            .sadd::<_, _, ()>(&user_index_key, challenge_id(&pre_auth_token))
             .await;
         let _: Result<(), _> = conn
             .expire::<_, ()>(&user_index_key, PRE_AUTH_TTL_SECS as i64)
             .await;
 
         // For Email 2FA, dispatch the code as soon as the challenge is issued.
+        // A code sent less than a minute ago is still valid: the challenge
+        // goes on without a new one rather than failing after it was stored.
         if method == ChallengeMethod::Email {
-            email_2fa::send_code(state, user.id).await?;
+            match email_2fa::send_code(state, user.id, Some(&pre_auth_token)).await {
+                Ok(()) => {}
+                Err(AppError::RateLimitExceeded) => {
+                    tracing::info!(user_id = %user.id, "email code not resent within its cooldown");
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         metrics::counter!("auth_logins_total", "outcome" => "two_factor_required").increment(1);
@@ -288,12 +429,81 @@ pub(crate) async fn first_factor_proven(
             identifier,
             request_id,
             audit_metadata,
+            second_factor: false,
         }),
     )
     .await?;
 
     metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
     Ok(LoginResult::Complete(tokens))
+}
+
+/// Reserve one password attempt against the budgets of the client address
+/// and of the account, atomically, before the hash is computed. Returns the
+/// keys to give back on success. A budget past its limit refuses the attempt;
+/// Redis being unavailable reserves nothing (the database counts still hold).
+async fn reserve_attempt(
+    state: &AppState,
+    account: Option<Uuid>,
+    ip: Option<IpNetwork>,
+    identifier_ceiling: i64,
+) -> Result<Vec<String>, AppError> {
+    // An unknown identifier cannot sign in: the database counts bound it.
+    let mut keys: Vec<(String, i64)> = account
+        .map(|id| (format!("login_try:{id}"), identifier_ceiling))
+        .into_iter()
+        .collect();
+    if let Some(ip) = ip {
+        keys.push((
+            format!("login_try_ip:{}", ip_bucket(ip.ip())),
+            MAX_FAILURES_BY_IP,
+        ));
+    }
+    let budgets: Vec<Budget> = keys
+        .iter()
+        .map(|(key, limit)| Budget {
+            key,
+            limit: *limit,
+            window_secs: BRUTE_FORCE_WINDOW_SECS as u64,
+        })
+        .collect();
+    match redis_counter::consume(&state.redis, &budgets).await {
+        Ok(consumed) if consumed.exceeded => {
+            let reserved: Vec<&str> = keys.iter().map(|(key, _)| key.as_str()).collect();
+            redis_counter::release(&state.redis, &reserved).await;
+            Err(AppError::RateLimitExceeded)
+        }
+        Ok(_) => Ok(keys.into_iter().map(|(key, _)| key).collect()),
+        Err(error) => {
+            tracing::warn!(error = %error, "sign-in attempt budget unavailable, database counts only");
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// Tell the owner their password is locked, and until when: a lock they did
+/// not cause means someone is guessing it. Sent once per lock, as a lock is
+/// set only on an unlocked account.
+fn notify_locked(state: &AppState, user: &User, locked_until: ::time::OffsetDateTime) {
+    let mailer = state.mailer.clone();
+    let templates = state.templates.clone();
+    let mail_cfg = state.config.mail.clone();
+    let email_to = user.email.clone();
+    let username = user.username.clone();
+    let locale = user.preferred_locale.clone();
+    let minutes = ((locked_until - state.clock.now()).whole_seconds().max(0) + 59) / 60;
+    email::dispatch_best_effort("account_locked_email", async move {
+        email::send_account_locked(
+            &mailer,
+            templates.as_ref(),
+            &mail_cfg,
+            &email_to,
+            &username,
+            &locale,
+            minutes,
+        )
+        .await
+    });
 }
 
 /// When a sign-in locks the account: once `consecutive` wrong passwords reach

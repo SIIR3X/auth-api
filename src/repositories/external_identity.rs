@@ -42,8 +42,8 @@ pub async fn find_by_user(
 
 /// Link an identity to an account. A unique violation means the identity, or
 /// an identity at this provider for this account, is already linked.
-pub async fn link(
-    pool: &PgPool,
+pub async fn link<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     user_id: Uuid,
     provider: &str,
     subject: &str,
@@ -56,7 +56,7 @@ pub async fn link(
     .bind(user_id)
     .bind(provider)
     .bind(subject)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 

@@ -52,33 +52,37 @@ pub struct ClaimedDelivery {
     pub payload: Value,
     pub occurred_at: OffsetDateTime,
     pub attempts: i32,
+    pub endpoint_id: Uuid,
     pub url: String,
     pub secret: String,
 }
 
 // Endpoints
 
-pub async fn create_endpoint(
-    pool: &PgPool,
+/// `id` is chosen by the caller: the secret is encrypted bound to it.
+pub async fn create_endpoint<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
     settings: &EndpointSettings<'_>,
     encrypted_secret: &str,
 ) -> Result<WebhookEndpoint, sqlx::Error> {
     sqlx::query_as::<_, WebhookEndpoint>(
-        "INSERT INTO webhook_endpoints (url, description, events, enabled, secret)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO webhook_endpoints (id, url, description, events, enabled, secret)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *",
     )
+    .bind(id)
     .bind(settings.url)
     .bind(settings.description)
     .bind(settings.events)
     .bind(settings.enabled)
     .bind(encrypted_secret)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 
-pub async fn update_endpoint(
-    pool: &PgPool,
+pub async fn update_endpoint<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     id: Uuid,
     settings: &EndpointSettings<'_>,
 ) -> Result<Option<WebhookEndpoint>, sqlx::Error> {
@@ -93,27 +97,30 @@ pub async fn update_endpoint(
     .bind(settings.description)
     .bind(settings.events)
     .bind(settings.enabled)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
 }
 
-pub async fn replace_secret(
-    pool: &PgPool,
+pub async fn replace_secret<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     id: Uuid,
     encrypted_secret: &str,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("UPDATE webhook_endpoints SET secret = $2 WHERE id = $1")
         .bind(id)
         .bind(encrypted_secret)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(result.rows_affected() == 1)
 }
 
-pub async fn delete_endpoint(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+pub async fn delete_endpoint<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("DELETE FROM webhook_endpoints WHERE id = $1")
         .bind(id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(result.rows_affected() == 1)
 }
@@ -203,7 +210,7 @@ pub async fn claim_due(
              FROM due WHERE d.id = due.id
              RETURNING d.id, d.endpoint_id, d.event_id, d.event_name, d.payload, d.occurred_at, d.attempts
          )
-         SELECT c.id, c.event_id, c.event_name, c.payload, c.occurred_at, c.attempts, e.url, e.secret
+         SELECT c.id, c.event_id, c.event_name, c.payload, c.occurred_at, c.attempts, e.id AS endpoint_id, e.url, e.secret
          FROM claimed c JOIN webhook_endpoints e ON e.id = c.endpoint_id",
     )
     .bind(limit)
@@ -271,7 +278,11 @@ pub async fn find_recent_deliveries(
 }
 
 /// Queue a delivery again now, with a fresh attempt budget.
-pub async fn redeliver(pool: &PgPool, endpoint_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
+pub async fn redeliver<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    endpoint_id: Uuid,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
         "UPDATE webhook_deliveries
          SET attempts = 0, failed_at = NULL, delivered_at = NULL, next_attempt_at = NOW()
@@ -279,7 +290,7 @@ pub async fn redeliver(pool: &PgPool, endpoint_id: Uuid, id: Uuid) -> Result<boo
     )
     .bind(id)
     .bind(endpoint_id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(result.rows_affected() == 1)
 }

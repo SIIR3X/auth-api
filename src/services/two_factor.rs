@@ -11,8 +11,6 @@ use ipnetwork::IpNetwork;
 use serde_json::json;
 use uuid::Uuid;
 
-use deadpool_redis::redis::AsyncCommands;
-
 use crate::{
     domain::{
         audit::AuditAction,
@@ -155,7 +153,7 @@ pub async fn setup_totp(
     );
     let encrypted = state
         .keyring
-        .encrypt(&base32_secret)
+        .encrypt(&base32_secret, user_id.as_bytes())
         .map_err(|e| AppError::Internal(e.into()))?;
 
     let method = create_or_restart_method(
@@ -213,6 +211,7 @@ pub async fn verify_setup(
 
     let valid = totp::verify_code(
         encrypted_secret,
+        user_id,
         code,
         &state.keyring,
         state.config.crypto.totp_skew,
@@ -223,9 +222,14 @@ pub async fn verify_setup(
     // Consumed in the durable replay table shared with sign-in: a code seen
     // while confirming the method cannot complete a sign-in as well.
     let consumed = valid
-        && tf_repo::try_consume_totp_code(&state.db, user_id, &crypto::sha256(code.as_bytes()))
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        && tf_repo::try_consume_totp_code(
+            &state.db,
+            user_id,
+            &crypto::sha256(code.as_bytes()),
+            state.clock.now(),
+        )
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
     if !consumed {
         return Err(AppError::TwoFactorFailed);
     }
@@ -292,24 +296,23 @@ pub async fn generate_recovery_codes(
     )
     .await?;
 
+    // Claimed before regenerating: concurrent requests cannot each replace
+    // the codes the previous one just showed.
     let cooldown_key = format!("rc_regen:{}", user_id);
-    if let Ok(mut conn) = state.redis.get().await {
-        let locked: bool = conn.exists(&cooldown_key).await.unwrap_or(false);
-        if locked {
-            return Err(AppError::RateLimitExceeded);
+    if !redis_counter::claim_cooldown_strict(&state.redis, &cooldown_key, RC_REGEN_COOLDOWN_SECS)
+        .await?
+    {
+        return Err(AppError::RateLimitExceeded);
+    }
+
+    match create_recovery_codes(state, user_id).await {
+        Ok(codes) => Ok(codes),
+        Err(error) => {
+            // Nothing was replaced: the owner may try again.
+            redis_counter::reset(&state.redis, &[&cooldown_key]).await;
+            Err(error)
         }
     }
-
-    let codes = create_recovery_codes(state, user_id).await?;
-
-    // Set cooldown after successful regeneration.
-    if let Ok(mut conn) = state.redis.get().await {
-        let _: Result<(), _> = conn
-            .set_ex(&cooldown_key, 1u8, RC_REGEN_COOLDOWN_SECS)
-            .await;
-    }
-
-    Ok(codes)
 }
 
 // Internal version used by verify_setup; no password check needed at that point.
@@ -346,67 +349,6 @@ async fn create_recovery_codes(state: &AppState, user_id: Uuid) -> Result<Vec<St
         .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(plaintext)
-}
-
-/// Validates and consumes a recovery code submitted by an already-authenticated user.
-/// Records the event in the audit log; returns an error if the code is invalid, already
-/// used, expired, or if the failure budget has been exhausted.
-pub async fn use_recovery_code(
-    state: &AppState,
-    user_id: Uuid,
-    code: &str,
-    request_id: Option<Uuid>,
-) -> Result<(), AppError> {
-    // The same per-account budget as the sign-in challenge: a second route
-    // must not double the guesses against the same codes.
-    let fail_key = format!("{}{user_id}", super::auth::RC_USER_FAIL_PREFIX);
-
-    let attempt = redis_counter::consume(
-        &state.redis,
-        &[Budget {
-            key: &fail_key,
-            limit: super::auth::MAX_RECOVERY_FAILURES_BY_USER,
-            window_secs: super::auth::RECOVERY_FAILURE_USER_WINDOW_SECS,
-        }],
-    )
-    .await?;
-    if attempt.exceeded {
-        return Err(AppError::RateLimitExceeded);
-    }
-
-    // `find_by_hash` refuses used and expired codes; `consume` re-checks both.
-    let hash = crypto::sha256(code.as_bytes());
-    let record = recovery_code::find_by_hash(&state.db, &hash)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-        .filter(|r| r.user_id == user_id);
-
-    let consumed = match record {
-        Some(record) => recovery_code::consume(&state.db, record.id)
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?,
-        None => false,
-    };
-    if !consumed {
-        return Err(AppError::TwoFactorFailed);
-    }
-
-    redis_counter::reset(&state.redis, &[&fail_key]).await;
-
-    audit::append(
-        &state.db,
-        &NewAuditEntry {
-            user_id: Some(user_id),
-            request_id,
-            action: AuditAction::RecoveryCodeUsed,
-            ip_address: None,
-            metadata: json!({}),
-        },
-    )
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
-
-    Ok(())
 }
 
 /// Disables the TOTP method. Requires a recent re-authentication or the current
@@ -471,13 +413,16 @@ pub(crate) async fn disable_method(
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
 
-    let removed = tf_repo::remove_method(&state.db, method_id, user_id, method_type)
+    let mut tx = state.db.begin().await?;
+    user_repo::lock_row(&mut *tx, user_id).await?;
+    let removed = tf_repo::remove_method(&mut tx, method_id, user_id, method_type)
         .await
         .map_err(|e| AppError::Internal(e.into()))?
         .ok_or(AppError::NotFound)?;
+    crate::services::user::keep_a_second_factor_for_administrators(&mut tx, user_id).await?;
 
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(user_id),
             request_id,
@@ -492,6 +437,7 @@ pub(crate) async fn disable_method(
     )
     .await
     .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await?;
 
     notify_two_factor_change(state, &user, label, false);
     Ok(())

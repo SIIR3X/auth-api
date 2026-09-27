@@ -13,7 +13,7 @@ processing, not a legal notice.
 | Data | Where | Purpose | Kept | When the account is deleted |
 |------|-------|---------|------|-----------------------------|
 | Email address, username, password hash (Argon2id), locale, status, timestamps | `users` | Account and sign-in | Until the account is deleted | Deleted |
-| Accounts whose address was never verified | `users` | Letting the owner finish signing up | 7 days (`CLEANUP_UNVERIFIED_ACCOUNT_DAYS`), then deleted and announced like a deletion | - |
+| Accounts whose address was never verified | `users` | Letting the owner finish signing up | 2 days (`CLEANUP_UNVERIFIED_ACCOUNT_DAYS`), then deleted and announced like a deletion | - |
 | Sessions: client address, user agent, device name | `sessions` | Signed-in devices, revocation, replay detection | Until expiry or revocation, plus 7 days (`CLEANUP_SESSIONS_GRACE_DAYS`) | Deleted |
 | Devices signed in from: browser and system families, hashed | `known_devices` | Telling the owner about a sign-in from a new device | 90 days unused (`CLEANUP_KNOWN_DEVICE_DAYS`) | Deleted |
 | Sign-in attempts: identifier typed, client address, user agent of failures | `login_attempts` | Brute-force protection, lockout, security history | 90 days (`CLEANUP_LOGIN_ATTEMPTS_RETENTION_DAYS`) | Deleted, including failed attempts typed with the account's address or username before it existed |
@@ -32,8 +32,9 @@ processing, not a legal notice.
 | First five characters of a new password's SHA-1 | Pwned Passwords range API | Refusing breached passwords (k-anonymity: the password and its full hash never leave) | Not stored by auth-api | - |
 
 The application logs record the route, status, latency and request id of each
-request, not the client address. nginx records client addresses in its access
-log, rotated by the system's logrotate. Database backups are encrypted and kept
+request, not the client address. nginx records client addresses and user
+agents in its access log, rotated daily and kept 14 days
+(`deploy/api/logrotate-auth-api`). Database backups are encrypted and kept
 7 days on the server and 30 days offsite (`RETAIN_DAYS`, `OFFSITE_RETAIN_DAYS`);
 pgBackRest keeps the last two full backups and the WAL they need
 (`repo1-retention-full=2`). A deleted account disappears from backups when the
@@ -58,7 +59,7 @@ erase their own data about that user id.
 
 | Right | How |
 |-------|-----|
-| Access and portability | `GET /users/me/export`: one JSON document with everything listed above that auth-api stores about the account, secrets excepted; the other `GET /users/me/*` routes show each part |
+| Access and portability | `GET /users/me/export`: one JSON document with everything listed above that auth-api stores about the account (passkeys, personal access tokens, linked identities and where each mailed link was asked from included), secrets excepted; the other `GET /users/me/*` routes show each part. Failed sign-ins typed for the account are part of its security history, including those of other people: for them, and for the requests of mailed links, only the network (/24, /48) is shown. A change made by an administrator names neither the administrator nor their address |
 | Rectification | `PATCH /users/me/username`, `PATCH /users/me/locale`, the email change flow (`/users/me/email/*`) |
 | Erasure | `DELETE /users/me`; for an account the user cannot reach, an administrator deletes it (`DELETE /admin/users/{id}`) |
 | Restriction | An administrator suspends the account (`POST /admin/users/{id}/suspend`) |
@@ -73,3 +74,10 @@ erase their own data about that user id.
   account is gone.
 - Client addresses of the audit log lose their host part after 90 days.
 - Failed sign-ins keep the user agent, successful ones do not.
+
+## Sign-in attempts
+
+A failed sign-in records the identifier typed only when it has the shape of an
+email address or a username; anything else (a password typed into the wrong
+field, for instance) is recorded as `<unrecognized>`, so it never sits in
+`login_attempts` for the retention period.

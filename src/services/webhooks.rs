@@ -100,7 +100,7 @@ async fn attempt(state: &AppState, delivery: &ClaimedDelivery) -> Outcome {
     let failed = |status, error: String| Outcome::Failed { status, error };
     let key = match state
         .keyring
-        .decrypt(&delivery.secret)
+        .decrypt(&delivery.secret, delivery.endpoint_id.as_bytes())
         .ok()
         .and_then(|secret| webhook::secret_bytes(&secret))
     {
@@ -165,8 +165,12 @@ async fn attempt(state: &AppState, delivery: &ClaimedDelivery) -> Outcome {
             Some(response.status().as_u16()),
             format!("endpoint answered {}", response.status()),
         ),
+        // Fixed messages: the error of the HTTP client carries the full URL,
+        // whose path or query may hold a token of the endpoint's own.
         Err(e) if e.is_timeout() => failed(None, "timed out".into()),
-        Err(e) => failed(None, format!("request failed: {e}")),
+        Err(e) if e.is_connect() => failed(None, "connection failed".into()),
+        Err(e) if e.is_redirect() => failed(None, "redirect refused".into()),
+        Err(_) => failed(None, "request failed".into()),
     }
 }
 
@@ -258,13 +262,42 @@ fn checked<'a>(
     Ok((events, description))
 }
 
-fn new_secret(state: &AppState) -> Result<(String, String), AppError> {
+/// A new signing secret for endpoint `id`, and its ciphertext bound to it.
+fn new_secret(state: &AppState, id: Uuid) -> Result<(String, String), AppError> {
     let secret = webhook::format_secret(&crypto::random_bytes::<32>());
     let encrypted = state
         .keyring
-        .encrypt(&secret)
+        .encrypt(&secret, id.as_bytes())
         .map_err(|e| AppError::Internal(anyhow::anyhow!("cannot encrypt webhook secret: {e:?}")))?;
     Ok((secret, encrypted))
+}
+
+/// Pointing a webhook somewhere sends it every account event of its
+/// subscription: creating one, changing where it points and rotating its
+/// secret need a recent re-authentication, like granting a role.
+async fn require_reauth(
+    state: &AppState,
+    actor: &Actor,
+    reason: &'static str,
+) -> Result<(), AppError> {
+    crate::services::reauth::require_recent_reauth_or_password(
+        state,
+        actor.user_id,
+        actor.session_id,
+        None,
+        actor.ip,
+        actor.request_id,
+        reason,
+    )
+    .await
+}
+
+/// The host of a webhook URL, for the audit log: enough to trace where events
+/// went, without the path or query, which may carry a token of their own.
+fn url_host(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
 }
 
 pub async fn create(
@@ -273,9 +306,13 @@ pub async fn create(
     input: &EndpointInput<'_>,
 ) -> Result<SavedEndpoint, AppError> {
     let (events, description) = checked(state, input)?;
-    let (secret, encrypted) = new_secret(state)?;
+    require_reauth(state, actor, "admin_create_webhook").await?;
+    let id = Uuid::new_v4();
+    let (secret, encrypted) = new_secret(state, id)?;
+    let mut tx = state.db.begin().await?;
     let endpoint = webhook_repo::create_endpoint(
-        &state.db,
+        &mut *tx,
+        id,
         &EndpointSettings {
             url: input.url,
             description,
@@ -285,22 +322,38 @@ pub async fn create(
         &encrypted,
     )
     .await?;
-    audit_change(state, actor, AuditAction::WebhookCreated, endpoint.id).await?;
+    audit_change(
+        &mut tx,
+        actor,
+        AuditAction::WebhookCreated,
+        endpoint.id,
+        json!({ "host": url_host(input.url) }),
+    )
+    .await?;
+    tx.commit().await?;
     Ok(SavedEndpoint {
         endpoint,
         secret: Some(secret),
     })
 }
 
+/// Change an endpoint. Pointing it at another host gives it a new signing
+/// secret, returned once: the former host would otherwise keep a secret still
+/// valid for the endpoint, and could sign deliveries to the new one.
 pub async fn update(
     state: &AppState,
     actor: &Actor,
     id: Uuid,
     input: &EndpointInput<'_>,
-) -> Result<WebhookEndpoint, AppError> {
+) -> Result<SavedEndpoint, AppError> {
     let (events, description) = checked(state, input)?;
+    require_reauth(state, actor, "admin_update_webhook").await?;
+    let previous = webhook_repo::find_endpoint(&state.db, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let mut tx = state.db.begin().await?;
     let endpoint = webhook_repo::update_endpoint(
-        &state.db,
+        &mut *tx,
         id,
         &EndpointSettings {
             url: input.url,
@@ -311,53 +364,119 @@ pub async fn update(
     )
     .await?
     .ok_or(AppError::NotFound)?;
-    audit_change(state, actor, AuditAction::WebhookUpdated, id).await?;
-    Ok(endpoint)
+    let moved = url_host(&previous.url) != url_host(input.url);
+    let secret = if moved {
+        let (secret, encrypted) = new_secret(state, id)?;
+        webhook_repo::replace_secret(&mut *tx, id, &encrypted).await?;
+        Some(secret)
+    } else {
+        None
+    };
+    audit_change(
+        &mut tx,
+        actor,
+        AuditAction::WebhookUpdated,
+        id,
+        json!({
+            "previous_host": url_host(&previous.url),
+            "host": url_host(input.url),
+            "secret_rotated": moved,
+        }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(SavedEndpoint { endpoint, secret })
 }
 
 pub async fn rotate_secret(state: &AppState, actor: &Actor, id: Uuid) -> Result<String, AppError> {
-    let (secret, encrypted) = new_secret(state)?;
-    if !webhook_repo::replace_secret(&state.db, id, &encrypted).await? {
+    require_reauth(state, actor, "admin_webhook_secret").await?;
+    let (secret, encrypted) = new_secret(state, id)?;
+    let mut tx = state.db.begin().await?;
+    if !webhook_repo::replace_secret(&mut *tx, id, &encrypted).await? {
         return Err(AppError::NotFound);
     }
-    audit_change(state, actor, AuditAction::WebhookSecretRotated, id).await?;
+    audit_change(
+        &mut tx,
+        actor,
+        AuditAction::WebhookSecretRotated,
+        id,
+        json!({}),
+    )
+    .await?;
+    tx.commit().await?;
     Ok(secret)
 }
 
+/// Deleting an endpoint drops its pending deliveries: a recent
+/// re-authentication, like every other change to where events go.
 pub async fn delete(state: &AppState, actor: &Actor, id: Uuid) -> Result<(), AppError> {
-    if !webhook_repo::delete_endpoint(&state.db, id).await? {
+    require_reauth(state, actor, "admin_delete_webhook").await?;
+    let previous = webhook_repo::find_endpoint(&state.db, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let mut tx = state.db.begin().await?;
+    if !webhook_repo::delete_endpoint(&mut *tx, id).await? {
         return Err(AppError::NotFound);
     }
-    audit_change(state, actor, AuditAction::WebhookDeleted, id).await
+    audit_change(
+        &mut tx,
+        actor,
+        AuditAction::WebhookDeleted,
+        id,
+        json!({ "host": url_host(&previous.url) }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
+/// Send a delivery again: audited like every change an administrator makes,
+/// since it replays account events to the endpoint.
 pub async fn redeliver(
     state: &AppState,
+    actor: &Actor,
     endpoint_id: Uuid,
     delivery_id: Uuid,
 ) -> Result<(), AppError> {
-    if !webhook_repo::redeliver(&state.db, endpoint_id, delivery_id).await? {
+    require_reauth(state, actor, "admin_redeliver_webhook").await?;
+    let mut tx = state.db.begin().await?;
+    if !webhook_repo::redeliver(&mut *tx, endpoint_id, delivery_id).await? {
         return Err(AppError::NotFound);
     }
+    audit_change(
+        &mut tx,
+        actor,
+        AuditAction::WebhookUpdated,
+        endpoint_id,
+        json!({ "redelivered": delivery_id }),
+    )
+    .await?;
+    tx.commit().await?;
     wake();
     Ok(())
 }
 
-/// The URL is left out of the audit log: it may carry a token of its own.
+/// Audited in the change's transaction. The URL itself is left out, only its
+/// host is kept: the path or query may carry a token of its own.
 async fn audit_change(
-    state: &AppState,
+    tx: &mut sqlx::PgConnection,
     actor: &Actor,
     action: AuditAction,
     id: Uuid,
+    extra: serde_json::Value,
 ) -> Result<(), AppError> {
+    let mut metadata = json!({ "webhook_id": id });
+    if let (Some(metadata), Some(extra)) = (metadata.as_object_mut(), extra.as_object()) {
+        metadata.extend(extra.clone());
+    }
     audit::append(
-        &state.db,
+        &mut *tx,
         &NewAuditEntry {
             user_id: Some(actor.user_id),
             request_id: actor.request_id,
             action,
             ip_address: actor.ip,
-            metadata: actor.metadata(json!({ "webhook_id": id })),
+            metadata: actor.metadata(metadata),
         },
     )
     .await?;

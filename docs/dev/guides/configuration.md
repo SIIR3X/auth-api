@@ -5,6 +5,11 @@ that is present but does not parse is an error, never a silent fallback to its
 default (`LOCKOUT_THRESHOLD=1O` refuses to start). A blank value counts as
 unset.
 
+Any variable `X` can instead be given as `X_FILE`, the path of a file holding
+its value (a trailing newline is dropped): a Docker or systemd secret, kept out
+of the environment that `docker inspect` and `/proc` show. Setting both `X` and
+`X_FILE` refuses to start; a file that does not exist counts as unset.
+
 In `APP_ENV=production` the configuration is validated before the server
 accepts traffic; the checks are listed under [Production checks](#production-checks).
 
@@ -123,11 +128,15 @@ and `occurred_at`. The broker ships in the compose files.
 | `LOCKOUT_DURATION_SECS` | `1800` | Lockout duration |
 | `SENSITIVE_ACTION_REAUTH_SECS` | `600` | How long a re-authentication (`POST /users/me/reauth`) covers sensitive actions |
 | `MAGIC_LINK_ENABLED` | `false` | Offer sign-in links by email (`/auth/magic-link`): whoever reads the mailbox can sign in without the password, the second factor still applies. Off, the routes answer `404` |
+| `RESET_REVOKES_FACTORS_ADDED_HOURS` | `72` | A password reset removes the second factors, passkeys and external identities added this many hours before it was asked for, and lists them in its mail; `0` keeps them |
+| `REGISTRATIONS_PER_IP_PER_HOUR` | `20` | Registrations accepted per client address (IPv6 /64) per hour, `429` past it; `0` removes the budget. Usernames are reserved from registration, so this bounds how fast they can be squatted |
 | `NEW_DEVICE_ALERTS_ENABLED` | `true` | E-mail the owner when an account signs in from a browser and system family it never used (devices are recorded either way) |
 | `CAPTCHA_SECRET` | unset | hCaptcha secret; unset disables the check, which production refuses |
 | `CAPTCHA_VERIFY_URL` | `https://hcaptcha.com/siteverify` | Verification endpoint |
 | `CAPTCHA_TIMEOUT_SECS` | `5` | Verification timeout |
 | `CAPTCHA_FAIL_OPEN` | `true` outside production | Accept the request when the provider cannot be reached |
+| `CAPTCHA_SITE_KEY` | unset | Site key of the widget, sent with each verification: a token solved for another site key is refused |
+| `CAPTCHA_EXPECTED_HOSTNAMES` | host of `FRONTEND_URL` | Comma-separated hostnames a challenge may be solved on |
 | `PWNED_PASSWORDS_ENABLED` | `true` | Refuse passwords found in known data breaches, at registration, change and reset (`422 password_compromised`) |
 | `PWNED_PASSWORDS_URL` | `https://api.pwnedpasswords.com` | Range API; production requires HTTPS. Only the first five characters of the password's SHA-1 are sent |
 | `PWNED_PASSWORDS_TIMEOUT_MS` | `1500` | Range query timeout |
@@ -213,7 +222,7 @@ the audit log partitions.
 | `CLEANUP_RECOVERY_CODES_GRACE_DAYS` | `7` | Kept after expiry |
 | `CLEANUP_WEBHOOK_DELIVERY_DAYS` | `7` | Delivered and given-up webhook deliveries are deleted after this many days |
 | `CLEANUP_KNOWN_DEVICE_DAYS` | `90` | Devices unused for this many days are forgotten; a later sign-in from one alerts again |
-| `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` | `7` | Accounts whose address was never verified are deleted after this many days (audited, `user.deleted` published); `0` keeps them |
+| `CLEANUP_UNVERIFIED_ACCOUNT_DAYS` | `2` | Accounts whose address was never verified are deleted after this many days (audited, `user.deleted` published); `0` keeps them |
 | `AUDIT_LOG_RETENTION_MONTHS` | `12` | Monthly audit partitions kept; `0` keeps every partition |
 | `AUDIT_IP_RETENTION_DAYS` | `90` | Client addresses of older audit entries keep only their network (/24, /48); `0` keeps full addresses |
 
@@ -227,6 +236,7 @@ session it produced) and TOTP replay records 90 seconds; neither is configurable
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug`, `trace` |
 | `LOG_FORMAT` | `pretty` | `json` in production |
 | `METRICS_ENABLED` | `true` | Serve Prometheus metrics on a separate listener |
+| `METRICS_HOST` | `SERVER_HOST` | Address of the internal listener (`/metrics`, detailed `/ready`); `127.0.0.1` outside a container |
 | `METRICS_PORT` | `9464` | Metrics listener port; publish on loopback only |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP/HTTP collector base URL (`/v1/traces` is appended); unset, no trace is exported |
 | `OTEL_SERVICE_NAME` | `auth-api` | `service.name` of the traces |
@@ -236,8 +246,11 @@ session it produced) and TOTP replay records 90 seconds; neither is configurable
 
 With `APP_ENV=production` the service refuses to start when:
 
-- `APP_PUBLIC_URL`, `FRONTEND_URL`, `OAUTH_CONSENT_URI` or `CAPTCHA_VERIFY_URL` is not HTTPS;
-- `TRUSTED_PROXY_CIDRS` is empty (every client would share the proxy's address);
+- `APP_PUBLIC_URL`, `FRONTEND_URL`, `OAUTH_CONSENT_URI`,
+  `DEVICE_AUTH_VERIFICATION_URI` or `CAPTCHA_VERIFY_URL` is not HTTPS;
+- `TRUSTED_PROXY_CIDRS` is empty (every client would share the proxy's
+  address), or holds a network rather than addresses (`/32` in IPv4, `/128`
+  in IPv6): any other host of that network could forge `X-Forwarded-For`;
 - the JWT keys do not form a pair, or are the committed development pair;
 - `ENCRYPTION_KEY` is not 32 bytes, is a committed development key, or is an
   arithmetic sequence;
@@ -249,4 +262,27 @@ With `APP_ENV=production` the service refuses to start when:
 - `WEBHOOK_ALLOW_HTTP` or `WEBHOOK_ALLOW_PRIVATE_NETWORKS` is `true`;
 - `WEBAUTHN_ORIGINS` is empty, or lists an origin that is not HTTPS or not on
   `WEBAUTHN_RP_ID`;
-- `SENSITIVE_ACTION_REAUTH_SECS` or `ARGON2_MAX_CONCURRENCY` is `0`.
+- `ARGON2_MEMORY_KIB` is under `19456` or `ARGON2_ITERATIONS` under `2`;
+- `DATABASE_URL`, `DATABASE_READ_URL` or `REDIS_URL` carries no password;
+- `LOCKOUT_THRESHOLD` is above `50`, `RATE_LIMIT_RPM` or `RATE_LIMIT_AUTH_RPM`
+  above `10000`, `JWT_REFRESH_EXPIRY_SECS` or `JWT_MAX_SESSION_LIFETIME_SECS`
+  above a year, `REGISTRATIONS_PER_IP_PER_HOUR` is `0`, or
+  `PWNED_PASSWORDS_ENABLED` is `false`.
+
+In every environment, the service also refuses to start when:
+
+- `SENSITIVE_ACTION_REAUTH_SECS` is `0` or above `900`, or
+  `ARGON2_MAX_CONCURRENCY` is `0`;
+- `TOTP_SKEW` is above `1` (used codes are remembered one step each side);
+- `JWT_ACCESS_EXPIRY_SECS` is outside `60`-`3600`,
+  `JWT_SHORT_SESSION_EXPIRY_SECS` is `0`, or `JWT_REFRESH_EXPIRY_SECS` is below
+  `JWT_SHORT_SESSION_EXPIRY_SECS`;
+- `RATE_LIMIT_RPM` or `RATE_LIMIT_AUTH_RPM` is `0`;
+- `LOCKOUT_DURATION_SECS` is under `60`, or `DEVICE_AUTH_TTL_SECS` is `0` or
+  above `1800`;
+- a required variable is blank (it counts as missing).
+
+`PWNED_PASSWORDS_FAIL_OPEN=true` stays allowed in production, unlike the other
+fail-open switches: failing closed would make registration, password changes
+and resets depend on the breached-password service. The
+`AuthApiPwnedPasswordsUnavailable` alert shows when checks are skipped.

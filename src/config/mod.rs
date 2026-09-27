@@ -13,12 +13,13 @@ mod env_vars;
 #[cfg(test)]
 mod tests;
 mod validate;
+pub use validate::{MAX_TOTP_SKEW, weakened_settings};
 
 use env_vars::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("missing required env var: {0}")]
+    #[error("missing required env var: {0} (or {0}_FILE)")]
     Missing(String),
     #[error("invalid value for '{key}': {reason}")]
     Invalid { key: String, reason: String },
@@ -189,6 +190,14 @@ pub struct SecurityConfig {
     /// Offer sign-in links by email (`/auth/magic-link`). Whoever reads the
     /// mailbox can then sign in without the password, so it is off by default.
     pub magic_links: bool,
+    /// Registrations accepted per client address (IPv6 /64) per hour; 0
+    /// removes the budget. Bounds how fast usernames can be squatted with
+    /// throwaway addresses. Default: 20.
+    pub registrations_per_ip_per_hour: u32,
+    /// A password reset removes the second factors, passkeys and external
+    /// identities added in this many hours before it was asked for: whoever
+    /// held the password may have planted them. 0 keeps them. Default: 72.
+    pub reset_revokes_factors_added_hours: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -253,7 +262,7 @@ pub struct CleanupConfig {
     /// Grace period in days after recovery code expiry before deletion. Default: 7.
     pub recovery_codes_grace_days: u32,
     /// Age in days after which an account whose address was never verified is
-    /// deleted; 0 keeps them. Default: 7.
+    /// deleted; 0 keeps them. Default: 2.
     pub unverified_accounts_retention_days: u32,
     /// Days after which a device unseen is forgotten (a sign-in from it alerts
     /// again). Default: 90.
@@ -355,6 +364,12 @@ pub struct CaptchaConfig {
     pub request_timeout_secs: u64,
     /// When true, network/5xx errors from the CAPTCHA provider allow the request through.
     pub fail_open_on_error: bool,
+    /// Site key of the widget, sent with each verification so a token solved
+    /// for another site key is refused.
+    pub site_key: Option<String>,
+    /// Hostnames a solved challenge may come from; empty means the host of
+    /// `FRONTEND_URL`.
+    pub expected_hostnames: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -366,14 +381,33 @@ pub struct CorsConfig {
     pub allow_credentials: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MetricsConfig {
     /// When true, Prometheus metrics are collected and served on `port`.
     pub enabled: bool,
+    /// Address of the internal listener (`METRICS_HOST`, default
+    /// `SERVER_HOST`): outside a container, `127.0.0.1` keeps it off every
+    /// other interface.
+    pub host: String,
     /// Port of the internal metrics listener (`/metrics`). Conventionally 9464
     /// (Prometheus exporter range). Must never be exposed publicly: publish it
     /// on loopback only in docker-compose, never through the reverse proxy.
     pub port: u16,
+    /// Bearer token the internal listener requires (`METRICS_TOKEN`): the
+    /// traffic per route and the state of each dependency are not for every
+    /// host of the private network. Required in production.
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for MetricsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MetricsConfig")
+            .field("enabled", &self.enabled)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -423,9 +457,14 @@ pub struct Config {
 impl Config {
     /// Load configuration from environment variables.
     /// Silently ignores a missing `.env` file; production relies on real env vars.
+    ///
+    /// Any variable `X` may instead be given as `X_FILE`, the path of a file
+    /// holding its value (a Docker or systemd secret), so secrets stay out of
+    /// the environment that `docker inspect` and `/proc` show.
     pub fn from_env() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
-        Self::from_lookup(|key| std::env::var(key).ok())
+        let files = values_from_files(std::env::vars(), |path| std::fs::read_to_string(path))?;
+        Self::from_lookup(|key| env_or_file(std::env::var(key).ok(), files.get(key)))
     }
 
     /// Load configuration from `lookup`, which returns the value of a variable:
@@ -538,6 +577,12 @@ impl Config {
                     .unwrap_or(600),
                 new_device_alerts: vars.parse("NEW_DEVICE_ALERTS_ENABLED")?.unwrap_or(true),
                 magic_links: vars.parse("MAGIC_LINK_ENABLED")?.unwrap_or(false),
+                registrations_per_ip_per_hour: vars
+                    .parse("REGISTRATIONS_PER_IP_PER_HOUR")?
+                    .unwrap_or(20),
+                reset_revokes_factors_added_hours: vars
+                    .parse("RESET_REVOKES_FACTORS_ADDED_HOURS")?
+                    .unwrap_or(72),
             },
             mail: MailConfig {
                 smtp: SmtpConfig {
@@ -564,6 +609,8 @@ impl Config {
                     .unwrap_or_else(|| "https://hcaptcha.com/siteverify".into()),
                 request_timeout_secs: vars.parse("CAPTCHA_TIMEOUT_SECS")?.unwrap_or(5),
                 fail_open_on_error: vars.parse("CAPTCHA_FAIL_OPEN")?.unwrap_or(!is_production),
+                site_key: vars.string("CAPTCHA_SITE_KEY"),
+                expected_hostnames: vars.csv("CAPTCHA_EXPECTED_HOSTNAMES").unwrap_or_default(),
             },
             pwned_passwords: PwnedPasswordsConfig {
                 enabled: vars.parse("PWNED_PASSWORDS_ENABLED")?.unwrap_or(true),
@@ -641,7 +688,7 @@ impl Config {
                     .unwrap_or(7),
                 unverified_accounts_retention_days: vars
                     .parse("CLEANUP_UNVERIFIED_ACCOUNT_DAYS")?
-                    .unwrap_or(7),
+                    .unwrap_or(2),
                 known_devices_retention_days: vars
                     .parse("CLEANUP_KNOWN_DEVICE_DAYS")?
                     .unwrap_or(90),
@@ -685,7 +732,12 @@ impl Config {
             },
             metrics: MetricsConfig {
                 enabled: vars.parse("METRICS_ENABLED")?.unwrap_or(true),
+                host: vars
+                    .string("METRICS_HOST")
+                    .or_else(|| vars.string("SERVER_HOST"))
+                    .unwrap_or_else(|| "0.0.0.0".into()),
                 port: vars.parse("METRICS_PORT")?.unwrap_or(9464),
+                token: vars.string("METRICS_TOKEN"),
             },
         };
 

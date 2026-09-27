@@ -54,33 +54,54 @@ async fn email_verification_tokens_enforce_unique_hashes() {
 }
 
 #[tokio::test]
-async fn email_verification_tokens_allow_only_one_unused_token_per_user() {
+async fn email_verification_tokens_carry_complete_credentials_or_none() {
     let db = TestDb::new().await;
 
     let user_id = insert_user(&db.pool, 6111).await;
-    sqlx::query(
-        "INSERT INTO email_verification_tokens (user_id, token_hash, expires_at, target_email)
-             VALUES ($1, $2, NOW() + INTERVAL '1 hour', $3)",
+    // Several live links for one pending account: registrations on it each get
+    // their own.
+    for (seed, credentials) in [(29, false), (30, true)] {
+        sqlx::query(
+            "INSERT INTO email_verification_tokens
+                 (user_id, token_hash, expires_at, target_email, password_hash, username, preferred_locale)
+             VALUES ($1, $2, NOW() + INTERVAL '1 hour', $3, $4, $5, $6)",
+        )
+        .bind(user_id)
+        .bind(fixed_hash(seed))
+        .bind(sample_email(6111))
+        .bind(credentials.then_some("$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$aGFzaA"))
+        .bind(credentials.then_some("second_owner"))
+        .bind(credentials.then_some("fr"))
+        .execute(&db.pool)
+        .await
+        .expect("a pending account may hold several links");
+    }
+
+    let err = sqlx::query(
+        "INSERT INTO email_verification_tokens
+             (user_id, token_hash, expires_at, target_email, password_hash)
+         VALUES ($1, $2, NOW() + INTERVAL '1 hour', $3, 'hash')",
     )
     .bind(user_id)
-    .bind(fixed_hash(29))
+    .bind(fixed_hash(31))
     .bind(sample_email(6111))
     .execute(&db.pool)
     .await
-    .expect("failed to insert first unused email verification token");
+    .expect_err("a password without its username and locale is refused");
+    assert_constraint_error(&err, "email_verification_tokens_credentials_together");
 
     let err = sqlx::query(
-        "INSERT INTO email_verification_tokens (user_id, token_hash, expires_at, target_email)
-             VALUES ($1, $2, NOW() + INTERVAL '1 hour', $3)",
+        "INSERT INTO email_verification_tokens
+             (user_id, token_hash, expires_at, target_email, password_hash, username, preferred_locale)
+         VALUES ($1, $2, NOW() + INTERVAL '1 hour', $3, 'hash', 'bad name', 'en')",
     )
     .bind(user_id)
-    .bind(fixed_hash(30))
-    .bind(sample_email(6112))
+    .bind(fixed_hash(32))
+    .bind(sample_email(6111))
     .execute(&db.pool)
     .await
-    .expect_err("a second unused email verification token should fail");
-
-    assert_constraint_error(&err, "idx_email_verification_tokens_user_active");
+    .expect_err("a username the users table would refuse is refused here too");
+    assert_constraint_error(&err, "email_verification_tokens_username_format");
 }
 
 #[tokio::test]

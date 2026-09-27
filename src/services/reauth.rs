@@ -33,7 +33,10 @@ pub async fn mark_recent_reauth(state: &AppState, session_id: Uuid) {
 
     if let Ok(mut conn) = state.redis.get().await {
         let key = reauth_key(session_id);
-        let _: Result<(), _> = conn.set_ex(&key, 1u8, ttl).await;
+        // The value is when the password was proved: OpenID Connect `max_age`
+        // and `auth_time` need it.
+        let proven_at = state.clock.now().unix_timestamp();
+        let _: Result<(), _> = conn.set_ex(&key, proven_at, ttl).await;
     }
 }
 
@@ -42,6 +45,13 @@ pub async fn clear_recent_reauth(state: &AppState, session_id: Uuid) {
         let key = reauth_key(session_id);
         let _: Result<(), _> = conn.del(&key).await;
     }
+}
+
+/// When the session last proved the password, while that proof still stands.
+pub async fn reauth_proven_at(state: &AppState, session_id: Uuid) -> Option<i64> {
+    let mut conn = state.redis.get().await.ok()?;
+    let value: Option<String> = conn.get(reauth_key(session_id)).await.ok()?;
+    value?.parse().ok()
 }
 
 pub async fn has_recent_reauth(state: &AppState, session_id: Uuid) -> bool {
@@ -63,9 +73,12 @@ pub async fn reauthenticate(
     request_id: Option<Uuid>,
     reason: &'static str,
 ) -> Result<(), AppError> {
-    user_svc::verify_password(state, user_id, current_password).await?;
+    user_svc::verify_password(state, user_id, session_id, current_password).await?;
+    // Audited first: a proof of the password that left no trace grants
+    // nothing.
+    record_reauth_event(state, user_id, ip, request_id, reason).await?;
     mark_recent_reauth(state, session_id).await;
-    record_reauth_event(state, user_id, ip, request_id, reason).await
+    Ok(())
 }
 
 pub async fn require_recent_reauth_or_password(

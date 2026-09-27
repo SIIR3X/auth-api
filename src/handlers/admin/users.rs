@@ -14,7 +14,7 @@ use crate::{
     handlers::{
         audit::{decode_cursor, encode_cursor, page_limit, rows_to_fetch, split_page},
         extractors::{AdminUser, ClientIp},
-        user::{CurrentPasswordRequest, user_status_str},
+        user::user_status_str,
     },
     services::admin::users as admin_users,
     state::AppState,
@@ -114,7 +114,7 @@ fn parse_status(status: &str) -> Result<UserStatus, AppError> {
     responses(
         (status = 200, description = "Accounts, newest first", body = AdminUserPage),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:read`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:read`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 422, description = "Invalid status or cursor", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -122,6 +122,7 @@ fn parse_status(status: &str) -> Result<UserStatus, AppError> {
 pub async fn search(
     admin: AdminUser,
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<AdminUserPage>, AppError> {
     admin.require(&state, "users:read").await?;
@@ -138,6 +139,18 @@ pub async fn search(
     )
     .await?;
     let (rows, more) = split_page(rows, limit);
+    // What was searched is not kept (a prefix of someone's address), only
+    // that a search ran and how much it returned.
+    crate::services::admin::record_read(
+        &state,
+        &actor(&admin, ip),
+        serde_json::json!({
+            "read": "accounts",
+            "filtered": params.query.as_deref().is_some_and(|q| !q.trim().is_empty()),
+            "rows": rows.len(),
+        }),
+    )
+    .await?;
     let next_cursor = more
         .then(|| {
             rows.last()
@@ -159,7 +172,7 @@ pub async fn search(
     responses(
         (status = 200, description = "The account", body = AdminUserDetail),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:read`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:read`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -167,10 +180,17 @@ pub async fn search(
 pub async fn detail(
     admin: AdminUser,
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<AdminUserDetail>, AppError> {
     admin.require(&state, "users:read").await?;
     let detail = admin_users::detail(&state, user_id).await?;
+    crate::services::admin::record_read(
+        &state,
+        &actor(&admin, ip),
+        serde_json::json!({ "read": "account", "user_id": user_id }),
+    )
+    .await?;
     Ok(Json(AdminUserDetail {
         account: summary(&state, detail.user),
         roles: detail.roles,
@@ -187,9 +207,10 @@ pub async fn detail(
     responses(
         (status = 204, description = "Suspended and signed out everywhere, or already suspended"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:manage`, no second factor enrolled, or the administrator's own account", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, no second factor proven by the session, or the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
         (status = 422, description = "The account was never verified", body = crate::error::ErrorBody),
+        (status = 409, description = "`last_administrator`: the account is the last active one able to manage roles", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -212,7 +233,7 @@ pub async fn suspend(
     responses(
         (status = 204, description = "Active again, or already active"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -236,7 +257,7 @@ pub async fn reactivate(
     responses(
         (status = 204, description = "Lockouts ended and past failures forgiven"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:manage`, or no second factor enrolled", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, or no second factor proven by the session", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -260,7 +281,7 @@ pub async fn unlock(
     responses(
         (status = 200, description = "Signed out everywhere", body = RevokedSessionsResponse),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:manage`, no second factor enrolled, or the administrator's own account", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, no second factor proven by the session, or the administrator's own account", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
@@ -281,11 +302,13 @@ pub async fn revoke_sessions(
     path = "/admin/users/{id}/password-reset",
     tag = "admin",
     params(("id" = Uuid, Path, description = "Account id")),
+    request_body = Option<ForcePasswordResetRequest>,
     responses(
         (status = 204, description = "Signed out everywhere and a reset link mailed to the owner"),
         (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
-        (status = 403, description = "Missing `users:manage`, no second factor enrolled, or the administrator's own account", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, no second factor proven by the session, or the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_needs_second_factor`: `revoke_access_factors` on an account holding administrative permissions", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -294,9 +317,45 @@ pub async fn force_password_reset(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     Path(user_id): Path<Uuid>,
+    body: Option<Json<ForcePasswordResetRequest>>,
 ) -> Result<StatusCode, AppError> {
     admin.require(&state, "users:manage").await?;
-    admin_users::force_password_reset(&state, &actor(&admin, ip), user_id).await?;
+    let revoke = body.is_some_and(|Json(b)| b.revoke_access_factors);
+    admin_users::force_password_reset(&state, &actor(&admin, ip), user_id, revoke).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+pub struct ForcePasswordResetRequest {
+    /// Also remove the account's second factors, passkeys, external
+    /// identities and personal access tokens: what someone who knew the
+    /// password may have added.
+    #[serde(default)]
+    pub revoke_access_factors: bool,
+}
+
+#[utoipa::path(
+    delete,
+    path = "/admin/users/{id}/access-factors",
+    tag = "admin",
+    params(("id" = Uuid, Path, description = "Account id")),
+    responses(
+        (status = 204, description = "Second factors, recovery codes, passkeys, external identities and personal access tokens removed; the owner is mailed"),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 403, description = "Missing `users:manage`, no second factor proven by the session, the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
+        (status = 404, description = "No such account", body = crate::error::ErrorBody),
+        (status = 409, description = "`administrator_needs_second_factor`: the account holds administrative permissions", body = crate::error::ErrorBody),
+    ),
+    security(("bearer" = [])),
+)]
+pub async fn remove_access_factors(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    Path(user_id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    admin.require(&state, "users:manage").await?;
+    admin_users::remove_access_factors(&state, &actor(&admin, ip), user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -305,12 +364,12 @@ pub async fn force_password_reset(
     path = "/admin/users/{id}",
     tag = "admin",
     params(("id" = Uuid, Path, description = "Account id")),
-    request_body = Option<CurrentPasswordRequest>,
     responses(
         (status = 204, description = "Account deleted and `user.deleted` announced"),
-        (status = 401, description = "Missing, invalid or revoked access token, or wrong password", body = crate::error::ErrorBody),
+        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
         (status = 403, description = "Missing `users:manage`, no second factor, the administrator's own account, or re-authentication required", body = crate::error::ErrorBody),
         (status = 404, description = "No such account", body = crate::error::ErrorBody),
+        (status = 409, description = "`last_administrator`: the account is the last active one able to manage roles", body = crate::error::ErrorBody),
     ),
     security(("bearer" = [])),
 )]
@@ -319,16 +378,8 @@ pub async fn delete(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     Path(user_id): Path<Uuid>,
-    body: Option<Json<CurrentPasswordRequest>>,
 ) -> Result<StatusCode, AppError> {
     admin.require(&state, "users:manage").await?;
-    let current_password = body.and_then(|Json(b)| b.current_password);
-    admin_users::delete(
-        &state,
-        &actor(&admin, ip),
-        user_id,
-        current_password.as_deref(),
-    )
-    .await?;
+    admin_users::delete(&state, &actor(&admin, ip), user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

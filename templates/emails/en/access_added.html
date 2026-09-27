@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html>
+<body>
+<p>Hello {{ username }},</p>
+<p>A new way to access your {{ app_name }} account was added:
+{% if kind == "passkey" %}the passkey "{{ name }}"{% elif kind == "personal_access_token" %}the personal access token "{{ name }}"{% else %}sign-in with {{ name }}{% endif %}.</p>
+<p>If you didn't do this, someone else knows your password: remove it from your security settings, reset your password and contact support.</p>
+</body>
+</html>

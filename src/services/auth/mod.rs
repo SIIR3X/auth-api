@@ -65,7 +65,10 @@ mod session;
 mod tokens;
 
 use guards::*;
-pub(crate) use guards::{ensure_account_usable, ensure_status_allows_sign_in};
+pub(crate) use guards::{
+    account_budget_exceeded, budget_email_resend, ensure_account_usable,
+    ensure_status_allows_sign_in, notify_second_factor_pressure, second_factor_budget_keys,
+};
 pub use login::*;
 pub use magic_link::*;
 pub use password_reset::*;
@@ -95,6 +98,9 @@ const MAX_FAILURES_BY_IP: i64 = 30;
 /// Lookback window for brute-force counting (15 minutes).
 const BRUTE_FORCE_WINDOW_SECS: i64 = 900;
 
+/// Second-factor challenges open at once per account.
+const MAX_OPEN_CHALLENGES: i64 = 5;
+
 /// Redis key prefix for the credential-stuffing HyperLogLog counter (per IP).
 const CS_HLL_PREFIX: &str = "cs_hll:";
 
@@ -113,8 +119,9 @@ const REFRESH_FAILURE_WINDOW_SECS: u64 = 900;
 /// A rotated refresh token presented again within this window is treated as a
 /// concurrent refresh from the same client (two tabs, a retried request): it is
 /// refused without revoking the family. Later, it is a replay and the whole
-/// family is revoked. Kept short: inside the window a replay goes undetected.
-const REFRESH_REUSE_GRACE: TimeDuration = TimeDuration::seconds(2);
+/// family is revoked. Kept short: inside the window a replay goes undetected
+/// (it is counted in `auth_refresh_concurrent_total`).
+const REFRESH_REUSE_GRACE: TimeDuration = TimeDuration::seconds(1);
 
 /// Pre-auth (2FA challenge) token TTL in Redis.
 const PRE_AUTH_TTL_SECS: u64 = 300;
@@ -133,10 +140,21 @@ const MAX_TOTP_FAILURES: i64 = 5;
 /// Max TOTP code failures per account per window, across every pre-auth token.
 /// A new token only costs the password, so the per-token budget alone does not
 /// bound a search of the code space.
-const MAX_TOTP_FAILURES_BY_USER: i64 = 20;
+const MAX_TOTP_FAILURES_BY_USER: i64 = 10;
 
 /// Redis key prefix for the per-account TOTP failure budget.
-const TOTP_USER_FAIL_PREFIX: &str = "totp_user_fail:";
+pub(crate) const TOTP_USER_FAIL_PREFIX: &str = "totp_user_fail:";
+
+/// Redis key prefix for the per-account e-mail code failure budget.
+pub(crate) const EMAIL_2FA_USER_FAIL_PREFIX: &str = "email2fa_user_fail:";
+
+/// How many times the per-address second-factor budget the account's budget
+/// allows, across every address.
+pub(crate) const SECOND_FACTOR_ACCOUNT_FACTOR: i64 = 3;
+
+/// Resends of an e-mail code per challenge and per account (per hour).
+const MAX_EMAIL_RESENDS_PER_CHALLENGE: i64 = 2;
+const MAX_EMAIL_RESENDS_PER_ACCOUNT: i64 = 10;
 
 /// Rolling window of the per-account second-factor budgets (1 hour).
 const SECOND_FACTOR_USER_WINDOW_SECS: u64 = 3600;
@@ -148,10 +166,11 @@ const TOTP_USED_PREFIX: &str = "totp_used:";
 const MAX_RECOVERY_FAILURES: i64 = 5;
 
 /// Max recovery code failures per user in a rolling window (cross-session protection).
-pub(crate) const MAX_RECOVERY_FAILURES_BY_USER: i64 = 10;
+pub(crate) const MAX_RECOVERY_FAILURES_BY_USER: i64 = 5;
 
-/// Rolling window for the per-user recovery code failure counter (24 hours).
-pub(crate) const RECOVERY_FAILURE_USER_WINDOW_SECS: u64 = 86400;
+/// Rolling window for the per-user recovery code failure counter (1 hour):
+/// short, so exhausting it cannot keep the owner out for a day.
+pub(crate) const RECOVERY_FAILURE_USER_WINDOW_SECS: u64 = 3600;
 
 /// Redis key prefix for the per-user recovery code failure counter. Recovery
 /// codes guessed at sign-in and through the authenticated route share it.
@@ -188,11 +207,12 @@ const MAX_FORGOT_PASSWORD_BY_IP: i64 = 5;
 /// Window of the per-IP forgot-password budget (15 minutes).
 const FORGOT_PASSWORD_IP_WINDOW_SECS: u64 = 900;
 
-/// Reset emails per account per window, across every IP.
-const MAX_FORGOT_PASSWORD_BY_ACCOUNT: i64 = 3;
-
-/// Window of the per-account forgot-password budget (1 hour).
-const FORGOT_PASSWORD_ACCOUNT_WINDOW_SECS: u64 = 3600;
+/// Links mailed to an account (reset or sign-in) per window from one client
+/// address (IPv6 /64), and from every address together. Counted per address
+/// first: someone asking again and again from their own address spends only
+/// their own share, and the owner asking from theirs still gets a link.
+const MAX_MAILBOX_LINKS_BY_ACCOUNT_AND_IP: i64 = 3;
+const MAX_MAILBOX_LINKS_BY_ACCOUNT: i64 = 10;
 
 /// Verification e-mail requests per client address (IPv6 /64) per window.
 const MAX_VERIFICATION_RESENDS_BY_IP: i64 = 5;
@@ -210,9 +230,9 @@ const MAGIC_LINK_EXPIRY_SECS: u64 = 60 * 15;
 const MAX_MAGIC_LINKS_BY_IP: i64 = 5;
 const MAGIC_LINK_IP_WINDOW_SECS: u64 = 900;
 
-/// Sign-in links per account per window, across every address.
-const MAX_MAGIC_LINKS_BY_ACCOUNT: i64 = 3;
-const MAGIC_LINK_ACCOUNT_WINDOW_SECS: u64 = 3600;
+/// "Someone tried to register with your address" notices per account per window.
+const MAX_ACCOUNT_EXISTS_NOTICES: i64 = 3;
+const ACCOUNT_EXISTS_NOTICE_WINDOW_SECS: u64 = 3600;
 
 /// Every forgot-password response takes at least this long, known address or not.
 const FORGOT_PASSWORD_MIN_DURATION: std::time::Duration = std::time::Duration::from_millis(250);

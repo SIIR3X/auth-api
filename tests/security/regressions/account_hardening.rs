@@ -35,9 +35,9 @@ async fn locked_account_answers_the_same_whatever_the_password() {
                 &json!({ "identifier": user.email, "password": password }),
             )
             .await;
-        assert_eq!(res.status().as_u16(), 403);
+        assert_eq!(res.status().as_u16(), 401);
         let body: Value = res.json().await.unwrap();
-        assert_eq!(body["code"], "account_locked");
+        assert_eq!(body["code"], "invalid_credentials");
     }
 }
 
@@ -166,7 +166,10 @@ async fn a_one_time_token_submission_can_be_retried() {
 
     for _ in 0..2 {
         let res = app
-            .post("/auth/verify-email", &json!({ "token": token }))
+            .post(
+                "/auth/verify-email",
+                &json!({ "token": token, "password": "Any-Password-1!" }),
+            )
             .await;
         assert_eq!(res.status().as_u16(), 401, "a retry is not rate limited");
     }
@@ -251,11 +254,18 @@ async fn a_wrong_reauthentication_password_has_its_own_code() {
 #[tokio::test]
 async fn rotating_ipv6_addresses_within_a_64_does_not_reset_the_failure_budget() {
     let app = TestApp::spawn().await;
+    // A /64 of its own per run: address budgets live in the shared Redis.
+    let b = uuid::Uuid::new_v4().into_bytes();
+    let prefix = format!(
+        "2001:db8:{:x}:{:x}",
+        u16::from_be_bytes([b[0], b[1]]),
+        u16::from_be_bytes([b[2], b[3]])
+    );
     let attempt = |n: u32| {
         let request = app
             .client
             .post(app.url("/auth/login"))
-            .header("x-forwarded-for", format!("2001:db8:77:1::{n:x}"))
+            .header("x-forwarded-for", format!("{prefix}::{n:x}"))
             .json(&json!({
                 "identifier": format!("nobody{n}@example.com"),
                 "password": "Wrong-password1!",
@@ -295,4 +305,233 @@ async fn concurrent_reauthentication_guesses_never_exceed_the_budget() {
     // Two plain failures, then the third locks: never more, however parallel.
     assert_eq!(checked, 2, "{checked} guesses were checked past the budget");
     assert_eq!(locked, 18);
+}
+
+/// Registering an active address again and again does not flood its owner:
+/// the "someone tried to register" notice is budgeted per account.
+#[tokio::test]
+async fn registering_a_taken_address_repeatedly_notifies_its_owner_a_few_times() {
+    let app = TestApp::spawn().await;
+    let owner = fixtures::register_user(&app, 660).await;
+    fixtures::activate_user(&app.db, owner.id).await;
+
+    for attempt in 0..6 {
+        let res = app
+            .post(
+                "/auth/register",
+                &json!({
+                    "username": format!("flooder_{attempt}"),
+                    "email": owner.email,
+                    "password": "Password660!ok",
+                }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 202);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let notices = app
+        .mail
+        .messages_to(&owner.email)
+        .into_iter()
+        .filter(|mail| mail.subject != "Verify your email address")
+        .count();
+    assert_eq!(notices, 3);
+}
+
+/// A reset link or sign-in link mailed before a password change stops working:
+/// it would otherwise bypass the change.
+#[tokio::test]
+async fn a_password_change_ends_the_links_already_mailed() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 661).await;
+    let token = fixtures::create_password_reset_token(&app.db, user.id).await;
+
+    let res = app
+        .patch_auth(
+            "/users/me/password",
+            &user.access_token,
+            &json!({
+                "current_password": user.password,
+                "new_password": "Changed-Pass-661!",
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+
+    let res = app
+        .post(
+            "/auth/reset-password",
+            &json!({ "token": token.raw, "new_password": "Attacker-Pass-661!" }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        401,
+        "the old reset link still worked"
+    );
+}
+
+/// Registration takes the same minimum time whether the address is new or
+/// taken: the work differs, the response time must not.
+#[tokio::test]
+async fn registration_takes_a_constant_minimum_time() {
+    let app = TestApp::spawn().await;
+    let owner = fixtures::register_user(&app, 662).await;
+    fixtures::activate_user(&app.db, owner.id).await;
+
+    for (username, email) in [
+        ("timing_662", owner.email.clone()),
+        ("timing_663", "fresh662@example.com".to_owned()),
+    ] {
+        let started = Instant::now();
+        let res = app
+            .post(
+                "/auth/register",
+                &json!({ "username": username, "email": email, "password": "Password662!ok" }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 202);
+        assert!(started.elapsed() >= Duration::from_millis(250), "{email}");
+    }
+}
+
+/// Usernames are unique whatever their case: `Alice` cannot impersonate
+/// `alice`, and a sign-in finds the account whatever the case typed.
+#[tokio::test]
+async fn usernames_differing_only_in_case_cannot_coexist() {
+    let app = TestApp::spawn().await;
+    let alice = fixtures::register_user(&app, 670).await;
+    fixtures::activate_user(&app.db, alice.id).await;
+
+    let res = app
+        .post(
+            "/auth/register",
+            &json!({
+                "username": alice.username.to_uppercase(),
+                "email": "impostor670@example.com",
+                "password": "Password670!ok",
+            }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["code"], "username_taken");
+
+    let res = app
+        .post(
+            "/auth/login",
+            &json!({ "identifier": alice.username.to_uppercase(), "password": alice.password }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200);
+}
+
+/// Something typed in the identifier field that is neither an address nor a
+/// username (a password typed there by mistake) is not kept.
+#[tokio::test]
+async fn an_unrecognized_identifier_is_not_recorded() {
+    let app = TestApp::spawn().await;
+    let res = app
+        .post(
+            "/auth/login",
+            &json!({ "identifier": "My Secret Pa$$word!", "password": "whatever" }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 401);
+    let recorded: Vec<String> =
+        sqlx::query_scalar("SELECT attempted_identifier::text FROM login_attempts")
+            .fetch_all(&app.db)
+            .await
+            .unwrap();
+    assert!(
+        !recorded.iter().any(|value| value.contains("Secret")),
+        "{recorded:?}"
+    );
+    assert!(recorded.iter().any(|value| value == "<unrecognized>"));
+}
+
+/// Whether a username is taken tells nothing of an address: a registration on
+/// a registered address reserves its username like a new account would, at
+/// registration and for a rename alike (SEC-77).
+#[tokio::test]
+async fn a_username_answers_the_same_whether_its_address_was_registered() {
+    let app = TestApp::spawn().await;
+    let owner = fixtures::register_user(&app, 671).await;
+    fixtures::activate_user(&app.db, owner.id).await;
+
+    let mut probes = Vec::new();
+    for email in [
+        owner.email.clone(),
+        fixtures::unique("fresh") + "@example.com",
+    ] {
+        let probe = fixtures::unique("probe_");
+        let res = app
+            .post(
+                "/auth/register",
+                &json!({ "username": probe, "email": email, "password": "Password671!ok" }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 202);
+        let again = app
+            .post(
+                "/auth/register",
+                &json!({
+                    "username": probe.to_uppercase(),
+                    "email": fixtures::unique("other") + "@example.com",
+                    "password": "Password671!ok",
+                }),
+            )
+            .await;
+        assert_eq!(again.status().as_u16(), 409, "after registering {email}");
+        probes.push(probe);
+    }
+
+    let renamer = fixtures::authenticated_user(&app, 672).await;
+    let res = app
+        .patch_auth(
+            "/users/me/username",
+            &renamer.access_token,
+            &json!({ "username": probes[0], "current_password": renamer.password }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        409,
+        "a reserved name is taken for a rename too"
+    );
+}
+
+/// A registered address holds one username reservation at a time: registering
+/// it again replaces the previous one, so nobody squats usernames in bulk
+/// through an address they own (SEC-83).
+#[tokio::test]
+async fn an_address_holds_one_username_reservation_at_a_time() {
+    let app = TestApp::spawn().await;
+    let owner = fixtures::register_user(&app, 673).await;
+    fixtures::activate_user(&app.db, owner.id).await;
+    let (first, second) = (fixtures::unique("squat_a_"), fixtures::unique("squat_b_"));
+    for name in [&first, &second] {
+        let res = app
+            .post(
+                "/auth/register",
+                &json!({ "username": name, "email": owner.email, "password": "Password673!ok" }),
+            )
+            .await;
+        assert_eq!(res.status().as_u16(), 202);
+    }
+    let res = app
+        .post(
+            "/auth/register",
+            &json!({
+                "username": first,
+                "email": fixtures::unique("fresh") + "@example.com",
+                "password": "Password673!ok",
+            }),
+        )
+        .await;
+    assert_eq!(
+        res.status().as_u16(),
+        202,
+        "the first reservation was replaced"
+    );
 }

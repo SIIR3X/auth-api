@@ -62,7 +62,7 @@ async fn account_flows_never_log_their_secrets() {
     let verified = app
         .post(
             "/auth/verify-email",
-            &json!({ "token": verification_token }),
+            &json!({ "token": verification_token, "password": user.password }),
         )
         .await;
     assert!(verified.status().is_success(), "{}", verified.status());

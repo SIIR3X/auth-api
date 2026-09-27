@@ -62,6 +62,7 @@ pub async fn detail(state: &AppState, user_id: Uuid) -> Result<UserDetail, AppEr
 /// changes nothing.
 pub async fn suspend(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
     refuse_own_account(actor, user_id)?;
+    require_reauth(state, actor, "admin_suspend_account").await?;
     let user = find(state, user_id).await?;
     if user.status == UserStatus::PendingVerification {
         return Err(AppError::Validation(
@@ -69,12 +70,21 @@ pub async fn suspend(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(
         ));
     }
 
-    let active = session_repo::find_active_by_user(&state.db, user_id).await?;
     let mut tx = state.db.begin().await?;
     if !user_repo::suspend(&mut *tx, user_id).await? {
         return Ok(());
     }
-    session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
+    // Read in the transaction, after the row is locked by the update: a role
+    // granted meanwhile is seen.
+    let manages_roles =
+        role_repo::user_has_permission(&mut *tx, user_id, crate::domain::role::ROLES_MANAGE)
+            .await?;
+    if manages_roles {
+        super::roles::keep_an_administrator(&mut tx).await?;
+    }
+    // Read in the transaction: a session opened meanwhile is revoked and
+    // forgotten like the others.
+    let active = session_repo::revoke_all_by_user_returning(&mut *tx, user_id).await?;
     audit::append(
         &mut *tx,
         &entry(
@@ -101,11 +111,14 @@ pub async fn suspend(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(
     events::wake();
 
     forget_sessions(state, &active).await;
+    super::notify_owner(state, user_id, "suspended", None).await;
     Ok(())
 }
 
 /// Lift a suspension. Reactivating an active account changes nothing.
 pub async fn reactivate(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
+    // Reopening an account a stolen token wants back needs the administrator.
+    require_reauth(state, actor, "admin_reactivate_account").await?;
     find(state, user_id).await?;
     let mut tx = state.db.begin().await?;
     if !user_repo::reactivate(&mut *tx, user_id).await? {
@@ -124,19 +137,34 @@ pub async fn reactivate(state: &AppState, actor: &Actor, user_id: Uuid) -> Resul
     .await?;
     tx.commit().await?;
     events::wake();
+    super::notify_owner(state, user_id, "reactivated", None).await;
     Ok(())
 }
 
 /// End a lockout: the sign-in lockout and the re-authentication one.
+/// Not on one's own account, and after a recent re-authentication: unlocking
+/// in a loop would otherwise let a stolen token guess the password freely.
 pub async fn unlock(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
+    refuse_own_account(actor, user_id)?;
+    require_reauth(state, actor, "admin_unlock_account").await?;
     find(state, user_id).await?;
-    user_repo::clear_lockout(&state.db, user_id).await?;
-    redis_counter::reset(&state.redis, &[&user_svc::reauth_fail_key(user_id)]).await;
+    let mut tx = state.db.begin().await?;
+    user_repo::clear_lockout(&mut *tx, user_id).await?;
     audit::append(
-        &state.db,
+        &mut *tx,
         &entry(actor, user_id, AuditAction::AccountUnlocked, json!({})),
     )
     .await?;
+    tx.commit().await?;
+    redis_counter::reset(
+        &state.redis,
+        &[
+            &user_svc::reauth_fail_key(user_id),
+            &format!("login_try:{user_id}"),
+        ],
+    )
+    .await;
+    super::notify_owner(state, user_id, "unlocked", None).await;
     Ok(())
 }
 
@@ -147,11 +175,14 @@ pub async fn revoke_sessions(
     user_id: Uuid,
 ) -> Result<u64, AppError> {
     refuse_own_account(actor, user_id)?;
+    // Signing others out in a loop is how a stolen administrator token would
+    // push the other administrators out.
+    require_reauth(state, actor, "admin_revoke_sessions").await?;
     find(state, user_id).await?;
-    let active = session_repo::find_active_by_user(&state.db, user_id).await?;
 
     let mut tx = state.db.begin().await?;
-    let count = session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
+    let active = session_repo::revoke_all_by_user_returning(&mut *tx, user_id).await?;
+    let count = active.len() as u64;
     audit::append(
         &mut *tx,
         &entry(
@@ -172,6 +203,9 @@ pub async fn revoke_sessions(
     events::wake();
 
     forget_sessions(state, &active).await;
+    if count > 0 {
+        super::notify_owner(state, user_id, "sessions_revoked", None).await;
+    }
     Ok(count)
 }
 
@@ -181,13 +215,18 @@ pub async fn force_password_reset(
     state: &AppState,
     actor: &Actor,
     user_id: Uuid,
+    revoke_access_factors: bool,
 ) -> Result<(), AppError> {
     refuse_own_account(actor, user_id)?;
+    require_reauth(state, actor, "admin_force_password_reset").await?;
     let user = find(state, user_id).await?;
-    let active = session_repo::find_active_by_user(&state.db, user_id).await?;
 
+    // One transaction: when the access factors cannot go (an administrator
+    // keeps a second factor), nothing is revoked either.
     let mut tx = state.db.begin().await?;
-    let count = session_repo::revoke_all_by_user(&mut *tx, user_id).await?;
+    user_repo::lock_row(&mut *tx, user_id).await?;
+    let active = session_repo::revoke_all_by_user_returning(&mut *tx, user_id).await?;
+    let count = active.len();
     audit::append(
         &mut *tx,
         &entry(
@@ -198,6 +237,11 @@ pub async fn force_password_reset(
         ),
     )
     .await?;
+    // Whoever knew the password may have added their own ways in: on request,
+    // they go with it.
+    if revoke_access_factors {
+        drop_access_factors_in(&mut tx, actor, user_id).await?;
+    }
     events::enqueue(
         &mut *tx,
         "user.sessions_revoked",
@@ -208,28 +252,66 @@ pub async fn force_password_reset(
     events::wake();
 
     forget_sessions(state, &active).await;
-    auth_svc::send_reset_link(state, &user, actor.ip, None).await
+    // The link records no address: it would show the administrator's in the
+    // owner's export.
+    auth_svc::send_reset_link(state, &user, None, None, true).await
 }
 
-/// Delete the account like its owner would, after a recent re-authentication of
-/// the administrator.
-pub async fn delete(
+/// Remove every way into the account other than its password: second
+/// factors, recovery codes, passkeys, external identities and personal access
+/// tokens. For an account whose password was known to someone else, after a
+/// forced reset: what they planted goes too. An account holding
+/// administrative permissions keeps its second factor.
+pub async fn remove_access_factors(
     state: &AppState,
     actor: &Actor,
     user_id: Uuid,
-    current_password: Option<&str>,
 ) -> Result<(), AppError> {
     refuse_own_account(actor, user_id)?;
-    reauth_svc::require_recent_reauth_or_password(
-        state,
-        actor.user_id,
-        actor.session_id,
-        current_password,
-        actor.ip,
-        actor.request_id,
-        "admin_delete_account",
+    require_reauth(state, actor, "admin_remove_access_factors").await?;
+    find(state, user_id).await?;
+    let mut tx = state.db.begin().await?;
+    user_repo::lock_row(&mut *tx, user_id).await?;
+    // Every session goes, not only those of personal access tokens: whoever
+    // planted a factor may be signed in through the browser or a device.
+    let revoked = session_repo::revoke_all_by_user_returning(&mut *tx, user_id).await?;
+    drop_access_factors_in(&mut tx, actor, user_id).await?;
+    events::enqueue(
+        &mut *tx,
+        "user.sessions_revoked",
+        &events::UserSessionsRevoked { user_id },
     )
     .await?;
+    tx.commit().await?;
+    events::wake();
+    forget_sessions(state, &revoked).await;
+    super::notify_owner(state, user_id, "access_removed", None).await;
+    Ok(())
+}
+
+/// Drop the account's access factors in the caller's transaction, which holds
+/// the account's lock and revokes its sessions.
+async fn drop_access_factors_in(
+    tx: &mut sqlx::PgConnection,
+    actor: &Actor,
+    user_id: Uuid,
+) -> Result<(), AppError> {
+    user_repo::drop_access_factors(&mut *tx, user_id).await?;
+    crate::services::user::keep_a_second_factor_for_administrators(&mut *tx, user_id).await?;
+    audit::append(
+        &mut *tx,
+        &entry(actor, user_id, AuditAction::AccessFactorsRemoved, json!({})),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Delete the account like its owner would, after a recent re-authentication of
+/// the administrator (`POST /users/me/reauth`, whose attempts are budgeted
+/// like every password route).
+pub async fn delete(state: &AppState, actor: &Actor, user_id: Uuid) -> Result<(), AppError> {
+    refuse_own_account(actor, user_id)?;
+    require_reauth(state, actor, "admin_delete_account").await?;
     find(state, user_id).await?;
     user_svc::erase_account(
         state,
@@ -237,6 +319,26 @@ pub async fn delete(
         actor.metadata(json!({})),
         actor.ip,
         actor.request_id,
+    )
+    .await
+}
+
+/// Suspending an account or forcing its reset locks its owner out: like
+/// deleting it, it needs the administrator's recent re-authentication, so a
+/// stolen administrator token alone cannot shut accounts out.
+async fn require_reauth(
+    state: &AppState,
+    actor: &Actor,
+    reason: &'static str,
+) -> Result<(), AppError> {
+    reauth_svc::require_recent_reauth_or_password(
+        state,
+        actor.user_id,
+        actor.session_id,
+        None,
+        actor.ip,
+        actor.request_id,
+        reason,
     )
     .await
 }

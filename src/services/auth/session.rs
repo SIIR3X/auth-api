@@ -19,14 +19,12 @@ pub async fn refresh_token(
     // abuse budgets: without Redis the refresh goes on to the database, the
     // durable authority on revocation.
     if let Some(ip_val) = ip {
-        let key = format!("refresh_fail:{}", ip_bucket(ip_val.ip()));
-        match state.redis.get().await {
-            Ok(mut conn) => {
-                let failures: i64 = conn.get(&key).await.unwrap_or(0);
-                if failures >= MAX_REFRESH_FAILURES_BY_IP {
-                    return Err(AppError::RateLimitExceeded);
-                }
+        let key = refresh_failure_key(ip_val);
+        match redis_counter::peek(&state.redis, &key).await {
+            Ok(failures) if failures >= MAX_REFRESH_FAILURES_BY_IP => {
+                return Err(AppError::RateLimitExceeded);
             }
+            Ok(_) => {}
             Err(error) => {
                 tracing::warn!(error = %error, "refresh budget unavailable, failing open");
             }
@@ -56,20 +54,13 @@ pub async fn refresh_token(
     {
         Some(s) => s,
         None => {
-            // Increment failure counter on unknown token.
-            if let Some(ip_val) = ip {
-                let key = format!("refresh_fail:{}", ip_bucket(ip_val.ip()));
-                if let Ok(mut conn) = state.redis.get().await {
-                    let _: Result<(), _> = conn.incr(&key, 1i64).await;
-                    let _: Result<(), _> =
-                        conn.expire(&key, REFRESH_FAILURE_WINDOW_SECS as i64).await;
-                }
-            }
+            note_refresh_failure(state, ip).await;
             return Err(AppError::TokenInvalid);
         }
     };
 
     if session.client_id.as_deref() != client_id {
+        note_refresh_failure(state, ip).await;
         return Err(AppError::TokenInvalid);
     }
 
@@ -80,12 +71,42 @@ pub async fn refresh_token(
     };
     match session.refresh_verdict(state.clock.now(), ip.map(|n| n.ip()), &policy) {
         RefreshVerdict::Rotate => {}
-        RefreshVerdict::ConcurrentRefresh => return Err(AppError::TokenInvalid),
+        RefreshVerdict::ConcurrentRefresh
+            if rotated_by_this_client(state, &session, ip, user_agent).await =>
+        {
+            // Two tabs, or a retried request, from the client that rotated
+            // the session: refused, the family left alive.
+            metrics::counter!("auth_refresh_concurrent_total").increment(1);
+            tracing::info!(session_id = %session.id, "rotated refresh token presented within the grace window");
+            return Err(AppError::TokenInvalid);
+        }
+        RefreshVerdict::ConcurrentRefresh => {
+            // Within the grace window but from another network or client: the
+            // token is in two hands, and the family goes like on any replay.
+            note_refresh_failure(state, ip).await;
+            revoke_family(state, session.id).await?;
+            metrics::counter!("auth_session_replays_total").increment(1);
+            audit::append(
+                &state.db,
+                &NewAuditEntry {
+                    user_id: Some(session.user_id),
+                    request_id,
+                    action: AuditAction::SessionReplayDetected,
+                    ip_address: ip,
+                    metadata: json!({
+                        "session_id": session.id,
+                        "reason": "reused_by_another_client",
+                    }),
+                },
+            )
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+            return Err(AppError::TokenInvalid);
+        }
         RefreshVerdict::Expired => return Err(AppError::TokenExpired),
         RefreshVerdict::Replay => {
-            session_repo::revoke_family(&state.db, session.id)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
+            note_refresh_failure(state, ip).await;
+            revoke_family(state, session.id).await?;
 
             audit::append(
                 &state.db,
@@ -103,6 +124,7 @@ pub async fn refresh_token(
             return Err(AppError::TokenInvalid);
         }
         RefreshVerdict::AddressMismatch => {
+            note_refresh_failure(state, ip).await;
             metrics::counter!("auth_session_replays_total").increment(1);
             audit::append(
                 &state.db,
@@ -114,15 +136,18 @@ pub async fn refresh_token(
                     metadata: json!({
                         "reason": "ip_mismatch",
                         "session_id": session.id,
-                        "expected_ip": session.ip_address.map(|n| n.ip().to_string()),
-                        "actual_ip": ip.map(|n| n.ip().to_string()),
+                        // No address in the metadata, which is never coarsened
+                        // nor forgotten: the row's own address is the one used.
+                        "same_network": same_network(session.ip_address, ip),
                     }),
                 },
             )
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
 
-            return Err(AppError::Unauthorized);
+            // Answered like any refused token: a distinct answer would tell
+            // whoever stole it that it is still alive elsewhere.
+            return Err(AppError::TokenInvalid);
         }
     }
 
@@ -159,6 +184,7 @@ pub async fn refresh_token(
             client_id: session.client_id.as_deref(),
             family_created_at: Some(session.family_created_at),
             scopes: None,
+            mfa: session.mfa,
         },
     )
     .await
@@ -169,12 +195,11 @@ pub async fn refresh_token(
             // lock. Moments ago: the same client refreshing twice.
             if let Ok(Some(current)) = session_repo::find_by_id(&state.db, session.id).await
                 && current.rotated_within(REFRESH_REUSE_GRACE, state.clock.now())
+                && rotated_by_this_client(state, &current, ip, user_agent).await
             {
                 return Err(AppError::TokenInvalid);
             }
-            session_repo::revoke_family(&state.db, session.id)
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
+            revoke_family(state, session.id).await?;
 
             metrics::counter!("auth_session_replays_total").increment(1);
 
@@ -200,6 +225,8 @@ pub async fn refresh_token(
         user.id,
         new_session.id,
         new_session.scopes.as_deref(),
+        new_session.client_id.as_deref(),
+        &new_session.session_type,
         state,
     )
     .await?;
@@ -209,6 +236,29 @@ pub async fn refresh_token(
         refresh_token: new_raw_token,
         session: new_session,
     })
+}
+
+fn refresh_failure_key(ip: IpNetwork) -> String {
+    format!("refresh_fail:{}", ip_bucket(ip.ip()))
+}
+
+/// Count a refused refresh (unknown token, another client's session, a replay,
+/// another address) against the address, atomically with its window.
+async fn note_refresh_failure(state: &AppState, ip: Option<IpNetwork>) {
+    let Some(ip) = ip else { return };
+    let key = refresh_failure_key(ip);
+    if let Err(error) = redis_counter::consume(
+        &state.redis,
+        &[Budget {
+            key: &key,
+            limit: MAX_REFRESH_FAILURES_BY_IP,
+            window_secs: REFRESH_FAILURE_WINDOW_SECS,
+        }],
+    )
+    .await
+    {
+        tracing::warn!(%error, "could not count a refused refresh");
+    }
 }
 
 pub async fn logout(
@@ -231,7 +281,7 @@ pub async fn logout(
 
     // Invalidate the Redis session cache so revocation propagates immediately
     // without waiting for SESSION_CACHE_TTL_SECS to expire.
-    invalidate_session_cache(state, session_id);
+    invalidate_session_cache(state, session_id).await;
 
     blocklist_jti(state, jti, token_exp).await;
 
@@ -254,4 +304,63 @@ pub async fn logout(
     .map_err(|e| AppError::Internal(e.into()))?;
 
     Ok(())
+}
+
+/// Whether the rotation that replaced `session` came from the client now
+/// presenting its token again: the same network and the same user agent. Only
+/// then is a second use within the grace window a concurrent refresh; the
+/// comparison does not depend on how precisely the clocks agree.
+async fn rotated_by_this_client(
+    state: &AppState,
+    session: &Session,
+    ip: Option<IpNetwork>,
+    user_agent: Option<&str>,
+) -> bool {
+    let Some(next_id) = session.replaced_by_session_id else {
+        return false;
+    };
+    let Ok(Some(next)) = session_repo::find_by_id(&state.db, next_id).await else {
+        return false;
+    };
+    let network_matches = match (next.ip_address, ip) {
+        (None, None) => true,
+        (a, b) => same_network(a, b) == Some(true),
+    };
+    network_matches && next.user_agent.as_deref() == user_agent
+}
+
+/// Whether two client addresses fall in the same network (/24 for IPv4, /48
+/// for IPv6): what an investigation needs of a replay, without the addresses.
+fn same_network(a: Option<ipnetwork::IpNetwork>, b: Option<ipnetwork::IpNetwork>) -> Option<bool> {
+    let (a, b) = (a?.ip(), b?.ip());
+    let prefix = |ip: std::net::IpAddr| -> Option<ipnetwork::IpNetwork> {
+        let len = if ip.is_ipv4() { 24 } else { 48 };
+        ipnetwork::IpNetwork::new(ip, len)
+            .ok()
+            .and_then(|n| ipnetwork::IpNetwork::new(n.network(), len).ok())
+    };
+    Some(prefix(a)? == prefix(b)?)
+}
+
+#[cfg(test)]
+mod same_network_tests {
+    use super::same_network;
+
+    #[test]
+    fn addresses_compare_by_network() {
+        let net = |s: &str| Some(s.parse::<ipnetwork::IpNetwork>().unwrap());
+        assert_eq!(
+            same_network(net("203.0.113.7"), net("203.0.113.200")),
+            Some(true)
+        );
+        assert_eq!(
+            same_network(net("203.0.113.7"), net("198.51.100.7")),
+            Some(false)
+        );
+        assert_eq!(
+            same_network(net("2001:db8:1::1"), net("2001:db8:1:ff::2")),
+            Some(true)
+        );
+        assert_eq!(same_network(None, net("203.0.113.7")), None);
+    }
 }

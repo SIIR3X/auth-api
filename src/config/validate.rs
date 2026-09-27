@@ -23,6 +23,7 @@ impl Config {
         validate_device_auth(&self.device_auth)?;
         validate_session_lifetime(&self.jwt)?;
         validate_crypto(&self.crypto)?;
+        validate_rate_limits(&self.rate_limit)?;
 
         validate_jwt_audience(&self.jwt.audience, self.is_production())?;
 
@@ -53,6 +54,10 @@ impl Config {
             validate_https_url("APP_PUBLIC_URL", &self.server.public_url)?;
             validate_https_url("FRONTEND_URL", &self.server.frontend_url)?;
             validate_https_url("OAUTH_CONSENT_URI", &self.device_auth.consent_uri)?;
+            validate_https_url(
+                "DEVICE_AUTH_VERIFICATION_URI",
+                &self.device_auth.verification_uri,
+            )?;
 
             // TLS terminates at a reverse proxy in production. With no trusted
             // CIDR every request resolves to the proxy's address: one rate-limit
@@ -63,7 +68,24 @@ impl Config {
                     reason: "must not be empty in production -- without it every client is rate-limited and audited as the reverse proxy".into(),
                 });
             }
+            if let Some(wide) = self.server.trusted_proxy_cidrs.iter().find(|cidr| {
+                cidr.prefix()
+                    < if cidr.is_ipv4() {
+                        MIN_TRUSTED_PROXY_PREFIX_V4
+                    } else {
+                        MIN_TRUSTED_PROXY_PREFIX_V6
+                    }
+            }) {
+                return Err(ConfigError::Invalid {
+                    key: "TRUSTED_PROXY_CIDRS".into(),
+                    reason: format!(
+                        "{wide} is a network -- name each reverse proxy by its address (/32, /128), or any other host in it can forge X-Forwarded-For"
+                    ),
+                });
+            }
+            validate_production_ceilings(self)?;
 
+            validate_production_argon2(&self.crypto)?;
             validate_production_encryption_key("ENCRYPTION_KEY", &self.crypto.encryption_key)?;
             if let Some(previous) = self.crypto.previous_encryption_key.as_deref() {
                 validate_production_encryption_key("PREVIOUS_ENCRYPTION_KEY", previous)?;
@@ -114,6 +136,10 @@ impl Config {
                 });
             }
 
+            // PWNED_PASSWORDS_FAIL_OPEN stays allowed in production, unlike the
+            // other fail-open switches: failing closed would make registration,
+            // password changes and resets depend on a third-party service. An
+            // alert (AuthApiPwnedPasswordsUnavailable) shows the degraded mode.
             if self.pwned_passwords.enabled {
                 validate_https_url("PWNED_PASSWORDS_URL", &self.pwned_passwords.api_url)?;
             }
@@ -143,6 +169,40 @@ impl Config {
                         "must carry the broker credentials in production (nats://<token>@host:port)"
                             .into(),
                 });
+            }
+
+            // The internal listener answers only to the monitoring's token.
+            if self.metrics.enabled
+                && self
+                    .metrics
+                    .token
+                    .as_deref()
+                    .is_none_or(|token| token.len() < MIN_METRICS_TOKEN_LEN)
+            {
+                return Err(ConfigError::Invalid {
+                    key: "METRICS_TOKEN".into(),
+                    reason: format!(
+                        "must be set in production, at least {MIN_METRICS_TOKEN_LEN} characters (openssl rand -hex 32)"
+                    ),
+                });
+            }
+
+            // The database and the cache sit behind the private network only;
+            // a role or a user without a password would leave them open to
+            // anything that reaches that network.
+            for (key, url) in [
+                ("DATABASE_URL", Some(self.database.url.as_str())),
+                ("DATABASE_READ_URL", self.database.read_url.as_deref()),
+                ("REDIS_URL", Some(self.redis.url.as_str())),
+            ] {
+                if let Some(url) = url
+                    && !url_has_password(url)
+                {
+                    return Err(ConfigError::Invalid {
+                        key: key.into(),
+                        reason: "must carry a password in production".into(),
+                    });
+                }
             }
 
             // Hardened-default switches: in production these MUST be set to the
@@ -291,6 +351,16 @@ pub(super) fn validate_production_encryption_key(
         reason: format!("must be valid base64: {e}"),
     })?;
 
+    // Text encoded as base64 (a passphrase, a sentence) is 32 printable ASCII
+    // bytes: guessable from a dictionary, and all but impossible for random
+    // bytes ((95/256)^32, about 10^-14).
+    if decoded.iter().all(|b| (0x20..=0x7e).contains(b)) {
+        return Err(ConfigError::Invalid {
+            key: key_name.into(),
+            reason: "key is printable text, not random bytes: use a cryptographically random key (e.g. openssl rand -base64 32)".into(),
+        });
+    }
+
     let stride = decoded
         .windows(2)
         .next()
@@ -373,7 +443,155 @@ pub(super) fn validate_crypto(crypto: &CryptoConfig) -> Result<(), ConfigError> 
             reason: "must be greater than 0".into(),
         });
     }
+    // A code is accepted over (2 * skew + 1) steps of 30 seconds, and consumed
+    // codes are remembered for 90 seconds: a wider skew would let a used code
+    // be replayed once its record is gone.
+    if crypto.totp_skew > MAX_TOTP_SKEW {
+        return Err(ConfigError::Invalid {
+            key: "TOTP_SKEW".into(),
+            reason: format!("must be at most {MAX_TOTP_SKEW}"),
+        });
+    }
 
+    Ok(())
+}
+
+/// Widest TOTP skew the replay table covers (see `used_totp_codes`).
+pub const MAX_TOTP_SKEW: u8 = 1;
+
+/// Argon2id floors in production (OWASP: 19 MiB and 2 iterations): lower
+/// values make every stored hash cheap to crack.
+pub const MIN_ARGON2_MEMORY_KIB: u32 = 19_456;
+pub const MIN_ARGON2_ITERATIONS: u32 = 2;
+
+pub(super) fn validate_production_argon2(crypto: &CryptoConfig) -> Result<(), ConfigError> {
+    if crypto.argon2_memory_kib < MIN_ARGON2_MEMORY_KIB {
+        return Err(ConfigError::Invalid {
+            key: "ARGON2_MEMORY_KIB".into(),
+            reason: format!("must be at least {MIN_ARGON2_MEMORY_KIB} in production"),
+        });
+    }
+    if crypto.argon2_iterations < MIN_ARGON2_ITERATIONS {
+        return Err(ConfigError::Invalid {
+            key: "ARGON2_ITERATIONS".into(),
+            reason: format!("must be at least {MIN_ARGON2_ITERATIONS} in production"),
+        });
+    }
+    if crypto.argon2_parallelism == 0 {
+        return Err(ConfigError::Invalid {
+            key: "ARGON2_PARALLELISM".into(),
+            reason: "must be at least 1".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Settings a typo could push so far that their control no longer works:
+/// refused in production.
+pub(super) fn validate_production_ceilings(config: &Config) -> Result<(), ConfigError> {
+    let too_high = |key: &str, max: String| ConfigError::Invalid {
+        key: key.into(),
+        reason: format!("must be at most {max} in production"),
+    };
+    if config.security.lockout_threshold > MAX_LOCKOUT_THRESHOLD {
+        return Err(too_high(
+            "LOCKOUT_THRESHOLD",
+            MAX_LOCKOUT_THRESHOLD.to_string(),
+        ));
+    }
+    for (key, value) in [
+        ("RATE_LIMIT_RPM", config.rate_limit.requests_per_minute),
+        (
+            "RATE_LIMIT_AUTH_RPM",
+            config.rate_limit.auth_requests_per_minute,
+        ),
+    ] {
+        if value > MAX_REQUESTS_PER_MINUTE {
+            return Err(too_high(key, MAX_REQUESTS_PER_MINUTE.to_string()));
+        }
+    }
+    for (key, value) in [
+        ("JWT_REFRESH_EXPIRY_SECS", config.jwt.refresh_expiry_secs),
+        (
+            "JWT_MAX_SESSION_LIFETIME_SECS",
+            config.jwt.max_session_lifetime_secs,
+        ),
+    ] {
+        if value > MAX_SESSION_SECS {
+            return Err(too_high(key, format!("{MAX_SESSION_SECS} (a year)")));
+        }
+    }
+    if config.security.registrations_per_ip_per_hour == 0 {
+        return Err(ConfigError::Invalid {
+            key: "REGISTRATIONS_PER_IP_PER_HOUR".into(),
+            reason: "must be at least 1 in production".into(),
+        });
+    }
+    if !config.pwned_passwords.enabled {
+        return Err(ConfigError::Invalid {
+            key: "PWNED_PASSWORDS_ENABLED".into(),
+            reason: "must be true in production -- breached passwords would be accepted".into(),
+        });
+    }
+    // Recovery codes that never expire stay usable forever from wherever they
+    // were written down.
+    if !(1..=MAX_RECOVERY_CODE_EXPIRY_DAYS).contains(&config.crypto.recovery_code_expiry_days) {
+        return Err(ConfigError::Invalid {
+            key: "RECOVERY_CODE_EXPIRY_DAYS".into(),
+            reason: format!("must be between 1 and {MAX_RECOVERY_CODE_EXPIRY_DAYS} in production"),
+        });
+    }
+    Ok(())
+}
+
+/// Longest life of a recovery code in production (two years).
+const MAX_RECOVERY_CODE_EXPIRY_DAYS: u32 = 730;
+
+/// Settings allowed in production that weaken a control, with what each one
+/// gives up: logged as warnings at startup, so a typo or a forgotten test
+/// value shows instead of silently lowering the bar.
+pub fn weakened_settings(config: &Config) -> Vec<(&'static str, &'static str)> {
+    let mut weakened = Vec::new();
+    if config.security.magic_links {
+        weakened.push((
+            "MAGIC_LINK_ENABLED",
+            "the mailbox alone signs in (a second factor still applies)",
+        ));
+    }
+    if config.security.reset_revokes_factors_added_hours == 0 {
+        weakened.push((
+            "RESET_REVOKES_FACTORS_ADDED_HOURS",
+            "factors planted by whoever held the password survive a reset",
+        ));
+    }
+    if !config.security.new_device_alerts {
+        weakened.push((
+            "NEW_DEVICE_ALERTS_ENABLED",
+            "owners are not told of sign-ins from new devices",
+        ));
+    }
+    if config.audit.retention_months == 0 {
+        weakened.push((
+            "AUDIT_LOG_RETENTION_MONTHS",
+            "the audit log, full addresses aside, is kept forever",
+        ));
+    }
+    weakened
+}
+
+/// A limit of zero refuses every request.
+pub(super) fn validate_rate_limits(limits: &RateLimitConfig) -> Result<(), ConfigError> {
+    for (key, value) in [
+        ("RATE_LIMIT_RPM", limits.requests_per_minute),
+        ("RATE_LIMIT_AUTH_RPM", limits.auth_requests_per_minute),
+    ] {
+        if value == 0 {
+            return Err(ConfigError::Invalid {
+                key: key.into(),
+                reason: "must be at least 1".into(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -385,11 +603,20 @@ pub(super) fn validate_security(security: &SecurityConfig) -> Result<(), ConfigE
             reason: "must be at least 1".into(),
         });
     }
+    // A lock shorter than a minute is no lock: it ends before the next guess.
+    if security.lockout_duration_secs < MIN_LOCKOUT_DURATION_SECS {
+        return Err(ConfigError::Invalid {
+            key: "LOCKOUT_DURATION_SECS".into(),
+            reason: format!("must be at least {MIN_LOCKOUT_DURATION_SECS}"),
+        });
+    }
 
-    if security.sensitive_action_reauth_secs == 0 {
+    if security.sensitive_action_reauth_secs == 0
+        || security.sensitive_action_reauth_secs > MAX_REAUTH_WINDOW_SECS
+    {
         return Err(ConfigError::Invalid {
             key: "SENSITIVE_ACTION_REAUTH_SECS".into(),
-            reason: "must be greater than 0".into(),
+            reason: format!("must be between 1 and {MAX_REAUTH_WINDOW_SECS}"),
         });
     }
 
@@ -398,10 +625,11 @@ pub(super) fn validate_security(security: &SecurityConfig) -> Result<(), ConfigE
 
 /// A device flow needs a code that lives long enough to be polled at least once.
 pub(super) fn validate_device_auth(device: &DeviceAuthConfig) -> Result<(), ConfigError> {
-    if device.ttl_secs == 0 {
+    // A device code is a bearer of the approval to come: it lives minutes.
+    if device.ttl_secs == 0 || device.ttl_secs > MAX_DEVICE_AUTH_TTL_SECS {
         return Err(ConfigError::Invalid {
             key: "DEVICE_AUTH_TTL_SECS".into(),
-            reason: "must be greater than 0".into(),
+            reason: format!("must be between 1 and {MAX_DEVICE_AUTH_TTL_SECS}"),
         });
     }
     // 0 was advertised to clients as is, while polling was paced at one second:
@@ -421,12 +649,66 @@ pub(super) fn validate_device_auth(device: &DeviceAuthConfig) -> Result<(), Conf
     Ok(())
 }
 
-/// A zero absolute lifetime would refuse every refresh.
+/// Shortest bearer token of the internal listener.
+const MIN_METRICS_TOKEN_LEN: usize = 32;
+
+/// Shortest lockout that still holds a guesser back.
+const MIN_LOCKOUT_DURATION_SECS: u64 = 60;
+
+/// Longest life of a device code (RFC 8628 suggests minutes).
+const MAX_DEVICE_AUTH_TTL_SECS: u64 = 1800;
+
+/// Trusted proxies are named one address at a time in production: a network
+/// would also trust its other hosts (on a compose bridge, the broker's
+/// containers), and any of them could forge `X-Forwarded-For` and pick its
+/// own address.
+const MIN_TRUSTED_PROXY_PREFIX_V4: u8 = 32;
+const MIN_TRUSTED_PROXY_PREFIX_V6: u8 = 128;
+
+/// Production ceilings of the anti-abuse settings: a typo must not turn a
+/// control off.
+const MAX_LOCKOUT_THRESHOLD: u32 = 50;
+const MAX_REQUESTS_PER_MINUTE: u64 = 10_000;
+const MAX_SESSION_SECS: u64 = 365 * 86_400;
+
+/// Longest re-authentication window: a proof of the password stands for
+/// sensitive actions only for a few minutes.
+pub const MAX_REAUTH_WINDOW_SECS: u64 = 900;
+
+/// Access token lifetimes accepted: revocation reaches resource servers that
+/// verify tokens offline only when the token expires, so it stays short.
+pub const ACCESS_EXPIRY_RANGE_SECS: std::ops::RangeInclusive<u64> = 60..=3600;
+
+/// Lifetimes that make sense together. A zero absolute lifetime would refuse
+/// every refresh, and a refresh lifetime of zero would end every session at
+/// once.
 pub(super) fn validate_session_lifetime(jwt: &JwtConfig) -> Result<(), ConfigError> {
     if jwt.max_session_lifetime_secs == 0 {
         return Err(ConfigError::Invalid {
             key: "JWT_MAX_SESSION_LIFETIME_SECS".into(),
             reason: "must be greater than 0".into(),
+        });
+    }
+    if !ACCESS_EXPIRY_RANGE_SECS.contains(&jwt.access_expiry_secs) {
+        return Err(ConfigError::Invalid {
+            key: "JWT_ACCESS_EXPIRY_SECS".into(),
+            reason: format!(
+                "must be between {} and {}",
+                ACCESS_EXPIRY_RANGE_SECS.start(),
+                ACCESS_EXPIRY_RANGE_SECS.end()
+            ),
+        });
+    }
+    if jwt.short_session_expiry_secs == 0 {
+        return Err(ConfigError::Invalid {
+            key: "JWT_SHORT_SESSION_EXPIRY_SECS".into(),
+            reason: "must be greater than 0".into(),
+        });
+    }
+    if jwt.refresh_expiry_secs < jwt.short_session_expiry_secs {
+        return Err(ConfigError::Invalid {
+            key: "JWT_REFRESH_EXPIRY_SECS".into(),
+            reason: "must be at least JWT_SHORT_SESSION_EXPIRY_SECS: remember me must not shorten a session".into(),
         });
     }
     Ok(())
@@ -470,7 +752,25 @@ pub(super) fn validate_cors(cors: &CorsConfig, is_production: bool) -> Result<()
                 reason: format!("origin '{origin}' must use https in production"),
             });
         }
+        // A browser sends `Origin: scheme://host[:port]`, nothing more: an
+        // entry with a path, a query or a trailing slash never matches, and
+        // the front end would be refused without a word.
+        let serialized = parsed.origin().ascii_serialization();
+        if origin != &serialized || axum::http::HeaderValue::from_str(origin).is_err() {
+            return Err(ConfigError::Invalid {
+                key: "CORS_ALLOWED_ORIGINS".into(),
+                reason: format!("'{origin}' is not an origin: write it as '{serialized}'"),
+            });
+        }
     }
 
     Ok(())
+}
+
+/// Whether a connection URL carries a password (`scheme://user:password@host`).
+pub(super) fn url_has_password(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.password().map(|p| !p.is_empty()))
+        .unwrap_or(false)
 }

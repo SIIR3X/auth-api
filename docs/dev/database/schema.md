@@ -1,7 +1,10 @@
 # Database Schema
 
-Migrations live in `migrations/` and are never edited once released: every
-change is a new file. Tokens, codes and refresh tokens are stored as SHA-256
+Migrations live in `migrations/`, one per table or feature, each defining its
+objects whole. No deployment exists yet, so they are edited in place: a new
+column or enum value goes into the migration that creates its table, never
+into an `ALTER` of a later file. Once a database is in production they are
+frozen (`migrations/SHA256SUMS`) and every change becomes a new file. Tokens, codes and refresh tokens are stored as SHA-256
 digests (32 bytes), never in clear.
 
 ## Accounts
@@ -16,7 +19,7 @@ digests (32 bytes), never in clear.
 | `email_verified_at` | TIMESTAMPTZ | Yes | |
 | `last_login_at` | TIMESTAMPTZ | Yes | Last completed sign-in |
 | `locked_until` | TIMESTAMPTZ | Yes | Lockout expiry after repeated wrong passwords |
-| `lockout_cleared_at` | TIMESTAMPTZ | Yes | Last unlock by an administrator; earlier failures no longer count toward a lockout |
+| `lockout_cleared_at` | TIMESTAMPTZ | Yes | Last completed sign-in, administrator unlock or password reset; earlier failures no longer count toward a lockout |
 | `status` | user_status | No | `pending_verification`, `active`, `inactive`, `suspended` |
 | `preferred_locale` | VARCHAR(10) | No | `en`, `fr`, ... |
 | `username` | VARCHAR(50) | No | Unique, case-insensitive |
@@ -67,7 +70,20 @@ address), `first_seen_at`, `last_seen_at`. Forgotten after
 ### email_verification_tokens, password_reset_tokens, magic_link_tokens
 
 Single-use tokens (`token_hash`, `expires_at`, `used_at`). At most one active
-token per user. `magic_link_tokens` hold sign-in links (15 minutes).
+reset or sign-in link per user; a pending account may hold several
+verification links, each carrying the `password_hash`, `username` and
+`preferred_locale` of the registration that sent it (all three or none),
+until one of them verifies the account. `magic_link_tokens` hold sign-in links
+(15 minutes).
+
+### username_reservations
+
+A username asked for by a registration on an address that already has an
+account (`username`, unique whatever its case; `expires_at`, when that
+registration's link would have expired; `reserved_for`, the account of that
+address, which holds one reservation at a time). Registrations and renames treat it as
+taken, so a taken username never tells whether an address is registered.
+Expired rows go with `cleanup_expired_email_verification_tokens`.
 
 ### webhook_endpoints, webhook_deliveries
 
@@ -152,8 +168,9 @@ Per-user override of a client's session limit: `user_id`, `client_id`,
 
 ### used_totp_codes
 
-Replay guard: `(user_id, code_hash)` primary key, `used_at`. A TOTP code is
-accepted once within its validity window.
+Replay guard: `(user_id, code_hash)` primary key, `used_at` written from the
+application's clock. A consumed code stays refused 120 seconds: every step it
+can be accepted in (skew 1) and a step of margin.
 
 ### email_2fa_codes
 
@@ -193,7 +210,7 @@ a client address.
 | `created_at` | TIMESTAMPTZ | No | Partition key |
 | `user_id` | UUID | Yes | FK -> users |
 | `request_id` | UUID | Yes | `x-request-id` of the request |
-| `action` | audit_action | No | `login`, `password_changed`, `session_replay_detected`, `encryption_key_rotated`, ... |
+| `action` | audit_action | No | `login`, `password_changed`, `session_replay_detected`, `client_authorized`, `device_approved`, `device_denied`, `admin_data_read`, `encryption_key_rotated`, ... |
 | `ip_address` | INET | Yes | Only the network (/24, /48) after `AUDIT_IP_RETENTION_DAYS`; removed when the account is deleted |
 | `metadata` | JSONB | No | Action details, without personal data such as addresses |
 

@@ -1,0 +1,21 @@
+# Rotation of the auth-api access log: 14 days at most. The log holds client
+# addresses and user agents; keeping them longer than the application keeps
+# full addresses in its audit log would undo its retention policy
+# (docs/dev/privacy.md). Takes precedence over the nginx package's weekly
+# rotation of /var/log/nginx/*.log for this file.
+#
+# Install: sudo install -m 644 deploy/api/logrotate-auth-api /etc/logrotate.d/auth-api
+# Check:   sudo logrotate --debug /etc/logrotate.d/auth-api
+/var/log/nginx/auth-api.access.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 www-data adm
+    sharedscripts
+    postrotate
+        invoke-rc.d nginx rotate >/dev/null 2>&1 || true
+    endscript
+}

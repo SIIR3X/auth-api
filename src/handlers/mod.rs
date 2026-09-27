@@ -64,9 +64,17 @@ pub async fn live() -> &'static str {
     "ok"
 }
 
-/// What `/ready` found for each dependency.
+/// Whether this instance can serve traffic, as the public `/ready` says it.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct ReadyResponse {
+    /// `ready` when every dependency answered, `unavailable` otherwise.
+    pub status: &'static str,
+}
+
+/// What a readiness check found for each dependency. Served on the internal
+/// listener only: which dependency is down is operational detail.
+#[derive(serde::Serialize)]
+pub struct Readiness {
     /// `ready` when every dependency answered, `unavailable` otherwise.
     pub status: &'static str,
     /// `up` or `down`.
@@ -75,23 +83,17 @@ pub struct ReadyResponse {
     pub nats: &'static str,
 }
 
+impl Readiness {
+    pub fn is_ready(&self) -> bool {
+        self.status == "ready"
+    }
+}
+
 /// How long a readiness check waits for one dependency.
 const READY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
-#[utoipa::path(
-    get,
-    path = "/ready",
-    tag = "discovery",
-    responses(
-        (status = 200, description = "Every dependency answered", body = ReadyResponse),
-        (status = 503, description = "A dependency did not answer", body = ReadyResponse),
-    ),
-)]
-/// Readiness: whether this instance can serve traffic now. The reverse proxy
-/// and the rolling update send traffic only to a ready instance.
-pub async fn ready(
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> (axum::http::StatusCode, axum::Json<ReadyResponse>) {
+/// Check every dependency, each within [`READY_PROBE_TIMEOUT`].
+pub async fn readiness(state: &AppState) -> Readiness {
     let database = async {
         matches!(
             tokio::time::timeout(
@@ -119,20 +121,123 @@ pub async fn ready(
     let nats = state.nats.connection_state() == async_nats::connection::State::Connected;
 
     let up = |ok: bool| if ok { "up" } else { "down" };
-    let all = database && redis && nats;
-    (
-        if all {
-            axum::http::StatusCode::OK
+    Readiness {
+        status: if database && redis && nats {
+            "ready"
         } else {
-            axum::http::StatusCode::SERVICE_UNAVAILABLE
+            "unavailable"
         },
-        axum::Json(ReadyResponse {
-            status: if all { "ready" } else { "unavailable" },
-            database: up(database),
-            redis: up(redis),
-            nats: up(nats),
-        }),
-    )
+        database: up(database),
+        redis: up(redis),
+        nats: up(nats),
+    }
+}
+
+fn ready_status(readiness: &Readiness) -> axum::http::StatusCode {
+    if readiness.is_ready() {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/ready",
+    tag = "discovery",
+    responses(
+        (status = 200, description = "Every dependency answered", body = ReadyResponse),
+        (status = 503, description = "A dependency did not answer; the internal listener says which", body = ReadyResponse),
+    ),
+)]
+/// Readiness: whether this instance can serve traffic now. The reverse proxy
+/// and the rolling update send traffic only to a ready instance.
+pub async fn ready(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, axum::Json<ReadyResponse>) {
+    // Anyone may poll it: the answer is reused for a second, so a flood costs
+    // the dependencies one check per second and no pool connections.
+    let ready = {
+        let mut cached = state.readiness_cache.lock().await;
+        match *cached {
+            Some((taken, ready)) if taken.elapsed() < READY_CACHE_TTL => ready,
+            _ => {
+                let ready = readiness(&state).await.is_ready();
+                *cached = Some((std::time::Instant::now(), ready));
+                ready
+            }
+        }
+    };
+    let (status, word) = if ready {
+        (axum::http::StatusCode::OK, "ready")
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+    };
+    (status, axum::Json(ReadyResponse { status: word }))
+}
+
+/// How long the public readiness answer is reused.
+const READY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The readiness of each dependency, on the internal listener.
+async fn ready_detail(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, axum::Json<Readiness>) {
+    let readiness = readiness(&state).await;
+    (ready_status(&readiness), axum::Json(readiness))
+}
+
+/// Nothing on the internal listener takes a body or should take long: slow or
+/// large requests from the private network cannot pile up.
+fn internal_limits(router: Router) -> Router {
+    router
+        .layer(DefaultBodyLimit::max(1024))
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            std::time::Duration::from_secs(10),
+        ))
+}
+
+/// The internal listener answers only with `Authorization: Bearer
+/// <METRICS_TOKEN>` when a token is configured (always, in production).
+async fn internal_bearer(
+    axum::extract::State(token): axum::extract::State<Option<String>>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    if let Some(token) = token.as_deref() {
+        let presented = request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .unwrap_or_default();
+        if !crate::utils::crypto::constant_time_eq(presented.as_bytes(), token.as_bytes()) {
+            return axum::response::IntoResponse::into_response(
+                axum::http::StatusCode::UNAUTHORIZED,
+            );
+        }
+    }
+    next.run(request).await
+}
+
+/// The endpoint label of requests no route matched: the raw path would give
+/// every scanned URL a series of its own.
+fn unmatched_endpoint_label(_path: &str) -> String {
+    "<unmatched>".to_owned()
+}
+
+/// The HTTP metrics layer and the handle that renders the exposition.
+fn metrics_layer() -> (
+    axum_prometheus::PrometheusMetricLayer<'static>,
+    axum_prometheus::metrics_exporter_prometheus::PrometheusHandle,
+) {
+    axum_prometheus::PrometheusMetricLayerBuilder::new()
+        .with_endpoint_label_type(axum_prometheus::EndpointLabel::MatchedPathWithFallbackFn(
+            unmatched_endpoint_label,
+        ))
+        .with_default_metrics()
+        .build_pair()
 }
 
 #[utoipa::path(
@@ -156,9 +261,10 @@ pub async fn jwks(
     )
 }
 
-/// Build the main application router plus a separate `/metrics` router.
+/// Build the main application router plus a separate internal router:
+/// `/metrics` and the detailed `/ready`.
 ///
-/// The metrics router MUST be served on an internal listener only (see
+/// The internal router MUST be served on an internal listener only (see
 /// `MetricsConfig`): the Prometheus exposition reveals route-level traffic
 /// patterns and must never sit behind the public reverse proxy.
 ///
@@ -166,18 +272,26 @@ pub async fn jwks(
 /// happen once per process: use it from `main` only. Tests use `router()`,
 /// which records no metrics.
 pub fn router_with_metrics(state: AppState) -> (Router, Router) {
-    let (prometheus_layer, metric_handle) = axum_prometheus::PrometheusMetricLayer::pair();
+    let (prometheus_layer, metric_handle) = metrics_layer();
 
-    let app = build_router(state, Some(prometheus_layer));
-    let metrics = Router::new().route(
-        "/metrics",
-        get(move || {
-            let handle = metric_handle.clone();
-            async move { handle.render() }
-        }),
-    );
+    let app = build_router(state.clone(), Some(prometheus_layer));
+    let internal = Router::new()
+        .route(
+            "/metrics",
+            get(move || {
+                let handle = metric_handle.clone();
+                async move { handle.render() }
+            }),
+        )
+        .route("/ready", get(ready_detail))
+        .layer(middleware::from_fn_with_state(
+            state.config.metrics.token.clone(),
+            internal_bearer,
+        ))
+        .with_state(state);
+    let internal = internal_limits(internal);
 
-    (app, metrics)
+    (app, internal)
 }
 
 pub fn router(state: AppState) -> Router {
@@ -236,6 +350,15 @@ fn build_router(
         .route("/live", get(live))
         .route("/ready", get(ready));
 
+    // Requests no route matches spend the general budget too: a scan of
+    // unknown paths is still traffic from one address.
+    let unmatched = Router::new()
+        .fallback(not_found)
+        .layer(middleware::from_fn_with_state(
+            rl_general.clone(),
+            rate_limit::layer_with_state,
+        ));
+
     let admin = admin_router().layer(middleware::from_fn_with_state(
         rl_general.clone(),
         rate_limit::layer_with_state,
@@ -256,12 +379,13 @@ fn build_router(
         // brute-force attack must not prevent the legitimate user from ending their session.
         .route("/auth/logout", post(auth::logout))
         .layer(middleware::from_fn_with_state(
-            rl_general,
+            rl_general.clone(),
             rate_limit::layer_with_state,
         ));
 
     let router = probes
         .merge(public)
+        .merge(unmatched)
         .nest(
             "/auth",
             auth_router().layer(middleware::from_fn_with_state(
@@ -271,10 +395,15 @@ fn build_router(
         )
         .nest(
             "/oauth",
-            oauth_router().layer(middleware::from_fn_with_state(
-                rl_auth,
-                rate_limit::layer_with_state,
-            )),
+            oauth_router()
+                .layer(middleware::from_fn_with_state(
+                    rl_auth,
+                    rate_limit::layer_with_state,
+                ))
+                .merge(oauth_client_router().layer(middleware::from_fn_with_state(
+                    rl_general,
+                    rate_limit::layer_with_state,
+                ))),
         )
         .nest("/users/me", me_with_strict_reauth)
         .nest("/admin", admin)
@@ -309,6 +438,11 @@ fn build_router(
     };
 
     router.with_state(state)
+}
+
+/// The router's own 404, which the error body layer documents.
+async fn not_found() -> axum::http::StatusCode {
+    axum::http::StatusCode::NOT_FOUND
 }
 
 fn build_cors(cfg: &crate::config::CorsConfig) -> CorsLayer {
@@ -400,6 +534,10 @@ fn admin_router() -> Router<AppState> {
         .route("/users/{id}/reactivate", post(admin::users::reactivate))
         .route("/users/{id}/unlock", post(admin::users::unlock))
         .route(
+            "/users/{id}/access-factors",
+            delete(admin::users::remove_access_factors),
+        )
+        .route(
             "/users/{id}/sessions",
             delete(admin::users::revoke_sessions),
         )
@@ -454,11 +592,8 @@ fn admin_router() -> Router<AppState> {
 fn oauth_router() -> Router<AppState> {
     Router::new()
         .route("/authorize", get(oauth::authorize))
-        .route("/token", post(oauth::token))
         .route("/device_authorization", post(oauth::device_authorization))
-        .route("/introspect", post(oauth::introspect))
         .route("/userinfo", get(oauth::userinfo))
-        .route("/revoke", post(oauth::revoke))
         .route("/device/verify", post(oauth::verify_device))
         .route("/device/{user_code}", get(oauth::describe_device))
         .route("/authorization-requests/{id}", get(oauth::describe_request))
@@ -470,6 +605,19 @@ fn oauth_router() -> Router<AppState> {
             "/authorization-requests/{id}/deny",
             post(oauth::deny_request),
         )
+}
+
+// The endpoints a client application calls with its own credentials: under
+// the general per-address bucket, with a per-client budget and a per-address
+// budget of wrong secrets in `services::oauth::authenticate_client`. The strict
+// bucket would cap a resource server introspecting from one address, or every
+// client behind a NAT, at a handful of requests a minute.
+
+fn oauth_client_router() -> Router<AppState> {
+    Router::new()
+        .route("/token", post(oauth::token))
+        .route("/introspect", post(oauth::introspect))
+        .route("/revoke", post(oauth::revoke))
 }
 
 // Sensitive authenticated routes placed under the strict auth rate-limit bucket.
@@ -485,6 +633,30 @@ fn me_strict_router() -> Router<AppState> {
         .route("/email/verify-current", post(user::verify_current_email))
         .route("/email/submit", post(user::submit_new_email))
         .route("/email/confirm", post(user::confirm_new_email))
+        // Every route accepting `current_password` guesses the password like
+        // `/reauth` does, so it shares its bucket: the general one would let a
+        // stolen access token try passwords fifteen times faster.
+        .route("/", delete(user::delete_account))
+        .route("/username", patch(user::change_username))
+        .route("/password", patch(user::change_password))
+        .route("/sessions", delete(session::revoke_all))
+        .route("/sessions/{id}", delete(session::revoke))
+        .route("/passkeys/{id}", delete(passkey::remove))
+        .route(
+            "/external-identities/{id}",
+            delete(external_identity::unlink),
+        )
+        .route("/two-factor/totp/setup", post(two_factor::setup_totp))
+        .route("/two-factor/totp/{id}", delete(two_factor::disable_totp))
+        .route(
+            "/two-factor/recovery-codes",
+            post(two_factor::regenerate_recovery_codes),
+        )
+        .route("/two-factor/email/setup", post(two_factor::setup_email_otp))
+        .route(
+            "/two-factor/email/{id}",
+            delete(two_factor::disable_email_otp),
+        )
 }
 
 // Protected routes under /users/me (all require a valid JWT).
@@ -496,10 +668,7 @@ fn me_router() -> Router<AppState> {
         .route("/", get(user::me))
         .route("/audit", get(audit::list))
         .route("/two-factor", get(two_factor::list))
-        .route("/username", patch(user::change_username))
-        .route("/password", patch(user::change_password))
         .route("/locale", patch(user::change_locale))
-        .route("/", delete(user::delete_account))
         // External identities
         .route("/external-identities", get(external_identity::list))
         .route(
@@ -510,40 +679,22 @@ fn me_router() -> Router<AppState> {
             "/external-identities/{provider}/start",
             post(external_identity::start_link),
         )
-        .route(
-            "/external-identities/{id}",
-            delete(external_identity::unlink),
-        )
         // Passkeys
         .route("/passkeys", get(passkey::list))
         .route("/passkeys", post(passkey::register))
         .route("/passkeys/options", post(passkey::registration_options))
-        .route("/passkeys/{id}", delete(passkey::remove))
         // Personal access tokens
         .route("/tokens", get(personal_access_token::list))
         .route("/tokens", post(personal_access_token::create))
         .route("/tokens/{id}", delete(personal_access_token::revoke))
         // Sessions
         .route("/sessions", get(session::list))
-        .route("/sessions", delete(session::revoke_all))
-        .route("/sessions/{id}", delete(session::revoke))
         // Two-factor: TOTP
-        .route("/two-factor/totp/setup", post(two_factor::setup_totp))
         .route(
             "/two-factor/totp/{id}/verify",
             post(two_factor::verify_totp_setup),
         )
-        .route("/two-factor/totp/{id}", delete(two_factor::disable_totp))
-        .route(
-            "/two-factor/recovery-codes",
-            post(two_factor::regenerate_recovery_codes),
-        )
-        .route(
-            "/two-factor/recovery-codes/use",
-            post(two_factor::use_recovery_code),
-        )
         // Two-factor: Email OTP
-        .route("/two-factor/email/setup", post(two_factor::setup_email_otp))
         .route(
             "/two-factor/email/send",
             post(two_factor::send_email_otp_code),
@@ -552,24 +703,84 @@ fn me_router() -> Router<AppState> {
             "/two-factor/email/{id}/verify",
             post(two_factor::verify_email_otp_setup),
         )
-        .route(
-            "/two-factor/email/{id}",
-            delete(two_factor::disable_email_otp),
-        )
 }
 
 #[cfg(test)]
 mod tests {
+    use tower::ServiceExt;
+
+    /// The internal listener refuses large bodies (SEC-73).
     #[tokio::test]
-    async fn metrics_recorder_renders_business_counters() {
-        // pair() installs the process-global Prometheus recorder (and spawns
-        // its upkeep task, hence the Tokio runtime); this must stay the only
-        // test doing so (router() never installs it, so the integration suite
-        // is unaffected).
-        let (_layer, handle) = axum_prometheus::PrometheusMetricLayer::pair();
+    async fn the_internal_listener_refuses_large_bodies() {
+        let app = super::internal_limits(axum::Router::new().route(
+            "/metrics",
+            axum::routing::post(|body: axum::body::Bytes| async move { body.len().to_string() }),
+        ));
+        let status = app
+            .oneshot(
+                axum::http::Request::post("/metrics")
+                    .body(axum::body::Body::from(vec![b'x'; 4096]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+            .as_u16();
+        assert_eq!(status, 413);
+    }
+
+    /// The internal listener answers only with its bearer token (SEC-65).
+    #[tokio::test]
+    async fn the_internal_listener_needs_its_token() {
+        let app = axum::Router::new()
+            .route("/ready", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                Some("metrics-token".to_owned()),
+                super::internal_bearer,
+            ));
+        let status = |authorization: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let mut request = axum::http::Request::get("/ready");
+                if let Some(value) = authorization {
+                    request = request.header("authorization", value);
+                }
+                app.oneshot(request.body(axum::body::Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+                    .as_u16()
+            }
+        };
+        assert_eq!(status(None).await, 401);
+        assert_eq!(status(Some("Bearer wrong")).await, 401);
+        assert_eq!(status(Some("Bearer metrics-token")).await, 200);
+    }
+
+    #[tokio::test]
+    async fn metrics_recorder_renders_business_counters_and_folds_unmatched_paths() {
+        // The builder installs the process-global Prometheus recorder (and
+        // spawns its upkeep task, hence the Tokio runtime); this must stay the
+        // only test doing so (router() never installs it, so the integration
+        // suite is unaffected).
+        let (layer, handle) = super::metrics_layer();
 
         metrics::counter!("auth_logins_total", "outcome" => "success").increment(1);
         metrics::gauge!("argon2_queue_available_permits").set(4.0);
+
+        let app = axum::Router::new()
+            .route("/known", axum::routing::get(|| async { "ok" }))
+            .layer(layer);
+        for path in ["/known", "/scan-a1b2c3", "/.env"] {
+            app.clone()
+                .oneshot(
+                    axum::http::Request::get(path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
 
         let body = handle.render();
         assert!(
@@ -577,5 +788,11 @@ mod tests {
             "missing counter: {body}"
         );
         assert!(body.contains("argon2_queue_available_permits"));
+        assert!(body.contains(r#"endpoint="/known""#), "{body}");
+        assert!(body.contains(r#"endpoint="<unmatched>""#), "{body}");
+        assert!(
+            !body.contains("scan-a1b2c3") && !body.contains("/.env"),
+            "an unmatched path became a label: {body}"
+        );
     }
 }

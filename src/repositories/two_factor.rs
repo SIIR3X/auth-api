@@ -100,13 +100,11 @@ pub struct RemovedMethod {
 ///
 /// Returns `None` when the user has no method with this id and type.
 pub async fn remove_method(
-    pool: &PgPool,
+    tx: &mut sqlx::PgConnection,
     id: Uuid,
     user_id: Uuid,
     method_type: TwoFactorType,
 ) -> Result<Option<RemovedMethod>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-
     let removed: Option<(bool,)> = sqlx::query_as(
         "DELETE FROM two_factor_methods
          WHERE id = $1 AND user_id = $2 AND method_type = $3
@@ -151,7 +149,6 @@ pub async fn remove_method(
             .await?;
     }
 
-    tx.commit().await?;
     Ok(Some(RemovedMethod {
         was_primary,
         remaining_verified,
@@ -200,9 +197,13 @@ pub async fn find_primary_by_user(
 
 /// Returns (id, totp_secret) for every verified TOTP method that has a secret.
 /// Used exclusively during encryption key rotation.
-pub async fn find_all_totp_secrets(pool: &PgPool) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
-    let rows: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, totp_secret
+/// A stored TOTP secret: method id, account id, ciphertext.
+pub type StoredTotpSecret = (Uuid, Uuid, String);
+
+/// Every stored TOTP secret.
+pub async fn find_all_totp_secrets(pool: &PgPool) -> Result<Vec<StoredTotpSecret>, sqlx::Error> {
+    let rows: Vec<StoredTotpSecret> = sqlx::query_as(
+        "SELECT id, user_id, totp_secret
          FROM two_factor_methods
          WHERE method_type = 'totp' AND totp_secret IS NOT NULL",
     )
@@ -261,6 +262,11 @@ pub async fn find_all_by_type(
 
 // TOTP replay guard (used_totp_codes)
 
+/// How long a consumed TOTP code stays refused: every step it can be accepted
+/// in (the current one and `MAX_TOTP_SKEW` on each side) plus one step of
+/// margin, so no clock drift reopens it.
+pub const TOTP_REPLAY_WINDOW_SECS: i64 = (2 * crate::config::MAX_TOTP_SKEW as i64 + 2) * 30;
+
 /// Atomically consume a TOTP code for a user: purges the user's expired
 /// entries, then records the code hash. Returns `false` when the exact code
 /// was already consumed within the validity window (replay).
@@ -272,26 +278,27 @@ pub async fn try_consume_totp_code(
     pool: &PgPool,
     user_id: Uuid,
     code_hash: &[u8],
+    now: time::OffsetDateTime,
 ) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
     // Self-cleaning: TOTP codes repeat naturally over time, so stale rows must
-    // never block a future legitimate login even if pg_cron/background cleanup
-    // lags. 90 s = one 30-second step on each side of the current one
-    // (TOTP_SKEW=1), matching cleanup_used_totp_codes().
-    sqlx::query(
-        "DELETE FROM used_totp_codes WHERE user_id = $1 AND used_at < NOW() - INTERVAL '90 seconds'",
-    )
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await?;
+    // never block a future legitimate login even if background cleanup lags.
+    // Judged on the application's clock, like the code's validity: a database
+    // clock running ahead must not reopen a replay window.
+    sqlx::query("DELETE FROM used_totp_codes WHERE user_id = $1 AND used_at < $2")
+        .bind(user_id)
+        .bind(now - time::Duration::seconds(TOTP_REPLAY_WINDOW_SECS))
+        .execute(&mut *tx)
+        .await?;
 
     let inserted = sqlx::query(
-        "INSERT INTO used_totp_codes (user_id, code_hash) VALUES ($1, $2)
+        "INSERT INTO used_totp_codes (user_id, code_hash, used_at) VALUES ($1, $2, $3)
          ON CONFLICT (user_id, code_hash) DO NOTHING",
     )
     .bind(user_id)
     .bind(code_hash)
+    .bind(now)
     .execute(&mut *tx)
     .await?
     .rows_affected();

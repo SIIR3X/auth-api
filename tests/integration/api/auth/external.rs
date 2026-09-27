@@ -38,6 +38,10 @@ struct Provider {
     grants: Arc<Mutex<HashMap<String, Grant>>>,
     /// Signs ID tokens with another key when set.
     forge: Arc<Mutex<bool>>,
+    /// Names another issuer in its discovery document when set.
+    foreign_issuer: Arc<Mutex<bool>>,
+    /// Publishes its token endpoint over another transport when set.
+    foreign_transport: Arc<Mutex<bool>>,
 }
 
 impl Provider {
@@ -48,6 +52,8 @@ impl Provider {
             key: Arc::new(SigningKey::random(&mut rand_core::OsRng)),
             grants: Arc::default(),
             forge: Arc::default(),
+            foreign_issuer: Arc::default(),
+            foreign_transport: Arc::default(),
         };
         let app = Router::new()
             .route("/.well-known/openid-configuration", get(discovery))
@@ -91,10 +97,19 @@ impl Provider {
 }
 
 async fn discovery(State(provider): State<Provider>) -> Json<Value> {
+    let issuer = if *provider.foreign_issuer.lock().unwrap() {
+        "https://elsewhere.example".to_owned()
+    } else {
+        provider.base.clone()
+    };
     Json(json!({
-        "issuer": provider.base,
+        "issuer": issuer,
         "authorization_endpoint": format!("{}/authorize", provider.base),
-        "token_endpoint": format!("{}/token", provider.base),
+        "token_endpoint": if *provider.foreign_transport.lock().unwrap() {
+            format!("{}/token", provider.base.replacen("http://", "https://", 1))
+        } else {
+            format!("{}/token", provider.base)
+        },
         "jwks_uri": format!("{}/jwks", provider.base),
     }))
 }
@@ -471,4 +486,71 @@ async fn a_github_identity_is_its_numeric_user_id() {
     )
     .await;
     assert_eq!(status, 200);
+}
+
+/// A callback URL is something anyone can be made to open. An attacker starting
+/// a link on their own account and sending the provider URL to someone signed
+/// in there must not get that person's identity linked: nothing is linked until
+/// the browser holding the binding completes the flow.
+#[tokio::test]
+async fn a_callback_alone_links_nothing() {
+    let mock = Provider::start().await;
+    let app = app_with(&mock, IdentityProviderKind::Oidc).await;
+    let attacker = fixtures::authenticated_user(&app, 20).await;
+
+    let (code, _binding) = through_provider(
+        &app,
+        &mock,
+        "corp",
+        (
+            "/users/me/external-identities/corp/start",
+            Some(&attacker.access_token),
+        ),
+        "victim-subject",
+    )
+    .await;
+    let linked: i64 = sqlx::query_scalar("SELECT count(*) FROM external_identities")
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(linked, 0, "the callback linked the identity on its own");
+
+    // The outcome code lands in the victim's browser; without the attacker's
+    // binding it completes nothing.
+    let (status, _) = post(
+        &app,
+        "/users/me/external-identities/complete",
+        Some(&attacker.access_token),
+        json!({ "code": code, "binding": "not-the-binding" }),
+    )
+    .await;
+    assert_eq!(status, 401);
+    let linked: i64 = sqlx::query_scalar("SELECT count(*) FROM external_identities")
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    assert_eq!(linked, 0);
+}
+
+/// A discovery document naming another issuer is not followed: its endpoints
+/// would receive the client secret and the codes (SEC-79).
+#[tokio::test]
+async fn metadata_of_another_issuer_is_not_followed() {
+    let mock = Provider::start().await;
+    *mock.foreign_issuer.lock().unwrap() = true;
+    let app = app_with(&mock, IdentityProviderKind::Oidc).await;
+    let (status, _) = post(&app, "/auth/external/corp/start", None, json!({})).await;
+    assert_eq!(status, 503);
+}
+
+/// Its endpoints receive the client secret and the codes: a discovery document
+/// publishing them over another transport than the issuer's is refused
+/// (SEC-86).
+#[tokio::test]
+async fn endpoints_over_another_transport_are_not_followed() {
+    let mock = Provider::start().await;
+    *mock.foreign_transport.lock().unwrap() = true;
+    let app = app_with(&mock, IdentityProviderKind::Oidc).await;
+    let (status, _) = post(&app, "/auth/external/corp/start", None, json!({})).await;
+    assert_eq!(status, 503);
 }

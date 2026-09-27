@@ -65,6 +65,14 @@ pub struct Claims {
     /// token belongs to no user and no session: `sid` is nil.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    /// What `sub` names: `user`, or `client` for a client credentials token.
+    /// A resource server authorizing by `sub` tells them apart with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_type: Option<String>,
+    /// The kind of session a user's token comes from: `web`, `device`, or
+    /// `personal_access_token` for a script.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_type: Option<String>,
 }
 
 impl Claims {
@@ -82,6 +90,8 @@ impl Claims {
             roles: Vec::new(),
             permissions: Vec::new(),
             client_id: None,
+            sub_type: Some("user".to_owned()),
+            session_type: None,
         }
     }
 
@@ -112,6 +122,9 @@ pub fn encode_token(
     // Optional key identifier. When present, JWKS-based verifiers can pin
     // verification to a specific key, allowing safe key rotation.
     header.kid = kid.map(str::to_owned);
+    // An access token says so (RFC 9068): a resource server can tell it from
+    // an ID token, which keeps the plain `JWT` type.
+    header.typ = Some("at+jwt".to_owned());
 
     jsonwebtoken::encode(&header, claims, key).map_err(|e| JwtError::Encode(e.to_string()))
 }
@@ -284,11 +297,13 @@ pub fn parse_verifying_key(pem: &str) -> Result<DecodingKey, JwtError> {
         .map_err(|e| JwtError::Decode(format!("invalid public key PEM: {e}")))
 }
 
-/// Compute a short key ID (first 8 hex chars of the SHA-256 of the uncompressed public point).
+/// Compute a key ID: the first 16 hex digits (64 bits) of the SHA-256 of the
+/// uncompressed public point. Wide enough that two keys held together never
+/// share one by chance; `parse_jwt_keys` refuses to start if they do.
 pub fn compute_kid(key: &VerifyingKey) -> String {
     let point = key.to_encoded_point(false);
     let hash = Sha256::digest(point.as_bytes());
-    hash[..4].iter().map(|b| format!("{b:02x}")).collect()
+    hash[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Build a JWK representation of a P-256 public key for the JWKS endpoint.
@@ -419,6 +434,8 @@ mod tests {
             roles: Vec::new(),
             permissions: Vec::new(),
             client_id: None,
+            sub_type: None,
+            session_type: None,
         };
         let token = encode_token(&claims, &sk, None).unwrap();
         assert!(matches!(
@@ -443,6 +460,8 @@ mod tests {
             roles: Vec::new(),
             permissions: Vec::new(),
             client_id: None,
+            sub_type: None,
+            session_type: None,
         };
         let token = encode_token(&claims, &sk, None).unwrap();
         assert!(matches!(
@@ -637,6 +656,8 @@ mod tests {
                 roles: Vec::new(),
                 permissions: Vec::new(),
                 client_id: None,
+                sub_type: None,
+                session_type: None,
             };
 
             let token = encode_token(&claims, &sk, None).unwrap();
@@ -670,6 +691,8 @@ mod tests {
                 roles: Vec::new(),
                 permissions: Vec::new(),
                 client_id: None,
+                sub_type: None,
+                session_type: None,
             };
 
             let token = encode_token(&claims, &sk, None).unwrap();
@@ -685,11 +708,11 @@ mod tests {
     }
 
     #[test]
-    fn a_kid_is_eight_lowercase_hex_digits_stable_per_key() {
+    fn a_kid_is_sixteen_lowercase_hex_digits_stable_per_key() {
         let (_, public) = test_key_pems();
         let key = parse_p256_verifying_key(&public).unwrap();
         let kid = compute_kid(&key);
-        assert_eq!(kid.len(), 8);
+        assert_eq!(kid.len(), 16);
         assert!(
             kid.bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),

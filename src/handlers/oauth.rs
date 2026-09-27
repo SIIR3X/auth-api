@@ -14,7 +14,6 @@ use serde_json::json;
 use crate::{
     domain::oauth::{self, ErrorCode},
     error::AppError,
-    repositories::role as role_repo,
     services::{
         device as device_svc,
         oauth::{self as oauth_svc, AuthorizeOutcome, EndpointError, OAuthError},
@@ -22,7 +21,7 @@ use crate::{
     state::AppState,
 };
 
-use super::extractors::{AuthUser, ClientIp, UserAgent};
+use super::extractors::{AuthUser, ClientIp, FirstPartyUser, UserAgent};
 
 /// RFC 6749 section 5.2.
 #[derive(Serialize, utoipa::ToSchema)]
@@ -147,6 +146,9 @@ pub struct DeviceVerifyRequest {
     pub user_code: String,
     #[serde(default = "default_approve")]
     pub approve: bool,
+    /// Approving a device of a client other than the instance's own
+    /// application needs this, or a recent `POST /users/me/reauth`.
+    pub current_password: Option<String>,
 }
 
 fn default_approve() -> bool {
@@ -193,11 +195,9 @@ pub async fn metadata(State(state): State<AppState>) -> Result<impl IntoResponse
         .public_url
         .trim_end_matches('/')
         .to_owned();
-    let scopes: Vec<String> = role_repo::find_all_permissions(&state.db)
-        .await?
-        .into_iter()
-        .map(|p| p.name)
-        .collect();
+    // Only what a registered client may ask for: the full permission catalog
+    // would map the authorization model for anyone.
+    let scopes = crate::repositories::registered_client::assignable_scopes(&state.db).await?;
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=300")],
         Json(json!({
@@ -221,7 +221,7 @@ pub async fn metadata(State(state): State<AppState>) -> Result<impl IntoResponse
             ],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
             "code_challenge_methods_supported": ["S256"],
-            "authorization_response_iss_parameter_supported": false,
+            "authorization_response_iss_parameter_supported": true,
         })),
     ))
 }
@@ -247,12 +247,7 @@ pub async fn openid_configuration(
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
-    scopes.extend(
-        role_repo::find_all_permissions(&state.db)
-            .await?
-            .into_iter()
-            .map(|p| p.name),
-    );
+    scopes.extend(crate::repositories::registered_client::assignable_scopes(&state.db).await?);
     Ok((
         [(header::CACHE_CONTROL, "public, max-age=300")],
         Json(json!({
@@ -357,7 +352,7 @@ pub async fn authorize(
 )]
 pub async fn describe_request(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(id): Path<String>,
 ) -> Result<Json<AuthorizationRequestResponse>, AppError> {
     let described = oauth_svc::describe_request(&state, auth.user_id, auth.session_id, &id).await?;
@@ -392,7 +387,7 @@ pub async fn describe_request(
 pub async fn approve_request(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Path(id): Path<String>,
     body: Option<Json<ApproveAuthorizationRequest>>,
 ) -> Result<Json<AuthorizationDecisionResponse>, AppError> {
@@ -424,10 +419,10 @@ pub async fn approve_request(
 )]
 pub async fn deny_request(
     State(state): State<AppState>,
-    _auth: AuthUser,
+    auth: FirstPartyUser,
     Path(id): Path<String>,
 ) -> Result<Json<AuthorizationDecisionResponse>, AppError> {
-    let redirect_to = oauth_svc::deny_request(&state, &id).await?;
+    let redirect_to = oauth_svc::deny_request(&state, auth.user_id, &id).await?;
     Ok(Json(AuthorizationDecisionResponse { redirect_to }))
 }
 
@@ -529,11 +524,13 @@ pub struct TokenOperationRequest {
 )]
 pub async fn introspect(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, EndpointError> {
     let parameters = form(&headers, &body)?;
-    let introspection = oauth_svc::introspect(&state, authorization(&headers), &parameters).await?;
+    let introspection =
+        oauth_svc::introspect(&state, authorization(&headers), &parameters, ip).await?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(introspection)).into_response())
 }
 
@@ -575,11 +572,13 @@ pub async fn revoke(
 pub async fn describe_device(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    _auth: AuthUser,
+    auth: FirstPartyUser,
     Path(user_code): Path<String>,
 ) -> Result<Json<device_svc::DevicePreview>, AppError> {
     validate_user_code(&user_code)?;
-    Ok(Json(device_svc::describe(&state, &user_code, ip).await?))
+    Ok(Json(
+        device_svc::describe(&state, auth.user_id, auth.session_id, &user_code, ip).await?,
+    ))
 }
 
 #[utoipa::path(
@@ -589,7 +588,8 @@ pub async fn describe_device(
     request_body = DeviceVerifyRequest,
     responses(
         (status = 200, description = "Decision recorded"),
-        (status = 401, description = "Missing, invalid or revoked access token", body = crate::error::ErrorBody),
+        (status = 401, description = "Missing, invalid or revoked access token, or wrong password", body = crate::error::ErrorBody),
+        (status = 403, description = "Re-authentication required to approve a client other than the instance's own application, or a delegated token", body = crate::error::ErrorBody),
         (status = 404, description = "Unknown or expired code", body = crate::error::ErrorBody),
         (status = 409, description = "Already decided", body = crate::error::ErrorBody),
     ),
@@ -598,14 +598,25 @@ pub async fn describe_device(
 pub async fn verify_device(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Json(body): Json<DeviceVerifyRequest>,
 ) -> Result<StatusCode, AppError> {
     validate_user_code(&body.user_code)?;
     if body.approve {
-        device_svc::verify(&state, auth.user_id, &body.user_code, ip).await?;
+        device_svc::verify(
+            &state,
+            &device_svc::Approval {
+                user_id: auth.user_id,
+                session_id: auth.session_id,
+                user_code: &body.user_code,
+                current_password: body.current_password.as_deref(),
+                ip,
+                request_id: auth.request_id,
+            },
+        )
+        .await?;
     } else {
-        device_svc::deny(&state, &body.user_code, ip).await?;
+        device_svc::deny(&state, auth.user_id, &body.user_code, ip).await?;
     }
     Ok(StatusCode::OK)
 }

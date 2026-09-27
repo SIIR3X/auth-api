@@ -3,7 +3,7 @@
 //! Redemption is one statement that consumes and returns the code, so two
 //! concurrent redemptions cannot both succeed.
 
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -19,6 +19,7 @@ pub struct AuthorizationCode {
     pub consumed_at: Option<OffsetDateTime>,
     pub session_id: Option<Uuid>,
     pub nonce: Option<String>,
+    pub auth_time: OffsetDateTime,
 }
 
 pub struct NewAuthorizationCode<'a> {
@@ -29,16 +30,20 @@ pub struct NewAuthorizationCode<'a> {
     pub code_challenge: &'a str,
     pub scopes: Option<&'a [String]>,
     pub nonce: Option<&'a str>,
+    pub auth_time: OffsetDateTime,
     pub expires_at: OffsetDateTime,
 }
 
-const COLUMNS: &str = "id, user_id, client_id, redirect_uri, code_challenge, scopes, expires_at, consumed_at, session_id, nonce";
+const COLUMNS: &str = "id, user_id, client_id, redirect_uri, code_challenge, scopes, expires_at, consumed_at, session_id, nonce, auth_time";
 
-pub async fn create(pool: &PgPool, input: &NewAuthorizationCode<'_>) -> Result<Uuid, sqlx::Error> {
+pub async fn create<'e>(
+    executor: impl PgExecutor<'e>,
+    input: &NewAuthorizationCode<'_>,
+) -> Result<Uuid, sqlx::Error> {
     sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO authorization_codes
-             (code_hash, user_id, client_id, redirect_uri, code_challenge, scopes, expires_at, nonce)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             (code_hash, user_id, client_id, redirect_uri, code_challenge, scopes, expires_at, nonce, auth_time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id",
     )
     .bind(input.code_hash)
@@ -49,14 +54,15 @@ pub async fn create(pool: &PgPool, input: &NewAuthorizationCode<'_>) -> Result<U
     .bind(input.scopes)
     .bind(input.expires_at)
     .bind(input.nonce)
-    .fetch_one(pool)
+    .bind(input.auth_time)
+    .fetch_one(executor)
     .await
 }
 
 /// Consume a live code in one statement. `None` for unknown, expired or already
 /// consumed codes; [`find`] tells them apart when needed.
-pub async fn consume(
-    pool: &PgPool,
+pub async fn consume<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     code_hash: &[u8],
 ) -> Result<Option<AuthorizationCode>, sqlx::Error> {
     sqlx::query_as::<_, AuthorizationCode>(&format!(
@@ -66,7 +72,7 @@ pub async fn consume(
          RETURNING {COLUMNS}"
     ))
     .bind(code_hash)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
 }
 
@@ -84,11 +90,15 @@ pub async fn find(
 }
 
 /// Remember which session a code produced, so a replay can revoke it.
-pub async fn attach_session(pool: &PgPool, id: Uuid, session_id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn attach_session<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    id: Uuid,
+    session_id: Uuid,
+) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE authorization_codes SET session_id = $2 WHERE id = $1")
         .bind(id)
         .bind(session_id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }

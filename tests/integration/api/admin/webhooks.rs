@@ -232,11 +232,21 @@ async fn internal_addresses_are_never_called() {
 
     fixtures::register_user(&app, 2).await;
     webhooks::deliver_once(&app.state).await.unwrap();
-    let deliveries = delivery_state(&app, &admin.token, created["id"].as_str().unwrap()).await;
+    // The background dispatcher may have claimed the delivery first: wait for
+    // the attempt to be recorded, whoever made it.
+    let id = created["id"].as_str().unwrap();
+    let mut deliveries = delivery_state(&app, &admin.token, id).await;
+    for _ in 0..50 {
+        if deliveries[0]["last_error"].is_string() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        deliveries = delivery_state(&app, &admin.token, id).await;
+    }
     assert!(
         deliveries[0]["last_error"]
             .as_str()
-            .unwrap()
+            .unwrap_or_default()
             .contains("blocked address"),
         "{deliveries}"
     );
@@ -302,6 +312,28 @@ async fn endpoints_are_checked_updated_rotated_and_removed() {
     assert_eq!(status, 200, "{updated}");
     assert_eq!(updated["enabled"], true);
     assert_eq!(updated["events"], json!(["user.created", "user.deleted"]));
+    assert!(
+        updated.get("secret").is_none(),
+        "same host: the secret stays"
+    );
+
+    // Another host: a new secret, so the former host cannot sign for it
+    // (SEC-85).
+    let (status, moved) = send(
+        &app,
+        Method::PUT,
+        &format!("/admin/webhooks/{id}"),
+        &admin.token,
+        json!({ "url": "https://elsewhere.example.com/hook", "events": ["user.created", "user.deleted"] }),
+    )
+    .await;
+    assert_eq!(status, 200, "{moved}");
+    assert!(
+        moved["secret"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("whsec_"))
+    );
+    assert_ne!(moved["secret"], created["secret"]);
 
     let (status, rotated) = send(
         &app,
@@ -357,8 +389,159 @@ async fn endpoints_are_checked_updated_rotated_and_removed() {
         [
             "webhook_created",
             "webhook_updated",
+            "webhook_updated",
             "webhook_secret_rotated",
             "webhook_deleted"
         ]
+    );
+}
+
+/// A stolen administrator token alone must not point account events
+/// somewhere: creating, redirecting or re-keying a webhook needs a recent
+/// re-authentication, and the audit keeps where events went.
+#[tokio::test]
+async fn pointing_a_webhook_somewhere_needs_a_reauthentication_and_is_traced() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let (_receiver, url) = Receiver::start().await;
+
+    app.clear_recent_reauth(&admin.token).await;
+    let (status, response) = send(
+        &app,
+        Method::POST,
+        "/admin/webhooks",
+        &admin.token,
+        json!({ "url": url, "events": ["*"] }),
+    )
+    .await;
+    assert_eq!(status, 403, "{response}");
+    assert_eq!(response["code"], "reauthentication_required");
+
+    let (status, _) = send(
+        &app,
+        Method::POST,
+        "/users/me/reauth",
+        &admin.user.access_token,
+        json!({ "current_password": admin.user.password }),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, created) = send(
+        &app,
+        Method::POST,
+        "/admin/webhooks",
+        &admin.token,
+        json!({ "url": url, "events": ["*"] }),
+    )
+    .await;
+    assert_eq!(status, 201, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+
+    let metadata: Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE action = 'webhook_created' AND user_id = $1",
+    )
+    .bind(admin.user.id)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(metadata["host"], "127.0.0.1");
+    assert_eq!(metadata["webhook_id"], id.as_str());
+    assert!(
+        !metadata.to_string().contains("/hook"),
+        "no path: {metadata}"
+    );
+
+    app.clear_recent_reauth(&admin.token).await;
+    for (method, path) in [
+        (Method::PUT, format!("/admin/webhooks/{id}")),
+        (Method::POST, format!("/admin/webhooks/{id}/secret")),
+    ] {
+        let (status, response) = send(
+            &app,
+            method,
+            &path,
+            &admin.token,
+            json!({ "url": url, "events": ["*"] }),
+        )
+        .await;
+        assert_eq!(status, 403, "{path}: {response}");
+        assert_eq!(response["code"], "reauthentication_required");
+    }
+}
+
+#[tokio::test]
+async fn a_redelivery_is_audited() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let (receiver, url) = Receiver::start().await;
+    let (_, created) = send(
+        &app,
+        Method::POST,
+        "/admin/webhooks",
+        &admin.token,
+        json!({ "url": url, "events": ["user.created"] }),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_owned();
+    fixtures::register_user(&app, 2).await;
+    eventually(|| receiver.count() == 1).await;
+    let deliveries = delivery_state(&app, &admin.token, &id).await;
+    let delivery = deliveries[0]["id"].as_str().unwrap().to_owned();
+
+    let (status, response) = send(
+        &app,
+        Method::POST,
+        &format!("/admin/webhooks/{id}/deliveries/{delivery}/retry"),
+        &admin.token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 204, "{response}");
+    let redelivered: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log
+         WHERE action = 'webhook_updated' AND metadata->>'redelivered' = $1",
+    )
+    .bind(&delivery)
+    .fetch_one(&app.db)
+    .await
+    .unwrap();
+    assert_eq!(redelivered, 1);
+}
+
+/// A failed delivery records a fixed message: the HTTP client's error carries
+/// the full URL, whose query may hold the endpoint's own token (SEC-70).
+#[tokio::test]
+async fn a_failed_delivery_never_records_the_endpoint_url() {
+    let app = TestApp::spawn_with_config(|c| {
+        c.webhooks.allow_private_networks = true;
+        c.webhooks.allow_http = true;
+    })
+    .await;
+    let admin = admin(&app, 1).await;
+    let (_, created) = send(
+        &app,
+        Method::POST,
+        "/admin/webhooks",
+        &admin.token,
+        json!({ "url": "http://127.0.0.1:9/hook?token=endpoint-secret", "events": ["user.created"] }),
+    )
+    .await;
+
+    fixtures::register_user(&app, 2).await;
+    webhooks::deliver_once(&app.state).await.unwrap();
+    let id = created["id"].as_str().unwrap();
+    let mut deliveries = delivery_state(&app, &admin.token, id).await;
+    for _ in 0..50 {
+        if deliveries[0]["last_error"].is_string() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        deliveries = delivery_state(&app, &admin.token, id).await;
+    }
+    let error = deliveries[0]["last_error"].as_str().unwrap_or_default();
+    assert!(!error.is_empty(), "{deliveries}");
+    assert!(
+        !error.contains("endpoint-secret") && !error.contains("127.0.0.1"),
+        "{error}"
     );
 }

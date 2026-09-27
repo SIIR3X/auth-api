@@ -18,7 +18,7 @@ use crate::{
     domain::audit::AuditAction, error::AppError, repositories::audit as audit_repo, state::AppState,
 };
 
-use super::extractors::AuthUser;
+use super::extractors::FirstPartyUser;
 
 const DEFAULT_LIMIT: i64 = 50;
 /// Most entries one page may hold; larger requests are clamped, not refused.
@@ -69,7 +69,7 @@ pub struct AuditPageResponse {
 )]
 pub async fn list(
     State(state): State<AppState>,
-    auth: AuthUser,
+    auth: FirstPartyUser,
     Query(params): Query<ListParams>,
 ) -> Result<Json<AuditPageResponse>, AppError> {
     let limit = page_limit(params.limit);
@@ -91,15 +91,21 @@ pub async fn list(
     Ok(Json(AuditPageResponse {
         entries: rows
             .into_iter()
-            .map(|entry| AuditEntryResponse {
-                id: entry.id,
-                created_at: entry.created_at.unix_timestamp(),
-                action: action_name(&entry.action),
-                // The address, not the network: every row is written from one
-                // address and a `/32` on each line says nothing.
-                ip_address: entry.ip_address.map(|net| net.ip().to_string()),
-                request_id: entry.request_id,
-                metadata: entry.metadata,
+            .map(|entry| {
+                // An administrator's change names neither the administrator
+                // nor the address they acted from, as in the export.
+                let (metadata, ip_address) =
+                    crate::domain::audit::owner_view(entry.metadata, entry.ip_address);
+                AuditEntryResponse {
+                    id: entry.id,
+                    created_at: entry.created_at.unix_timestamp(),
+                    action: action_name(&entry.action),
+                    // The address, not the network: every row is written from
+                    // one address and a `/32` on each line says nothing.
+                    ip_address: ip_address.map(|net| net.ip().to_string()),
+                    request_id: entry.request_id,
+                    metadata,
+                }
             })
             .collect(),
         next_cursor,
@@ -176,6 +182,11 @@ pub(crate) fn action_name(action: &AuditAction) -> &'static str {
         A::EncryptionKeyRotated => "encryption_key_rotated",
         A::AccountUnlocked => "account_unlocked",
         A::PasswordResetForced => "password_reset_forced",
+        A::AccessFactorsRemoved => "access_factors_removed",
+        A::ClientAuthorized => "client_authorized",
+        A::DeviceApproved => "device_approved",
+        A::DeviceDenied => "device_denied",
+        A::AdminDataRead => "admin_data_read",
         A::RoleCreated => "role_created",
         A::RoleDeleted => "role_deleted",
         A::RolePermissionsChanged => "role_permissions_changed",

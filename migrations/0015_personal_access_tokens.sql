@@ -2,7 +2,6 @@
 -- scripts, exchanged for short-lived access tokens. Each one owns a session of
 -- type `personal_access_token`, so every revocation path (the token list, the
 -- session list, a password change, an administrator) ends it the same way.
-ALTER TYPE session_type ADD VALUE IF NOT EXISTS 'personal_access_token';
 
 CREATE TABLE personal_access_tokens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -23,6 +22,3 @@ CREATE TABLE personal_access_tokens (
 );
 
 CREATE INDEX idx_personal_access_tokens_user ON personal_access_tokens (user_id, created_at DESC);
-
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'personal_access_token_created';
-ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'personal_access_token_revoked';

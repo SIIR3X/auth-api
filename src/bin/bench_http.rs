@@ -1891,7 +1891,10 @@ async fn inject_known_otp_into_flow(
     redis: &auth_api::utils::redis_pool::RedisPool,
     flow_token: &str,
 ) {
-    let key = format!("email_change_flow:{}", flow_token);
+    let key = format!(
+        "email_change_flow:{}",
+        auth_api::utils::crypto::token_id(flow_token)
+    );
     if let Ok(mut conn) = redis.get().await
         && let Ok(raw) = conn.get::<_, String>(&key).await
         && let Ok(mut val) = serde_json::from_str::<Value>(&raw)
@@ -1919,8 +1922,8 @@ async fn cancel_email_change_flow_bench(state: &AppState, user_id: Uuid) {
     if let Ok(mut conn) = state.redis.get().await {
         let active_key = format!("email_change_active:{}", user_id);
         if let Ok(Some(old_token)) = conn.get::<_, Option<String>>(&active_key).await {
-            let _: Result<(), _> = conn.del(format!("email_change_flow:{}", old_token)).await;
-            let _: Result<(), _> = conn.del(format!("email_change_fail:{}", old_token)).await;
+            let _: Result<(), _> = conn.del(format!("email_change_flow:{old_token}")).await;
+            let _: Result<(), _> = conn.del(format!("email_change_fail:{old_token}")).await;
         }
         let _: Result<(), _> = conn.del(&active_key).await;
     }

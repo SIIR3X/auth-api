@@ -1,7 +1,6 @@
 use crate::common::{app::TestApp, fixtures};
 use auth_api::repositories::{email_2fa as email_2fa_repo, recovery_code as recovery_code_repo};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 // helpers
 
@@ -22,7 +21,7 @@ async fn setup_email_2fa(app: &TestApp, token: &str, user_id: uuid::Uuid) -> uui
     let method_id = uuid::Uuid::parse_str(body["method_id"].as_str().unwrap()).unwrap();
 
     // 2. read the OTP from the DB and verify setup
-    let otp = read_otp_from_db(app, user_id).await;
+    let otp = read_otp_from_db(app, user_id, None).await;
 
     let res = app
         .post_auth(
@@ -40,7 +39,9 @@ async fn setup_email_2fa(app: &TestApp, token: &str, user_id: uuid::Uuid) -> uui
 }
 
 /// Read the latest active OTP hash from the DB and brute-force the plaintext.
-async fn read_otp_from_db(app: &TestApp, user_id: uuid::Uuid) -> String {
+/// `challenge` is the sign-in challenge the code was sent for, if any: a
+/// sign-in code is bound to it.
+async fn read_otp_from_db(app: &TestApp, user_id: uuid::Uuid, challenge: Option<&str>) -> String {
     let row: (Vec<u8>,) = sqlx::query_as(
         "SELECT code_hash FROM email_2fa_codes
          WHERE user_id = $1 AND used_at IS NULL
@@ -51,19 +52,13 @@ async fn read_otp_from_db(app: &TestApp, user_id: uuid::Uuid) -> String {
     .await
     .expect("no active email_2fa_code found");
 
-    brute_force_otp(&row.0)
-}
-
-/// Brute-force a 6-digit OTP from its SHA-256 hash.
-fn brute_force_otp(expected_hash: &[u8]) -> String {
-    for n in 0u32..1_000_000 {
-        let candidate = format!("{:06}", n);
-        let h = Sha256::digest(candidate.as_bytes());
-        if h.as_slice() == expected_hash {
-            return candidate;
-        }
-    }
-    panic!("OTP not found in 6-digit space - unexpected hash");
+    testkit::app::brute_force_otp(&row.0, |code| {
+        app.state.keyring.otp_digest(
+            "email_2fa",
+            &auth_api::services::email_2fa::code_subject(user_id, challenge),
+            code,
+        )
+    })
 }
 
 async fn active_email_code_hashes(app: &TestApp, user_id: uuid::Uuid) -> Vec<Vec<u8>> {
@@ -120,7 +115,7 @@ async fn email_2fa_setup_and_login() {
     let pre_auth_token = body["pre_auth_token"].as_str().unwrap().to_owned();
 
     // Read OTP that was auto-sent on login challenge.
-    let otp = read_otp_from_db(&app, user.id).await;
+    let otp = read_otp_from_db(&app, user.id, Some(&pre_auth_token)).await;
 
     // Complete the 2FA challenge.
     let res = app
@@ -280,7 +275,7 @@ async fn email_2fa_lockout_after_max_failures() {
     }
 
     // 6th attempt (correct OTP) must be rejected - token is burned.
-    let otp = read_otp_from_db(&app, user.id).await;
+    let otp = read_otp_from_db(&app, user.id, Some(&pre_auth_token)).await;
     let res = app
         .post(
             "/auth/two-factor/email/complete",
@@ -603,7 +598,7 @@ async fn email_2fa_setup_verify_expired_code_rejected() {
     .expect("failed to expire 2fa codes");
 
     // Read the (now expired) code and try to verify - must return 401.
-    let expired_otp = read_otp_from_db(&app, user.id).await;
+    let expired_otp = read_otp_from_db(&app, user.id, None).await;
     let res = app
         .post_auth(
             &format!("/users/me/two-factor/email/{}/verify", method_id),
@@ -612,4 +607,66 @@ async fn email_2fa_setup_verify_expired_code_rejected() {
         )
         .await;
     assert_eq!(res.status().as_u16(), 401, "expired code must return 401");
+}
+
+async fn email_challenge(app: &TestApp, user: &fixtures::AuthenticatedUser) -> String {
+    let body: Value = app
+        .post(
+            "/auth/login",
+            &serde_json::json!({ "identifier": user.email, "password": user.password }),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["two_factor_method"], "email", "{body}");
+    body["pre_auth_token"].as_str().unwrap().to_owned()
+}
+
+/// A resend keeps the previous code usable (someone holding the challenge
+/// must not kill the code its owner is typing), and a challenge resends at
+/// most twice (SEC-68).
+#[tokio::test]
+async fn a_resend_keeps_the_previous_code_and_is_budgeted() {
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 880).await;
+    setup_email_2fa(&app, &user.access_token, user.id).await;
+    let pre_auth = email_challenge(&app, &user).await;
+    let mut statuses = Vec::new();
+    for _ in 0..3 {
+        app.clear_email_2fa_cooldown(user.id).await;
+        let res = app
+            .post(
+                "/auth/two-factor/email/resend",
+                &serde_json::json!({ "pre_auth_token": pre_auth }),
+            )
+            .await;
+        statuses.push(res.status().as_u16());
+    }
+    assert_eq!(statuses, [204, 204, 429]);
+
+    // A new challenge: its code, then a resend, and the first code still works.
+    app.clear_email_2fa_cooldown(user.id).await;
+    let pre_auth = email_challenge(&app, &user).await;
+    let first = read_otp_from_db(&app, user.id, Some(&pre_auth)).await;
+    app.clear_email_2fa_cooldown(user.id).await;
+    let res = app
+        .post(
+            "/auth/two-factor/email/resend",
+            &serde_json::json!({ "pre_auth_token": pre_auth }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 204);
+
+    let res = app
+        .post(
+            "/auth/two-factor/email/complete",
+            &serde_json::json!({ "pre_auth_token": pre_auth, "code": first }),
+        )
+        .await;
+    assert_eq!(res.status().as_u16(), 200, "the earlier code still works");
+    assert!(
+        active_email_code_hashes(&app, user.id).await.is_empty(),
+        "using a code ends the other one"
+    );
 }

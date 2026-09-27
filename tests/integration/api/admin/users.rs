@@ -52,6 +52,30 @@ async fn an_administrator_without_a_second_factor_is_refused() {
 }
 
 #[tokio::test]
+async fn an_administrator_whose_sign_in_skipped_the_second_factor_is_refused() {
+    // Enrolled, but the session came from the password alone: a passkey-only
+    // administrator signing in by password, or a sign-in link.
+    let app = TestApp::spawn().await;
+    let user = fixtures::authenticated_user(&app, 1).await;
+    let role = auth_api::repositories::role::find_by_name(&app.db, "admin")
+        .await
+        .unwrap()
+        .unwrap();
+    auth_api::repositories::role::assign_to_user(&app.db, user.id, role.id, None)
+        .await
+        .unwrap();
+    super::enroll_second_factor(&app, user.id).await;
+    let token = token_with(&app, &user, &["users:read"]);
+
+    let (status, response) = body(app.get_auth("/admin/users", &token).await).await;
+    assert_eq!(status, 403);
+    assert_eq!(response["code"], "two_factor_required");
+
+    super::prove_second_factor(&app, &user).await;
+    assert_eq!(app.get_auth("/admin/users", &token).await.status(), 200);
+}
+
+#[tokio::test]
 async fn a_permission_revoked_in_the_database_stops_working_before_the_token_expires() {
     let app = TestApp::spawn().await;
     let admin = admin(&app, 1).await;
@@ -271,8 +295,9 @@ async fn unlocking_ends_the_lockout_and_forgives_the_failures() {
     for _ in 0..3 {
         sign_in(&app, &target.email, "WrongPassword1!").await;
     }
-    let (_, locked) = sign_in(&app, &target.email, &target.password).await;
-    assert_eq!(locked["code"], "account_locked");
+    // A locked password answers like a wrong one.
+    let (status, _) = sign_in(&app, &target.email, &target.password).await;
+    assert_eq!(status, 401);
 
     let (status, _) = body(
         app.post_auth(
@@ -375,7 +400,9 @@ async fn deleting_an_account_needs_a_recent_reauthentication_and_announces_it() 
     assert_eq!(status, 403);
     assert_eq!(response["code"], "reauthentication_required");
 
-    let (status, response) = body(
+    // A password in the body is not enough: the re-authentication goes
+    // through its own, strictly budgeted route.
+    let (status, _) = body(
         app.delete_auth_json(
             &path,
             &admin.token,
@@ -384,6 +411,16 @@ async fn deleting_an_account_needs_a_recent_reauthentication_and_announces_it() 
         .await,
     )
     .await;
+    assert_eq!(status, 403);
+    let reauth = app
+        .post_auth(
+            "/users/me/reauth",
+            &admin.token,
+            &json!({ "current_password": admin.user.password }),
+        )
+        .await;
+    assert_eq!(reauth.status().as_u16(), 204);
+    let (status, response) = body(app.delete_auth(&path, &admin.token).await).await;
     assert_eq!(status, 204, "{response}");
     assert_eq!(app.get_auth(&path, &admin.token).await.status(), 404);
 
@@ -413,5 +450,34 @@ async fn deleting_an_account_needs_a_recent_reauthentication_and_announces_it() 
     assert_eq!(
         status, 403,
         "an administrator does not delete their own account here"
+    );
+}
+
+#[tokio::test]
+async fn suspending_or_forcing_a_reset_needs_a_recent_reauthentication() {
+    let app = TestApp::spawn().await;
+    let admin = admin(&app, 1).await;
+    let target = fixtures::authenticated_user(&app, 2).await;
+    app.clear_recent_reauth(&admin.token).await;
+
+    for action in ["suspend", "password-reset"] {
+        let (status, response) = body(
+            app.post_auth(
+                &format!("/admin/users/{}/{action}", target.id),
+                &admin.token,
+                &json!({}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, 403, "{action}: {response}");
+        assert_eq!(response["code"], "reauthentication_required");
+    }
+    assert_eq!(
+        app.get_auth("/users/me", &target.access_token)
+            .await
+            .status(),
+        200,
+        "the target is untouched"
     );
 }

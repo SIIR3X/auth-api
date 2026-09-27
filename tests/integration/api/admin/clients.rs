@@ -130,30 +130,67 @@ async fn invalid_client_settings_are_refused() {
             "/admin/clients/app",
             json!({ "display_name": "App", "scopes": ["planets:destroy"] }),
         ),
+        // A client acting with every permission of its users is never so by
+        // omission (SEC-79).
+        ("/admin/clients/app", json!({ "display_name": "App" })),
+        // Only https, loopback http and private-use schemes with a dot.
+        (
+            "/admin/clients/app",
+            json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["javascript:alert(1)//"] }),
+        ),
+        (
+            "/admin/clients/app",
+            json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["data:text/html,hi"] }),
+        ),
+        (
+            "/admin/clients/app",
+            json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["http://app.example.com/cb"] }),
+        ),
+        // No fragment, no credentials (SEC-86).
+        (
+            "/admin/clients/app",
+            json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["https://app.example.com/cb#frag"] }),
+        ),
+        (
+            "/admin/clients/app",
+            json!({ "display_name": "App", "unrestricted": true, "redirect_uris": ["https://user:pw@app.example.com/cb"] }),
+        ),
     ] {
         let (status, response) =
             send(&app, Method::PUT, path, &admin.token, settings.clone()).await;
         assert_eq!(status, 422, "{settings}: {response}");
     }
 
-    let primary = json!({ "display_name": "App", "is_primary": true });
-    let (status, _) = send(
+    // The primary client is the command line's: the administration neither
+    // designates one nor changes it (SEC-75).
+    let (status, response) = send(
         &app,
         Method::PUT,
         "/admin/clients/first",
         &admin.token,
-        primary.clone(),
+        json!({ "display_name": "App", "is_primary": true, "unrestricted": true }),
     )
     .await;
-    assert_eq!(status, 201);
+    assert_eq!(
+        (status, response["code"].as_str()),
+        (409, Some("primary_client_managed_by_command_line"))
+    );
+    sqlx::query(
+        "INSERT INTO registered_clients (client_id, display_name, is_primary) VALUES ('first', 'App', TRUE)",
+    )
+    .execute(&app.db)
+    .await
+    .unwrap();
     let (status, response) = send(
         &app,
         Method::PUT,
-        "/admin/clients/second",
+        "/admin/clients/first",
         &admin.token,
-        primary,
+        json!({ "display_name": "App", "redirect_uris": ["https://evil.example/cb"], "unrestricted": true }),
     )
     .await;
-    assert_eq!(status, 409);
-    assert_eq!(response["code"], "primary_client_exists");
+    assert_eq!(
+        (status, response["code"].as_str()),
+        (409, Some("primary_client_managed_by_command_line"))
+    );
 }
