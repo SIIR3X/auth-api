@@ -361,8 +361,14 @@ grants (`403` otherwise). `PUT /admin/clients/{client_id}` refuses a client
 without scopes unless the body sets `"unrestricted": true`, redirect URIs that
 are not `https`, loopback `http` or a private-use `reverse.domain:` scheme, and
 any change to the primary client or `"is_primary": true`
-(`409 primary_client_managed_by_command_line`): the primary client is managed
-with `auth-api --register-client`.
+(`409 primary_client_managed_by_command_line`); deleting the primary client or
+changing its secret is refused the same way: the primary client is managed
+with `auth-api --register-client`. Adding an administrative permission to a
+role needs every holder active with a second factor
+(`409 holders_without_second_factor`). Searching accounts, reading an account
+and reading the audit log are recorded in the administrator's history
+(`admin_data_read`). `PUT /admin/webhooks/{id}` returns a new `secret` when the
+endpoint now points at another host.
 
 `GET /admin/users` takes `query` (start of the address or username), `status`,
 `limit` and `cursor`, and pages newest first. Administrators cannot suspend,

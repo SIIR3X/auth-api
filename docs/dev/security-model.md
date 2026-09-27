@@ -111,6 +111,14 @@ the database together, is out of scope.
   The budgets guarding a link, a device code or an e-mail change target fail
   closed when Redis cannot count them.
 
+- **Unverified accounts read as unknown:** a password sign-in to an account
+  whose address is not verified answers like a wrong password and mails a new
+  link: registering someone's address, then signing in with one's own
+  password, tells nothing of whether it had an account.
+- **Challenges resist a Redis read:** sign-in challenges and e-mail change
+  flows are stored under their token's digest, and a sign-in e-mail code
+  completes only the challenge it was sent for.
+
 ## Sessions and tokens
 
 - **New devices** are announced: a sign-in from a browser and operating system
@@ -333,6 +341,13 @@ the database together, is out of scope.
   operator and host.
 - Removing an account's access factors revokes every session in the same
   transaction; a forced reset asking for it is one change, refused whole.
+
+- A role gaining administration makes administrators of its holders: each must
+  be active with a second factor, and each is audited and told. A reset keeps
+  the last second factor of an account holding administration.
+- Administrative reads are audited in the administrator's history, without
+  what was searched. The runtime role cannot delete outgoing events or webhook
+  deliveries, and executes the owner-privileged functions by name only.
 
 ## Webhooks
 

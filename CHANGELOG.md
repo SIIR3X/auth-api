@@ -8,7 +8,7 @@ as described in the [versioning policy](docs/dev/guides/versioning.md).
 ## [2.1.0] - 2026-09-26
 
 Security release: fixes every finding of the security audit of 2026-09-26
-and of the three independent re-audits that followed it.
+and of the four independent re-audits that followed it.
 Some fixes refuse what was unsafe to accept, as the versioning policy allows
 for security fixes: each such change is listed under **Security**. No
 deployment exists yet, so the migrations were consolidated: each table is
@@ -315,6 +315,48 @@ from scratch (read **Upgrading**).
   access log 14 days; the infrastructure check verifies that PostgreSQL and
   Redis listen on the VPN address only.
 
+- Every administrative invariant holds on every route: a role gains an
+  administrative permission only when each holder is active with a second
+  factor (`409 holders_without_second_factor`), and each holder is audited and
+  told; the primary client can neither be deleted nor have its secret changed
+  over HTTP; a password reset keeps the last second factor of an account
+  holding administration; the primary client needs a second-factor session in
+  the authorization code flow too; changing the password ends a lockout.
+- An account whose address is not verified answers a password sign-in like a
+  wrong password (`401 invalid_credentials`, no longer `403
+  email_not_verified`) and gets a new verification link: registering an
+  address and signing in with one's own password no longer tells whether it
+  had an account. Verification links are budgeted per client address first; a
+  registered address holds one username reservation at a time; a reset that
+  activates a pending account adopts the username of its latest registration;
+  a refresh refused for its address answers `token_invalid`.
+- Sign-in challenges and e-mail change flows are kept in Redis under their
+  digest; a sign-in e-mail code completes its own challenge only (codes are
+  budgeted per challenge and per account); `POST /users/me/two-factor/email/send`
+  answers `404` unless a method is being set up; a lockout is applied, audited
+  and mailed once; no route hashes a password longer than 256 bytes.
+- Administrative reads (account search, account detail, `/admin/audit`) are
+  audited in the administrator's history (`admin_data_read`, without the
+  search). The owner's history and export no longer show a command-line
+  operator or host; strangers' user agents in the export are reduced to their
+  family. The runtime role cannot delete events from the outbox or webhook
+  deliveries (owner functions with floors do). Pointing a webhook at another
+  host regenerates its secret, returned once by `PUT /admin/webhooks/{id}`.
+- OAuth: an identity provider's endpoints must use its issuer's transport;
+  redirect URIs with a fragment or credentials are refused; a client
+  credentials token is introspected against the client's current scopes; a
+  refresh may narrow `scope` and is refused (`invalid_scope`) when it widens
+  it; device refusals are audited (`device_denied`).
+- Production names trusted proxies one address at a time (`/32`, `/128`) and
+  bounds `RECOVERY_CODE_EXPIRY_DAYS` to 1-730; weakened settings are logged at
+  startup. An IPv4-mapped peer is compared as IPv4. The NATS broker runs
+  read-only with a PID limit, its monitoring endpoint on loopback and the
+  exporter in its network namespace. nginx redirects to a fixed host and
+  limits connections per client network. `write-secrets.sh` reads pass
+  directly. The runtime role executes the owner-privileged functions by name.
+  New `METRICS_HOST`. Errors of the Pwned Passwords API are logged without
+  their URL.
+
 ### Upgrading
 
 - Administrators signed in before the upgrade sign in again with their second
@@ -352,6 +394,16 @@ from scratch (read **Upgrading**).
   recovery codes are used at sign-in (`/auth/two-factor/recovery`).
 - Resource servers that authorized third-party tokens by role authorize them
   by permission: those tokens no longer carry roles.
+- Front ends that told an unverified user so at sign-in: `/auth/login` now
+  answers `401 invalid_credentials` and mails a new link; point users at their
+  mailbox after a registration instead.
+- `TRUSTED_PROXY_CIDRS` lists addresses in production (`172.30.0.1/32` as
+  shipped). `write-secrets.sh` reads pass itself: stop exporting the secrets
+  before running it. Reapply `deploy/db/auth-api-grants.sql` (functions granted
+  by name, no delete on the outbox and deliveries). Update
+  `docker-compose.api.yml` and `nats.conf` together (monitoring on loopback).
+- Scripts calling `PUT /admin/webhooks/{id}` with a new host store the
+  `secret` of the response.
 
 ## [2.0.1] - 2026-09-18
 

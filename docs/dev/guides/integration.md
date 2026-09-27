@@ -67,7 +67,9 @@ secret once.
 
    Each refresh returns a new refresh token; keep only the latest. Presenting a
    replaced one revokes the whole session (two requests within two seconds are
-   treated as the same client retrying).
+   treated as the same client retrying). A `scope` parameter asks for fewer
+   permissions in that access token (never more: `invalid_scope`); a
+   refreshed ID token carries no `nonce`.
 
 Native applications register a loopback redirect such as
 `http://127.0.0.1/callback` and listen on any free port: the redirect

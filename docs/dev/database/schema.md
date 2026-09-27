@@ -80,7 +80,8 @@ until one of them verifies the account. `magic_link_tokens` hold sign-in links
 
 A username asked for by a registration on an address that already has an
 account (`username`, unique whatever its case; `expires_at`, when that
-registration's link would have expired). Registrations and renames treat it as
+registration's link would have expired; `reserved_for`, the account of that
+address, which holds one reservation at a time). Registrations and renames treat it as
 taken, so a taken username never tells whether an address is registered.
 Expired rows go with `cleanup_expired_email_verification_tokens`.
 
@@ -209,7 +210,7 @@ a client address.
 | `created_at` | TIMESTAMPTZ | No | Partition key |
 | `user_id` | UUID | Yes | FK -> users |
 | `request_id` | UUID | Yes | `x-request-id` of the request |
-| `action` | audit_action | No | `login`, `password_changed`, `session_replay_detected`, `client_authorized`, `device_approved`, `encryption_key_rotated`, ... |
+| `action` | audit_action | No | `login`, `password_changed`, `session_replay_detected`, `client_authorized`, `device_approved`, `device_denied`, `admin_data_read`, `encryption_key_rotated`, ... |
 | `ip_address` | INET | Yes | Only the network (/24, /48) after `AUDIT_IP_RETENTION_DAYS`; removed when the account is deleted |
 | `metadata` | JSONB | No | Action details, without personal data such as addresses |
 
