@@ -17,7 +17,7 @@ fn valid_config() -> Config {
             port: 3000,
             public_url: "https://api.example.com".into(),
             frontend_url: "https://api.example.com".into(),
-            trusted_proxy_cidrs: vec!["10.0.0.0/24".parse().unwrap()],
+            trusted_proxy_cidrs: vec!["10.0.0.1/32".parse().unwrap()],
         },
         database: DatabaseConfig {
             url: "postgres://user:pass@localhost/db".into(),
@@ -146,6 +146,7 @@ fn valid_config() -> Config {
         },
         metrics: MetricsConfig {
             enabled: true,
+            host: "127.0.0.1".into(),
             port: 9464,
             token: Some("metrics-token-0123456789abcdef0123456789".into()),
         },
@@ -1267,7 +1268,13 @@ fn validate_rejects_settings_that_undo_their_control() {
     config.device_auth.verification_uri = "http://auth.example.com/device".into();
     assert_eq!(invalid_key(config), "DEVICE_AUTH_VERIFICATION_URI");
 
-    for wide in ["0.0.0.0/0", "::/0", "10.0.0.0/7", "10.0.0.0/8", "fd00::/48"] {
+    for wide in [
+        "0.0.0.0/0",
+        "::/0",
+        "10.0.0.0/8",
+        "172.30.0.0/24",
+        "fd00::/64",
+    ] {
         let mut config = valid_config();
         config.server.trusted_proxy_cidrs = vec![wide.parse().unwrap()];
         assert_eq!(invalid_key(config), "TRUSTED_PROXY_CIDRS", "{wide}");
@@ -1342,4 +1349,37 @@ fn validate_rejects_cors_entries_that_are_not_origins() {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+}
+
+#[test]
+fn production_bounds_recovery_codes_and_names_weakened_settings() {
+    let invalid_key = |config: Config| match config.validate() {
+        Err(ConfigError::Invalid { key, .. }) => key,
+        other => panic!("expected an invalid setting, got {other:?}"),
+    };
+    for days in [0, 731] {
+        let mut config = valid_config();
+        config.crypto.recovery_code_expiry_days = days;
+        assert_eq!(invalid_key(config), "RECOVERY_CODE_EXPIRY_DAYS", "{days}");
+    }
+
+    let mut config = valid_config();
+    assert!(super::weakened_settings(&config).is_empty());
+    config.security.magic_links = true;
+    config.security.reset_revokes_factors_added_hours = 0;
+    config.security.new_device_alerts = false;
+    config.audit.retention_months = 0;
+    let keys: Vec<&str> = super::weakened_settings(&config)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "MAGIC_LINK_ENABLED",
+            "RESET_REVOKES_FACTORS_ADDED_HOURS",
+            "NEW_DEVICE_ALERTS_ENABLED",
+            "AUDIT_LOG_RETENTION_MONTHS"
+        ]
+    );
 }

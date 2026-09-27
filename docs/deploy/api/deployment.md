@@ -112,20 +112,15 @@ DATABASE_URL=$(pass prod/auth-api/database-owner-url) \
 
 ---
 
-### 1.6 Export secrets and start
+### 1.6 Write the secrets and start
+
+`write-secrets.sh` reads each secret from pass into its file under
+`/etc/auth-api/secrets`, without exporting it (see [Secrets](secrets.md)).
 
 ```bash
 cd /srv/auth-api
 export AUTH_API_VERSION=X.Y.Z
-export DATABASE_URL=$(pass prod/auth-api/database-url)
-export REDIS_URL=$(pass prod/auth-api/redis-url)
-export JWT_PRIVATE_KEY=$(pass prod/auth-api/jwt-private-key)
-export JWT_PUBLIC_KEY=$(pass prod/auth-api/jwt-public-key)
-export ENCRYPTION_KEY=$(pass prod/auth-api/encryption-key)
-export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
-export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
-export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
-export NATS_URL=$(pass prod/auth-api/nats-url)
+./write-secrets.sh
 # Owned by root: the broker runs without capabilities (see Secrets)
 sudo install -m 600 -o root -g root /dev/null nats-auth.conf
 printf 'authorization { token: "%s" }\n' "$(pass prod/auth-api/nats-auth-token)" \

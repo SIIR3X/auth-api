@@ -51,7 +51,7 @@ pub(crate) fn resolve_client_ip(
     headers: &HeaderMap,
     trusted_proxy_cidrs: &[IpNetwork],
 ) -> Option<IpAddr> {
-    let peer = peer?;
+    let peer = canonical(peer?);
     if !is_trusted_proxy(peer, trusted_proxy_cidrs) {
         return Some(peer);
     }
@@ -59,7 +59,18 @@ pub(crate) fn resolve_client_ip(
 }
 
 fn is_trusted_proxy(ip: IpAddr, trusted_proxy_cidrs: &[IpNetwork]) -> bool {
+    // A dual-stack listener sees an IPv4 peer as `::ffff:a.b.c.d`: compared
+    // as the IPv4 address it is, or an IPv4 proxy would never be trusted.
+    let ip = canonical(ip);
     trusted_proxy_cidrs.iter().any(|cidr| cidr.contains(ip))
+}
+
+/// An IPv4-mapped IPv6 address as the IPv4 address it carries.
+fn canonical(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    }
 }
 
 /// The client named by the forwarding headers of a trusted proxy.
@@ -161,6 +172,16 @@ mod tests {
     }
 
     const PROXY: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+    #[test]
+    fn an_ipv4_mapped_proxy_is_trusted_as_its_ipv4_address() {
+        let mapped: IpAddr = match PROXY {
+            IpAddr::V4(v4) => IpAddr::V6(v4.to_ipv6_mapped()),
+            v6 => v6,
+        };
+        let ip = resolve_client_ip(Some(mapped), &forwarded(&["1.2.3.4"]), &trusted());
+        assert_eq!(ip, Some("1.2.3.4".parse().unwrap()));
+    }
 
     #[test]
     fn every_forwarded_line_counts_as_one_list() {

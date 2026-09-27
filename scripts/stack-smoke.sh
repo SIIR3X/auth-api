@@ -114,7 +114,7 @@ for svc in api-a api-b; do
   id=$("${C[@]}" ps -q $svc)
   check "$svc healthy" healthy "$(docker inspect -f '{{.State.Health.Status}}' "$id")"
   check "$svc CPU limit (profile M)" 3000000000 "$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$id")"
-  check "$svc memory limit" 536870912 "$(docker inspect -f '{{.HostConfig.Memory}}' "$id")"
+  check "$svc memory limit" 671088640 "$(docker inspect -f '{{.HostConfig.Memory}}' "$id")"
   check "$svc memory reservation" 268435456 "$(docker inspect -f '{{.HostConfig.MemoryReservation}}' "$id")"
   check "$svc pids limit" 256 "$(docker inspect -f '{{.HostConfig.PidsLimit}}' "$id")"
   check "$svc stop grace" 40 "$(docker inspect -f '{{.Config.StopTimeout}}' "$id")"
@@ -132,9 +132,9 @@ check "metrics api-a" 200 "$(curl -s "${BEARER[@]}" -o /dev/null -w '%{http_code
 check "metrics api-b" 200 "$(curl -s "${BEARER[@]}" -o /dev/null -w '%{http_code}' http://127.0.0.1:9466/metrics)"
 check "no secret in the container environment" 0 "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$("${C[@]}" ps -q api-a)" | grep -cE '^(DATABASE_URL|REDIS_URL|JWT_PRIVATE_KEY|ENCRYPTION_KEY|SMTP_PASSWORD|CAPTCHA_SECRET|NATS_URL|METRICS_TOKEN)=')"
 metric() { curl -s "${BEARER[@]}" "http://127.0.0.1:$1/metrics" | awk -v m="$2" '$1==m {printf "%d", $2}'; }
-check "api-a publishes its memory limit" 536870912 "$(metric 9465 auth_container_memory_limit_bytes)"
+check "api-a publishes its memory limit" 671088640 "$(metric 9465 auth_container_memory_limit_bytes)"
 ws=$(metric 9465 auth_container_memory_working_set_bytes)
-check "api-a working set within limit" true "$([ "${ws:-0}" -gt 0 ] && [ "$ws" -lt 536870912 ] && echo true || echo false)"
+check "api-a working set within limit" true "$([ "${ws:-0}" -gt 0 ] && [ "$ws" -lt 671088640 ] && echo true || echo false)"
 check "api-b publishes CPU periods" true "$(curl -s "${BEARER[@]}" http://127.0.0.1:9466/metrics | grep -q '^auth_container_cpu_periods_total ' && echo true || echo false)"
 check "api-b publishes its start time" true "$(curl -s "${BEARER[@]}" http://127.0.0.1:9466/metrics | grep -q '^auth_process_start_time_seconds ' && echo true || echo false)"
 nats_metrics=false
@@ -147,7 +147,10 @@ check "NATS exporter" true "$nats_metrics"
 nats_id=$("${C[@]}" ps -q nats)
 check "NATS token absent from broker arguments" false "$(docker inspect -f '{{json .Args}} {{json .Config.Cmd}}' "$nats_id" | grep -q "$NATS_TOKEN" && echo true || echo false)"
 check "NATS memory limit" 201326592 "$(docker inspect -f '{{.HostConfig.Memory}}' "$nats_id")"
-check "NATS JetStream file store cap" 1073741824 "$(docker run --rm --network auth-smoke_auth-api natsio/nats-box:0.14.5 wget -qO- http://nats:8222/jsz 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["config"]["max_storage"])' 2>/dev/null)"
+check "NATS JetStream file store cap" 1073741824 "$("${C[@]}" exec -T nats wget -qO- http://127.0.0.1:8222/jsz 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["config"]["max_storage"])' 2>/dev/null)"
+# The monitoring endpoint listens on the broker's loopback only.
+docker run --rm --network auth-smoke_auth-api natsio/nats-box:0.14.5 wget -qO- -T 3 http://nats:8222/varz >/dev/null 2>&1
+check "NATS monitoring closed to the compose network" 1 $?
 
 echo "== nginx.conf in front, TLS"
 docker run -d --name auth-smoke-nginx --network host \

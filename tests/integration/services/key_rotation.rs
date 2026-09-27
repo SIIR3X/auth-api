@@ -220,7 +220,8 @@ async fn secrets_in_an_unbound_format_stop_the_start() {
         .await;
     assert_eq!(setup_res.status().as_u16(), 200);
 
-    let legacy = crypto::encrypt("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", &key_a).unwrap();
+    let legacy =
+        crypto::legacy_unbound_ciphertext("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", &key_a).unwrap();
     sqlx::query("UPDATE two_factor_methods SET totp_secret = $1 WHERE user_id = $2")
         .bind(&legacy)
         .bind(user.id)

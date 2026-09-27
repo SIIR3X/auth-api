@@ -66,6 +66,9 @@ async fn fetch_range(state: &AppState, prefix: &str) -> Option<String> {
             return None;
         }
         Err(error) => {
+            // Without the URL: it carries the first characters of the
+            // password's SHA-1.
+            let error = error.without_url();
             tracing::warn!(%error, "pwned passwords API unreachable");
             return None;
         }
@@ -73,6 +76,7 @@ async fn fetch_range(state: &AppState, prefix: &str) -> Option<String> {
     match response.text().await {
         Ok(body) => Some(body),
         Err(error) => {
+            let error = error.without_url();
             tracing::warn!(%error, "pwned passwords answer could not be read");
             None
         }

@@ -30,6 +30,11 @@ async fn main() -> anyhow::Result<()> {
     let tracer_provider = auth_api::telemetry::tracer_provider(&config.telemetry)?;
     init_tracing(&config.log, tracer_provider.as_ref());
     auth_api::utils::password::log_capacity(&config.crypto);
+    if config.is_production() {
+        for (key, consequence) in auth_api::config::weakened_settings(&config) {
+            tracing::warn!(key, consequence, "production runs with a weakened setting");
+        }
+    }
 
     // One-off command: re-encrypt all TOTP secrets with the new key.
     // Set PREVIOUS_ENCRYPTION_KEY=<old> ENCRYPTION_KEY=<new>, run, then remove PREVIOUS_ENCRYPTION_KEY.
@@ -128,7 +133,10 @@ async fn main() -> anyhow::Result<()> {
     // exposition endpoint never sits behind the public reverse proxy.
     // docker-compose publishes this port on loopback only.
     let app = if state.config.metrics.enabled {
-        let metrics_addr = format!("{}:{}", state.config.server.host, state.config.metrics.port);
+        let metrics_addr = format!(
+            "{}:{}",
+            state.config.metrics.host, state.config.metrics.port
+        );
         let (app, metrics_app) = handlers::router_with_metrics(state);
 
         let metrics_listener = tokio::net::TcpListener::bind(&metrics_addr).await?;

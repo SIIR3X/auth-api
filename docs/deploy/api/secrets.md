@@ -2,8 +2,9 @@
 
 [Index](../README.md) | Next: [Database Deployment](../database/deployment.md)
 
-All secrets are stored in `pass` on the API VPS. Before a deployment they are
-exported, then `scripts/write-secrets.sh` writes them to
+All secrets are stored in `pass` on the API VPS. Before a deployment
+`scripts/write-secrets.sh` reads each of them from pass, never through an
+exported variable, and writes it to
 `/etc/auth-api/secrets`: a directory only root enters, one file per secret
 readable only by the image's user (UID 65532). `docker-compose.api.yml` mounts
 them as compose secrets and passes each variable `X` as `X_FILE`, so the values

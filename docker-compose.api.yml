@@ -130,6 +130,13 @@ services:
     secrets:
       - source: nats_auth
         target: /etc/nats/auth.conf
+    # The exporter shares this network namespace to read the monitoring
+    # endpoint, which listens on loopback only: its port is published here.
+    ports:
+      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:7777:7777"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
     cap_drop:
       - ALL
     security_opt:
@@ -145,8 +152,9 @@ services:
         limits:
           cpus: "${NATS_CPUS:?pass a profile with --env-file}"
           memory: ${NATS_MEMORY:?pass a profile with --env-file}
+          pids: 128
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8222/healthz"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -157,9 +165,10 @@ services:
   nats-exporter:
     image: natsio/prometheus-nats-exporter:0.20.2@sha256:c623b608e148e31e1c1c878673a197f1828e58ce90de4f01d22f1baa84c8fee9
     restart: unless-stopped
-    command: ["-varz", "-jsz=all", "http://nats:8222"]
-    ports:
-      - "${METRICS_BIND_ADDRESS:-10.0.0.1}:7777:7777"
+    command: ["-varz", "-jsz=all", "http://127.0.0.1:8222"]
+    # In the broker's network namespace: the monitoring endpoint is not on the
+    # compose network, where any container could read connections and streams.
+    network_mode: "service:nats"
     read_only: true
     cap_drop:
       - ALL
@@ -175,11 +184,10 @@ services:
         limits:
           cpus: "0.1"
           memory: 32M
+          pids: 32
     depends_on:
       nats:
         condition: service_healthy
-    networks:
-      - auth-api
 
 secrets:
   # The application's secrets (scripts/write-secrets.sh).

@@ -13,14 +13,22 @@
 GRANT USAGE ON SCHEMA public TO auth_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO auth_api;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO auth_api;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO auth_api;
+-- The functions running with the owner's privileges are granted by name: a
+-- function added later runs for the application only once listed here. Every
+-- other function keeps PostgreSQL's default EXECUTE for everyone.
+GRANT EXECUTE ON FUNCTION
+    rotate_audit_log_partitions(INTEGER, INTEGER),
+    forget_account_traces(UUID),
+    purge_unverified_accounts(INTERVAL, INTEGER),
+    coarsen_audit_addresses(INTERVAL, INTEGER),
+    cleanup_published_events(INTERVAL, INTEGER),
+    cleanup_finished_webhook_deliveries(INTERVAL, INTEGER)
+TO auth_api;
 
 ALTER DEFAULT PRIVILEGES FOR ROLE auth_api_owner IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO auth_api;
 ALTER DEFAULT PRIVILEGES FOR ROLE auth_api_owner IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO auth_api;
-ALTER DEFAULT PRIVILEGES FOR ROLE auth_api_owner IN SCHEMA public
-    GRANT EXECUTE ON FUNCTIONS TO auth_api;
 
 -- The audit log is append-only for the application: rows are rewritten only
 -- by the maintenance functions of the migrations, which run as the owner, and removed only

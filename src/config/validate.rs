@@ -79,7 +79,7 @@ impl Config {
                 return Err(ConfigError::Invalid {
                     key: "TRUSTED_PROXY_CIDRS".into(),
                     reason: format!(
-                        "{wide} is too wide -- name the reverse proxies, or any peer can forge X-Forwarded-For"
+                        "{wide} is a network -- name each reverse proxy by its address (/32, /128), or any other host in it can forge X-Forwarded-For"
                     ),
                 });
             }
@@ -533,7 +533,50 @@ pub(super) fn validate_production_ceilings(config: &Config) -> Result<(), Config
             reason: "must be true in production -- breached passwords would be accepted".into(),
         });
     }
+    // Recovery codes that never expire stay usable forever from wherever they
+    // were written down.
+    if !(1..=MAX_RECOVERY_CODE_EXPIRY_DAYS).contains(&config.crypto.recovery_code_expiry_days) {
+        return Err(ConfigError::Invalid {
+            key: "RECOVERY_CODE_EXPIRY_DAYS".into(),
+            reason: format!("must be between 1 and {MAX_RECOVERY_CODE_EXPIRY_DAYS} in production"),
+        });
+    }
     Ok(())
+}
+
+/// Longest life of a recovery code in production (two years).
+const MAX_RECOVERY_CODE_EXPIRY_DAYS: u32 = 730;
+
+/// Settings allowed in production that weaken a control, with what each one
+/// gives up: logged as warnings at startup, so a typo or a forgotten test
+/// value shows instead of silently lowering the bar.
+pub fn weakened_settings(config: &Config) -> Vec<(&'static str, &'static str)> {
+    let mut weakened = Vec::new();
+    if config.security.magic_links {
+        weakened.push((
+            "MAGIC_LINK_ENABLED",
+            "the mailbox alone signs in (a second factor still applies)",
+        ));
+    }
+    if config.security.reset_revokes_factors_added_hours == 0 {
+        weakened.push((
+            "RESET_REVOKES_FACTORS_ADDED_HOURS",
+            "factors planted by whoever held the password survive a reset",
+        ));
+    }
+    if !config.security.new_device_alerts {
+        weakened.push((
+            "NEW_DEVICE_ALERTS_ENABLED",
+            "owners are not told of sign-ins from new devices",
+        ));
+    }
+    if config.audit.retention_months == 0 {
+        weakened.push((
+            "AUDIT_LOG_RETENTION_MONTHS",
+            "the audit log, full addresses aside, is kept forever",
+        ));
+    }
+    weakened
 }
 
 /// A limit of zero refuses every request.
@@ -615,10 +658,12 @@ const MIN_LOCKOUT_DURATION_SECS: u64 = 60;
 /// Longest life of a device code (RFC 8628 suggests minutes).
 const MAX_DEVICE_AUTH_TTL_SECS: u64 = 1800;
 
-/// Widest trusted proxy network: anything wider lets arbitrary peers forge
-/// `X-Forwarded-For` and pick their own address.
-const MIN_TRUSTED_PROXY_PREFIX_V4: u8 = 24;
-const MIN_TRUSTED_PROXY_PREFIX_V6: u8 = 64;
+/// Trusted proxies are named one address at a time in production: a network
+/// would also trust its other hosts (on a compose bridge, the broker's
+/// containers), and any of them could forge `X-Forwarded-For` and pick its
+/// own address.
+const MIN_TRUSTED_PROXY_PREFIX_V4: u8 = 32;
+const MIN_TRUSTED_PROXY_PREFIX_V6: u8 = 128;
 
 /// Production ceilings of the anti-abuse settings: a typo must not turn a
 /// control off.

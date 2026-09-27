@@ -31,7 +31,6 @@ openssl ec -in jwt-private-new.pem -pubout -out jwt-public-new.pem
    ```bash
    pass insert -m prod/auth-api/jwt-next-private-key < jwt-private-new.pem
    pass insert -m prod/auth-api/jwt-next-public-key  < jwt-public-new.pem
-   export JWT_NEXT_PUBLIC_KEY=$(pass show prod/auth-api/jwt-next-public-key)
    ```
 
    Redeploy ([Deploying a New Release](update.md#4-start-the-new-version)).
@@ -45,7 +44,6 @@ openssl ec -in jwt-private-new.pem -pubout -out jwt-public-new.pem
    pass show prod/auth-api/jwt-next-private-key | pass insert -m -f prod/auth-api/jwt-private-key
    pass show prod/auth-api/jwt-next-public-key  | pass insert -m -f prod/auth-api/jwt-public-key
    pass rm prod/auth-api/jwt-next-private-key prod/auth-api/jwt-next-public-key
-   unset JWT_NEXT_PUBLIC_KEY
    ```
 
    Redeploy. New tokens carry the new `kid`; tokens signed with the old key

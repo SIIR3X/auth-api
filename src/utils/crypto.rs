@@ -308,18 +308,25 @@ fn v2_aad(context: &[u8]) -> Vec<u8> {
     aad
 }
 
-/// Encrypts plaintext using AES-256-GCM. Returns base64(nonce || ciphertext).
-pub fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<String, CryptoError> {
+/// Encrypts plaintext using AES-256-GCM without associated data. Returns
+/// base64(nonce || ciphertext). Only the tests use it: a ciphertext bound to
+/// nothing could be moved from one row to another, which the `v2` format of
+/// [`Keyring`] rules out.
+#[cfg(test)]
+fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<String, CryptoError> {
     encrypt_with_aad(plaintext, key, &[])
 }
 
-/// [`encrypt`] with associated data: authenticated, not encrypted, and required
-/// again to decrypt.
-pub fn encrypt_with_aad(
-    plaintext: &str,
-    key: &[u8; 32],
-    aad: &[u8],
-) -> Result<String, CryptoError> {
+/// A ciphertext in the unversioned format written before `v2`, bound to no
+/// row: for tests that check such values are refused. Never for storage.
+#[doc(hidden)]
+pub fn legacy_unbound_ciphertext(plaintext: &str, key: &[u8; 32]) -> Result<String, CryptoError> {
+    encrypt_with_aad(plaintext, key, &[])
+}
+
+/// AES-256-GCM with associated data: authenticated, not encrypted, and
+/// required again to decrypt.
+fn encrypt_with_aad(plaintext: &str, key: &[u8; 32], aad: &[u8]) -> Result<String, CryptoError> {
     let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
     // aead 0.6 dropped `AeadCore::generate_nonce`; fill the 96-bit nonce
     // directly from the OS CSPRNG instead.
@@ -346,12 +353,13 @@ pub fn encrypt_with_aad(
 }
 
 /// Decrypts a value produced by `encrypt`.
-pub fn decrypt(encoded: &str, key: &[u8; 32]) -> Result<String, CryptoError> {
+#[cfg(test)]
+fn decrypt(encoded: &str, key: &[u8; 32]) -> Result<String, CryptoError> {
     decrypt_with_aad(encoded, key, &[])
 }
 
 /// Decrypts a value produced by [`encrypt_with_aad`] with the same data.
-pub fn decrypt_with_aad(encoded: &str, key: &[u8; 32], aad: &[u8]) -> Result<String, CryptoError> {
+fn decrypt_with_aad(encoded: &str, key: &[u8; 32], aad: &[u8]) -> Result<String, CryptoError> {
     let combined = B64.decode(encoded).map_err(|_| CryptoError::InvalidInput)?;
 
     // 12-byte nonce + at least 16-byte GCM tag

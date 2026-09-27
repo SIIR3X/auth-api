@@ -61,27 +61,15 @@ DATABASE_URL=$(pass prod/auth-api/database-owner-url) \
 ```bash
 cd /srv/auth-api
 export AUTH_API_VERSION=X.Y.Z
-export DATABASE_URL=$(pass prod/auth-api/database-url)
-export REDIS_URL=$(pass prod/auth-api/redis-url)
-export JWT_PRIVATE_KEY=$(pass prod/auth-api/jwt-private-key)
-export JWT_PUBLIC_KEY=$(pass prod/auth-api/jwt-public-key)
-export ENCRYPTION_KEY=$(pass prod/auth-api/encryption-key)
-# Only while a key rotation is in progress (see the operations runbook); unset
-# otherwise. An empty value is treated as unset.
-export JWT_PREVIOUS_PUBLIC_KEY=$(pass prod/auth-api/jwt-previous-public-key 2>/dev/null)
-export JWT_NEXT_PUBLIC_KEY=$(pass prod/auth-api/jwt-next-public-key 2>/dev/null)
-export PREVIOUS_ENCRYPTION_KEY=$(pass prod/auth-api/previous-encryption-key 2>/dev/null)
-export SMTP_USERNAME=$(pass prod/auth-api/smtp-username)
-export SMTP_PASSWORD=$(pass prod/auth-api/smtp-password)
-export CAPTCHA_SECRET=$(pass prod/auth-api/captcha-secret)
-export NATS_URL=$(pass prod/auth-api/nats-url)
-export METRICS_TOKEN=$(pass prod/auth-api/metrics-token)
-
 ./write-secrets.sh
 sudo -E ./rolling-update.sh
 ```
 
-`write-secrets.sh` writes the values to `/etc/auth-api/secrets` (a directory
+`write-secrets.sh` reads each secret from pass (`prod/auth-api/<name>`,
+`PASS_PREFIX` to change it) straight into its file, never through an exported
+variable; the rotation secrets (`jwt-previous-public-key`,
+`jwt-next-public-key`, `previous-encryption-key`) are written empty when pass
+holds none. It writes the values to `/etc/auth-api/secrets` (a directory
 only root enters, files only the container's user reads), which compose mounts
 as secrets: the instances read each variable `X` from the file named by
 `X_FILE`, so the values appear neither in `docker inspect` nor in the process

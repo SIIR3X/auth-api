@@ -13,7 +13,7 @@ mod env_vars;
 #[cfg(test)]
 mod tests;
 mod validate;
-pub use validate::MAX_TOTP_SKEW;
+pub use validate::{MAX_TOTP_SKEW, weakened_settings};
 
 use env_vars::*;
 
@@ -385,6 +385,10 @@ pub struct CorsConfig {
 pub struct MetricsConfig {
     /// When true, Prometheus metrics are collected and served on `port`.
     pub enabled: bool,
+    /// Address of the internal listener (`METRICS_HOST`, default
+    /// `SERVER_HOST`): outside a container, `127.0.0.1` keeps it off every
+    /// other interface.
+    pub host: String,
     /// Port of the internal metrics listener (`/metrics`). Conventionally 9464
     /// (Prometheus exporter range). Must never be exposed publicly: publish it
     /// on loopback only in docker-compose, never through the reverse proxy.
@@ -399,6 +403,7 @@ impl std::fmt::Debug for MetricsConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MetricsConfig")
             .field("enabled", &self.enabled)
+            .field("host", &self.host)
             .field("port", &self.port)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .finish()
@@ -727,6 +732,10 @@ impl Config {
             },
             metrics: MetricsConfig {
                 enabled: vars.parse("METRICS_ENABLED")?.unwrap_or(true),
+                host: vars
+                    .string("METRICS_HOST")
+                    .or_else(|| vars.string("SERVER_HOST"))
+                    .unwrap_or_else(|| "0.0.0.0".into()),
                 port: vars.parse("METRICS_PORT")?.unwrap_or(9464),
                 token: vars.string("METRICS_TOKEN"),
             },

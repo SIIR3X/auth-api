@@ -624,6 +624,7 @@ pub fn test_config(db_url: &str, redis_url: &str, nats_url: &str) -> Config {
         },
         metrics: MetricsConfig {
             enabled: false,
+            host: "127.0.0.1".into(),
             port: 9464,
             token: None,
         },

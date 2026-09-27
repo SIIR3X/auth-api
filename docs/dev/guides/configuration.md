@@ -236,6 +236,7 @@ session it produced) and TOTP replay records 90 seconds; neither is configurable
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug`, `trace` |
 | `LOG_FORMAT` | `pretty` | `json` in production |
 | `METRICS_ENABLED` | `true` | Serve Prometheus metrics on a separate listener |
+| `METRICS_HOST` | `SERVER_HOST` | Address of the internal listener (`/metrics`, detailed `/ready`); `127.0.0.1` outside a container |
 | `METRICS_PORT` | `9464` | Metrics listener port; publish on loopback only |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP/HTTP collector base URL (`/v1/traces` is appended); unset, no trace is exported |
 | `OTEL_SERVICE_NAME` | `auth-api` | `service.name` of the traces |
@@ -248,8 +249,8 @@ With `APP_ENV=production` the service refuses to start when:
 - `APP_PUBLIC_URL`, `FRONTEND_URL`, `OAUTH_CONSENT_URI`,
   `DEVICE_AUTH_VERIFICATION_URI` or `CAPTCHA_VERIFY_URL` is not HTTPS;
 - `TRUSTED_PROXY_CIDRS` is empty (every client would share the proxy's
-  address), or holds a network wider than `/24` (IPv4) or `/64` (IPv6), from
-  which any peer could forge `X-Forwarded-For`;
+  address), or holds a network rather than addresses (`/32` in IPv4, `/128`
+  in IPv6): any other host of that network could forge `X-Forwarded-For`;
 - the JWT keys do not form a pair, or are the committed development pair;
 - `ENCRYPTION_KEY` is not 32 bytes, is a committed development key, or is an
   arithmetic sequence;
