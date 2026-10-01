@@ -30,10 +30,10 @@ ipnetwork = "0.20"
 # (Marvin) advisory - RSA is never used here, we only sign/verify ES256.
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 lettre = { version = "0.11.19", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname", "pool"] }
-opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
-opentelemetry-http = { version = "0.32", default-features = false }
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "http-proto"] }
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "rt-tokio"] }
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry-http = { version = "0.33", default-features = false }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "http-proto"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "rt-tokio"] }
 percent-encoding = "2.3"
 rand = "0.10.0"
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -52,13 +52,13 @@ time = { version = "0.3.47", features = ["serde"] }
 tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
 totp-rs = { version = "6.0.0", features = ["gen_secret"] }
 tracing = "0.1.44"
-tracing-opentelemetry = { version = "0.33", default-features = false }
+tracing-opentelemetry = { version = "0.34", default-features = false }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.22.0", features = ["v4", "v5", "serde"] }
 tower-http = { version = "0.7.0", features = ["cors", "timeout"] }
 email_address = "0.2.9"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "form"] }
-utoipa = { version = "5", features = ["time", "uuid", "yaml"] }
+utoipa = { version = "6", features = ["time", "uuid", "yaml"] }
 
 [features]
 # Entry points of the fuzz targets (`fuzz/`, `tests/fuzz_corpus.rs`). Never
@@ -66,7 +66,7 @@ utoipa = { version = "5", features = ["time", "uuid", "yaml"] }
 fuzzing = []
 
 [dev-dependencies]
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "testing"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "testing"] }
 testkit = { path = "crates/testkit" }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 futures = "0.3"

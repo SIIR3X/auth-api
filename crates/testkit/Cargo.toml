@@ -14,7 +14,7 @@ base64 = "0.23.1"
 ciborium = "0.2.2"
 deadpool-redis = "0.23.0"
 dotenvy = "0.15.7"
-jsonschema = { version = "0.56.0", default-features = false }
+jsonschema = { version = "0.58.1", default-features = false }
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -27,5 +27,5 @@ sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio
 time = "0.3.47"
 tokio = { version = "1.50.0", features = ["full"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-utoipa = "5"
+utoipa = "6"
 uuid = { version = "1.22.0", features = ["v4"] }
